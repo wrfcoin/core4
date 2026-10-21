@@ -36,7 +36,7 @@
   "author": "WRFCoin Team",
   "license": "MIT",
   "dependencies": {
-    "@noble/curves": "^2.3.0",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "axios": "^1.20.0",
     "ethers": "^6.17.0",
