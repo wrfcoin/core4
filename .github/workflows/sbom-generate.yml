@@ -1,0 +1,361 @@
+name: SBOM Generation
+
+on:
+  # PRE-PUBLICATION release gate (#2317, review of #2347). The `release: published`
+  # event fires only AFTER a release is already public, so it can never *prevent*
+  # a bad release — it can only turn red afterwards. The authoritative gate is
+  # therefore the release-candidate **tag**: pushing `vX.Y.Z` runs the full
+  # validate + critical-scan gate BEFORE a GitHub release is cut. Publish the
+  # release only once this gate is green, and the `release: published` run below
+  # then attaches the SBOMs (re-running the same gate first, so a bad SBOM is
+  # never attached).
+  push:
+    tags:
+      - 'v*.*.*'
+  release:
+    types: [published]
+# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
+# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
+# untouched, so PR gating is unchanged and this can still be run on demand with
+# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
+# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
+  # schedule:
+  # - cron: "0 5 * * 3"
+  workflow_dispatch:
+    inputs:
+      scan_vulnerabilities:
+        description: "Run Grype scans and fail on critical findings"
+        type: boolean
+        default: true
+
+env:
+  NODE_VERSION: '20'
+  RUST_VERSION: '1.98.0'
+
+# #2945: deliberately NOT `cancel-in-progress: ${{ github.event_name ==
+# 'pull_request' }}` — this workflow has no `pull_request` trigger (only a
+# `push` on a release tag, `release: published`, and `workflow_dispatch`), so
+# that expression would always evaluate to `false` here too, but for a
+# different reason worth stating: a release tag push and the `release:
+# published` event for that SAME tag share this group (`github.ref` is the
+# tag ref both times, per the header comment above on why the two exist).
+# With `cancel-in-progress: true`, publishing the release while the
+# pre-publication tag-push gate is still running CANCELS that gate instead of
+# letting it finish — destroying the one result the header comment says this
+# split exists to produce ("the full validate + critical-scan gate BEFORE a
+# GitHub release is cut"). `false` makes the second run queue behind the
+# first instead of killing it; on this single-tag-at-a-time surface that costs
+# a short wait, not a lost verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate-sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-sbom
+          key: rust-sbom-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install SBOM tools
+        run: |
+          # Install cargo-sbom if not cached
+          if ! command -v cargo-sbom &> /dev/null; then
+            cargo install cargo-sbom
+          fi
+
+          # Install cyclonedx-npm
+          npm install -g @cyclonedx/cyclonedx-npm
+
+          # Install grype for vulnerability scanning
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install Node.js dependencies
+        run: npm ci --ignore-scripts --prefer-offline
+
+      - name: Create SBOM directory
+        run: mkdir -p sbom
+
+      - name: Generate Node.js SBOM (CycloneDX)
+        run: |
+          npx @cyclonedx/cyclonedx-npm \
+            --ignore-npm-errors \
+            --output-format json \
+            --output-file sbom/npm-sbom.cdx.json
+
+          echo "Node.js SBOM generated:"
+          jq '.components | length' sbom/npm-sbom.cdx.json
+          echo "components"
+
+      - name: Generate Rust SBOM (CycloneDX)
+        run: |
+          cargo sbom --output-format cyclone_dx_json_1_5 > sbom/rust-sbom.cdx.json
+
+          echo "Rust SBOM generated:"
+          jq '.components | length' sbom/rust-sbom.cdx.json
+          echo "components"
+
+      - name: Merge SBOMs
+        run: |
+          # Create a combined SBOM metadata file
+          cat > sbom/combined-sbom-metadata.json << EOF
+          {
+            "project": "wrfcoin",
+            "version": "${{ github.ref_name }}",
+            "generated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit": "${{ github.sha }}",
+            "sboms": [
+              {
+                "name": "npm-sbom.cdx.json",
+                "format": "CycloneDX 1.5",
+                "ecosystem": "npm",
+                "components": $(jq '.components | length' sbom/npm-sbom.cdx.json)
+              },
+              {
+                "name": "rust-sbom.cdx.json",
+                "format": "CycloneDX 1.5",
+                "ecosystem": "cargo",
+                "components": $(jq '.components | length' sbom/rust-sbom.cdx.json)
+              }
+            ]
+          }
+          EOF
+
+          echo "Combined SBOM metadata:"
+          cat sbom/combined-sbom-metadata.json
+
+  terminal-skip-guard:
+    name: Terminal skip guard
+    needs: [generate-sbom, verify-sbom]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: generate-sbom verify-sbom
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py
+
+      # Fail-closed inventory validation (#2317). The pinned `cyclonedx validate`
+      # CLI returns 0 on a malformed document unless `--fail-on-errors` is passed,
+      # and the old verify job also swallowed its exit with `|| echo`. This
+      # authoritative, network-free check rejects a missing / empty / non-JSON /
+      # wrong-format / empty inventory and the exact bypass the audit found (a
+      # `components` value that is a string, which the summary counted as a
+      # component total). A bad SBOM here is a red job — it is never uploaded,
+      # scanned, or attached to a release.
+      - name: Validate generated SBOMs (fail-closed)
+        run: |
+          python3 scripts/validate_sbom.py --self-test
+          python3 scripts/validate_sbom.py \
+            sbom/npm-sbom.cdx.json \
+            sbom/rust-sbom.cdx.json
+
+      # Install the pinned CycloneDX CLI HERE, in the generate job, so schema
+      # validation runs BEFORE the SBOMs are ever uploaded or attached (review of
+      # #2347). Previously the CLI schema check lived only in the downstream
+      # verify-sbom job, so a document that passed the lightweight Python check but
+      # failed full schema validation could be published before the job turned red.
+      - name: Install CycloneDX CLI
+        run: |
+          wget -qO- https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 > /tmp/cyclonedx
+          chmod +x /tmp/cyclonedx
+          sudo mv /tmp/cyclonedx /usr/local/bin/cyclonedx
+
+      # Authoritative CycloneDX schema validation at the publishing boundary. The
+      # pinned CLI returns 0 on a schema-invalid document without `--fail-on-errors`,
+      # so the flag is mandatory. A schema-invalid SBOM fails here, before upload.
+      - name: Validate SBOM schema before publishing (CycloneDX CLI)
+        run: |
+          cyclonedx validate --input-file sbom/npm-sbom.cdx.json  --input-format json --fail-on-errors
+          cyclonedx validate --input-file sbom/rust-sbom.cdx.json --input-format json --fail-on-errors
+
+      # Committed negative control (#2317): prove a critical scanner result fails the
+      # gate (a fake grype exit 1 is not swallowed) before we run the real scans.
+      - name: Critical-scanner negative control
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        run: bash scripts/sbom_scan_probe.sh
+
+      - name: Scan Node.js SBOM for vulnerabilities
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        run: |
+          # pipefail so grype's non-zero `--fail-on critical` exit is authoritative
+          # rather than masked by tee (the old step used `|| true` + continue-on-error).
+          set -o pipefail
+          echo "Scanning Node.js SBOM for vulnerabilities (fails on critical)..."
+          grype sbom:./sbom/npm-sbom.cdx.json --output table --fail-on critical \
+            | tee sbom/npm-vulnerability-report.txt
+
+      - name: Scan Rust SBOM for vulnerabilities
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        run: |
+          set -o pipefail
+          echo "Scanning Rust SBOM for vulnerabilities (fails on critical)..."
+          grype sbom:./sbom/rust-sbom.cdx.json --output table --fail-on critical \
+            | tee sbom/rust-vulnerability-report.txt
+
+      - name: Generate vulnerability summary
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        run: |
+          echo "## Vulnerability Scan Summary" > sbom/vulnerability-summary.md
+          echo "" >> sbom/vulnerability-summary.md
+          echo "**Scan Date:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> sbom/vulnerability-summary.md
+          echo "**Commit:** ${{ github.sha }}" >> sbom/vulnerability-summary.md
+          echo "" >> sbom/vulnerability-summary.md
+
+          echo "### Node.js Dependencies" >> sbom/vulnerability-summary.md
+          echo '```' >> sbom/vulnerability-summary.md
+          grype sbom:./sbom/npm-sbom.cdx.json --output table 2>/dev/null | head -50 >> sbom/vulnerability-summary.md || echo "No vulnerabilities found" >> sbom/vulnerability-summary.md
+          echo '```' >> sbom/vulnerability-summary.md
+          echo "" >> sbom/vulnerability-summary.md
+
+          echo "### Rust Dependencies" >> sbom/vulnerability-summary.md
+          echo '```' >> sbom/vulnerability-summary.md
+          grype sbom:./sbom/rust-sbom.cdx.json --output table 2>/dev/null | head -50 >> sbom/vulnerability-summary.md || echo "No vulnerabilities found" >> sbom/vulnerability-summary.md
+          echo '```' >> sbom/vulnerability-summary.md
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/
+          retention-days: 90
+
+      - name: Attach SBOMs to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            sbom/npm-sbom.cdx.json
+            sbom/rust-sbom.cdx.json
+            sbom/combined-sbom-metadata.json
+            sbom/vulnerability-summary.md
+
+      - name: Upload SARIF for GitHub Security
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        continue-on-error: true
+        run: |
+          # Generate SARIF output for GitHub Security tab
+          grype sbom:./sbom/npm-sbom.cdx.json --output sarif > sbom/npm-vulnerabilities.sarif 2>/dev/null || true
+          grype sbom:./sbom/rust-sbom.cdx.json --output sarif > sbom/rust-vulnerabilities.sarif 2>/dev/null || true
+
+      - name: Upload npm SARIF to GitHub Security
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        continue-on-error: true
+        with:
+          sarif_file: sbom/npm-vulnerabilities.sarif
+          category: npm-dependencies
+
+      - name: Upload Rust SARIF to GitHub Security
+        if: ${{ github.event.inputs.scan_vulnerabilities != 'false' }}
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        continue-on-error: true
+        with:
+          sarif_file: sbom/rust-vulnerabilities.sarif
+          category: rust-dependencies
+
+  # Redundant post-download re-validation of the PUBLISHED artifact (defense in
+  # depth / round-trip integrity). The AUTHORITATIVE, fail-closed gate now runs
+  # inside generate-sbom BEFORE anything is uploaded or attached (review of #2347);
+  # this job re-checks what was actually published.
+  verify-sbom:
+    runs-on: ubuntu-latest
+    needs: generate-sbom
+    timeout-minutes: 10
+
+    steps:
+      # Need the repo for scripts/validate_sbom.py (the download-artifact step
+      # only brings the SBOM files, not the source tree).
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/
+
+      - name: Install CycloneDX CLI
+        run: |
+          wget -qO- https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.27.1/cyclonedx-linux-x64 > /tmp/cyclonedx
+          chmod +x /tmp/cyclonedx
+          sudo mv /tmp/cyclonedx /usr/local/bin/cyclonedx
+
+      # Fail-closed structural validation (#2317) — the authoritative, network-free
+      # gate. Runs first so a malformed inventory fails even if the external CLI is
+      # unavailable or lenient. Its self-test proves it can still reject a bad SBOM.
+      - name: Validate SBOM inventory (fail-closed)
+        run: |
+          python3 scripts/validate_sbom.py --self-test
+          python3 scripts/validate_sbom.py \
+            sbom/npm-sbom.cdx.json \
+            sbom/rust-sbom.cdx.json
+
+      # CycloneDX schema validation, now authoritative: `--fail-on-errors` makes
+      # the pinned CLI exit non-zero on schema errors (without it, it returns 0),
+      # and the `|| echo` swallow is gone. A schema-invalid SBOM fails the job.
+      - name: Validate npm SBOM schema (CycloneDX CLI)
+        run: cyclonedx validate --input-file sbom/npm-sbom.cdx.json --input-format json --fail-on-errors
+
+      - name: Validate Rust SBOM schema (CycloneDX CLI)
+        run: cyclonedx validate --input-file sbom/rust-sbom.cdx.json --input-format json --fail-on-errors
+
+      - name: SBOM Summary
+        run: |
+          echo "=== SBOM Generation Summary ==="
+          echo ""
+          echo "Node.js Components: $(jq '.components | length' sbom/npm-sbom.cdx.json)"
+          echo "Rust Components: $(jq '.components | length' sbom/rust-sbom.cdx.json)"
+          echo ""
+          cat sbom/combined-sbom-metadata.json

@@ -1,0 +1,18 @@
+// Pinned pre-fix source of the #2259 bearer-token-as-node-id exposure,
+// verbatim from pre-#2266 main (see the sibling StealthKeys fixture for why
+// this is pinned rather than read from the live tree). The token here is a
+// function parameter — no real secret value exists in this file.
+fn forecast_node_id_from_token(
+    token_store: &FxHashMap<String, AuthPrincipal>,
+    token: &str,
+) -> String {
+    token_store
+        .get(token)
+        .and_then(|principal| {
+            principal.identity.as_ref().and_then(|identity| {
+                identity.oracle_node_id.clone().or(identity.contributor_id.clone())
+            })
+        })
+        .or_else(|| token_store.get(token).and_then(|principal| principal.identity.as_ref().and_then(|identity| identity.wallet_address.clone())))
+        .unwrap_or_else(|| format!("token:{token}"))
+}

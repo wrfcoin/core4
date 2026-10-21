@@ -1,0 +1,86 @@
+
+flowchart TD
+    subgraph "🌡️ Data Collection Layer"
+        WS[Weather Stations<br/>AcuRite | Ambient | Davis]
+        SENSORS[IoT Sensors<br/>Temperature | Humidity | Pressure]
+        APIS[Weather APIs<br/>OpenWeather | WeatherBit]
+    end
+    
+    subgraph "📡 Ingestion Layer"
+        COLLECTORS[Data Collectors<br/>Auto-collectors | Manual]
+        VALIDATION[Data Validation<br/>Quality Checks | Anomaly Detection]
+        NORM[Data Normalization<br/>Format Standardization]
+    end
+    
+    subgraph "⚡ Processing Layer"
+        STREAM[Stream Processing<br/>Real-time Analytics]
+        BATCH[Batch Processing<br/>Historical Analysis]
+        ML[ML Pipeline<br/>Weather Prediction | Pattern Analysis]
+    end
+    
+    subgraph "🏦 Blockchain Layer"
+        CONSENSUS[Consensus Mechanism<br/>Weather Data Validation]
+        MINING[Mining Rewards<br/>Data Contribution Incentives]
+        TOKENS[Token Distribution<br/>WRF Rewards | Carbon Credits]
+    end
+    
+    subgraph "💾 Storage Layer"
+        HOT[Hot Storage<br/>PostgreSQL | Redis]
+        WARM[Warm Storage<br/>IPFS Distributed]
+        COLD[Cold Storage<br/>Arweave | Filecoin]
+        ARCHIVE[Archive Storage<br/>Long-term Historical]
+    end
+    
+    subgraph "🎯 Application Layer"
+        DASHBOARD[Analytics Dashboard<br/>Real-time Monitoring]
+        TRADING[Carbon Trading<br/>Credit Marketplace]
+        DEFI_APP[DeFi Applications<br/>Yield Farming | Staking]
+        ORACLE_FEEDS[Oracle Feeds<br/>External Data Provision]
+    end
+    
+    %% Data flow connections
+    WS --> COLLECTORS
+    SENSORS --> COLLECTORS
+    APIS --> COLLECTORS
+    
+    COLLECTORS --> VALIDATION
+    VALIDATION --> NORM
+    NORM --> STREAM
+    NORM --> BATCH
+    
+    STREAM --> CONSENSUS
+    BATCH --> ML
+    ML --> CONSENSUS
+    
+    CONSENSUS --> MINING
+    MINING --> TOKENS
+    
+    STREAM --> HOT
+    BATCH --> WARM
+    ML --> COLD
+    TOKENS --> ARCHIVE
+    
+    HOT --> DASHBOARD
+    WARM --> TRADING
+    COLD --> DEFI_APP
+    ARCHIVE --> ORACLE_FEEDS
+    
+    %% Feedback loops
+    DASHBOARD -.-> VALIDATION
+    TRADING -.-> TOKENS
+    DEFI_APP -.-> MINING
+    ORACLE_FEEDS -.-> APIS
+    
+    classDef collection fill:#e8f8f5,stroke:#27ae60,stroke-width:2px
+    classDef ingestion fill:#ebf3fd,stroke:#3498db,stroke-width:2px
+    classDef processing fill:#fdf2e9,stroke:#f39c12,stroke-width:2px
+    classDef blockchain fill:#fadbd8,stroke:#e74c3c,stroke-width:2px
+    classDef storage fill:#f4f6f6,stroke:#95a5a6,stroke-width:2px
+    classDef application fill:#f8f9f9,stroke:#34495e,stroke-width:2px
+    
+    class WS,SENSORS,APIS collection
+    class COLLECTORS,VALIDATION,NORM ingestion
+    class STREAM,BATCH,ML processing
+    class CONSENSUS,MINING,TOKENS blockchain
+    class HOT,WARM,COLD,ARCHIVE storage
+    class DASHBOARD,TRADING,DEFI_APP,ORACLE_FEEDS application

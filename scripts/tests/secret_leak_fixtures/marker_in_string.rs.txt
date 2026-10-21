@@ -1,0 +1,5 @@
+// A `secret-leak-ok` marker is an annotation only when it is a COMMENT.
+// Inside a string literal it is data, and must not suppress the finding.
+fn leak(private_key: &str) {
+    log::error!("key={private_key} // secret-leak-ok: not a comment");
+}

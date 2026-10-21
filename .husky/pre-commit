@@ -1,0 +1,12 @@
+npm run security:check:testnet-secrets
+
+# Scan staged files for secrets using detect-secrets (Yelp/detect-secrets v1.5.0).
+# If detect-secrets-hook is not installed locally the hook skips with a warning —
+# the same scan is enforced by CI (secret-scanning.yml) so the hook cannot be
+# permanently bypassed by skipping the local install.
+if command -v detect-secrets-hook >/dev/null 2>&1; then
+  git diff --cached --name-only -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
+else
+  echo "⚠️  detect-secrets not installed — secret scan skipped locally (enforced in CI)."
+  echo "   Install: pip install detect-secrets==1.5.0"
+fi

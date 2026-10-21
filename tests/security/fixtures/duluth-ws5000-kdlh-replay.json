@@ -1,0 +1,41 @@
+{
+  "description": "Weather replay with synthetic station identity and coordinates; KDLH reference observations.",
+  "station": {
+    "name": "Example Station",
+    "source_id": "example-station-ws5000",
+    "device_id_hash": "c27c02f297b7a634b7b2c5c214e807c983bf64855e84e49620441b9f37d4df3d",
+    "device_model": "WS-5000",
+    "location": "Example location",
+    "lat": 10.123456,
+    "lon": 20.654321,
+    "elevation_m": 220
+  },
+  "normalized": [
+    { "recorded_at": 1773299100000, "temperature_c": -4.4, "humidity_pct": 60, "pressure_hpa": 992.6, "wind_speed_ms": 0.0 },
+    { "recorded_at": 1773298800000, "temperature_c": -4.6, "humidity_pct": 61, "pressure_hpa": 992.6, "wind_speed_ms": 0.6 },
+    { "recorded_at": 1773298500000, "temperature_c": -4.6, "humidity_pct": 62, "pressure_hpa": 992.5, "wind_speed_ms": 0.8 },
+    { "recorded_at": 1773298200000, "temperature_c": -4.2, "humidity_pct": 59, "pressure_hpa": 992.4, "wind_speed_ms": 0.0 },
+    { "recorded_at": 1773297900000, "temperature_c": -4.0, "humidity_pct": 59, "pressure_hpa": 992.4, "wind_speed_ms": 1.2 },
+    { "recorded_at": 1773297600000, "temperature_c": -3.9, "humidity_pct": 59, "pressure_hpa": 992.2, "wind_speed_ms": 1.2 },
+    { "recorded_at": 1773297300000, "temperature_c": -3.8, "humidity_pct": 58, "pressure_hpa": 992.2, "wind_speed_ms": 0.7 },
+    { "recorded_at": 1773297000000, "temperature_c": -3.9, "humidity_pct": 59, "pressure_hpa": 992.5, "wind_speed_ms": 1.1 },
+    { "recorded_at": 1773296700000, "temperature_c": -3.8, "humidity_pct": 58, "pressure_hpa": 992.1, "wind_speed_ms": 0.0 },
+    { "recorded_at": 1773296400000, "temperature_c": -3.5, "humidity_pct": 58, "pressure_hpa": 992.3, "wind_speed_ms": 0.0 },
+    { "recorded_at": 1773296100000, "temperature_c": -3.6, "humidity_pct": 58, "pressure_hpa": 992.4, "wind_speed_ms": 0.0 },
+    { "recorded_at": 1773295800000, "temperature_c": -3.6, "humidity_pct": 57, "pressure_hpa": 992.2, "wind_speed_ms": 0.0 }
+  ],
+  "nws_observations": [
+    { "timestamp_ms": 1773299100000, "temperature_c": -6.0, "pressure_hpa": 1018.9644, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773298800000, "temperature_c": -6.0, "pressure_hpa": 1018.9644, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.09 },
+    { "timestamp_ms": 1773298500000, "temperature_c": -6.1, "pressure_hpa": 1019.0, "humidity_pct": 59.090914693305, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773298200000, "temperature_c": -6.0, "pressure_hpa": 1018.9644, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773297900000, "temperature_c": -6.0, "pressure_hpa": 1018.9644, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773297600000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 2.57 },
+    { "timestamp_ms": 1773297300000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 2.57 },
+    { "timestamp_ms": 1773297000000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.09 },
+    { "timestamp_ms": 1773296700000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773296400000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 },
+    { "timestamp_ms": 1773296100000, "temperature_c": -5.0, "pressure_hpa": 1018.6257, "humidity_pct": 53.482721762667, "wind_speed_ms": 3.09 },
+    { "timestamp_ms": 1773295800000, "temperature_c": -6.0, "pressure_hpa": 1018.6257, "humidity_pct": 57.701028079024, "wind_speed_ms": 3.6 }
+  ]
+}

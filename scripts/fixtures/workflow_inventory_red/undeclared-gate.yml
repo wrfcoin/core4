@@ -1,0 +1,11 @@
+# A dispatch-only workflow whose name promises a standing gate and whose preamble
+# declares nothing — core4#2890's defect, preserved so CI can prove the checker
+# still catches it. DO NOT "fix" this file: making it green disarms the control.
+name: Production Security Gate
+on:
+  workflow_dispatch: {}
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "echo fixture"

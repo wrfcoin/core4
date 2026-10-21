@@ -1,0 +1,98 @@
+# bincode-boundary-guard.yml — flag `skip_serializing_if` on ANY type reachable
+# across a bincode boundary (#2924).
+#
+# `#[serde(skip_serializing_if = "Option::is_none")]` is safe under JSON and
+# undecodable on `None` under bincode: bincode is positional and
+# non-self-describing, so omitting a field on serialize leaves the derived
+# `Deserialize` short a byte it unconditionally expects to read. This has been
+# the root cause of two separate incidents (#1053, #2922), the second found by
+# accident while fixing something else. #1053's fix added only an INSTANCE
+# guard — a `debug_assert!` canary tied to one hardcoded type — which cannot
+# fail for a type it does not name. That is why the gap between the two
+# incidents was silent, and why this workflow exists.
+#
+# `paths:` FILTER: `**/*.rs` plus this guard's own machinery, and nothing
+# narrower — the reasoning from #2916 still holds: the defect this catches can
+# be introduced by editing ANY `.rs` file anywhere in the workspace — a struct
+# definition, not a specific directory — so a DIRECTORY filter would recreate
+# exactly the "instance guard with more entries" shape the issue explicitly
+# rejects. `**/*.rs` is not that shape: it is every Rust file, wherever it
+# lives. What it drops (#2888 story 7) is the run on pushes that touch no
+# Rust source at all — docs, scripts, workflow files — where a serde attribute
+# cannot have been introduced, on a three-runner pool where every extra job
+# per push is queue depth and a shared-cache race. Pure Python, scans the
+# whole workspace, takes seconds; the cost was never the scan, it was the slot.
+#
+# CT 102, not ubuntu-latest: hosted runners in this org are never assigned, so
+# those jobs "fail" in 2-3s with an empty runner_name and zero completed steps
+# — VOID, no evidence in either direction (#2908). Label set is the one other
+# core4 workflows already use.
+
+name: Bincode boundary guard
+
+on:
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - 'scripts/check_bincode_boundary_attrs.py'
+      - 'scripts/test_check_bincode_boundary_attrs.py'
+      - '.github/workflows/bincode-boundary-guard.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'scripts/**'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '**/*.rs'
+      - 'scripts/check_bincode_boundary_attrs.py'
+      - 'scripts/test_check_bincode_boundary_attrs.py'
+      - '.github/workflows/bincode-boundary-guard.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '6 3 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  bincode-boundary:
+    name: skip_serializing_if reachable across a bincode boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Put rustup's cargo on PATH
+        # Not needed by this check, but the runner service's non-interactive
+        # environment does not source ~/.cargo/env and other jobs on this
+        # runner fail confusingly without it. Cheap and harmless.
+        run: echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      # STEP 1 — CONTROL. Proves the parser can both flag a reachable type
+      # and stay silent on an unreachable one, on synthetic fixtures, before
+      # anything relies on either direction against the real workspace. A
+      # detector that always fired would make step 3 vacuous the same way a
+      # matcher that always matched would (docs/ci/VACUOUS_GATES.md).
+      - name: Control — the parser's own self-test
+        run: python3 scripts/check_bincode_boundary_attrs.py --self-test
+
+      # STEP 2 — the adversarial suite: both directions of the mutation
+      # experiment on synthetic fixtures, the reconstructed #1053 and #2922
+      # historical shapes, and the #[serde(skip)]-is-not-skip_serializing_if
+      # false-positive regression this guard's own development found.
+      - name: Adversarial and historical-shape tests
+        run: python3 scripts/test_check_bincode_boundary_attrs.py -v
+
+      # STEP 3 — the gate itself, against the real workspace.
+      - name: Every skip_serializing_if reachable across a bincode boundary
+        run: python3 scripts/check_bincode_boundary_attrs.py

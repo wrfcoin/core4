@@ -1,0 +1,31 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "title": "Ordering assessment availability (1=data, 0=no local candidates)",
+      "type": "timeseries",
+      "targets": [{ "expr": "wrfcoin_ordering_assessment_available" }]
+    },
+    {
+      "title": "Locally visible sufficient-fee exclusions by producer",
+      "type": "timeseries",
+      "targets": [{ "expr": "increase(wrfcoin_ordering_excluded_sufficient_fee_total[15m])" }]
+    },
+    {
+      "title": "95th percentile reorder distance",
+      "type": "timeseries",
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(wrfcoin_ordering_reorder_distance_bucket[15m])) by (le))" }]
+    },
+    {
+      "title": "Station observation inclusion-rank delay",
+      "type": "timeseries",
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(wrfcoin_observation_inclusion_delay_arrival_rank_bucket[15m])) by (le, station))" }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["wrfcoin", "ordering", "fairness"],
+  "title": "WRFCoin ordering fairness (#2199)",
+  "uid": "wrfcoin-ordering-fairness",
+  "version": 1
+}

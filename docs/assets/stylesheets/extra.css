@@ -1,0 +1,452 @@
+/* WRFCoin Platform Documentation - Custom Styles */
+
+:root {
+  /* WRFCoin Brand Colors */
+  --wrfcoin-primary: #0066cc;
+  --wrfcoin-secondary: #004499;
+  --wrfcoin-accent: #00ccff;
+  --wrfcoin-success: #00cc66;
+  --wrfcoin-warning: #ff9900;
+  --wrfcoin-error: #cc3300;
+
+  /* Neutral Colors */
+  --wrfcoin-dark: #1a1a1a;
+  --wrfcoin-light: #f8f9fa;
+  --wrfcoin-gray: #6c757d;
+
+  /* Gradients */
+  --wrfcoin-gradient: linear-gradient(
+    135deg,
+    var(--wrfcoin-primary),
+    var(--wrfcoin-accent)
+  );
+  --wrfcoin-hero-gradient: linear-gradient(
+    135deg,
+    #0066cc 0%,
+    #00ccff 50%,
+    #00cc66 100%
+  );
+}
+
+/* Header customization */
+.md-header {
+  background: var(--wrfcoin-gradient);
+  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.2);
+}
+
+.md-header__title {
+  font-weight: 600;
+  color: white !important;
+}
+
+.md-header__button.md-logo img {
+  filter: brightness(0) invert(1);
+}
+
+/* Navigation styling */
+.md-nav__title {
+  font-weight: 600;
+  color: var(--wrfcoin-primary);
+}
+
+.md-nav__link--active {
+  color: var(--wrfcoin-primary) !important;
+  font-weight: 600;
+}
+
+.md-nav__link:hover {
+  color: var(--wrfcoin-accent) !important;
+}
+
+/* Content area enhancements */
+.md-content {
+  max-width: 1200px;
+}
+
+.md-typeset h1 {
+  background: var(--wrfcoin-gradient);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+}
+
+.md-typeset h2 {
+  color: var(--wrfcoin-primary);
+  border-bottom: 2px solid var(--wrfcoin-accent);
+  padding-bottom: 0.5rem;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.md-typeset h3 {
+  color: var(--wrfcoin-secondary);
+  margin-top: 1.5rem;
+}
+
+/* Code blocks */
+.md-typeset .codehilite,
+.md-typeset .highlight {
+  border-left: 4px solid var(--wrfcoin-accent);
+  background: rgba(0, 102, 204, 0.05);
+}
+
+.md-typeset code {
+  background: rgba(0, 102, 204, 0.1);
+  color: var(--wrfcoin-secondary);
+  border: 1px solid rgba(0, 102, 204, 0.2);
+}
+
+/* Admonitions */
+.md-typeset .admonition.note {
+  border-left-color: var(--wrfcoin-primary);
+}
+
+.md-typeset .admonition.note > .admonition-title {
+  background: rgba(0, 102, 204, 0.1);
+  color: var(--wrfcoin-primary);
+}
+
+.md-typeset .admonition.tip {
+  border-left-color: var(--wrfcoin-success);
+}
+
+.md-typeset .admonition.tip > .admonition-title {
+  background: rgba(0, 204, 102, 0.1);
+  color: var(--wrfcoin-success);
+}
+
+.md-typeset .admonition.warning {
+  border-left-color: var(--wrfcoin-warning);
+}
+
+.md-typeset .admonition.warning > .admonition-title {
+  background: rgba(255, 153, 0, 0.1);
+  color: var(--wrfcoin-warning);
+}
+
+.md-typeset .admonition.danger {
+  border-left-color: var(--wrfcoin-error);
+}
+
+.md-typeset .admonition.danger > .admonition-title {
+  background: rgba(204, 51, 0, 0.1);
+  color: var(--wrfcoin-error);
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  border: 1px solid rgba(0, 102, 204, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--wrfcoin-gradient);
+  color: white;
+  font-weight: 600;
+}
+
+.md-typeset table:not([class]) tr:nth-child(even) {
+  background: rgba(0, 102, 204, 0.05);
+}
+
+/* Buttons and links */
+.md-typeset a {
+  color: var(--wrfcoin-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--wrfcoin-accent);
+  text-underline-offset: 2px;
+}
+
+.md-typeset a:hover {
+  color: var(--wrfcoin-accent);
+}
+
+/* Custom homepage hero section */
+.homepage-hero {
+  background: var(--wrfcoin-hero-gradient);
+  color: white;
+  padding: 3rem 2rem;
+  margin: -1rem -1rem 2rem -1rem;
+  border-radius: 0 0 16px 16px;
+  text-align: center;
+}
+
+.homepage-hero h1 {
+  color: white !important;
+  -webkit-text-fill-color: white !important;
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.homepage-hero p {
+  font-size: 1.2rem;
+  margin-bottom: 2rem;
+  opacity: 0.95;
+}
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 2rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  background: white;
+  border: 2px solid rgba(0, 102, 204, 0.1);
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0, 102, 204, 0.1);
+}
+
+.feature-card:hover {
+  border-color: var(--wrfcoin-accent);
+  box-shadow: 0 8px 24px rgba(0, 102, 204, 0.2);
+  transform: translateY(-2px);
+}
+
+.feature-card h3 {
+  color: var(--wrfcoin-primary);
+  margin-top: 0;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.feature-card p {
+  color: var(--wrfcoin-gray);
+  margin-bottom: 1rem;
+}
+
+.feature-card .feature-link {
+  color: var(--wrfcoin-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.feature-card .feature-link:hover {
+  color: var(--wrfcoin-primary);
+}
+
+/* Quick navigation cards */
+.quick-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.quick-nav-card {
+  background: rgba(0, 102, 204, 0.05);
+  border: 1px solid rgba(0, 102, 204, 0.2);
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.quick-nav-card:hover {
+  background: rgba(0, 102, 204, 0.1);
+  border-color: var(--wrfcoin-accent);
+  transform: translateY(-2px);
+}
+
+.quick-nav-card h4 {
+  color: var(--wrfcoin-primary);
+  margin: 0 0 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.quick-nav-card p {
+  color: var(--wrfcoin-gray);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* Mermaid diagram styling */
+.mermaid {
+  background: rgba(0, 102, 204, 0.02);
+  border: 1px solid rgba(0, 102, 204, 0.1);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+/* Search styling */
+.md-search__input {
+  border: 2px solid rgba(0, 102, 204, 0.2);
+}
+
+.md-search__input:focus {
+  border-color: var(--wrfcoin-accent);
+}
+
+/* Footer */
+.md-footer {
+  background: var(--wrfcoin-dark);
+}
+
+.md-footer-meta {
+  background: rgba(26, 26, 26, 0.8);
+}
+
+/* Dark mode adjustments */
+[data-md-color-scheme='slate'] {
+  --wrfcoin-primary: #3399ff;
+  --wrfcoin-secondary: #66b3ff;
+  --wrfcoin-accent: #00ffcc;
+}
+
+[data-md-color-scheme='slate'] .feature-card {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(51, 153, 255, 0.2);
+}
+
+[data-md-color-scheme='slate'] .feature-card:hover {
+  border-color: var(--wrfcoin-accent);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-md-color-scheme='slate'] .quick-nav-card {
+  background: rgba(51, 153, 255, 0.1);
+  border-color: rgba(51, 153, 255, 0.3);
+}
+
+[data-md-color-scheme='slate'] .quick-nav-card:hover {
+  background: rgba(51, 153, 255, 0.15);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .homepage-hero {
+    padding: 2rem 1rem;
+    margin: -1rem -1rem 1rem -1rem;
+  }
+
+  .homepage-hero h1 {
+    font-size: 2rem;
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .quick-nav {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 102, 204, 0.1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--wrfcoin-accent);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wrfcoin-primary);
+}
+
+/* Copy code button styling */
+.md-clipboard {
+  color: var(--wrfcoin-accent) !important;
+}
+
+.md-clipboard:hover {
+  color: var(--wrfcoin-primary) !important;
+}
+
+/* Tab styling */
+.md-typeset .tabbed-set {
+  border: 1px solid rgba(0, 102, 204, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-typeset .tabbed-labels > label {
+  background: rgba(0, 102, 204, 0.05);
+  color: var(--wrfcoin-primary);
+  border-right: 1px solid rgba(0, 102, 204, 0.2);
+}
+
+.md-typeset .tabbed-labels > label:hover {
+  background: rgba(0, 102, 204, 0.1);
+}
+
+.md-typeset .tabbed-set input:checked + label {
+  background: var(--wrfcoin-primary);
+  color: white;
+}
+
+/* Progress indicators */
+.progress-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.progress-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(0, 102, 204, 0.3);
+}
+
+.progress-dot.active {
+  background: var(--wrfcoin-primary);
+}
+
+.progress-dot.completed {
+  background: var(--wrfcoin-success);
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-badge.stable {
+  background: rgba(0, 204, 102, 0.1);
+  color: var(--wrfcoin-success);
+  border: 1px solid var(--wrfcoin-success);
+}
+
+.status-badge.beta {
+  background: rgba(255, 153, 0, 0.1);
+  color: var(--wrfcoin-warning);
+  border: 1px solid var(--wrfcoin-warning);
+}
+
+.status-badge.experimental {
+  background: rgba(204, 51, 0, 0.1);
+  color: var(--wrfcoin-error);
+  border: 1px solid var(--wrfcoin-error);
+}
+
+.status-badge.new {
+  background: rgba(0, 102, 204, 0.1);
+  color: var(--wrfcoin-primary);
+  border: 1px solid var(--wrfcoin-primary);
+}

@@ -1,0 +1,288 @@
+{
+  "timestamp": "2025-07-27T18:59:37.124Z",
+  "overall_score": 115,
+  "max_score": 255,
+  "percentage": 45,
+  "category_scores": {
+    "technical_infrastructure": {
+      "score": 35,
+      "max": 60
+    },
+    "security_sovereignty": {
+      "score": 15,
+      "max": 50
+    },
+    "network_distribution": {
+      "score": 25,
+      "max": 40
+    },
+    "governance_autonomy": {
+      "score": 0,
+      "max": 30
+    },
+    "updatability": {
+      "score": 10,
+      "max": 15
+    },
+    "data_redundancy": {
+      "score": 25,
+      "max": 35
+    },
+    "open_source": {
+      "score": 5,
+      "max": 25
+    }
+  },
+  "detailed_results": [
+    {
+      "category": "technical_infrastructure",
+      "check": "Docker Containerization",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Docker infrastructure not found",
+      "recommendations": []
+    },
+    {
+      "category": "technical_infrastructure",
+      "check": "Stateless Services",
+      "passed": true,
+      "score": 15,
+      "maxScore": 15,
+      "details": "29 stateless services identified",
+      "recommendations": []
+    },
+    {
+      "category": "technical_infrastructure",
+      "check": "Multi-node Redundancy",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "4 distributed services running",
+      "recommendations": []
+    },
+    {
+      "category": "technical_infrastructure",
+      "check": "Peer Discovery (No Central DNS)",
+      "passed": true,
+      "score": 20,
+      "maxScore": 20,
+      "details": "IPFS and node discovery implemented",
+      "recommendations": []
+    },
+    {
+      "category": "security_sovereignty",
+      "check": "Hardware-Backed Admin Access",
+      "passed": false,
+      "score": 0,
+      "maxScore": 25,
+      "details": "Simulated HSM keys only - need real hardware",
+      "recommendations": [
+        "Purchase YubiKey/HSM devices",
+        "Implement WebAuthn multisig"
+      ]
+    },
+    {
+      "category": "security_sovereignty",
+      "check": "Immutable Core Logic",
+      "passed": true,
+      "score": 15,
+      "maxScore": 15,
+      "details": "Governance and consensus migration implemented",
+      "recommendations": []
+    },
+    {
+      "category": "security_sovereignty",
+      "check": "DDoS Protection",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "DDoS protection not implemented",
+      "recommendations": []
+    },
+    {
+      "category": "network_distribution",
+      "check": "Geographic Validator Spread",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Single-region deployment only",
+      "recommendations": [
+        "Deploy validators across 3+ continents",
+        "Add geographic diversity incentives"
+      ]
+    },
+    {
+      "category": "network_distribution",
+      "check": "Cross-Chain Bridge Redundancy",
+      "passed": true,
+      "score": 10,
+      "maxScore": 10,
+      "details": "Support for 8 cross-chain protocols",
+      "recommendations": []
+    },
+    {
+      "category": "network_distribution",
+      "check": "Mesh Network Capability",
+      "passed": true,
+      "score": 15,
+      "maxScore": 15,
+      "details": "WebSocket and P2P discovery active",
+      "recommendations": [
+        "Add LoRaWAN support",
+        "Implement satellite connectivity"
+      ]
+    },
+    {
+      "category": "governance_autonomy",
+      "check": "On-Chain Transparent Proposals",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Governance system incomplete",
+      "recommendations": []
+    },
+    {
+      "category": "governance_autonomy",
+      "check": "Consensus Data Migration",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "Consensus migration incomplete",
+      "recommendations": []
+    },
+    {
+      "category": "governance_autonomy",
+      "check": "Fork-Resistant Game Theory",
+      "passed": false,
+      "score": 0,
+      "maxScore": 5,
+      "details": "Single oracle dependency risk",
+      "recommendations": []
+    },
+    {
+      "category": "updatability",
+      "check": "Hot-Swappable Modules",
+      "passed": true,
+      "score": 10,
+      "maxScore": 10,
+      "details": "32 modular services identified",
+      "recommendations": []
+    },
+    {
+      "category": "updatability",
+      "check": "Staged Rollout Capability",
+      "passed": false,
+      "score": 0,
+      "maxScore": 5,
+      "details": "No staged rollout capability",
+      "recommendations": []
+    },
+    {
+      "category": "data_redundancy",
+      "check": "IPFS Integration",
+      "passed": true,
+      "score": 15,
+      "maxScore": 15,
+      "details": "IPFS adapter implemented",
+      "recommendations": []
+    },
+    {
+      "category": "data_redundancy",
+      "check": "Distributed Storage Networks",
+      "passed": true,
+      "score": 10,
+      "maxScore": 10,
+      "details": "Storage networks server implemented",
+      "recommendations": []
+    },
+    {
+      "category": "data_redundancy",
+      "check": "Compute Network Resilience",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "Distributed compute not configured",
+      "recommendations": []
+    },
+    {
+      "category": "open_source",
+      "check": "CLI Installation Tool",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "CLI tool not found",
+      "recommendations": []
+    },
+    {
+      "category": "open_source",
+      "check": "Self-Hosting Documentation",
+      "passed": true,
+      "score": 5,
+      "maxScore": 5,
+      "details": "2/3 self-hosting docs found",
+      "recommendations": []
+    },
+    {
+      "category": "open_source",
+      "check": "Sovereign Deployment Capability",
+      "passed": false,
+      "score": 0,
+      "maxScore": 10,
+      "details": "Sovereign deployment capability incomplete",
+      "recommendations": []
+    }
+  ],
+  "critical_gaps": [
+    {
+      "category": "technical_infrastructure",
+      "check": "Docker Containerization",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Docker infrastructure not found",
+      "recommendations": []
+    },
+    {
+      "category": "security_sovereignty",
+      "check": "Hardware-Backed Admin Access",
+      "passed": false,
+      "score": 0,
+      "maxScore": 25,
+      "details": "Simulated HSM keys only - need real hardware",
+      "recommendations": [
+        "Purchase YubiKey/HSM devices",
+        "Implement WebAuthn multisig"
+      ]
+    },
+    {
+      "category": "network_distribution",
+      "check": "Geographic Validator Spread",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Single-region deployment only",
+      "recommendations": [
+        "Deploy validators across 3+ continents",
+        "Add geographic diversity incentives"
+      ]
+    },
+    {
+      "category": "governance_autonomy",
+      "check": "On-Chain Transparent Proposals",
+      "passed": false,
+      "score": 0,
+      "maxScore": 15,
+      "details": "Governance system incomplete",
+      "recommendations": []
+    }
+  ],
+  "recommendations": [
+    "Purchase YubiKey/HSM devices",
+    "Implement WebAuthn multisig",
+    "Deploy validators across 3+ continents",
+    "Add geographic diversity incentives",
+    "Add LoRaWAN support",
+    "Implement satellite connectivity"
+  ]
+}

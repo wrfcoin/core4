@@ -1,0 +1,21 @@
+{
+  "seam": "core4-realtime-event-source",
+  "chainHeightSequence": [1000, 1001],
+  "block": {
+    "height": 1001,
+    "hash": "0x00000000000000000000000000000000000000000000000000000000000003e9",
+    "timestamp": "2026-03-10T00:00:00.000Z",
+    "transactions": [
+      {
+        "hash": "0xtx1001",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222",
+        "type": "transfer"
+      }
+    ]
+  },
+  "expectedWebSocket": {
+    "channel": "blocks",
+    "event": "new_block"
+  }
+}

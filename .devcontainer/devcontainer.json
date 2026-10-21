@@ -1,0 +1,328 @@
+{
+  "name": "WRFCoin Platform Development Environment",
+  "dockerComposeFile": "./docker-compose.dev.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+
+  // Features to install
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true,
+      "username": "root"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "nodeGypDependencies": true,
+      "version": "20",
+      "nvmVersion": "latest"
+    },
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "default"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": true,
+      "optimize": true
+    },
+    "ghcr.io/devcontainers/features/git:1": {
+      "ppa": true,
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "moby": true
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    }
+  },
+
+  // Configure tool-specific properties
+  "customizations": {
+    "vscode": {
+      // Essential VS Code extensions for WRFCoin development
+      "extensions": [
+        // Rust development
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "serayuzgur.crates",
+        "tamasfe.even-better-toml",
+
+        // TypeScript/JavaScript development
+        "ms-vscode.vscode-typescript-next",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-vscode.vscode-json",
+        "yzhang.markdown-all-in-one",
+
+        // React/Frontend development
+        "ms-vscode.vscode-react-javascript-snippets",
+        "formulahendry.auto-rename-tag",
+        "christian-kohler.path-intellisense",
+        "steoates.autoimport-es6-ts",
+
+        // Solidity smart contracts
+        "JuanBlanco.solidity",
+        "tintinweb.solidity-visual-auditor",
+        "consensys.truffle-vscode",
+
+        // Testing
+        "ms-playwright.playwright",
+        "orta.vscode-jest",
+        "hbenl.vscode-test-explorer",
+
+        // Linting and code quality
+        "ms-vscode.eslint",
+        "dbaeumer.vscode-eslint",
+        "ms-vscode.vscode-typescript-tslint-plugin",
+        "bradlc.vscode-tailwindcss",
+
+        // Git and version control
+        "eamodio.gitlens",
+        "github.vscode-pull-request-github",
+        "github.copilot",
+        "github.copilot-chat",
+
+        // Documentation and markdown
+        "davidanson.vscode-markdownlint",
+        "shd101wyy.markdown-preview-enhanced",
+        "bierner.markdown-mermaid",
+        "redhat.vscode-yaml",
+
+        // DevOps and containers
+        "ms-azuretools.vscode-docker",
+        "ms-vscode-remote.remote-containers",
+        "hashicorp.terraform",
+
+        // API development
+        "humao.rest-client",
+        "ms-vscode.vscode-thunder-client",
+        "rangav.vscode-thunder-client",
+
+        // Productivity and utilities
+        "ms-vscode.vscode-npm-script",
+        "christian-kohler.npm-intellisense",
+        "bradlc.vscode-tailwindcss",
+        "formulahendry.code-runner",
+        "ms-vscode.hexeditor",
+        "aaron-bond.better-comments",
+        "alefragnani.bookmarks",
+        "gruntfuggly.todo-tree",
+
+        // Theme and appearance
+        "pkief.material-icon-theme",
+        "dracula-theme.theme-dracula",
+        "github.github-vscode-theme",
+
+        // Additional language support
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "ms-python.isort",
+        "golang.go",
+        "ms-dotnettools.csharp"
+      ],
+
+      // VS Code settings
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "zsh": {
+            "path": "/bin/zsh",
+            "args": ["-l"]
+          }
+        },
+
+        // Editor configuration
+        "editor.formatOnSave": true,
+        "editor.formatOnPaste": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit",
+          "source.organizeImports": "explicit"
+        },
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.rulers": [80, 120],
+        "editor.wordWrap": "on",
+        "editor.minimap.enabled": true,
+
+        // File associations
+        "files.associations": {
+          "*.rs": "rust",
+          "*.toml": "toml",
+          "*.sol": "solidity",
+          "*.ts": "typescript",
+          "*.tsx": "typescriptreact",
+          "*.js": "javascript",
+          "*.jsx": "javascriptreact",
+          "*.md": "markdown",
+          "*.yml": "yaml",
+          "*.yaml": "yaml",
+          "Dockerfile": "dockerfile",
+          ".env*": "dotenv"
+        },
+
+        // Language-specific settings
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.cargo.buildScripts.enable": true,
+        "rust-analyzer.procMacro.enable": true,
+        "rust-analyzer.inlayHints.enable": true,
+
+        "typescript.preferences.includePackageJsonAutoImports": "on",
+        "typescript.suggest.autoImports": true,
+        "typescript.updateImportsOnFileMove.enabled": "always",
+
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[javascript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[json]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[markdown]": {
+          "editor.defaultFormatter": "davidanson.vscode-markdownlint"
+        },
+        "[solidity]": {
+          "editor.defaultFormatter": "JuanBlanco.solidity"
+        },
+
+        // Git configuration
+        "git.enableSmartCommit": true,
+        "git.confirmSync": false,
+        "git.autofetch": true,
+
+        // Search configuration
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/target": true,
+          "**/dist": true,
+          "**/build": true,
+          "**/.git": true,
+          "**/coverage": true,
+          "**/.turbo": true
+        },
+
+        // File watcher configuration
+        "files.watcherExclude": {
+          "**/node_modules/**": true,
+          "**/target/**": true,
+          "**/dist/**": true,
+          "**/build/**": true,
+          "**/.git/**": true,
+          "**/coverage/**": true,
+          "**/.turbo/**": true
+        },
+
+        // Testing configuration
+        "jest.autoRun": "off",
+        "jest.showCoverageOnLoad": false,
+        "playwright.reuseBrowser": true,
+        "playwright.showTrace": true,
+
+        // Documentation and markdown
+        "markdownlint.config": {
+          "MD013": false,
+          "MD033": false,
+          "MD041": false
+        },
+
+        // Docker configuration
+        "docker.showStartPage": false,
+
+        // Task configuration
+        "task.allowAutomaticTasks": "on",
+
+        // Extension configuration
+        "eslint.workingDirectories": ["frontend", "backend", "contracts"],
+        "prettier.configPath": ".prettierrc",
+
+        // Security and privacy
+        "telemetry.telemetryLevel": "off",
+        "update.showReleaseNotes": false,
+
+        // Performance
+        "typescript.preferences.includePackageJsonAutoImports": "auto",
+        "typescript.suggest.completeFunctionCalls": true,
+        "typescript.surveys.enabled": false
+      }
+    }
+  },
+
+  // Lifecycle scripts
+  "onCreateCommand": ["bash .devcontainer/scripts/setup.sh"],
+
+  "postCreateCommand": ["bash .devcontainer/scripts/post-create.sh"],
+
+  "postStartCommand": ["bash .devcontainer/scripts/post-start.sh"],
+
+  // Port forwarding for development services
+  "forwardPorts": [
+    3000, // Frontend development server
+    3001, // Test frontend
+    4000, // Wallet server
+    4001, // Main API server
+    5432, // PostgreSQL
+    6379, // Redis
+    8000, // Governance server
+    8080, // Weather earnings
+    8090, // Quality monitoring
+    9001 // Node discovery
+  ],
+
+  "portsAttributes": {
+    "3000": {
+      "label": "Frontend Dev Server",
+      "onAutoForward": "notify"
+    },
+    "4001": {
+      "label": "Main API Server",
+      "onAutoForward": "notify"
+    },
+    "5432": {
+      "label": "PostgreSQL Database",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis Cache",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // Mount configuration
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker-host.sock,type=bind",
+    "source=wrfcoin-node-modules,target=/workspace/node_modules,type=volume",
+    "source=wrfcoin-cargo-cache,target=/usr/local/cargo/registry,type=volume",
+    "source=wrfcoin-target-cache,target=/workspace/blockchain-core/target,type=volume"
+  ],
+
+  // Environment variables
+  "containerEnv": {
+    "NODE_ENV": "development",
+    "RUST_LOG": "debug",
+    "CARGO_TARGET_DIR": "/workspace/blockchain-core/target",
+    "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright",
+    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "0"
+  },
+
+  // Additional run arguments (avoid --privileged for security; use specific capabilities)
+  "runArgs": ["--init", "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined"],
+
+  // Remote user configuration
+  "remoteUser": "root",
+
+  // Wait for services to be ready
+  "waitFor": "onCreateCommand",
+
+  // Update remote user UID/GID
+  "updateRemoteUserUID": true
+}

@@ -1,0 +1,265 @@
+version: '3.8'
+
+services:
+  # Rust Blockchain Core with Oracle Integration
+  wrfcoin-blockchain:
+    build:
+      context: ../blockchain-core
+      dockerfile: Dockerfile.oracle
+    container_name: wrfcoin-blockchain-oracle
+    restart: unless-stopped
+    ports:
+      - '8545:8545' # Blockchain RPC
+      - '30303:30303' # P2P networking
+    volumes:
+      - blockchain_data:/app/data
+      - oracle_ipc:/tmp/oracle:rw
+    environment:
+      - RUST_LOG=info
+      - BLOCKCHAIN_CONFIG=oracle-enabled
+      - ORACLE_IPC_PATH=/tmp/oracle/wrfcoin_oracle.sock
+      - CONSENSUS_MODE=liquid-democracy
+      - NETWORK_ID=${NETWORK_ID:-wrfcoin-oracle}
+    networks:
+      - oracle-network
+    depends_on:
+      - oracle-redis
+      - oracle-postgres
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8545/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # TypeScript Backend with Oracle Bridge
+  wrfcoin-oracle-api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.oracle
+    container_name: wrfcoin-oracle-api
+    restart: unless-stopped
+    ports:
+      - '4001:4001' # Oracle API server
+    volumes:
+      - oracle_ipc:/tmp/oracle:rw
+      - oracle_logs:/var/log/wrfcoin:rw
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://oracle:${POSTGRES_PASSWORD}@oracle-postgres:5432/wrfcoin_oracle
+      # SECURITY: ORACLE_REDIS_PASSWORD must be set - no default fallback
+      - REDIS_URL=redis://:${ORACLE_REDIS_PASSWORD:?ORACLE_REDIS_PASSWORD must be set}@oracle-redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - BLOCKCHAIN_NODE_URL=http://wrfcoin-blockchain:8545
+      - ORACLE_IPC_PATH=/tmp/oracle/wrfcoin_oracle.sock
+      - CROSS_CHAIN_BRIDGES=ethereum,polygon,base,sui
+      - LOG_LEVEL=info
+    networks:
+      - oracle-network
+    depends_on:
+      - wrfcoin-blockchain
+      - oracle-redis
+      - oracle-postgres
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '-f',
+          'http://localhost:4001/api/oracle/cross-chain/test',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for Oracle Caching and Sessions
+  oracle-redis:
+    image: redis:7-alpine
+    container_name: wrfcoin-oracle-redis
+    restart: unless-stopped
+    # SECURITY: Remove public port exposure - Oracle Redis should only be accessible internally
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - oracle_redis_data:/data
+    environment:
+      # SECURITY: ORACLE_REDIS_PASSWORD must be set - deployment will fail otherwise
+      - REDIS_PASSWORD=${ORACLE_REDIS_PASSWORD:?ORACLE_REDIS_PASSWORD must be set}
+    # SECURITY (#1203): policy is `noeviction` because this instance is
+    # dual-use (cache + session state — the oracle API injects JWT_SECRET
+    # and connects to this same Redis). `noeviction` fails writes loudly
+    # under memory pressure rather than silently evicting JWT revocation
+    # or session keys. See docs/security/REDIS_EVICTION_POLICY.md.
+    command: redis-server --requirepass ${ORACLE_REDIS_PASSWORD:?ORACLE_REDIS_PASSWORD must be set} --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction --protected-mode yes
+    networks:
+      - oracle-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'redis-cli',
+          '--no-auth-warning',
+          '-a',
+          '${ORACLE_REDIS_PASSWORD}',
+          'ping',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for Oracle Data Storage
+  oracle-postgres:
+    image: postgres:15-alpine
+    container_name: wrfcoin-oracle-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    volumes:
+      - oracle_postgres_data:/var/lib/postgresql/data
+      - ../backend/drizzle/migrations:/docker-entrypoint-initdb.d:ro
+    environment:
+      - POSTGRES_DB=wrfcoin_oracle
+      - POSTGRES_USER=oracle
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    networks:
+      - oracle-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U oracle -d wrfcoin_oracle']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Oracle Monitoring and Metrics
+  oracle-monitoring:
+    image: prom/prometheus:latest
+    container_name: wrfcoin-oracle-monitoring
+    restart: unless-stopped
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./monitoring/prometheus.oracle.yml:/etc/prometheus/prometheus.yml:ro
+      - oracle_prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - oracle-network
+    depends_on:
+      - wrfcoin-oracle-api
+      - wrfcoin-blockchain
+
+  # Oracle Grafana Dashboard
+  oracle-grafana:
+    image: grafana/grafana:latest
+    container_name: wrfcoin-oracle-grafana
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    volumes:
+      - oracle_grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_DOMAIN=localhost
+    networks:
+      - oracle-network
+    depends_on:
+      - oracle-monitoring
+
+  # Cross-chain Bridge Monitor
+  bridge-monitor:
+    build:
+      context: ../scripts
+      dockerfile: Dockerfile.bridge-monitor
+    container_name: wrfcoin-bridge-monitor
+    restart: unless-stopped
+    volumes:
+      - oracle_logs:/var/log/wrfcoin:rw
+    environment:
+      - MONITOR_INTERVAL=30
+      - BRIDGE_ENDPOINTS=ethereum:https://mainnet.infura.io/v3/${INFURA_KEY},polygon:https://polygon-mainnet.infura.io/v3/${INFURA_KEY},base:https://base-mainnet.infura.io/v3/${INFURA_KEY}
+      - ORACLE_API_URL=http://wrfcoin-oracle-api:4001
+      - LOG_LEVEL=info
+    networks:
+      - oracle-network
+    depends_on:
+      - wrfcoin-oracle-api
+
+# Persistent Data Volumes
+volumes:
+  blockchain_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/blockchain
+  oracle_redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/redis
+  oracle_postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/postgres
+  oracle_prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/prometheus
+  oracle_grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/grafana
+  oracle_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/logs
+  oracle_ipc:
+    driver: tmpfs
+    driver_opts:
+      tmpfs-size: 100m
+      tmpfs-mode: 1777
+
+# Networking
+networks:
+  oracle-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Health Check Configurations
+x-logging: &default-logging
+  driver: 'json-file'
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+# Apply logging to all services
+x-service-base: &service-base
+  logging: *default-logging
+  security_opt:
+    - no-new-privileges:true
+  read_only: false
+  tmpfs:
+    - /tmp
+    - /var/run
+  cap_drop:
+    - ALL
+  cap_add:
+    - NET_BIND_SERVICE

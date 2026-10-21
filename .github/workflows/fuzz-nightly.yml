@@ -1,0 +1,354 @@
+name: Fuzz Nightly
+
+on:
+# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
+# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
+# untouched, so PR gating is unchanged and this can still be run on demand with
+# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
+# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
+  # schedule:
+  # - cron: "0 7 * * *" # Daily 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds to fuzz each target (default 900 for the nightly campaign)"
+        required: false
+        default: "900"
+  # Run the build-only smoke job on PRs that touch fuzzed surfaces so a broken
+  # target is caught at PR time, not at the next nightly (#2027). The expensive
+  # per-target campaign (`fuzz` job below) is gated off pull_request events.
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - "fuzz-corpus/**"
+      - "scripts/replay_fuzz_corpus.sh"
+      - "shared-protocol/**"
+      - "p2p/**"
+      - "consensus-engines/**"
+      - "native-chain/**"
+      # fuzz/Cargo.toml depends on these crates; a change here can reintroduce a
+      # crash in fuzz_range_proof_verify / fuzz_groth16_proof_deser, so the gate
+      # must run when they change (#2251 review).
+      - "privacy/**"
+      - "zk-circuits/**"
+      - ".github/workflows/fuzz-nightly.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# cargo-fuzz is pinned so a transitive dependency cannot silently bump its
+# minimum supported rustc above the nightly the runner ships (the 8+ day red
+# streak in #2027 was cargo-platform@0.3.3 demanding rustc 1.91 while the plain
+# `cargo install` ran under the runner's pinned stable toolchain).
+env:
+  CARGO_FUZZ_VERSION: "0.13.2"
+  # How long each target fuzzes during the scheduled run. workflow_dispatch can
+  # override via the max_total_time input.
+  FUZZ_MAX_TOTAL_TIME: ${{ github.event.inputs.max_total_time || '900' }}
+
+jobs:
+  fuzz:
+    # The stable prefix is deliberate (#2981 / merge-admission epic story 5): on
+    # pull_request this job is skipped, and a skipped job's `name:` template is
+    # never evaluated, so `${{ matrix.target }}` renders literally in the checks
+    # list. A matrix job cannot avoid that suffix, but it can say up front that
+    # the skip is by design rather than a broken workflow.
+    name: "Fuzz campaign (schedule/dispatch only; skipped on PRs by design): ${{ matrix.target }}"
+    # The full per-target campaign is expensive; only run it on the nightly
+    # schedule and manual dispatch. PRs get the fast build-only smoke job below.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep this list in sync with the [[bin]] entries in fuzz/Cargo.toml.
+        target:
+          - fuzz_transaction_deserialize
+          - fuzz_range_proof_verify
+          - fuzz_block_validation
+          - fuzz_pop_verify_block
+          - fuzz_iso20022_parse
+          - fuzz_snapshot_sync
+          - fuzz_bridge_safety
+          - fuzz_p2p_message
+          - fuzz_snapshot_inclusion_proof
+          - fuzz_layer2_proof
+          - fuzz_user_operation
+          - fuzz_block_sync_request_deser
+          - fuzz_sync_manager_range_plan
+          - fuzz_p2p_gossipsub_message_parse
+          - fuzz_genesis_handshake
+          - fuzz_da_challenge
+          - fuzz_finality_vote_inner
+          - fuzz_groth16_proof_deser
+          - fuzz_commit_id
+          - fuzz_reveal_payload_decode
+          - fuzz_oracle_attestation_decode
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-fuzz
+        # `cargo +nightly install` forces the freshly installed nightly to build
+        # cargo-fuzz. A bare `cargo install` here uses the runner's default
+        # toolchain (stable 1.98.0), rather than nightly as required by cargo-fuzz's
+        # deps and was the root cause of the all-red nightly (#2027).
+        run: cargo +nightly install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+
+      - name: Seed working corpus from the committed regression corpus (#2110)
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          if [ -d "fuzz-corpus/${{ matrix.target }}" ]; then
+            # Copy committed regression inputs (never the .md note files) so the
+            # campaign always starts from every known crasher.
+            find "fuzz-corpus/${{ matrix.target }}" -type f ! -name '*.md' \
+              -exec cp {} "fuzz/corpus/${{ matrix.target }}/" \;
+          fi
+
+      - name: Run fuzz target
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/${{ matrix.target }}
+          cargo +nightly fuzz run ${{ matrix.target }} \
+            corpus/${{ matrix.target }} \
+            -- -max_total_time="${FUZZ_MAX_TOTAL_TIME}" -timeout=25
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Fast regression gate (#2110): replay every COMMITTED corpus entry through its
+  # target once and fail on any panic — so a reintroduced crasher is caught on the
+  # PR that reintroduces it, not at the next nightly. This is a single-run replay,
+  # not a fuzzing campaign. Runs on PRs too (unlike the campaign `fuzz` job above).
+  # NOTE: the build (nightly + cargo-fuzz) dominates wall-clock; the "under 60s"
+  # target in #2110 is the replay execution itself, post-build, aided by the cache.
+  corpus-replay:
+    name: Fuzz corpus replay (regression gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fail-fast, and no toolchain needed: layout validation + the self-test run
+      # BEFORE the ~80s nightly + cargo-fuzz install (#2251 review, step ordering).
+      - name: Validate corpus layout (empty corpus fails here)
+        run: scripts/replay_fuzz_corpus.sh --check
+
+      # Prove the gate actually catches a crash — the "the check reports a violation
+      # that is actually present" criterion. Plant a crashing entry, stub `cargo` so
+      # it aborts on that input, assert the script exits non-zero, then clean up.
+      # The self-test MUST leave no trace. The previous revision created
+      # `fuzz-corpus/fuzz_p2p_message/`, removed only the planted files, and left the
+      # directory behind — the real replay then failed on "corpus dir has no replayable
+      # entries". The mechanism that proved the gate worked was what made the gate red
+      # (#2251 review). Cleanup is a trap so it runs on every exit path, and the directory
+      # is removed with `rmdir` and only if this step created it, so a seeded corpus
+      # directory can never be deleted by the self-test.
+      - name: Self-test — a planted crasher must fail the replay
+        run: |
+          set -euo pipefail
+          target_dir="fuzz-corpus/fuzz_p2p_message"
+          created_dir=0
+          cleanup() {
+            rm -f "${target_dir}/crash-selftest01" "${target_dir}/crash-selftest01.md"
+            if [[ "${created_dir}" -eq 1 ]]; then
+              rmdir "${target_dir}" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+          stub="$(mktemp -d)"
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'for a in "$@"; do case "$a" in *crash-selftest*) echo "stub crash: $a" >&2; exit 1;; esac; done' \
+            'exit 0' > "$stub/cargo"
+          chmod +x "$stub/cargo"
+          if [[ ! -d "${target_dir}" ]]; then
+            mkdir -p "${target_dir}"
+            created_dir=1
+          fi
+          printf 'boom' > "${target_dir}/crash-selftest01"
+          echo "self-test planted crasher" > "${target_dir}/crash-selftest01.md"
+          if PATH="$stub:$PATH" scripts/replay_fuzz_corpus.sh; then
+            echo "SELF-TEST FAILED: replay did not fail on a planted crasher" >&2
+            exit 1
+          fi
+          echo "self-test OK: planted crasher correctly failed the replay"
+
+      # Generalisable guard for the defect above: assert the self-test was inert. Without
+      # this, residue is only discovered by the next step failing for a reason that looks
+      # unrelated to the step that caused it — which is exactly how it reached review.
+      - name: Assert the self-test left no residue
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain -- fuzz-corpus scripts)" ]]; then
+            echo "FAIL: the self-test modified the working tree:" >&2
+            git status --porcelain -- fuzz-corpus scripts >&2
+            exit 1
+          fi
+          echo "working tree clean after self-test"
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
+      - name: Cache Cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+      - name: Replay committed corpus entries
+        run: scripts/replay_fuzz_corpus.sh
+
+  # Fast build-only gate: catches a fuzz target (or the fuzz crate) that no
+  # longer compiles without waiting for the full campaign, and gives the
+  # notify-on-failure job below something cheap to depend on. This is the
+  # build-only smoke requested in #2027 step 3; mirror it into PR CI to stop
+  # broken targets from rotting until the next nightly.
+  fuzz-build-smoke:
+    name: Fuzz build smoke (all targets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked --version "${CARGO_FUZZ_VERSION}"
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+
+      - name: Build all fuzz targets (no run)
+        working-directory: fuzz
+        run: cargo +nightly fuzz build
+
+  # Notification net so an all-red streak cannot recur unnoticed for 8 days
+  # (the symptom in #2027). Opens/refreshes a tracking issue when any fuzzing
+  # or build job fails on the scheduled run.
+  notify-on-failure:
+    # Static name states the skip condition (#2981 story 5): this job is skipped
+    # on every PR and every dispatch by design, not by fault.
+    name: Notify on failure (schedule only; skipped on PR/dispatch by design)
+    needs: [fuzz, fuzz-build-smoke, corpus-replay]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Fuzz Nightly failed";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The scheduled **Fuzz Nightly** run failed.\n\nRun: ${runUrl}\n\nOne or more fuzz targets failed to build or hit a crash/timeout/OOM. See the run for per-target logs and any uploaded crash artifacts.`;
+            // Ensure the tracking label exists before we filter/create with it.
+            // issues.create() returns 422 if a label in the array does not exist,
+            // which would otherwise break the failure notifier on its first use.
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: "fuzz-nightly-failure",
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: "fuzz-nightly-failure",
+                  color: "d73a4a",
+                  description: "Automated tracker for Fuzz Nightly failures (#2027)",
+                });
+              } else {
+                throw e;
+              }
+            }
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "fuzz-nightly-failure",
+              per_page: 1,
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["fuzz-nightly-failure"],
+              });
+            }
+
+  terminal-skip-guard:
+    name: Fuzz terminal guard
+    needs: [fuzz, fuzz-build-smoke, corpus-replay]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: ${{ github.event_name == 'pull_request' && 'fuzz-build-smoke corpus-replay' || 'fuzz fuzz-build-smoke corpus-replay' }}
+          GATE_CONDITIONAL: ${{ github.event_name == 'pull_request' && 'fuzz' || '' }}
+        run: python3 scripts/assert_gate_results.py

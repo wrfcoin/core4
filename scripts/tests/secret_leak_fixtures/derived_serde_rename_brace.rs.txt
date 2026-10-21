@@ -1,0 +1,8 @@
+// A `}` inside an attribute string must not close the struct body early:
+// brace matching counts CODE braces only, so the secret field below it is seen.
+#[derive(Debug, Serialize)]
+pub struct Credentials {
+    #[serde(rename = "}")]
+    pub id: u64,
+    pub signing_key: [u8; 32],
+}

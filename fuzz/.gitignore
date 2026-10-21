@@ -1,0 +1,4 @@
+# cargo-fuzz build output and crash/OOM reproducers must never be committed.
+# Seed corpora under corpus/ ARE intentionally tracked, so they are not ignored.
+/target
+artifacts/

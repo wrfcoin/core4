@@ -1,0 +1,16 @@
+[package]
+name = "wrfcoin-sensor-attestation"
+version = "0.1.0"
+edition = "2021"
+description = "Device trust, calibration proof, tamper evidence, and freshness attestation types for WRFCoin"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wrf-primitives.workspace = true
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+
+[dev-dependencies]
+rand.workspace = true

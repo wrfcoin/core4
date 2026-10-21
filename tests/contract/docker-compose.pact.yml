@@ -1,0 +1,161 @@
+version: '3.8'
+
+services:
+  pact-broker:
+    image: pactfoundation/pact-broker:latest
+    container_name: wrfcoin-pact-broker
+    ports:
+      - '9292:9292'
+    environment:
+      PACT_BROKER_DATABASE_URL: postgresql://postgres:password@postgres:5432/pact_broker
+      PACT_BROKER_DATABASE_ADAPTER: postgres
+      PACT_BROKER_BASIC_AUTH_USERNAME: admin
+      PACT_BROKER_BASIC_AUTH_PASSWORD: ${PACT_BROKER_PASSWORD:?Set PACT_BROKER_PASSWORD in .env}
+      PACT_BROKER_LOG_LEVEL: INFO
+      PACT_BROKER_ALLOW_PUBLIC_READ: 'true'
+      PACT_BROKER_ENABLE_PUBLIC_BADGE_ACCESS: 'true'
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - pact-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9292']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: wrfcoin-pact-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pact_broker
+    ports:
+      - '5433:5432' # Different port to avoid conflict with main DB
+    volumes:
+      - pact-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - pact-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Mock services for testing
+  weather-api-mock:
+    image: node:20-alpine
+    container_name: wrfcoin-weather-mock
+    working_dir: /app
+    command: sh -c "npm install express cors && node mock-weather-api.js"
+    ports:
+      - '3010:3010'
+    volumes:
+      - ./mocks:/app
+    environment:
+      NODE_ENV: test
+      PORT: 3010
+      SERVICE_NAME: weather-api-mock
+    restart: unless-stopped
+    networks:
+      - pact-network
+
+  blockchain-rpc-mock:
+    image: node:20-alpine
+    container_name: wrfcoin-blockchain-mock
+    working_dir: /app
+    command: sh -c "npm install express cors && node mock-blockchain-rpc.js"
+    ports:
+      - '8545:8545'
+    volumes:
+      - ./mocks:/app
+    environment:
+      NODE_ENV: test
+      PORT: 8545
+      SERVICE_NAME: blockchain-rpc-mock
+    restart: unless-stopped
+    networks:
+      - pact-network
+
+  carbon-oracle-mock:
+    image: node:20-alpine
+    container_name: wrfcoin-carbon-mock
+    working_dir: /app
+    command: sh -c "npm install express cors && node mock-carbon-oracle.js"
+    ports:
+      - '3020:3020'
+    volumes:
+      - ./mocks:/app
+    environment:
+      NODE_ENV: test
+      PORT: 3020
+      SERVICE_NAME: carbon-oracle-mock
+    restart: unless-stopped
+    networks:
+      - pact-network
+
+  # Test runner container
+  pact-test-runner:
+    image: node:20-alpine
+    container_name: wrfcoin-pact-tests
+    working_dir: /app
+    command: sh -c "npm install && npm run test:contract"
+    volumes:
+      - ../../:/app
+      - ./pacts:/app/pacts
+    environment:
+      NODE_ENV: test
+      PACT_BROKER_BASE_URL: http://pact-broker:9292
+      PACT_BROKER_USERNAME: admin
+      PACT_BROKER_PASSWORD: ${PACT_BROKER_PASSWORD:?Set PACT_BROKER_PASSWORD in .env}
+      WEATHER_API_URL: http://weather-api-mock:3010
+      BLOCKCHAIN_RPC_URL: http://blockchain-rpc-mock:8545
+      CARBON_ORACLE_URL: http://carbon-oracle-mock:3020
+      DATABASE_URL: postgresql://postgres:testpass@test-postgres:5432/wrfcoin_test
+    depends_on:
+      - pact-broker
+      - weather-api-mock
+      - blockchain-rpc-mock
+      - carbon-oracle-mock
+      - test-postgres
+    networks:
+      - pact-network
+    profiles:
+      - testing
+
+  # Test database
+  test-postgres:
+    image: postgres:15-alpine
+    container_name: wrfcoin-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: wrfcoin_test
+    ports:
+      - '5434:5432'
+    volumes:
+      - test-db-data:/var/lib/postgresql/data
+      - ./test-data:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    networks:
+      - pact-network
+    profiles:
+      - testing
+
+volumes:
+  pact-db-data:
+    driver: local
+  test-db-data:
+    driver: local
+
+networks:
+  pact-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-pact
+      com.docker.network.bridge.enable_icc: 'true'
+      com.docker.network.bridge.enable_ip_masquerade: 'true'

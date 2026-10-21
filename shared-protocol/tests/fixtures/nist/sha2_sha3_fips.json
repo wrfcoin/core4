@@ -1,0 +1,70 @@
+{
+  "algorithm": "hash",
+  "source": "NIST FIPS 180-4 / FIPS 202 published test messages",
+  "tests": [
+    {
+      "tcId": "empty_sha256",
+      "algo": "sha256",
+      "msg_hex": "",
+      "expected_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "result": "valid"
+    },
+    {
+      "tcId": "empty_sha3_256",
+      "algo": "sha3_256",
+      "msg_hex": "",
+      "expected_hex": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+      "result": "valid"
+    },
+    {
+      "tcId": "abc_sha256",
+      "algo": "sha256",
+      "msg_hex": "616263",
+      "expected_hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "result": "valid"
+    },
+    {
+      "tcId": "abc_sha3_256",
+      "algo": "sha3_256",
+      "msg_hex": "616263",
+      "expected_hex": "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+      "result": "valid"
+    },
+    {
+      "tcId": "nist_448bit_sha256",
+      "algo": "sha256",
+      "msg_hex": "6162636462636465636465666465666765666768666768696768696a68696a6b696a6b6c6a6b6c6d6b6c6d6e6c6d6e6f6d6e6f706e6f7071",
+      "expected_hex": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+      "result": "valid"
+    },
+    {
+      "tcId": "nist_448bit_sha3_256",
+      "algo": "sha3_256",
+      "msg_hex": "6162636462636465636465666465666765666768666768696768696a68696a6b696a6b6c6a6b6c6d6b6c6d6e6c6d6e6f6d6e6f706e6f7071",
+      "expected_hex": "41c0dba2a9d6240849100376a8235e2c82e1b9998a999e21db32dd97496d3376",
+      "result": "valid"
+    },
+    {
+      "tcId": "quick_fox_sha256",
+      "algo": "sha256",
+      "msg_hex": "54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67",
+      "expected_hex": "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+      "result": "valid"
+    },
+    {
+      "tcId": "quick_fox_sha3_256",
+      "algo": "sha3_256",
+      "msg_hex": "54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67",
+      "expected_hex": "69070dda01975c8c120c3aada1b282394e7f032fa9cf32f4cb2259a0897dfc04",
+      "result": "valid"
+    },
+    {
+      "tcId": "wrong_expected_sha256",
+      "algo": "sha256",
+      "msg_hex": "616263",
+      "expected_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "result": "invalid",
+      "comment": "deliberately wrong expected"
+    }
+  ]
+}

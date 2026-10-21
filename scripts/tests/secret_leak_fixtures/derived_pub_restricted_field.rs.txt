@@ -1,0 +1,7 @@
+// #3284: `pub(crate)` / `pub(super)` visibility on a secret field hid it from
+// FIELD, which only understood bare `pub`.
+#[derive(Debug)]
+pub struct Signer {
+    pub(crate) id: u64,
+    pub(crate) signing_key: [u8; 32],
+}

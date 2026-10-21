@@ -1,0 +1,7 @@
+{
+  "teamId": "wrfcoin",
+  "apiUrl": "https://vercel.com/api/turborepo",
+  "loginUrl": "https://vercel.com",
+  "timeout": 60,
+  "signature": true
+}

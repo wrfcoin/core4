@@ -1,0 +1,23 @@
+digraph core_schema {
+    label="Core Blockchain Operations";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    blocks [label="{blocks|{id (PK)|created_at|updated_at}}"];
+    transactions [label="{transactions|{id (PK)|block_id (FK)|created_at|updated_at}}"];
+    computational_work_proofs [label="{computational_work_proofs|{id (PK)|block_id (FK)|created_at|updated_at}}"];
+    trust_anchors [label="{trust_anchors|{id (PK)|created_at|updated_at}}"];
+    trust_endorsements [label="{trust_endorsements|{id (PK)|anchor_id (FK)|created_at|updated_at}}"];
+    shards [label="{shards|{id (PK)|created_at|updated_at}}"];
+    shard_rebalance_operations [label="{shard_rebalance_operations|{id (PK)|shard_id (FK)|created_at|updated_at}}"];
+    slash_events [label="{slash_events|{id (PK)|created_at|updated_at}}"];
+
+    blocks -> transactions [label="1:N"];
+    blocks -> computational_work_proofs [label="1:N"];
+    transactions -> blocks [label="N:1"];
+    computational_work_proofs -> blocks [label="N:1"];
+    trust_anchors -> trust_endorsements [label="1:N"];
+    trust_endorsements -> trust_anchors [label="N:1"];
+    shards -> shard_rebalance_operations [label="1:N"];
+    shard_rebalance_operations -> shards [label="N:1"];
+}

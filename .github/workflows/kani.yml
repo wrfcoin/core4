@@ -1,0 +1,154 @@
+name: Kani Proofs
+
+# Bounded model-checking of the economic arithmetic (quorum, fees, burn) in
+# consensus-engines/src/economics/proofs.rs. Kani is heavy and runs its own
+# toolchain, so it is NOT on the default cargo-test path — the proofs are
+# #[cfg(kani)]. The runnable #[cfg(test)] mirrors run in ordinary CI/local.
+# See docs/security/KANI_PROOFS.md.
+
+on:
+  pull_request:
+    paths:
+      - 'consensus-engines/**'
+      - 'docs/security/KANI_PROOFS.md'
+      - '.github/workflows/kani.yml'
+# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
+# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
+# untouched, so PR gating is unchanged and this can still be run on demand with
+# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
+# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
+  # schedule:
+  # - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Data cap (infra#1113, owner ruling 2026-09-27): a new push to a PR cancels
+# that PR's superseded run. Every other event (push to main, schedule,
+# workflow_dispatch) gets a group unique to its run id, so it is never
+# cancelled and never evicted while pending (#2945, #3036).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Cheap, always-on: the runnable proof mirrors (no Kani solver needed).
+  proof-mirrors:
+    name: Economic proof mirrors (runnable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - name: Run proof mirror tests
+        run: cargo test --locked -p wrfcoin-consensus-engines --lib economics::proofs::tests
+
+  # Heavy: the actual bounded proofs. Scheduled/dispatch + PRs touching the crate.
+  kani:
+    name: Kani bounded proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      - name: Run proofs
+        run: |
+          # Run each harness individually. Measured wall times, kani 0.67.0 on a
+          # dev machine, across two full runs of this exact list:
+          #   strict_supermajority 9-10s | monotonic 8s | boundary_is_exact 7-11s
+          #   empty_set 7-8s | slash_never_exceeds_stake 8-10s | effective_fee 7-8s
+          #   whole set: 49s and 52s.
+          # The 120s budget is ~11x the slowest harness observed (11s), and the
+          # whole set fits in ~1 minute of the 45-minute job — leaving the rest
+          # for `cargo install kani-verifier` and `cargo kani setup`. These are
+          # measurements, not estimates; re-measure if the harness list changes.
+          # A single `cargo kani -p ...` invocation
+          # runs them in one process, so ONE runaway harness consumes the whole
+          # job and every later harness is silently never reached — which is
+          # exactly what happened in run 29875816548, where the fee-burn proof ate
+          # the remaining ~40 minutes and the quorum proofs never ran (#2108
+          # review). Per-harness invocation makes a timeout attributable and lets
+          # the surviving proofs still report.
+          set -uo pipefail
+          HARNESSES="
+            proof_quorum_strict_supermajority
+            proof_quorum_monotonic
+            proof_quorum_boundary_is_exact
+            proof_empty_set_never_reaches_quorum
+            proof_slash_never_exceeds_stake
+            proof_effective_fee_capped
+          "
+          # Preflight: a harness renamed in the source but not here makes
+          # `cargo kani --harness` exit 1, which the loop below would report as
+          # "the property does not hold" — a FALSE counterexample. Catch the
+          # rename first and name it as what it is.
+          MISSING=""
+          for h in $HARNESSES; do
+            grep -q "fn $h()" consensus-engines/src/economics/proofs.rs || MISSING="$MISSING $h"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::harness(es) listed here but absent from proofs.rs:$MISSING"
+            echo "  This is a NAME DRIFT, not a refuted property. Re-sync the list."
+            exit 1
+          fi
+
+          # Run one harness under a budget that actually terminates it.
+          #
+          # `timeout N cargo kani ...` is NOT sufficient and was measured failing:
+          # timeout signals only `cargo-kani`, while the `cbmc` grandchild doing
+          # the real work ignores it and keeps running. Observed on this branch —
+          # `timeout 120` returned 124 at a wall time of 128s, and that harness's
+          # cbmc was still consuming CPU ~56s after the timeout had "fired".
+          # Orphaned solvers then compete with every later harness for the same
+          # 45-minute job, which is the runaway this per-harness split exists to
+          # prevent. So: run each harness in its OWN process group and kill the
+          # GROUP on expiry.
+          run_harness() {
+            h="$1"; budget=120
+            setsid cargo kani -p wrfcoin-consensus-engines --harness "$h" &
+            pid=$!
+            pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+            start=$SECONDS
+            while kill -0 "$pid" 2>/dev/null; do
+              if [ $((SECONDS - start)) -ge "$budget" ]; then
+                [ -n "$pgid" ] && kill -9 -- "-$pgid" 2>/dev/null
+                wait "$pid" 2>/dev/null
+                return 124
+              fi
+              sleep 2
+            done
+            wait "$pid" 2>/dev/null
+          }
+
+          FAILED=""
+          COUNT=0
+          for h in $HARNESSES; do
+            COUNT=$((COUNT + 1))
+            echo "::group::kani $h"
+            if run_harness "$h"; then
+              echo "OK   $h"
+            else
+              status=$?
+              # 124 = per-harness timeout. Distinguished from a real refutation so
+              # a tractability problem is never reported as a falsified property.
+              if [ "$status" -eq 124 ]; then
+                echo "::error::TIMEOUT $h — exceeded the 2-minute per-harness budget."
+                echo "  This is a tractability failure, NOT a counterexample."
+              else
+                echo "::error::FAILED $h (exit $status) — Kani reports the property does not hold."
+              fi
+              FAILED="$FAILED $h"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$FAILED" ]; then
+            echo "::error::harness(es) failed or timed out:$FAILED"
+            exit 1
+          fi
+          # `${#HARNESSES}` would print the string's LENGTH, not the harness count.
+          echo "All $COUNT harnesses completed."

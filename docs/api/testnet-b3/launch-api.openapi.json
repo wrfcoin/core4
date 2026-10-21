@@ -1,0 +1,2159 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "WRFCoin B3 launch_api registered routes",
+    "version": "65134a644921",
+    "description": "Complete source-checked method/path contract for the pinned B3 Dockerfile feature set. Registered does not imply capability availability, successful writes, authorization or public edge access. No response schema or runtime conformance claim."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8556",
+      "description": "Local node API; no public hostname is selected."
+    }
+  ],
+  "x-core4-revision": "65134a644921",
+  "x-build-features": [
+    "full-mining",
+    "hsm",
+    "p2p",
+    "upgrade-notice-fetch"
+  ],
+  "x-build-profile": {
+    "infra-revision": "wrfcoin/infra@750298cdf20c",
+    "source": "infra/docker/Dockerfile.core:43-45",
+    "fixture": "deployed-node-build.Dockerfile"
+  },
+  "x-excluded-operations": [
+    {
+      "method": "post",
+      "path": "/debug/seed-account",
+      "handler": "debug::seed_account",
+      "cfg": "any(test,feature=\"dev-endpoints\")"
+    },
+    {
+      "method": "get",
+      "path": "/execution/models",
+      "handler": "execution::list_models",
+      "cfg": "feature=\"execution\""
+    },
+    {
+      "method": "get",
+      "path": "/execution/result/{run_id}",
+      "handler": "execution::get_result",
+      "cfg": "feature=\"execution\""
+    },
+    {
+      "method": "post",
+      "path": "/execution/run",
+      "handler": "execution::submit_run",
+      "cfg": "feature=\"execution\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/commitment/create",
+      "handler": "privacy_handlers::create_commitment",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/commitment/verify",
+      "handler": "privacy_handlers::verify_commitment",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "get",
+      "path": "/privacy/key-images",
+      "handler": "privacy_handlers::get_key_images",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/keys/register",
+      "handler": "privacy_handlers::register_key",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/payload/decrypt",
+      "handler": "privacy_handlers::decrypt_payload",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/payload/encrypt",
+      "handler": "privacy_handlers::encrypt_payload",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/range-proof/create",
+      "handler": "privacy_handlers::create_range_proof",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/range-proof/verify",
+      "handler": "privacy_handlers::verify_range_proof",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/ring-signature/create",
+      "handler": "privacy_handlers::create_ring_signature",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/ring-signature/verify",
+      "handler": "privacy_handlers::verify_ring_signature",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/stealth-address/check",
+      "handler": "privacy_handlers::check_stealth_address",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/stealth-address/create",
+      "handler": "privacy_handlers::create_stealth_address",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "post",
+      "path": "/privacy/stealth-keys/generate",
+      "handler": "privacy_handlers::generate_stealth_keys",
+      "cfg": "feature=\"privacy\""
+    },
+    {
+      "method": "get",
+      "path": "/zk/circuits",
+      "handler": "zk_handlers::list_circuits",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/confidential-transfer/generate",
+      "handler": "zk_handlers::generate_confidential_transfer",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/confidential-transfer/verify",
+      "handler": "zk_handlers::verify_confidential_transfer",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/range-proof/generate",
+      "handler": "zk_handlers::generate_range_proof",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/range-proof/verify",
+      "handler": "zk_handlers::verify_range_proof",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/selective-disclosure/generate",
+      "handler": "zk_handlers::generate_selective_disclosure",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/selective-disclosure/verify",
+      "handler": "zk_handlers::verify_selective_disclosure",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "get",
+      "path": "/zk/stats",
+      "handler": "zk_handlers::get_zk_stats",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/weather-model/generate",
+      "handler": "zk_handlers::generate_weather_model_proof",
+      "cfg": "feature=\"zk\""
+    },
+    {
+      "method": "post",
+      "path": "/zk/weather-model/verify",
+      "handler": "zk_handlers::verify_weather_model_proof",
+      "cfg": "feature=\"zk\""
+    }
+  ],
+  "paths": {
+    "/addresses/{address}": {
+      "get": {
+        "operationId": "get_addresses_address",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_address_compat",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/addresses/{address}/transactions": {
+      "get": {
+        "operationId": "get_addresses_address_transactions",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_address_transactions",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/blockchain": {
+      "get": {
+        "operationId": "get_blockchain",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_blockchain_compat",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/blocks/mine": {
+      "post": {
+        "operationId": "post_blocks_mine",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "mining::mine_block",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/audit-log": {
+      "get": {
+        "operationId": "get_bridge_safety_audit_log",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::get_bridge_audit_log",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/caps/update": {
+      "post": {
+        "operationId": "post_bridge_safety_caps_update",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::update_bridge_caps",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/challenge/open": {
+      "post": {
+        "operationId": "post_bridge_safety_challenge_open",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::open_bridge_challenge",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/challenge/resolve": {
+      "post": {
+        "operationId": "post_bridge_safety_challenge_resolve",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::resolve_bridge_challenge",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/challenge/submit": {
+      "post": {
+        "operationId": "post_bridge_safety_challenge_submit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::submit_bridge_challenge",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/exposure": {
+      "get": {
+        "operationId": "get_bridge_safety_exposure",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::get_bridge_exposure",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/halt": {
+      "post": {
+        "operationId": "post_bridge_safety_halt",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::halt_bridge",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/resume": {
+      "post": {
+        "operationId": "post_bridge_safety_resume",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::resume_bridge",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/scan-stuck": {
+      "post": {
+        "operationId": "post_bridge_safety_scan_stuck",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::scan_bridge_stuck",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/bridge/safety/status": {
+      "get": {
+        "operationId": "get_bridge_safety_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "bridge::get_bridge_safety_status",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/chain/block/{height}": {
+      "get": {
+        "operationId": "get_chain_block_height",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_chain_block_by_height",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "height",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/chain/blocks": {
+      "get": {
+        "operationId": "get_chain_blocks",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_chain_blocks",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/chain/header/{height}": {
+      "get": {
+        "operationId": "get_chain_header_height",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "light::get_chain_header",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "height",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/cross_chain": {
+      "get": {
+        "operationId": "get_cross_chain",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::cross_chain_feature_disabled",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/cross_chain/status": {
+      "get": {
+        "operationId": "get_cross_chain_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::cross_chain_feature_disabled",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/da/chunk/{height}/{index}": {
+      "get": {
+        "operationId": "get_da_chunk_height_index",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "light::get_da_chunk",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "height",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/enhanced_security/status": {
+      "get": {
+        "operationId": "get_enhanced_security_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::enhanced_security_feature_disabled",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/evm_compatibility/status": {
+      "get": {
+        "operationId": "get_evm_compatibility_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::evm_compatibility_feature_disabled",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/analytics/dashboard": {
+      "get": {
+        "operationId": "get_governance_analytics_dashboard",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_governance_analytics",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/delegate": {
+      "post": {
+        "operationId": "post_governance_delegate",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::delegate_voting_power",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/laws": {
+      "get": {
+        "operationId": "get_governance_laws",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::list_governance_laws",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/laws/{law_id}": {
+      "get": {
+        "operationId": "get_governance_laws_law_id",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_governance_law",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "law_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals": {
+      "get": {
+        "operationId": "get_governance_proposals",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::list_governance_proposals",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/submit": {
+      "post": {
+        "operationId": "post_governance_proposals_submit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::submit_governance_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/{id}": {
+      "get": {
+        "operationId": "get_governance_proposals_id",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_governance_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/{id}/activate": {
+      "put": {
+        "operationId": "put_governance_proposals_id_activate",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::activate_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/{id}/execute": {
+      "put": {
+        "operationId": "put_governance_proposals_id_execute",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::execute_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/{id}/finalize": {
+      "put": {
+        "operationId": "put_governance_proposals_id_finalize",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::finalize_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/proposals/{id}/votes": {
+      "get": {
+        "operationId": "get_governance_proposals_id_votes",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_proposal_votes",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/quality/proposals/build": {
+      "post": {
+        "operationId": "post_governance_quality_proposals_build",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::build_quality_governance_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/treasury": {
+      "get": {
+        "operationId": "get_governance_treasury",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_treasury",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/treasury/deposit": {
+      "post": {
+        "operationId": "post_governance_treasury_deposit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::treasury_deposit",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/treasury/transactions": {
+      "get": {
+        "operationId": "get_governance_treasury_transactions",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_treasury_transactions",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/treasury/withdraw": {
+      "post": {
+        "operationId": "post_governance_treasury_withdraw",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::treasury_withdraw",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/trust/proposals/build": {
+      "post": {
+        "operationId": "post_governance_trust_proposals_build",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::build_trust_governance_proposal",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/trust/weights": {
+      "get": {
+        "operationId": "get_governance_trust_weights",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::get_trust_weights",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/governance/vote": {
+      "post": {
+        "operationId": "post_governance_vote",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "governance::submit_governance_vote",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "get_health",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::health",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/heatmap/json": {
+      "get": {
+        "operationId": "get_heatmap_json",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_heatmap_json_compat",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/layer2/rollup-config": {
+      "get": {
+        "operationId": "get_layer2_rollup_config",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_layer2_rollup_config",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/layer2/status": {
+      "get": {
+        "operationId": "get_layer2_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::layer2_feature_disabled",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/layer2/submit-batch": {
+      "post": {
+        "operationId": "post_layer2_submit_batch",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::submit_layer2_batch",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/mempool/pending": {
+      "get": {
+        "operationId": "get_mempool_pending",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_mempool_pending",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/mempool/purge": {
+      "post": {
+        "operationId": "post_mempool_purge",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "operator::purge_mempool",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "get_metrics",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_prometheus_metrics",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/mining/stats": {
+      "get": {
+        "operationId": "get_mining_stats",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "mining::get_mining_stats",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/audit-log": {
+      "get": {
+        "operationId": "get_network_audit_log",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_audit_log",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/dht/peers": {
+      "get": {
+        "operationId": "get_network_dht_peers",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_dht_peers",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/info": {
+      "get": {
+        "operationId": "get_network_info",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_info",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/peer_id": {
+      "get": {
+        "operationId": "get_network_peer_id",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_peer_id",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/peers": {
+      "get": {
+        "operationId": "get_network_peers",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_peers",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/peers/reputation": {
+      "get": {
+        "operationId": "get_network_peers_reputation",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_peer_reputation",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/peers/sync": {
+      "get": {
+        "operationId": "get_network_peers_sync",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_peers_sync",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/signing-keys/register": {
+      "post": {
+        "operationId": "post_network_signing_keys_register",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::register_signing_key_epoch",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/signing-keys/revoke": {
+      "post": {
+        "operationId": "post_network_signing_keys_revoke",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::revoke_signing_key_epoch",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/signing-keys/{role}": {
+      "get": {
+        "operationId": "get_network_signing_keys_role",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::get_signing_keys_by_role",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/snapshot-sync/ingest": {
+      "post": {
+        "operationId": "post_network_snapshot_sync_ingest",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::ingest_snapshot_sync_payload",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/stats": {
+      "get": {
+        "operationId": "get_network_stats",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_stats",
+        "x-rust-cfg": "feature=\"p2p\"",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/network/upgrade": {
+      "get": {
+        "operationId": "get_network_upgrade",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_network_upgrade",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/nft/list": {
+      "get": {
+        "operationId": "get_nft_list",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "nft::list_nfts",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/nft/mint": {
+      "post": {
+        "operationId": "post_nft_mint",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "nft::mint_nft",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/nft/{id}": {
+      "get": {
+        "operationId": "get_nft_id",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "nft::get_nft",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/nft/{id}/transfer": {
+      "post": {
+        "operationId": "post_nft_id_transfer",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "nft::transfer_nft",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/nft/{id}/verify": {
+      "post": {
+        "operationId": "post_nft_id_verify",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "nft::verify_nft",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/capability": {
+      "get": {
+        "operationId": "get_node_capability",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_node_capability",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/metrics/host": {
+      "get": {
+        "operationId": "get_node_metrics_host",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "host_metrics::get_host_metrics",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/network/failover": {
+      "get": {
+        "operationId": "get_node_network_failover",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_node_network_failover",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/partition-status": {
+      "get": {
+        "operationId": "get_node_partition_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_partition_status",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/resources": {
+      "get": {
+        "operationId": "get_node_resources",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_node_resources",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/sync/status": {
+      "get": {
+        "operationId": "get_node_sync_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::get_node_sync_status",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/operator/mempool/clear": {
+      "post": {
+        "operationId": "post_operator_mempool_clear",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "operator::clear_mempool",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/operator/mempool/purge": {
+      "post": {
+        "operationId": "post_operator_mempool_purge",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "operator::purge_mempool",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/operator/partition-mode": {
+      "post": {
+        "operationId": "post_operator_partition_mode",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "network::set_partition_mode",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/oracle/late-quorum/unpaid": {
+      "get": {
+        "operationId": "get_oracle_late_quorum_unpaid",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "late_quorum::get_late_quorum_unpaid",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/oracle/leaderboard": {
+      "get": {
+        "operationId": "get_oracle_leaderboard",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::get_oracle_leaderboard",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/participation/policy": {
+      "get": {
+        "operationId": "get_participation_policy",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::get_participation_policy",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/prometheus": {
+      "get": {
+        "operationId": "get_prometheus",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_prometheus_metrics",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "get_readyz",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::readyz",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/rewards/payout": {
+      "post": {
+        "operationId": "post_rewards_payout",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "rewards::payout",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot": {
+      "get": {
+        "operationId": "get_state_snapshot",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::get_state_snapshot",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot/entries": {
+      "get": {
+        "operationId": "get_state_snapshot_entries",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::get_state_snapshot_entries",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot/proof/{key_hex}": {
+      "get": {
+        "operationId": "get_state_snapshot_proof_key_hex",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::get_state_snapshot_proof",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "key_hex",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot/sync-payload": {
+      "get": {
+        "operationId": "get_state_snapshot_sync_payload",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::get_snapshot_sync_payload",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot/sync-payload/verify": {
+      "post": {
+        "operationId": "post_state_snapshot_sync_payload_verify",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::verify_snapshot_sync_payload",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/state/snapshot/verify-inclusion": {
+      "post": {
+        "operationId": "post_state_snapshot_verify_inclusion",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "snapshot::verify_state_snapshot_inclusion",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/commit/{commit_id}/status": {
+      "get": {
+        "operationId": "get_transactions_commit_commit_id_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::get_commit_status",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "commit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/contribution/commit": {
+      "post": {
+        "operationId": "post_transactions_contribution_commit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_contribution_commit",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/contribution/reveal": {
+      "post": {
+        "operationId": "post_transactions_contribution_reveal",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_contribution_reveal",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/contributions/status": {
+      "get": {
+        "operationId": "get_transactions_contributions_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::get_contribution_statuses",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/contributions/{commit_id}/reward-evidence": {
+      "get": {
+        "operationId": "get_transactions_contributions_commit_id_reward_evidence",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::get_contribution_reward_evidence",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "commit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/contributions/{station_id}/observations": {
+      "get": {
+        "operationId": "get_transactions_contributions_station_id_observations",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::get_station_observations",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/forecast/commit": {
+      "post": {
+        "operationId": "post_transactions_forecast_commit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_forecast_commit",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/forecast/reveal": {
+      "post": {
+        "operationId": "post_transactions_forecast_reveal",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_forecast_reveal",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/governance/schedule-extensions": {
+      "post": {
+        "operationId": "post_transactions_governance_schedule_extensions",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "schedule_extension::submit_schedule_extension",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/attestation": {
+      "post": {
+        "operationId": "post_transactions_oracle_attestation",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::submit_oracle_attestation",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/config": {
+      "get": {
+        "operationId": "get_transactions_oracle_config",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::get_oracle_config",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_transactions_oracle_config",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::update_oracle_config",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/operators": {
+      "post": {
+        "operationId": "post_transactions_oracle_operators",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::register_oracle_operator",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/pending": {
+      "get": {
+        "operationId": "get_transactions_oracle_pending",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::get_pending_attestations",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/registrations": {
+      "post": {
+        "operationId": "post_transactions_oracle_registrations",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::submit_oracle_registrations",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/oracle/status": {
+      "get": {
+        "operationId": "get_transactions_oracle_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "oracle::get_oracle_status",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/permissionless/submit": {
+      "post": {
+        "operationId": "post_transactions_permissionless_submit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_permissionless_transaction",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/quality/events": {
+      "get": {
+        "operationId": "get_transactions_quality_events",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "quality::get_quality_events",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/quality/participants/{address}/history": {
+      "get": {
+        "operationId": "get_transactions_quality_participants_address_history",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "quality::get_quality_participant_history",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/quality/summary": {
+      "get": {
+        "operationId": "get_transactions_quality_summary",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "quality::get_quality_summary",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/rewards/trust/summary": {
+      "get": {
+        "operationId": "get_transactions_rewards_trust_summary",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "quality::get_trust_reward_impact_summary",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/rewards/trust/timeline": {
+      "get": {
+        "operationId": "get_transactions_rewards_trust_timeline",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "quality::get_trust_reward_impact_timeline",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/signing-keys/register": {
+      "post": {
+        "operationId": "post_transactions_signing_keys_register",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::register_signing_key_epoch",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/signing-keys/revoke": {
+      "post": {
+        "operationId": "post_transactions_signing_keys_revoke",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::revoke_signing_key_epoch",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/signing-keys/{role}": {
+      "get": {
+        "operationId": "get_transactions_signing_keys_role",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "signing_keys::get_signing_keys_by_role",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/stake/metrics": {
+      "get": {
+        "operationId": "get_transactions_stake_metrics",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "stake::get_stake_metrics",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/stake/{address}": {
+      "get": {
+        "operationId": "get_transactions_stake_address",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "stake::get_stake_status",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/station/registrations": {
+      "get": {
+        "operationId": "get_transactions_station_registrations",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "station::list_station_registrations",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_transactions_station_registrations",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "station::submit_station_registrations",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/station/registrations/{station_id}": {
+      "get": {
+        "operationId": "get_transactions_station_registrations_station_id",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "station::get_station_registration",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "station_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/submit": {
+      "post": {
+        "operationId": "post_transactions_submit",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "transactions::submit_transaction_compat",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/transactions/{tx_id}/status": {
+      "get": {
+        "operationId": "get_transactions_tx_id_status",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::get_transaction_status",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Route parameter; see the handler for parsing and bounds."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "operationId": "get_version",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "chain::version",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/ws": {
+      "get": {
+        "operationId": "get_ws",
+        "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
+        "x-handler": "crate::websocket::ws_index",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    }
+  }
+}

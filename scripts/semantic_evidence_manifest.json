@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "archived_mock_cases": [
+    {
+      "id": "weather_to_blockchain",
+      "claims": ["weather validation", "reward", "block confirmation", "station balance"],
+      "old_active_paths": ["tests/integration/weather-to-blockchain.test.js"],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/weather-to-blockchain.mock-contract.fixture.js",
+          "tokens": ["mockWeatherBlockchainService", "calculateRewards.mockResolvedValue", "status: 'confirmed'"]
+        }
+      ],
+      "disposition": "File-local mocks supply every claimed transition. Preserved only as a historical coordinator contract."
+    },
+    {
+      "id": "blockchain_api",
+      "claims": ["wallet", "transaction inclusion", "mined block", "weather reward"],
+      "old_active_paths": ["tests/integration/blockchain-api.test.js"],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/blockchain-api.mock-contract.fixture.js",
+          "tokens": ["mockBlockchainAPI", "mineBlock.mockResolvedValue", "calculate_reward"]
+        }
+      ],
+      "disposition": "File-local mocks manufacture wallet, block, inclusion, and reward results."
+    },
+    {
+      "id": "mesh_registration",
+      "claims": ["mesh-to-chain storage", "registration signature verification"],
+      "old_active_paths": ["tests/integration/network/mesh-to-blockchain-flow.test.ts"],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/mesh-to-blockchain-flow.mock-contract.fixture.ts",
+          "tokens": ["MockMeshToBlockchainPipeline", "MockRegistrationHandler", "payload.signature.length >= 64"]
+        }
+      ],
+      "disposition": "The handwritten registration handler treats signature length as verification and imports no production verifier."
+    },
+    {
+      "id": "staking",
+      "claims": ["stake balance", "staking reward", "weather APY boost"],
+      "old_active_paths": [
+        "tests/integration/staking.test.js",
+        "tests/e2e/defi/staking.test.js"
+      ],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/staking.mock-contract.fixture.js",
+          "tokens": ["mockStakingService", "mockRewardsCalculator", "calculateDailyRewards.mockImplementation"]
+        },
+        {
+          "path": "tests/mock-contracts/legacy/e2e/defi/staking.mock-contract.fixture.js",
+          "tokens": ["mockStakingService", "mockRewardsCalculator", "calculateDailyRewards.mockImplementation"]
+        }
+      ],
+      "disposition": "Both byte-identical copies assert values returned by local Jest mocks; neither is production staking evidence."
+    },
+    {
+      "id": "wallet",
+      "claims": ["wallet creation", "balance", "transfer", "transaction signing"],
+      "old_active_paths": [
+        "tests/integration/wallet-integration.test.js",
+        "tests/e2e/wallet/wallet-integration.test.js"
+      ],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/wallet-integration.mock-contract.fixture.js",
+          "tokens": ["mockWalletService", "mockBlockchainAdapter", "mockCryptoUtils"]
+        },
+        {
+          "path": "tests/mock-contracts/legacy/e2e/wallet/wallet-integration.mock-contract.fixture.js",
+          "tokens": ["mockWalletService", "mockBlockchainAdapter", "mockCryptoUtils"]
+        }
+      ],
+      "disposition": "Both byte-identical copies obtain balances, transactions, and signatures from local mocks."
+    },
+    {
+      "id": "liquidity",
+      "claims": ["pool reserves", "LP balance", "fees", "impermanent loss"],
+      "old_active_paths": [
+        "tests/integration/liquidity.test.js",
+        "tests/e2e/defi/liquidity.test.js"
+      ],
+      "fixtures": [
+        {
+          "path": "tests/mock-contracts/legacy/integration/liquidity.mock-contract.fixture.js",
+          "tokens": ["mockLiquidityService", "mockPriceOracle", "mockFeeCalculator"]
+        },
+        {
+          "path": "tests/mock-contracts/legacy/e2e/defi/liquidity.mock-contract.fixture.js",
+          "tokens": ["mockLiquidityService", "mockPriceOracle", "mockFeeCalculator"]
+        }
+      ],
+      "disposition": "Both byte-identical copies assert pool and fee values authored by local mocks; no production pool exists in core4."
+    }
+  ],
+  "production_evidence": [
+    {
+      "id": "oracle_gated_reward_sink",
+      "command": "cargo test --locked -p wrfcoin-shared-protocol --features hsm,test-support --test earn_loop_oracle_gate_e2e",
+      "subjects": [
+        {
+          "path": "shared-protocol/tests/earn_loop_oracle_gate_e2e.rs",
+          "tokens": ["create_next_block", "signed_attestation_tx", "rewards_minted_count", "earned_balance_total"]
+        }
+      ],
+      "cut_status": "bounded",
+      "proves": "Real commit/reveal, signed attestations, block production, state application, zero reward without quorum, and positive contributor post-state with quorum.",
+      "limit": "The fixture seeds a synthetic 2-of-2 oracle configuration, trust, and reputation. It proves the core sink, not deployed attestation discovery or the final N=3/K=2 genesis configuration."
+    },
+    {
+      "id": "genesis_oracle_staged_state",
+      "command": "cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p genesis_oracle_set_s4 && cargo test --locked -p wrfcoin-native-chain --test genesis_oracle_registration_s4",
+      "subjects": [
+        {
+          "path": "native-chain/tests/genesis_oracle_registration_s4.rs",
+          "tokens": ["verify_oracle_registration_authorization", "second_registration_with_a_non_cumulative_set_evicts_the_first_oracle"]
+        },
+        {
+          "path": "native-chain/src/bin/launch_api/p2p_events.rs",
+          "tokens": ["genesis_oracle_set_s4", "create_pop_block_with_state", "apply_p2p_block", "state_root"]
+        }
+      ],
+      "cut_status": "bounded",
+      "proves": "The final N=3/K=2 declaration and all three matching block-1 registrations converge through producer, peer, restart, and sync, with tampered/incomplete registration rejection.",
+      "limit": "Seeded vector keys stand in for the three ceremony identities and their distinct signing keys. This does not prove hardware custody, deployment of independent attesters, or the public cut; no add-later path is claimed."
+    },
+    {
+      "id": "emission_and_supply",
+      "command": "cargo test --locked -p wrfcoin-shared-protocol --features hsm,test-support --test tdd_reward_determinism && cargo test --locked -p wrfcoin-shared-protocol --features hsm,test-support --test economic_property_tests supply_cap_holds_during_block_production_across_block_time_tiers",
+      "subjects": [
+        {
+          "path": "shared-protocol/tests/tdd_reward_determinism.rs",
+          "tokens": ["INITIAL_BLOCK_REWARD", "MAX_SUPPLY", "the_widest_reward_intermediate_cannot_overflow_2485"]
+        },
+        {
+          "path": "shared-protocol/tests/economic_property_tests.rs",
+          "tokens": ["supply_cap_holds_during_block_production_across_block_time_tiers", "non-vacuous"]
+        }
+      ],
+      "cut_status": "branch_sensitive",
+      "proves": "Reward units, arithmetic boundaries, non-vacuous phase coverage, and supply-cap behavior through production block application.",
+      "limit": "The exact expected curve is branch-sensitive while A2 is in flight; evidence must be rerun at the exact merged curve head."
+    },
+    {
+      "id": "signature_verification",
+      "command": "cargo test --locked -p wrfcoin-shared-protocol --features hsm,test-support --test signature_malleability --test block_producer_signing",
+      "subjects": [
+        {
+          "path": "shared-protocol/tests/signature_malleability.rs",
+          "tokens": ["valid_signature_verifies", "tampered_r_is_rejected", "verify_signature"]
+        },
+        {
+          "path": "shared-protocol/tests/block_producer_signing.rs",
+          "tokens": ["sign_block_producer", "wrong_key_is_rejected", "BadSignature"]
+        }
+      ],
+      "cut_status": "bounded",
+      "proves": "Real keypairs reach project verification wrappers; corrupt-only and wrong-key controls reject.",
+      "limit": "This does not prove physical HSM custody or ceremony execution; those have separate hardware/operator gates."
+    }
+  ]
+}

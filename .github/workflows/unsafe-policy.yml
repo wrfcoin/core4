@@ -1,0 +1,94 @@
+name: unsafe policy
+
+# The `// SAFETY:` baseline gate. Cheap, deterministic, and runs on every PR touching the
+# scanned crates. See docs/security/UNSAFE_POLICY.md.
+#
+# THIS WORKFLOW DOES NOT RUN MIRI. That is deliberate and is why it is a separate file.
+#
+# Miri previously lived in the same workflow as this gate, behind
+# `if: github.event_name != 'pull_request'`. On a PR the Miri matrix was `skipped` with
+# ZERO steps — its job name did not even expand past `Miri (${{ matrix.crate }})` — while
+# the run's overall conclusion was `success`, because this gate had passed. Run
+# `29892523607` was then cited as green proof that Miri worked. It was not: Miri had
+# executed nothing.
+#
+# Splitting the two means the workflow named "Miri" has no `pull_request` trigger at all,
+# so it produces no PR runs, so no PR run can be mistaken for Miri evidence. That is a
+# structural fix rather than a documented caution. Catalogued as antipattern 16 (a green
+# check that is no evidence) and 21 (reachability drift) in
+# docs/security/VERIFICATION_ANTIPATTERNS.md.
+
+on:
+  pull_request:
+    paths:
+      - 'primitives/**'
+      - 'shared-protocol/**'
+      - 'consensus-engines/**'
+      - 'scripts/check_unsafe_justified.py'
+      - 'scripts/unsafe_baseline.json'
+      - 'docs/security/UNSAFE_POLICY.md'
+      - '.github/workflows/unsafe-policy.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'scripts/**'
+  push:
+    branches:
+      - 'main'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '33 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Data cap (infra#1113, owner ruling 2026-09-27): a new push to a PR cancels
+# that PR's superseded run. Every other event (push to main, schedule,
+# workflow_dispatch) gets a group unique to its run id, so it is never
+# cancelled and never evicted while pending (#2945, #3036).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unsafe-gate:
+    name: "unsafe SAFETY-comment baseline gate"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The ratchet compares the baseline against the base ref, so main must be fetchable.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Detector self-test
+        run: python3 scripts/check_unsafe_justified.py --self-test
+      # Materialize the PR base ref so the gate's ratchet can tell pre-existing debt from a
+      # site introduced in this change. Without this a developer can grandfather a NEW `unsafe`
+      # by adding a baseline entry that cites an issue, in the same change (review of #2247,
+      # round 92) — a bypass no current-tree-only check can see.
+      - name: Materialize base ref for the grandfather ratchet
+        run: |
+          set -euo pipefail
+          BASE_REF="${{ github.base_ref || 'main' }}"
+          git fetch --no-tags origin "$BASE_REF"
+          rm -rf /tmp/unsafe-base-tree
+          mkdir -p /tmp/unsafe-base-tree
+          git archive FETCH_HEAD | tar -x -C /tmp/unsafe-base-tree
+      - name: Gate — no new unjustified unsafe (with grandfather ratchet)
+        run: |
+          python3 scripts/check_unsafe_justified.py \
+            --baseline scripts/unsafe_baseline.json \
+            --base-root /tmp/unsafe-base-tree
+      - name: Emit unsafe inventory
+        run: python3 scripts/check_unsafe_justified.py --inventory | tee unsafe-inventory.txt
+      - name: Upload unsafe inventory
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsafe-inventory
+          path: unsafe-inventory.txt

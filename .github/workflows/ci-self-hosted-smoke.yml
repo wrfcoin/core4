@@ -1,0 +1,83 @@
+# ci-self-hosted-smoke.yml
+#
+# Phase 1 of the self-hosted runner work: prove registration, connectivity and
+# JOB PICKUP on the N5 Pro. Nothing else.
+#
+# This header previously claimed phase 1 proved "systemd ... end to end". It did
+# not, and the same experiment proved the opposite: the runner was registered
+# EPHEMERAL, so it deregistered after its single job and systemd restarted it
+# into deleted configuration ("An error occurred: Not configured"). A workflow
+# comment must not turn a discovered defect into a success claim (#2324 review).
+#
+# Since then the owner chose a PERSISTENT runner, and the service has been shown
+# to survive consecutive jobs — two back-to-back runs (29949222030, 29949273054)
+# served by the same listener process, still online afterwards. That is service
+# survival ACROSS JOBS. It is still not reboot survival, which nothing here has
+# tested.
+#
+# This is a near-copy of the `runner-smoke` job in infra's ci-self-hosted.yml.
+# It exists in core4 because the runner is registered against THIS repo — see
+# the PR body — and a repo-level runner cannot serve another repository.
+#
+# It deliberately does NOT build anything. No existing workflow's `runs-on` is
+# changed by this PR; the GitHub-hosted path is untouched. Moving a real job
+# onto the runner is phase 2 and needs this result first.
+#
+# Issue: infra#115
+
+name: CI self-hosted smoke (N5 Pro)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# The runner is capped at 6 cores / 12 GB inside its own LXC precisely so a
+# runaway job cannot starve CT 101, which runs the live testnet node on the
+# same host. Keep that true: do not raise this timeout to cover a heavy job.
+#
+# #2945: this workflow carries the same YAML shape as the 17 siblings the
+# issue fixes, but is deliberately EXCLUDED from the `cancel-in-progress:
+# ${{ github.event_name == 'pull_request' }}` fix, recorded here rather than
+# silently skipped. It has no `push: branches: [main]` trigger at all — only
+# `ci/n5pro-**` — so the defect the issue describes (a merge to main
+# cancelling the previous main verdict) cannot occur on this workflow's
+# actual trigger. It also has no `pull_request` trigger, so applying the
+# sibling fix's expression here would silently evaluate to a constant
+# `false`: no run would ever cancel a stale one again, even for five rapid
+# iteration pushes to the same `ci/n5pro-setup` branch while debugging the
+# runner — the exact "kill the superseded attempt" behavior this smoke test
+# actually wants, since a `ci/n5pro-**` branch is a feature branch in every
+# way `github.ref` cares about, never `refs/heads/main`. Unconditional
+# `cancel-in-progress: false` stays correct for this workflow's actual
+# trigger; nothing here changes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  runner-smoke:
+    name: Runner smoke test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, n5pro]
+    timeout-minutes: 5
+    steps:
+      - name: System info
+        run: |
+          echo "Hostname : $(hostname)"
+          echo "Arch     : $(uname -m)"
+          echo "Kernel   : $(uname -r)"
+          echo "CPUs     : $(nproc)"
+          echo "RAM      : $(free -h | awk '/^Mem/{print $2}')"
+          echo "Disk     : $(df -h / | awk 'NR==2{print $4 " free of " $2}')"
+
+      - name: Docker available
+        # Reported, not enforced: phase 1 proves runner pickup, and a missing
+        # Docker daemon must not be mistaken for a broken runner. Whether
+        # container-based steps are wanted here is a phase-2 decision.
+        continue-on-error: true
+        run: docker info --format '{{.ServerVersion}}' || echo "docker not installed in this runner LXC"

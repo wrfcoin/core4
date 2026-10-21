@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toast Security Test - XSS Fix Verification</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: #f9f9f9;
+        }
+        
+        .test-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .test-button:hover {
+            background: #0056b3;
+        }
+        
+        .danger-button {
+            background: #dc3545;
+        }
+        
+        .danger-button:hover {
+            background: #c82333;
+        }
+        
+        .success-button {
+            background: #28a745;
+        }
+        
+        .success-button:hover {
+            background: #218838;
+        }
+        
+        .warning-button {
+            background: #ffc107;
+            color: black;
+        }
+        
+        .warning-button:hover {
+            background: #e0a800;
+        }
+        
+        /* Toast Styles */
+        .flash {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-width: 300px;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        .flash.info {
+            background-color: #17a2b8;
+        }
+        
+        .flash.success {
+            background-color: #28a745;
+        }
+        
+        .flash.error {
+            background-color: #dc3545;
+        }
+        
+        .flash.warning {
+            background-color: #ffc107;
+            color: black;
+        }
+        
+        .flash-close {
+            margin-left: 15px;
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: bold;
+            opacity: 0.8;
+        }
+        
+        .flash-close:hover {
+            opacity: 1;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .results {
+            margin-top: 30px;
+            padding: 15px;
+            background: #e8f5e8;
+            border: 1px solid #28a745;
+            border-radius: 5px;
+        }
+        
+        .code-example {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔒 Toast Security Test - XSS Fix Verification</h1>
+        
+        <div class="test-section">
+            <h3>1. Basic Toast Functionality</h3>
+            <p>Test that regular toast notifications work correctly:</p>
+            <button class="test-button" onclick="testBasicToast()">Test Info Toast</button>
+            <button class="test-button success-button" onclick="testSuccessToast()">Test Success Toast</button>
+            <button class="test-button danger-button" onclick="testErrorToast()">Test Error Toast</button>
+            <button class="test-button warning-button" onclick="testWarningToast()">Test Warning Toast</button>
+        </div>
+        
+        <div class="test-section">
+            <h3>2. Special Characters Test</h3>
+            <p>Verify special characters are displayed correctly (escaped automatically):</p>
+            <button class="test-button" onclick="testSpecialChars()">Test Special Characters</button>
+            <button class="test-button" onclick="testUnicodeChars()">Test Unicode Characters</button>
+        </div>
+        
+        <div class="test-section">
+            <h3>3. XSS Security Test</h3>
+            <p><strong>⚠️ Security Test:</strong> These should NOT execute JavaScript - they should display as plain text:</p>
+            <button class="test-button danger-button" onclick="testXSSAttempt1()">Test Script Tag Injection</button>
+            <button class="test-button danger-button" onclick="testXSSAttempt2()">Test Event Handler Injection</button>
+            <button class="test-button danger-button" onclick="testXSSAttempt3()">Test HTML Tag Injection</button>
+        </div>
+        
+        <div class="test-section">
+            <h3>4. API Error Simulation</h3>
+            <p>Simulate API errors with potentially malicious content:</p>
+            <button class="test-button danger-button" onclick="simulateAPIError()">Simulate Malicious API Error</button>
+            <button class="test-button" onclick="simulateNormalAPIError()">Simulate Normal API Error</button>
+        </div>
+        
+        <div class="test-section">
+            <h3>5. Close Button Test</h3>
+            <p>Verify close button functionality:</p>
+            <button class="test-button" onclick="testCloseButton()">Test Manual Close</button>
+            <button class="test-button" onclick="testAutoClose()">Test Auto Close (3s)</button>
+        </div>
+        
+        <div class="results">
+            <h3>✅ Expected Results:</h3>
+            <ul>
+                <li><strong>Toast Display:</strong> All toasts should appear in top-right corner</li>
+                <li><strong>Close Button:</strong> ❌ symbol should be clickable and remove toast</li>
+                <li><strong>Special Characters:</strong> Should display correctly as text (not HTML)</li>
+                <li><strong>XSS Prevention:</strong> Script tags and HTML should appear as plain text</li>
+                <li><strong>Auto-Close:</strong> Toasts should disappear after 3 seconds</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="assets/extracted_assets/WrfcoinBlockchain/src/api/static/common.js"></script>
+    <script>
+        // Test functions
+        function testBasicToast() {
+            showToast('This is a basic info toast notification', 'info');
+        }
+        
+        function testSuccessToast() {
+            showToast('Operation completed successfully!', 'success');
+        }
+        
+        function testErrorToast() {
+            showToast('An error occurred during processing', 'error');
+        }
+        
+        function testWarningToast() {
+            showToast('This is a warning message', 'warning');
+        }
+        
+        function testSpecialChars() {
+            showToast('Special chars: <>&"\'`~!@#$%^&*()_+-=[]{}|;:,.<>?', 'info');
+        }
+        
+        function testUnicodeChars() {
+            showToast('Unicode: 🔒🚀💰📊⚡🌟✅❌🎉🔧', 'success');
+        }
+        
+        function testXSSAttempt1() {
+            showToast('<script>alert("XSS Attack!")</script>This should not execute JavaScript', 'error');
+        }
+        
+        function testXSSAttempt2() {
+            showToast('<img src="x" onerror="alert(\'XSS via event handler\')">Image with XSS', 'error');
+        }
+        
+        function testXSSAttempt3() {
+            showToast('<b>Bold text</b> and <a href="javascript:alert(\'XSS\')">malicious link</a>', 'error');
+        }
+        
+        function simulateAPIError() {
+            // Simulate the exact path from apiRequest function
+            const maliciousError = {
+                message: '<script>alert("Malicious API Error!")</script>Database connection failed'
+            };
+            showToast(`API Error: ${maliciousError.message}`, 'error');
+        }
+        
+        function simulateNormalAPIError() {
+            const normalError = {
+                message: 'Connection timeout after 30 seconds'
+            };
+            showToast(`API Error: ${normalError.message}`, 'error');
+        }
+        
+        function testCloseButton() {
+            showToast('Click the ❌ button to close this toast manually', 'info', 30000); // 30 second duration
+        }
+        
+        function testAutoClose() {
+            showToast('This toast will auto-close in 3 seconds', 'warning', 3000);
+        }
+        
+        // Copy to clipboard test
+        function testClipboard() {
+            copyToClipboard('Test data copied to clipboard');
+        }
+        
+        // Add some additional test buttons
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🔒 Toast Security Test Page Loaded');
+            console.log('✅ XSS protection should prevent script execution in toasts');
+            
+            // Test on page load
+            setTimeout(() => {
+                showToast('🔒 Security test page loaded - XSS protection active', 'success');
+            }, 500);
+        });
+    </script>
+</body>
+</html>

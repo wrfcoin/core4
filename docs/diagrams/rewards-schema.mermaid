@@ -1,0 +1,35 @@
+erDiagram
+    %% Achievements & Economic Incentives
+
+    ACHIEVEMENTS {
+        id PK
+        category_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    ACHIEVEMENT_CATEGORIES {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    USER_ACHIEVEMENTS {
+        id PK
+        achievement_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    MINING_REWARDS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    ACHIEVEMENTS }o--|| ACHIEVEMENT_CATEGORIES : "belongs to"
+    ACHIEVEMENTS ||--o{ USER_ACHIEVEMENTS : "has many"
+    ACHIEVEMENTS ||--o{ ACHIEVEMENT_PROGRESS : "has many"
+    ACHIEVEMENT_CATEGORIES ||--o{ ACHIEVEMENTS : "has many"
+    USER_ACHIEVEMENTS }o--|| ACHIEVEMENTS : "belongs to"
+    MINING_REWARDS ||--o{ MINING_CONTRIBUTIONS : "has many"

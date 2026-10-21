@@ -1,0 +1,109 @@
+[workspace]
+resolver = "2"
+members = [
+    "meteo-types",
+    "geo-grid",
+    "forecast-score",
+    "dataset-manifest",
+    "keeper-proof",
+    "da",
+    "primitives",
+    "evm",
+    "oracle-packet",
+    "sensor-attestation",
+    "reputation-engine",
+    "shared-protocol",
+    "build-provenance",
+    "native-chain",
+    "tools/cli/WrfcoinCLI",
+    "tools/forecast-proto",
+    "sdks/generated/rust",
+    "tests/integration",
+    "p2p",
+    "privacy",
+    "consensus-engines",
+    "zk-circuits",
+    "execution-engine",
+    "security-demo",
+]
+exclude = [
+    "src-tauri",
+    "fuzz",
+    "shared-protocol/fuzz",
+]
+
+[workspace.package]
+version = "0.1.0"
+
+# Workspace-wide dependency versions
+[workspace.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+env_logger = "0.10"
+clap = { version = "4.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+sha2 = "0.10"
+sha3 = "0.10"
+rand = "0.8"
+k256 = { version = "0.13", features = ["ecdsa", "sha2"] }
+# #2169: P-256 (secp256r1) ECDSA for WebAuthn passkey verification. A distinct
+# curve from k256; never conflated. `pem`/`pkcs8` deliberately off.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rustc-hash = "2.0"
+wrf-primitives = { path = "primitives" }
+ark-bn254     = "=0.6.0"
+ark-groth16   = "=0.6.0"
+ark-ff        = "=0.6.0"
+ark-serialize = { version = "=0.6.0", features = ["derive"] }
+ark-snark     = "=0.6.0"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+dhat = "0.3"
+console-subscriber = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rayon = "1.10"
+memmap2 = "0.9"
+dashmap = "6"
+im = { version = "15", features = ["serde"] }
+ethers-core = "2.0"
+ts-rs = "10"
+
+# Shared optimization profiles
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true    # safe default; per-crate opt-in via [profile.release.package.*] after audit
+debug-assertions = false
+
+[profile.dev]
+opt-level = 0
+debug = true
+debug-assertions = true
+overflow-checks = true
+
+[profile.test]
+opt-level = 1
+debug = true
+debug-assertions = true
+overflow-checks = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+
+[profile.dhat]
+inherits = "release"
+debug = true
+
+[profile.release-checked]
+inherits = "release"
+overflow-checks = true

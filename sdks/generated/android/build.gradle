@@ -1,0 +1,340 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-parcelize'
+apply plugin: 'maven-publish'
+apply plugin: 'com.diffplug.spotless'
+
+group = 'com.wrfcoin.android'
+version = '1.0.0'
+
+buildscript {
+    ext.kotlin_version = '1.9.23'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.3.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        classpath 'com.diffplug.spotless:spotless-plugin-gradle:6.25.0'
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url "https://jitpack.io" }
+}
+
+android {
+    namespace 'com.wrfcoin.android.sdk'
+    compileSdk 34
+    
+    defaultConfig {
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName version
+        
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        
+        // ProGuard consumer rules
+        consumerProguardFiles "consumer-rules.pro"
+        
+        // BuildConfig fields for configuration
+        buildConfigField "String", "SDK_VERSION", "\"${version}\""
+        buildConfigField "String", "BASE_URL_PRODUCTION", "\"https://api.wrfcoin.com/v1\""
+        buildConfigField "String", "BASE_URL_STAGING", "\"https://staging-api.wrfcoin.com/v1\""
+        buildConfigField "String", "BASE_URL_LOCAL", "\"http://localhost:3001\""
+        
+        // Network security configuration
+        manifestPlaceholders = [
+            networkSecurityConfig: "@xml/network_security_config"
+        ]
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            
+            buildConfigField "boolean", "DEBUG_ENABLED", "false"
+            buildConfigField "boolean", "CERTIFICATE_PINNING_ENABLED", "true"
+            buildConfigField "long", "CACHE_SIZE_BYTES", "50L * 1024L * 1024L" // 50MB
+        }
+        debug {
+            debuggable true
+            
+            buildConfigField "boolean", "DEBUG_ENABLED", "true"
+            buildConfigField "boolean", "CERTIFICATE_PINNING_ENABLED", "false"
+            buildConfigField "long", "CACHE_SIZE_BYTES", "10L * 1024L * 1024L" // 10MB
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+        
+        // Enable desugaring for older API levels
+        coreLibraryDesugaringEnabled true
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+        freeCompilerArgs += [
+            '-opt-in=kotlin.RequiresOptIn',
+            '-Xjvm-default=all'
+        ]
+    }
+
+    buildFeatures {
+        buildConfig true
+        viewBinding true
+    }
+
+    // Lint configuration for mobile best practices
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+        disable 'InvalidPackage'
+        
+        // Mobile-specific lint checks
+        enable 'LogNotTimber', 'StringFormatInTimber', 'ThrowableNotAtBeginning',
+               'BinaryOperationInTimber', 'TimberArgCount', 'TimberArgTypes',
+               'TimberTagLength', 'LogConditional'
+    }
+
+    // Test options
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+        }
+        
+        unitTests.all {
+            useJUnitPlatform()
+            systemProperty 'robolectric.enabledSdks', '28,29,30,31,32,33,34'
+        }
+    }
+
+    // Packaging options
+    packagingOptions {
+        resources {
+            excludes += [
+                'META-INF/DEPENDENCIES',
+                'META-INF/LICENSE',
+                'META-INF/LICENSE.txt',
+                'META-INF/license.txt',
+                'META-INF/NOTICE',
+                'META-INF/NOTICE.txt',
+                'META-INF/notice.txt',
+                'META-INF/ASL2.0',
+                'META-INF/*.kotlin_module'
+            ]
+        }
+    }
+
+    // Configure APK and AAR naming
+    libraryVariants.all { variant ->
+        variant.outputs.configureEach { output ->
+            if (outputFileName.endsWith('.aar')) {
+                outputFileName = "${archivesBaseName}-${variant.name}-${version}.aar"
+            }
+        }
+    }
+}
+
+// External dependencies with mobile optimizations
+ext {
+    lifecycle_version = '2.7.0'
+    work_version = '2.9.0'
+    room_version = '2.6.1'
+    retrofit_version = '2.9.0'
+    okhttp_version = '4.12.0'
+    coroutines_version = '1.7.3'
+    security_crypto_version = '1.1.0-alpha06'
+    biometric_version = '1.1.0'
+}
+
+dependencies {
+    // Core dependencies
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+    
+    // Android Core & UI
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.activity:activity-ktx:1.8.2'
+    implementation 'androidx.fragment:fragment-ktx:1.6.2'
+    implementation 'com.google.android.material:material:1.11.0'
+    
+    // Architecture Components
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:$lifecycle_version"
+    implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:$lifecycle_version"
+    implementation "androidx.lifecycle:lifecycle-livedata-ktx:$lifecycle_version"
+    implementation "androidx.lifecycle:lifecycle-common-java8:$lifecycle_version"
+    
+    // Coroutines for async operations
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutines_version"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version"
+    
+    // Network & HTTP
+    implementation "com.squareup.okhttp3:okhttp:$okhttp_version"
+    implementation "com.squareup.okhttp3:logging-interceptor:$okhttp_version"
+    implementation "com.squareup.retrofit2:retrofit:$retrofit_version"
+    implementation "com.squareup.retrofit2:converter-gson:$retrofit_version"
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation 'io.gsonfire:gson-fire:1.9.0'
+    
+    // Certificate pinning and security
+    implementation "com.squareup.okhttp3:okhttp-tls:$okhttp_version"
+    implementation "androidx.security:security-crypto:$security_crypto_version"
+    implementation "androidx.biometric:biometric:$biometric_version"
+    
+    // Background processing
+    implementation "androidx.work:work-runtime-ktx:$work_version"
+    
+    // Local storage and caching
+    implementation "androidx.room:room-runtime:$room_version"
+    implementation "androidx.room:room-ktx:$room_version"
+    kapt "androidx.room:room-compiler:$room_version"
+    
+    // Location services (for weather station positioning)
+    implementation 'com.google.android.gms:play-services-location:21.0.1'
+    
+    // Utilities
+    implementation 'com.jakewharton.timber:timber:5.0.1'
+    implementation 'com.google.code.findbugs:jsr305:3.0.2'
+    implementation 'org.apache.commons:commons-lang3:3.14.0'
+    implementation 'jakarta.ws.rs:jakarta.ws.rs-api:3.1.0'
+    implementation 'jakarta.annotation:jakarta.annotation-api:2.1.1'
+    
+    // Testing dependencies
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
+    testImplementation 'org.mockito:mockito-core:5.10.0'
+    testImplementation 'org.mockito.kotlin:mockito-kotlin:5.2.1'
+    testImplementation 'org.robolectric:robolectric:4.11.1'
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutines_version"
+    testImplementation "androidx.arch.core:core-testing:2.2.0"
+    
+    // Android instrumentation tests
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-intents:3.5.1'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test:rules:1.5.0'
+    androidTestImplementation "androidx.work:work-testing:$work_version"
+    androidTestImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        release(MavenPublication) {
+            from components.release
+            
+            groupId = 'com.wrfcoin.android'
+            artifactId = 'wrfcoin-android-sdk'
+            version = '1.0.0'
+            
+            pom {
+                name = 'WRFCoin Android SDK'
+                description = 'Official Android SDK for WRFCoin blockchain platform'
+                url = 'https://github.com/wrfcoin/android-sdk'
+                
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+                
+                developers {
+                    developer {
+                        id = 'wrfcoin'
+                        name = 'WRFCoin Platform'
+                        email = 'developers@wrfcoin.com'
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Code formatting with Spotless
+spotless {
+    enforceCheck false
+    
+    kotlin {
+        target '**/*.kt'
+        ktlint('0.50.0').userData(['android': 'true'])
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    
+    java {
+        target '**/*.java'
+        googleJavaFormat('1.17.0').aosp().reflowLongStrings()
+        removeUnusedImports()
+        importOrder()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+    
+    format 'misc', {
+        target '.gitignore'
+        trimTrailingWhitespace()
+        indentWithSpaces()
+        endWithNewline()
+    }
+}
+
+// Task to generate sources jar
+task sourcesJar(type: Jar) {
+    from android.sourceSets.main.java.srcDirs
+    archiveClassifier.set('sources')
+}
+
+// Task to generate javadoc jar
+task javadocJar(type: Jar) {
+    from android.libraryVariants.all { variant ->
+        variant.javaCompileProvider.get().destinationDirectory
+    }
+    archiveClassifier.set('javadoc')
+}
+
+artifacts {
+    archives sourcesJar
+    archives javadocJar
+}
+
+// Configure test execution
+tasks.withType(Test) {
+    useJUnitPlatform()
+    
+    // Show test results
+    testLogging {
+        events "passed", "skipped", "failed", "standardOut", "standardError"
+        exceptionFormat "full"
+        showStandardStreams = false
+    }
+    
+    // Set test system properties
+    systemProperty 'robolectric.offline', 'true'
+    systemProperty 'robolectric.dependency.repo.url', 'https://repo1.maven.org/maven2'
+}
+
+// Task for running lint checks
+task lintAll {
+    dependsOn 'lint'
+    dependsOn 'spotlessCheck'
+}
+
+// Custom task for comprehensive checks
+task checkAll {
+    dependsOn 'lintAll'
+    dependsOn 'test'
+    dependsOn 'connectedAndroidTest'
+}

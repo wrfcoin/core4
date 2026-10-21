@@ -1,0 +1,20 @@
+# Meshtastic Gateway Service — Runtime Dependencies
+# WRFCoin LoRa-Meshtastic Integration - Milestone 1
+# Dev/test tools live in requirements-dev.txt
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Data validation and settings
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP client for backend communication
+httpx>=0.25.0
+
+# Environment configuration
+python-dotenv>=1.0.0
+
+# Structured logging
+structlog>=23.2.0

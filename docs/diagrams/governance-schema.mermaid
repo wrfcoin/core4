@@ -1,0 +1,48 @@
+erDiagram
+    %% Governance & Voting System
+
+    GOVERNANCE_PROPOSALS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_VOTES {
+        id PK
+        proposal_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_FOUNDATION_MEMBERS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_FOUNDATION_ACTIONS {
+        id PK
+        member_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_PARAMETERS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_PARAMETER_HISTORY {
+        id PK
+        parameter_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    GOVERNANCE_PROPOSALS ||--o{ GOVERNANCE_VOTES : "has many"
+    GOVERNANCE_VOTES }o--|| GOVERNANCE_PROPOSALS : "belongs to"
+    GOVERNANCE_FOUNDATION_MEMBERS ||--o{ GOVERNANCE_FOUNDATION_ACTIONS : "has many"
+    GOVERNANCE_FOUNDATION_ACTIONS }o--|| GOVERNANCE_FOUNDATION_MEMBERS : "belongs to"
+    GOVERNANCE_PARAMETERS ||--o{ GOVERNANCE_PARAMETER_HISTORY : "has many"
+    GOVERNANCE_PARAMETER_HISTORY }o--|| GOVERNANCE_PARAMETERS : "belongs to"

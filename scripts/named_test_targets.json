@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "why": "Cargo integration targets are excluded by `--workspace --lib`, so a target runs in CI only if something names it. `ci-readiness.yml`'s integration-target ratchet (#2490) is the mechanism that would otherwise cover them, and it resolves to `workflow_dispatch` only (#2695) \u2014 its banner claims `pull_request` is untouched and that is false. So these targets, which prove and fix the defaults reaching the genesis cut, are executed by nothing. This manifest names them and `check_named_test_targets.py` runs them. An `expect: red` target must also name `expect_failures`: a failure COUNT is substitutable \u2014 a broken control can stand in for the observation it guards \u2014 so the gate pins WHICH tests fail, not how many.",
+  "targets": [
+    {
+      "target": "oracle_governance_rotation_2712",
+      "package": "wrfcoin-native-chain",
+      "path": "native-chain/tests/oracle_governance_rotation_2712.rs",
+      "expect": "green",
+      "why": "#2712 demonstration: an appending rotation leaves the retired governance key authorized. Its PASSING is the finding, so a failure here means the resolver's behaviour changed and #2712 must be re-read.",
+      "expect_failures": []
+    },
+    {
+      "target": "oracle_governance_declaration_2712",
+      "package": "wrfcoin-native-chain",
+      "path": "native-chain/tests/oracle_governance_declaration_2712.rs",
+      "expect": "green",
+      "why": "#2719 fix: an UNDECLARED multi-key allowlist refuses to start, and the per-transaction resolver is untouched. A failure means the fail-closed cardinality check regressed.",
+      "expect_failures": []
+    },
+    {
+      "target": "chain_identity_split_2713",
+      "package": "wrfcoin-native-chain",
+      "path": "native-chain/tests/chain_identity_split_2713.rs",
+      "expect": "red",
+      "why": "#2713 regression artifact, RED BY DESIGN: the reporting fallbacks (777/unknown) still differ from the signing fallbacks (wrfcoin-main/mainnet). It goes green only when the divergent literals are removed \u2014 at which point PROMOTE it to `green` here rather than deleting it, because a permanently-red expectation nobody revisits is a stale exemption. `expect_failures` names the four OBSERVATIONS that must be the ones failing. The two control_* tests are deliberately excluded, so they must PASS: repairing #2713 removes the literals `control_a_reporting_fallbacks_are_still_written_where_this_test_claims` asserts are present, so without pinned identities that broken control would supply the one remaining failure and the aggregate count would still read as the expected red \u2014 making this temporary exception silently permanent at the exact moment the defect is fixed.",
+      "expect_failures": [
+        "unset_chain_id_reports_and_signs_the_same_identity",
+        "unset_network_id_reports_and_signs_the_same_identity",
+        "declared_signing_defaults_disagree_with_the_reporting_fallbacks",
+        "empty_string_export_diverges_by_a_different_mechanism"
+      ]
+    },
+    {
+      "target": "chain_identity_fail_closed_2713",
+      "package": "wrfcoin-native-chain",
+      "path": "native-chain/tests/chain_identity_fail_closed_2713.rs",
+      "expect": "green",
+      "why": "#2718 fix: chain identity must be declared or the node refuses to start, and a configured node is byte-identical. A failure means either the fail-closed refusal or the no-behaviour-change guarantee regressed.",
+      "expect_failures": []
+    },
+    {
+      "target": "restored_producer_set_is_unbound_2290",
+      "package": "wrfcoin-native-chain",
+      "path": "native-chain/tests/restored_producer_set_is_unbound_2290.rs",
+      "expect": "green",
+      "why": "#2717 characterisation: the restore path is identity-blind by signature and never reads the declared producer set. A failure means the startup structure changed and #2717 must be re-derived rather than trusted.",
+      "expect_failures": []
+    },
+    {
+      "target": "declared_ceilings_are_enforced",
+      "package": "wrfcoin-shared-protocol",
+      "path": "shared-protocol/tests/declared_ceilings_are_enforced.rs",
+      "expect": "green",
+      "why": "#2700 ceiling enforcement, landed via #2701. The deliberately RED observation is `#[ignore]`d so that the default suite executes only the two anti-vacuity controls, which must PASS; the RED itself is exercised by #2711's dedicated advisory workflow. Promoted from `pending` on 2026-09-03 after the file landed and this checker went RED on main demanding exactly that (check_named_test_targets.py exit 2).",
+      "expect_failures": []
+    }
+  ],
+  "pending": []
+}

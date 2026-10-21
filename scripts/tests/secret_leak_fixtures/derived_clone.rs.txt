@@ -1,0 +1,8 @@
+// Planted: brace struct deriving Clone over a secret-named field. Clone alone
+// leaks nothing, but each derived copy is another unzeroized secret buffer —
+// the #2266-review class. All key material below is synthetic.
+#[derive(Clone)]
+pub struct SessionKeys {
+    pub session_id: u64,
+    pub private_session_key: [u8; 32],
+}

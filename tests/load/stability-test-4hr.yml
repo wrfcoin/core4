@@ -1,0 +1,70 @@
+config:
+  target: 'http://localhost:3001'
+  phases:
+    # Warm-up phase (5 minutes)
+    - duration: 300
+      arrivalRate: 5
+      name: 'Warm-up'
+
+    # Ramp to sustained load (10 minutes)
+    - duration: 600
+      arrivalRate: 5
+      rampTo: 30
+      name: 'Ramp-up'
+
+    # Sustained load (4 hours = 14400 seconds)
+    - duration: 14400
+      arrivalRate: 30
+      name: 'Sustained load (4 hours)'
+
+    # Peak stress test (30 minutes)
+    - duration: 1800
+      arrivalRate: 50
+      name: 'Peak load'
+
+    # Cool-down phase (15 minutes)
+    - duration: 900
+      arrivalRate: 10
+      name: 'Cool-down'
+
+  ensure:
+    p95: 500
+    p99: 1000
+    maxErrorRate: 1
+
+  plugins:
+    expect: {}
+
+scenarios:
+  - name: 'API Health Check'
+    weight: 40
+    flow:
+      - get:
+          url: '/health'
+          expect:
+            - statusCode: 200
+
+  - name: 'Bridge Status'
+    weight: 30
+    flow:
+      - get:
+          url: '/api/bridge/status'
+          expect:
+            - statusCode: 200
+            - contentType: json
+
+  - name: 'Generic API Call'
+    weight: 20
+    flow:
+      - get:
+          url: '/api/status'
+          expect:
+            - statusCode: 200
+
+  - name: 'Prometheus Metrics'
+    weight: 10
+    flow:
+      - get:
+          url: 'http://127.0.0.1:9090/-/healthy'
+          expect:
+            - statusCode: 200

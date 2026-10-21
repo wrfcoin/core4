@@ -1,0 +1,47 @@
+# Clippy configuration for WRFCoin blockchain platform
+# This configuration enables strict linting rules for high-quality code
+
+# Performance and efficiency
+too-many-arguments-threshold = 7
+single-char-binding-names-threshold = 4
+trivial-copy-size-limit = 64
+pass-by-value-size-limit = 256
+vec-box-size-threshold = 4096
+
+# Cognitive complexity thresholds
+cognitive-complexity-threshold = 30
+type-complexity-threshold = 250
+
+# Avoid overly nested code
+excessive-nesting-threshold = 5
+
+# Documentation requirements
+missing-docs-in-crate-items = true
+
+# Enforce clippy::all and clippy::pedantic
+warn-on-all-wildcard-imports = true
+
+# Allow certain patterns common in blockchain development
+allowed-scripts = ["Latin"]
+
+# Disallowed methods (unsafe patterns we want to avoid)
+disallowed-methods = [
+    { path = "std::mem::transmute", reason = "use safer alternatives like from_ne_bytes" },
+    { path = "std::mem::forget", reason = "use ManuallyDrop or proper Drop implementation" },
+    { path = "std::ptr::null", reason = "use Option<&T> instead of raw pointers" },
+    { path = "std::slice::from_raw_parts", reason = "unsafe slice creation, use safe alternatives" }
+]
+
+# Disallowed types (patterns that can lead to issues)
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use rustc_hash::FxHashMap for better performance" },
+    { path = "std::collections::HashSet", reason = "use rustc_hash::FxHashSet for better performance" }
+]
+
+# Allow certain lints that are common in async/blockchain code
+allow-unwrap-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Msrv (minimum supported rust version)
+msrv = "1.83.0"

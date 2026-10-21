@@ -1,0 +1,19 @@
+digraph iot_schema {
+    label="Environmental & Sensor Data";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    environmental_data_submissions [label="{environmental_data_submissions|{id (PK)|created_at|updated_at}}"];
+    luftdaten_sensors [label="{luftdaten_sensors|{id (PK)|created_at|updated_at}}"];
+    luftdaten_measurements [label="{luftdaten_measurements|{id (PK)|sensor_id (FK)|created_at|updated_at}}"];
+    ttn_devices [label="{ttn_devices|{id (PK)|created_at|updated_at}}"];
+    streamr_streams [label="{streamr_streams|{id (PK)|created_at|updated_at}}"];
+
+    environmental_data_submissions -> environmental_attestations [label="1:N"];
+    luftdaten_sensors -> luftdaten_measurements [label="1:N"];
+    luftdaten_measurements -> luftdaten_sensors [label="N:1"];
+    ttn_devices -> ttn_measurements [label="1:N"];
+    ttn_devices -> ttn_sensors [label="1:N"];
+    streamr_streams -> streamr_data_points [label="1:N"];
+    streamr_streams -> streamr_subscriptions [label="1:N"];
+}

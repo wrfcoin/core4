@@ -1,0 +1,10 @@
+{
+  "network_id": "wrfcoin-testnet",
+  "chain_id": "777",
+  "node_version": "0.1.0",
+  "genesis_hash": "0xa3301def000000000000000000000000000000000000000000000000deadbeef",
+  "peer_count": 0,
+  "sync_status": "genesis",
+  "chain_height": 12345,
+  "local_peer_id": "unknown"
+}

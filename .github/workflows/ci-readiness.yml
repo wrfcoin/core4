@@ -1,0 +1,982 @@
+name: CI Readiness (parked, triggers suppressed)
+# NO-AUTOMATIC-TRIGGER: parked — BOTH automatic triggers are commented out below:
+# `schedule` and `pull_request`, by the 2026-07-31 owner decision on the Actions
+# budget. Only `workflow_dispatch` remains, so despite the name this workflow gates
+# NO pull request today — no preflight, no rust-lint, no rust-tests, and no
+# PR-title validation, which CONTRIBUTING.md and CLAUDE.md still describe as
+# enforced here. Restoration is tracked by #2695; the parking mechanism and
+# register are docs/ci/parked-workflows.txt and docs/ci/reenable-parked-workflows.sh.
+on:
+# The `schedule:` block below was parked 2026-07-31 to protect the August Actions budget
+# (3,000 min/month, private repo). Restore by deleting this banner and uncommenting.
+# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
+#
+# CORRECTED 2026-08-31 (#2890 review). This banner used to close with a sentence
+# asserting that the PR trigger was untouched and that this workflow still gated pull
+# requests. That stopped being true the same day it was written: the SUPPRESSED banner
+# further down comments out the `pull_request:` block as well, so only
+# `workflow_dispatch` remains. The sentence survived because nothing compares prose
+# against the YAML beneath it, leaving two contradictory accounts of its own triggers in
+# the workflow whose name promises the repo's CI gate.
+#
+# The false sentence is described here rather than quoted, deliberately:
+# `scripts/test_check_workflow_inventory.py` asserts the claim is absent by literal
+# match, and a verbatim quotation inside the correction would keep the assertion red
+# forever -- a record of a retracted claim is not the same object as the claim.
+# Whichever trigger you restore, delete the claim that outlives it.
+  # schedule:
+  # - cron: "0 4 * * 1"
+  # #2498 D2: the hosted runner cannot hold this build. Run 30712549357 died at
+  # 52 minutes with `No space left on device` — the runner PROCESS was killed
+  # before step 13 (the integration-target ratchet), so the run produced no D2
+  # evidence at all. It was not a test failure and not a timeout: the 240-minute
+  # ceiling and the 6000s inner cap were never approached. A hosted Ubuntu runner
+  # has ~14G free; a debug build of the 93 selected targets reaches a measured
+  # 21G of `target/` alone. No timeout value fixes that.
+  #
+  # `n5pro` is the self-hosted runner (CT 102 on the N5 Pro): 53G free of a 60G
+  # rootfs, measured 2026-08-01 — roughly a 2x margin over the build. It also
+  # costs ZERO Actions minutes, which matters: the org is on the free 3,000/month
+  # tier. The default WAS `ubuntu-latest` so nothing moved off hosted
+  # implicitly; #2921 decision 4 (owner, 2026-08-31) flipped both the input
+  # default and the non-dispatch fallback to `n5pro`, because with hosted
+  # runners billing-VOID the old default meant even a deliberate dispatch
+  # produced a 0-step run unless the dispatcher knew to override.
+  #
+  # If the self-hosted runner is offline the job QUEUES rather than skipping —
+  # deliberate, because a skipped job reads GREEN in rollups.
+  workflow_dispatch:
+    inputs:
+      rust_runner:
+        description: "Runner label for the Rust D2 leg"
+        type: choice
+        required: true
+        # #2921 decision 4 (owner, 2026-08-31): default flipped to the real
+        # runner. The old ubuntu-latest default meant even a deliberate
+        # dispatch produced a billing-VOID run unless the dispatcher knew to
+        # override — a gate unusable on purpose. NOTE: the rust-tests leg is
+        # ~154 runner-minutes and CT102 is serial; dispatch it deliberately.
+        default: n5pro
+        options:
+          - ubuntu-latest
+          - n5pro
+  # #2233: give Rust changes a real PR gate. Deliberately narrow — see the
+  # `if:` guards on the JS/contract/report jobs below. A Rust PR runs
+  # `preflight` + `rust-lint` + `rust-tests` and nothing else, because the org
+  # Actions budget is finite and was genuinely exhausted once this sprint.
+# SUPPRESSED 2026-07-31 by owner decision to protect the August Actions budget.
+# A PR touching any .rs file runs `rust-tests`, measured at ~154 min on a 2-core
+# hosted runner; the whole workflow is ~190 min per firing. At 3,000 min/month on a
+# private repo, 15-16 PRs exhaust the month -- leaving nothing for the #2498 D-row
+# verification the budget exists to fund.
+#
+# THIS IS A DELIBERATE COVERAGE REDUCTION, not a cleanup. Rust PRs get no
+# preflight / rust-lint / typecheck / security / rust-tests until it is restored,
+# and PR-title validation (`preflight`) stops with them -- see CONTRIBUTING.md.
+#
+# Restore: delete this banner, then uncomment the block below by stripping the
+# leading '# ' from each line -- ORIGINAL INDENTATION IS PRESERVED INSIDE THE
+# COMMENTS, so a plain strip restores valid YAML. Inventory and rationale:
+# docs/ci/reenable-parked-workflows.sh
+  # pull_request:
+  #   paths:
+  #     - '**/*.rs'
+  #     - '**/Cargo.toml'
+  #     - '**/Cargo.lock'
+  #     - 'rust-toolchain.toml'
+  #     - '.github/workflows/ci-readiness.yml'
+  #     - '.github/unwrap-baseline.json'
+  #     # The unwrap ratchet's counter and its regression suite: a change to
+  #     # either must run the gate that depends on them, or the counter could
+  #     # be altered without its own tests executing (#2278 round 3).
+  #     - 'scripts/count_unwraps.py'
+  #     - 'scripts/test_count_unwraps.py'
+  #     # #2470: these formerly active mock-only suites and their disposition
+  #     # manifest must run the semantic-evidence guard if they reappear or move.
+  #     - 'scripts/semantic_evidence_gate.py'
+  #     - 'scripts/semantic_evidence_manifest.json'
+  #     - 'tests/mock-contracts/**'
+  #     # Broad discovery roots are deliberate: an archived mock suite renamed to
+  #     # a new test path must still trigger the guard (#2470 review).
+  #     - 'tests/integration/**'
+  #     - 'tests/e2e/**'
+
+env:
+  NODE_VERSION: '20'
+  RUST_VERSION: '1.98.0'
+  CARGO_BUILD_JOBS: '4'
+  JEST_MAX_WORKERS: '4'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Job 1: Preflight ──────────────────────────────────────────────
+  # Cheap, shared gate: no npm, no cargo, so neither ecosystem can block the
+  # other's jobs from starting (#2233). Lockfile *sync* moved to preflight-js
+  # and preflight-rust.
+  preflight:
+    # CT102 self-hosted (2026-08-30): this cheap job gates every other job in
+    # the workflow via `needs:`; as a hosted job it becomes a zero-step billing
+    # failure when free minutes are exhausted, VOIDing the whole chain —
+    # including the self-hosted rust leg it is supposed to admit.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, n5pro]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python for the fail-closed toolchain checker
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML for the toolchain-pin checker
+        # The checker resolves job ownership from the PARSED workflow rather than by
+        # scanning lines (#2419). It fails closed without a parser, so the dependency
+        # is explicit here instead of relying on whatever the runner image happens to
+        # ship. Pinned to match release-gate-fixtures.yml.
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml==6.0.2
+      - name: Verify Rust toolchain pin
+        run: |
+          python3 scripts/check_toolchain_pin.py --self-test
+          python3 scripts/check_toolchain_pin.py
+      - name: Install pinned Rust toolchain for runtime verification
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Verify runtime Rust compiler matches the repository pin
+        run: python3 scripts/check_toolchain_pin.py --runtime
+      - name: Validate PR title
+        if: github.event_name == 'pull_request'
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          scopes: |
+            api
+            sdk
+            ui
+            contracts
+            tests
+            deps
+            config
+            ci
+            security
+            frontend
+            backend
+            rust
+            blockchain
+            bridge
+            infra
+            docker
+            monitoring
+            defi
+            weather
+            iot
+            graphql
+            cli
+      - name: Check required files & lockfiles
+        run: |
+          for f in package.json README.md CLAUDE.md .github/workflows; do
+            [ -e "$f" ] || { echo "::error::Missing required: $f"; exit 1; }
+          done
+          [ -f package-lock.json ] || { echo "::error::package-lock.json missing"; exit 1; }
+          [ -f Cargo.lock ] || { echo "::error::Cargo.lock missing"; exit 1; }
+      - name: Reject mock-authored integration evidence
+        run: |
+          python3 scripts/semantic_evidence_gate.py --self-test
+          python3 scripts/semantic_evidence_gate.py
+
+  # ── Job 1b: Node lockfile sync ────────────────────────────────────
+  # #2233: `npm ci` used to run inside `preflight`, which EVERY job depends on.
+  # A broken package-lock.json therefore took down rust-lint and rust-tests as
+  # collateral — the most severe form of the masking this issue is about.
+  preflight-js:
+    needs: preflight
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      node_lock: ${{ steps.result.outputs.node_lock }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Verify Node lockfile sync
+        id: node_lock
+        run: npm ci --ignore-scripts --prefer-offline
+      - name: Set output
+        id: result
+        if: always()
+        run: echo "node_lock=${{ steps.node_lock.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+
+  # ── Job 1c: Rust lockfile sync ────────────────────────────────────
+  preflight-rust:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      rust_lock: ${{ steps.result.outputs.rust_lock }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+      - name: Verify Rust lockfile sync
+        id: rust_lock
+        run: cargo check --locked
+      - name: Set output
+        id: result
+        if: always()
+        run: echo "rust_lock=${{ steps.rust_lock.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+
+  # ── Job 2: Lint & Format ──────────────────────────────────────────
+  js-lint:
+    needs: preflight
+    # #2233: schedule/dispatch only. On a Rust PR the JS gates add cost without
+    # adding signal, and the weekly run still covers them. `always()` keeps an
+    # unrelated preflight failure from turning this independent gate into a
+    # zero-step skip; this job consumes no preflight outputs.
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      eslint: ${{ steps.result.outputs.eslint }}
+      prettier: ${{ steps.result.outputs.prettier }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+      - run: npm ci --prefer-offline --no-audit
+      - name: ESLint
+        id: eslint
+        continue-on-error: true
+        run: npm run lint
+      - name: Prettier
+        id: prettier
+        continue-on-error: true
+        run: npm run format:check
+      - name: Set outputs
+        id: result
+        if: always()
+        run: |
+          echo "eslint=${{ steps.eslint.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+          echo "prettier=${{ steps.prettier.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+      - name: Enforce JS lint results
+        if: always()
+        run: |
+          FAIL=0
+          [[ "${{ steps.eslint.outcome }}" != "success" ]] && { echo "::error::ESLint failed"; FAIL=1; }
+          [[ "${{ steps.prettier.outcome }}" != "success" ]] && { echo "::error::Prettier failed"; FAIL=1; }
+          exit $FAIL
+
+  # ── Job 2b: Rust lint / format ────────────────────────────────────
+  # #2233: was interleaved with ESLint and Prettier in one `lint-format` job,
+  # so a Prettier violation meant rustfmt, clippy and the unwrap ratchet never
+  # executed and the workflow reported `failure` as though Rust had failed.
+  #
+  # No npm here at all: the ratchet reads its baseline with python3 instead of
+  # `node -e require(...)`, so a broken package-lock cannot block the Rust gate
+  # either.
+  rust-lint:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      rustfmt: ${{ steps.result.outputs.rustfmt }}
+      clippy: ${{ steps.result.outputs.clippy }}
+      unwrap_ratchet: ${{ steps.result.outputs.unwrap_ratchet }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+      # Every step is continue-on-error and the job's verdict is decided at the
+      # end, so ONE failing Rust lint cannot hide the other two. Same reasoning
+      # as the job split — applied within the job.
+      # ADVISORY as of #2269. `--check` only; this never rewrites files.
+      #
+      # The full `cargo fmt --all` sweep is 3,174 hunks across 285 files
+      # (measured on fea3500c7) and would conflict with most of the open PR
+      # queue, so it is deferred until that queue drains — tracked in its own
+      # issue, referenced from #2269. Advisory here means "reports but
+      # does not block" — NOT "silent". The step below turns the result into a
+      # warning annotation plus a job-summary line, so the debt stays countable
+      # on every run instead of quietly disappearing.
+      - name: Rust fmt (advisory)
+        id: rustfmt
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo fmt --all -- --check 2>&1 | tee /tmp/rustfmt-check.txt
+
+      - name: Report formatting debt
+        id: fmt_report
+        if: always()
+        run: |
+          set -euo pipefail
+          # `Diff in <path>:<line>:` is one hunk, so this counts hunks, not files.
+          COUNT=$(grep -c '^Diff in ' /tmp/rustfmt-check.txt 2>/dev/null || true)
+          COUNT=${COUNT:-0}
+          FILES=$(grep '^Diff in ' /tmp/rustfmt-check.txt 2>/dev/null | sed 's/^Diff in //; s/:[0-9]*:$//' | sort -u | wc -l || true)
+          FILES=${FILES:-0}
+          if [ "${{ steps.rustfmt.outcome }}" = "success" ]; then
+            echo "### Rust formatting: clean" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::cargo fmt --all --check reports ${COUNT} hunks across ${FILES} files (ADVISORY — does not block; deferred sweep tracked from #2269)"
+            {
+              echo "### Rust formatting: ${COUNT} hunks across ${FILES} files (advisory)"
+              echo ""
+              echo "This does **not** block the build. The workspace-wide \`cargo fmt --all\` sweep is"
+              echo "deferred until the open-PR queue is small enough to absorb it."
+              echo "Per-file formatting is still expected of new code — run"
+              echo "\`rustfmt --edition 2021 <file>\` on files you touch."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Rust clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Unwrap ratchet (consensus + blockchain)
+        id: unwrap_ratchet
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          BASELINE_FILE=".github/unwrap-baseline.json"
+          # The counter has its own committed regression suite covering the two
+          # failure classes this gate has already had once each: same-line
+          # growth passing (#2284) and non-production text counting (#2278
+          # review). Run it first — a broken counter must fail the gate, not
+          # mis-count under it.
+          python3 scripts/test_count_unwraps.py
+          FAIL=0
+          for path in "shared-protocol/src/consensus/" "shared-protocol/src/blockchain/"; do
+            BASELINE=$(python3 -c "import json,sys; print(json.load(open('${BASELINE_FILE}'))['${path}'])")
+            # Occurrence-counting (one per match, so a second `.unwrap()` on an
+            # already-counted line fails), restricted to PRODUCTION code:
+            # scripts/count_unwraps.py strips comments, string literals and doc
+            # examples, and excludes #[cfg(test)]/#[test]/#[tokio::test] items.
+            # `.unwrap_or(..)`/`.unwrap_or_else(..)` are not counted.
+            ACTUAL=$(python3 scripts/count_unwraps.py "$path")
+            echo "${path}: baseline=${BASELINE} actual=${ACTUAL}"
+            if [ "$ACTUAL" -gt "$BASELINE" ]; then
+              echo "::error::production unwrap() count in ${path} increased from ${BASELINE} to ${ACTUAL}"
+              FAIL=1
+            fi
+          done
+          [ "$FAIL" -eq 0 ] || exit 1
+      - name: Set outputs
+        id: result
+        if: always()
+        run: |
+          echo "rustfmt=${{ steps.rustfmt.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+          echo "clippy=${{ steps.clippy.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+          echo "unwrap_ratchet=${{ steps.unwrap_ratchet.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+      - name: Enforce Rust lint results
+        if: always()
+        run: |
+          # What this job actually enforces, as of #2269:
+          #
+          #   BLOCKING  unwrap ratchet — any increase in the OCCURRENCE count of
+          #                              `.unwrap()` under the two ratcheted
+          #                              paths fails the job. The baseline was
+          #                              raised to today's count so it blocks
+          #                              growth without blocking every PR on the
+          #                              existing 620.
+          #   ADVISORY  cargo fmt      — reported as a warning + job summary.
+          #   ADVISORY  clippy         — unchanged; it was already advisory
+          #                              before the #2233 split.
+          #
+          # Bounds of the ratchet, stated because an earlier revision of this
+          # comment claimed more than the mechanism delivers (#2278 review):
+          #
+          #   * It covers ONLY `shared-protocol/src/consensus/` and
+          #     `shared-protocol/src/blockchain/`. An `.unwrap()` added anywhere
+          #     else — `p2p/`, `consensus-engines/`, `native-chain/`, or the rest
+          #     of `shared-protocol/src/` — is NOT gated. It is not a
+          #     workspace-wide guarantee.
+          #   * It counts PRODUCTION occurrences via scripts/count_unwraps.py:
+          #     comments, string literals, doc examples, and
+          #     #[cfg(test)]/#[test]/#[tokio::test]/#[rstest] items are excluded
+          #     by a line/region filter. That filter is NOT a Rust parser: it
+          #     does not recognize #[cfg_attr(test, ...)], other test macros, or
+          #     macro-generated calls, and a `mod tests;` in its own file under a
+          #     ratcheted path counts as production (over-counts, fails closed).
+          #     Its regression suite (scripts/test_count_unwraps.py) runs before
+          #     every gate comparison.
+          #   * `.expect()` is the same panic class and is NOT counted.
+          #
+          # Nothing else. In particular this job does NOT check that touched
+          # files are individually formatted — that is a convention, not a gate.
+          FAIL=0
+          [[ "${{ steps.unwrap_ratchet.outcome }}" != "success" ]] && { echo "::error::unwrap ratchet failed — the .unwrap() occurrence count rose in a ratcheted path"; FAIL=1; }
+          [[ "${{ steps.rustfmt.outcome }}" != "success" ]] && echo "::warning::cargo fmt --check failed (advisory, non-blocking — see job summary)"
+          [[ "${{ steps.clippy.outcome }}" != "success" ]] && echo "::warning::clippy failed (advisory, non-blocking)"
+          exit $FAIL
+
+  # ── Job 3: Type Check ─────────────────────────────────────────────
+  typecheck:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdks/extensions/javascript
+    outputs:
+      ts_typecheck: ${{ steps.result.outputs.ts_typecheck }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: sdks/extensions/javascript/package-lock.json
+      - run: npm ci --prefer-offline --no-audit
+      - name: TypeScript type-check
+        id: tsc
+        run: npm run build:check
+      - name: Set output
+        id: result
+        if: always()
+        run: echo "ts_typecheck=${{ steps.tsc.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+
+  # ── Job 4: Security ───────────────────────────────────────────────
+  security:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      security_scan: ${{ steps.result.outputs.security_scan }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --prefer-offline --no-audit
+      - name: npm audit
+        id: npm_audit
+        continue-on-error: true
+        run: npm audit --audit-level=moderate
+      - name: Trufflehog secrets scan
+        id: trufflehog
+        continue-on-error: true
+        uses: trufflesecurity/trufflehog@main
+        with:
+          base: main
+          head: HEAD
+          extra_args: --only-verified
+      - name: Dependency review
+        id: deprev
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: moderate
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
+      - name: Set output
+        id: result
+        if: always()
+        run: |
+          AUDIT="${{ steps.npm_audit.outcome }}"
+          TRUF="${{ steps.trufflehog.outcome }}"
+          DEP="${{ steps.deprev.outcome }}"
+          [ -z "$DEP" ] && DEP="success"; [ "$DEP" = "skipped" ] && DEP="success"
+          if [[ "$AUDIT" == "success" && "$TRUF" == "success" && "$DEP" == "success" ]]; then
+            echo "security_scan=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "security_scan=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Job 5: Tests ──────────────────────────────────────────────────
+  js-tests:
+    needs: preflight
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      js_tests: ${{ steps.result.outputs.js_tests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --prefer-offline --no-audit
+      - name: JS unit tests
+        id: js_unit
+        run: npm run test:unit -- --passWithNoTests
+      - name: Set outputs
+        id: result
+        if: always()
+        run: echo "js_tests=${{ steps.js_unit.outcome == 'success' && 'pass' || 'fail' }}" >> "$GITHUB_OUTPUT"
+
+  # ── Job 5b: Rust tests ────────────────────────────────────────────
+  # #2233: these five steps were sequenced AFTER `JS unit tests` in a single
+  # `tests` job. The JS step fails on jest module-resolution errors
+  # (`Resolver._throwModNotFoundError`), so none of them ran — and the job
+  # reported `failure`, which reads as "Rust tests failed" rather than "Rust
+  # tests never executed". PR #2218 fixed a `p2p/src/sync.rs` assertion that
+  # had been red on main since 2026-06-19 for exactly this reason.
+  #
+  # No npm: nothing here needs it, and needing it was another way for a JS
+  # problem to take the Rust gate down.
+  rust-tests:
+    needs: preflight
+    # See the `rust_runner` input note at the top of this file. Falls back to
+    # `n5pro` (#2921 decision 4) for every non-dispatch event, where `inputs`
+    # is empty — the previous ubuntu-latest fallback made the only job that
+    # executes the 15 compile-only crates VOID even when someone dispatched it.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.rust_runner || 'n5pro' }}
+    # #2490 executes the full reviewed integration-target inventory after the
+    # existing lib/feature gates. The exact-head #2478 job already needed 44m
+    # on a cold runner, so the former 45m ceiling would cancel this gate before
+    # its fail-closed verdict steps could run.
+    #
+    # #2498 D2: 90 was measured too low for the post-#2490 job — a calibrated
+    # local reconstruction of every step (2026-07-31, local 27min at a 5.7x
+    # runner ratio anchored on the last live 39-minute run) estimates ~154
+    # runner-minutes, range 121-188. At 90 the job is guaranteed to cancel
+    # mid-inventory: a ~90-minute bill for zero evidence. 240 covers the upper
+    # bound plus a cold-cache first run.
+    timeout-minutes: 240
+    outputs:
+      rust_tests: ${{ steps.result.outputs.rust_tests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: runner.environment != 'self-hosted'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+      # Every step continue-on-error, verdict decided at the end: a failing
+      # lib test must not hide whether the p2p or adversarial gates pass. The
+      # point of this PR is to learn the true state of the Rust suite, and that
+      # needs every step to report, not just the first one to fail.
+      - name: Rust lib tests
+        id: rust_lib
+        continue-on-error: true
+        run: WRFCOIN_RUN_TLS_INTEGRATION_TESTS=0 cargo test --locked --workspace --lib --all-features
+      # #1813 regression gate: `--all-features` (clippy/lib tests above) enables
+      # p2p TOGETHER with hsm/zk/etc, so feature unification can mask a p2p-ONLY
+      # compile error; the hsm gate uses `--features hsm` and never exercises
+      # p2p; and the peer-churn step below only builds one --test target, not the
+      # launch_api bin. This step builds wrfcoin-native-chain's lib + bins under
+      # p2p alone, so a p2p-only compile error (like #1813) fails CI here.
+      - name: P2P-only build check (cargo check --features p2p)
+        id: p2p_build
+        continue-on-error: true
+        run: cargo check --locked -p wrfcoin-native-chain --features p2p
+      - name: P2P peer-churn integration tests
+        id: p2p_churn
+        continue-on-error: true
+        run: cargo test --locked -p wrfcoin-native-chain --test peer_churn_e2e --features p2p
+      # #2126/#2236: this harness had never executed anywhere. `--lib` (above)
+      # excludes tests/, and the deploy-features job compiles shared-protocol
+      # tests with `--no-run`. Both compile it; neither runs it. `--nocapture`
+      # is required or the passed/skipped/failed coverage ledger is swallowed by
+      # libtest, which is the difference between a gate and a gate-shaped thing.
+      - name: Adversarial crypto vectors (Wycheproof / NIST)
+        id: crypto_vectors
+        continue-on-error: true
+        run: cargo test --locked -p wrfcoin-shared-protocol --test wycheproof -- --nocapture
+      - name: Security regression checks
+        id: sec_regression
+        continue-on-error: true
+        run: |
+          if grep -rn '!.*signature.*is_empty()' shared-protocol/src/ native-chain/src/ --include='*.rs' | \
+             grep -v 'test' | grep -v '//' | grep -c 'Ok('; then
+            echo "::error::Found signature verification stubs that only check is_empty()"
+            exit 1
+          fi
+      - name: Adversarial security tests
+        id: adversarial
+        continue-on-error: true
+        run: |
+          cargo test --locked -p wrfcoin-shared-protocol --lib -- --nocapture
+          cargo test --locked -p wrfcoin-native-chain --lib -- --nocapture
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api -- --nocapture
+      # #2288: the embedded Groth16 key bundles in native-chain/zk-params/ drift
+      # silently from the circuits — verification just returns false, with no
+      # error to notice, and that went undetected for four months (#2283/#2274/
+      # #2240). The guard proves a known-valid witness with each embedded key and
+      # verifies it with the embedded verifying key.
+      #
+      # It needs its own step: `--lib` (above) excludes tests/, `--no-run`
+      # compiles without executing, and the all-targets clippy job only type-
+      # checks it. All three are ways to ship a test that never runs. `zk` is not
+      # a default feature, so it needs naming explicitly too.
+      - name: ZK params drift guard
+        id: zk_params_drift
+        continue-on-error: true
+        run: cargo test --locked -p wrfcoin-native-chain --features zk --test zk_params_drift -- --nocapture
+      # #2055/S4: the genesis oracle-set staged-state gate lives in
+      # `p2p_events.rs`, which is `#[cfg(feature = "p2p")]`, and its semantic
+      # controls live in `tests/`. The `adversarial` step above runs the
+      # launch_api bin with DEFAULT features, so the gate compiles under the
+      # p2p_build check and never executes; `--lib` excludes tests/ entirely.
+      # Both are ways to ship a gate-shaped thing. This matters more than the
+      # usual coverage argument: the oracle set is genesis CONTENT, block 1
+      # cannot be re-cut, and a vacuous green here is only discovered at the
+      # cut. `--nocapture` so the order-sweep ledger is not swallowed.
+      - name: Genesis oracle-set staged-state gate (S4, --features p2p)
+        id: s4_genesis_oracle
+        continue-on-error: true
+        run: |
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            genesis_oracle_set_s4 -- --nocapture
+          cargo test --locked -p wrfcoin-native-chain \
+            --test genesis_oracle_registration_s4 -- --nocapture
+      # #2490: --workspace --lib above excludes every Cargo integration target.
+      # This script inventories all of them, credits only the four targets
+      # already owned by enforced steps above, runs the remainder serially with
+      # hsm and no-fail-fast, and accepts only the exact shrinking diagnostic
+      # manifest. New/stale failures and new/removed/unexecuted targets are RED.
+      # The script's own default is 3600s, and it wraps ONE `cargo test` that
+      # both compiles and serially runs the whole inventory. Measured locally at
+      # `af4b30a49` (the #2655 reconciled manifest, the first head where this
+      # step reaches cargo at all): 93 targets, cold worktree, CARGO_BUILD_JOBS=4,
+      # RUSTC_WRAPPER="" — **11m13s**, exit 0. At #2654's calibration ratio of
+      # 5.7x (range 4.5-7, and biased conservative) that is ~64 runner-minutes
+      # central, 50-79 across the range. The 3600s default is therefore BELOW the
+      # central estimate: it is expected to fire on a HEALTHY run, not only a
+      # hung one.
+      #
+      # 6000s applies the same headroom #2654 gave the outer ceiling — 240 over a
+      # 188-minute upper bound is 1.28x, and 79 x 1.28 is ~100 minutes. Sized on
+      # the COLD figure deliberately: `actions/cache` restore-keys can miss, and
+      # a cap that only survives a warm cache is not a cap.
+      #
+      # INVARIANT: this must stay strictly below the job's `timeout-minutes`
+      # (above), with room for the two steps that follow it. If the inner cap
+      # fires you get a NAMED failure plus every later step's verdict; if the
+      # outer fires first you get an anonymous cancellation and no evidence at
+      # all. Raise the outer before raising this.
+      - name: Workspace integration-target inventory ratchet
+        id: integration_ratchet
+        continue-on-error: true
+        run: python3 scripts/integration_test_ratchet.py --timeout-seconds 6000
+      # #2490/D2: the broad ratchet inventories every integration target, but
+      # the genesis cut needs an explicit, auditable execution ledger for its
+      # 28 proof-bearing targets.  The helper fails closed on a missing/renamed
+      # manifest pair and on a target that reports zero non-ignored tests.
+      - name: Cut-critical integration targets
+        id: cut_integration
+        continue-on-error: true
+        run: python3 scripts/cut_integration_gate.py
+      # #2602: the state-carrying genesis/WAL/reduction/peer-sync proof is
+      # intentionally feature-gated. Without this dedicated invocation Cargo
+      # reports `running 0 tests` and exits 0, so compilation or a broad test
+      # job cannot certify the cut. Require both its named lifecycle test and
+      # the exact one-test libtest summary; either a missing/renamed test or a
+      # zero-test result is therefore RED.
+      - name: Cut composition lifecycle (feature-enabled, exactly one test)
+        id: cut_composition_lifecycle
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$(mktemp)"
+          trap 'rm -f "$report"' EXIT
+          cargo test -j 4 --locked -p wrfcoin-native-chain \
+            --features cut-composition-harness \
+            --test cut_composition_lifecycle_2498 \
+            -- --test-threads=1 --nocapture 2>&1 | tee "$report"
+          grep -F \
+            'test one_chain_survives_genesis_wal_reduction_and_peer_sync_2557 ... ok' \
+            "$report" >/dev/null
+          grep -F \
+            'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+            "$report" >/dev/null
+      - name: Set outputs
+        id: result
+        if: always()
+        run: |
+          RUST="pass"
+          [[ "${{ steps.rust_lib.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.p2p_build.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.p2p_churn.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.sec_regression.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.crypto_vectors.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.adversarial.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.zk_params_drift.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.s4_genesis_oracle.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.integration_ratchet.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.cut_integration.outcome }}" != "success" ]] && RUST="fail"
+          [[ "${{ steps.cut_composition_lifecycle.outcome }}" != "success" ]] && RUST="fail"
+          echo "rust_tests=$RUST" >> "$GITHUB_OUTPUT"
+      - name: Enforce Rust test results
+        if: always()
+        run: |
+          FAIL=0
+          for s in "rust_lib:${{ steps.rust_lib.outcome }}" \
+                   "p2p_build:${{ steps.p2p_build.outcome }}" \
+                   "p2p_churn:${{ steps.p2p_churn.outcome }}" \
+                   "sec_regression:${{ steps.sec_regression.outcome }}" \
+                   "crypto_vectors:${{ steps.crypto_vectors.outcome }}" \
+                   "adversarial:${{ steps.adversarial.outcome }}" \
+                   "zk_params_drift:${{ steps.zk_params_drift.outcome }}" \
+                   "s4_genesis_oracle:${{ steps.s4_genesis_oracle.outcome }}" \
+                   "integration_ratchet:${{ steps.integration_ratchet.outcome }}" \
+                   "cut_integration:${{ steps.cut_integration.outcome }}" \
+                   "cut_composition_lifecycle:${{ steps.cut_composition_lifecycle.outcome }}"; do
+            name="${s%%:*}"; outcome="${s##*:}"
+            if [ "$outcome" != "success" ]; then
+              echo "::error::Rust gate failed: ${name} (${outcome})"
+              FAIL=1
+            else
+              echo "ok: ${name}"
+            fi
+          done
+          exit $FAIL
+
+  # ── Job 6: Readiness Gate ─────────────────────────────────────────
+  readiness-gate:
+    needs: [preflight, preflight-js, preflight-rust, js-lint, rust-lint, typecheck, security, js-tests, rust-tests]
+    # This is the terminal verdict on every event.  The report is schedule-only;
+    # the strict result assertion below is intentionally also PR-reachable.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: ${{ github.event_name == 'pull_request' && 'preflight preflight-rust rust-lint typecheck security rust-tests' || 'preflight preflight-js preflight-rust js-lint rust-lint typecheck security js-tests rust-tests' }}
+          GATE_CONDITIONAL: ${{ github.event_name == 'pull_request' && 'preflight-js js-lint js-tests' || '' }}
+        run: python3 scripts/assert_gate_results.py
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --prefer-offline --no-audit
+      - name: Build readiness report
+        if: github.event_name != 'pull_request'
+        env:
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          OUT_ESLINT: ${{ needs.js-lint.outputs.eslint }}
+          OUT_PRETTIER: ${{ needs.js-lint.outputs.prettier }}
+          OUT_RUSTFMT: ${{ needs.rust-lint.outputs.rustfmt }}
+          OUT_CLIPPY: ${{ needs.rust-lint.outputs.clippy }}
+          OUT_UNWRAP: ${{ needs.rust-lint.outputs.unwrap_ratchet }}
+          OUT_TS: ${{ needs.typecheck.outputs.ts_typecheck }}
+          OUT_JS_TESTS: ${{ needs.js-tests.outputs.js_tests }}
+          OUT_RUST_TESTS: ${{ needs.rust-tests.outputs.rust_tests }}
+          OUT_SEC: ${{ needs.security.outputs.security_scan }}
+          OUT_NODE_LOCK: ${{ needs.preflight-js.outputs.node_lock }}
+          OUT_RUST_LOCK: ${{ needs.preflight-rust.outputs.rust_lock }}
+        run: |
+          : "${OUT_ESLINT:=fail}" "${OUT_PRETTIER:=fail}" "${OUT_RUSTFMT:=fail}" "${OUT_CLIPPY:=fail}" "${OUT_UNWRAP:=fail}"
+          : "${OUT_TS:=fail}" "${OUT_JS_TESTS:=fail}" "${OUT_RUST_TESTS:=fail}"
+          : "${OUT_SEC:=fail}" "${OUT_NODE_LOCK:=fail}" "${OUT_RUST_LOCK:=fail}"
+          OUT_LOCK="pass"; [[ "$OUT_NODE_LOCK" != "pass" || "$OUT_RUST_LOCK" != "pass" ]] && OUT_LOCK="fail"
+          be="pass"; [[ "$OUT_ESLINT" != "pass" || "$OUT_TS" != "pass" || "$OUT_JS_TESTS" != "pass" ]] && be="fail"
+          fe="pass"; [[ "$OUT_ESLINT" != "pass" || "$OUT_TS" != "pass" || "$OUT_JS_TESTS" != "pass" ]] && fe="fail"
+          # #2269: `core` reflects the BLOCKING Rust gates only — rust tests and
+          # the unwrap ratchet. `fmt` and `clippy` are advisory in the rust-lint
+          # job, so folding them in here made this artifact stricter than the
+          # gate it reports on, and a red `core` that no gate enforces is the
+          # same overstatement problem in the other direction. Both are still
+          # emitted as fields below, so the debt stays visible and countable.
+          core="pass"; [[ "$OUT_RUST_TESTS" != "pass" || "$OUT_UNWRAP" != "pass" ]] && core="fail"
+          xlc="pass"; [[ "$be" != "pass" || "$fe" != "pass" || "$core" != "pass" ]] && xlc="fail"
+          overall="pass"; [[ "$xlc" != "pass" || "$OUT_SEC" != "pass" || "$OUT_LOCK" != "pass" ]] && overall="fail"
+          node -e "
+            const r = {
+              version: '1.0.0',
+              generated_at: new Date().toISOString(),
+              commit: process.env.COMMIT_SHA,
+              branch: process.env.BRANCH_NAME,
+              layers: {
+                backend:   { status: '$be',   lint: '$OUT_ESLINT',   typecheck: '$OUT_TS', tests: '$OUT_JS_TESTS' },
+                frontend:  { status: '$fe',   lint: '$OUT_ESLINT',   typecheck: '$OUT_TS', tests: '$OUT_JS_TESTS' },
+                core:      { status: '$core', fmt:  '$OUT_RUSTFMT',  clippy:    '$OUT_CLIPPY', tests: '$OUT_RUST_TESTS', unwrap_ratchet: '$OUT_UNWRAP' }
+              },
+              gates: { security_scan: '$OUT_SEC', lockfile_integrity: '$OUT_LOCK', cross_layer_consistency: '$xlc' },
+              overall: '$overall'
+            };
+            require('fs').writeFileSync('readiness-report.json', JSON.stringify(r, null, 2));
+          "
+          cat readiness-report.json
+      - name: Validate readiness report
+        if: github.event_name != 'pull_request'
+        run: node scripts/validate-readiness-report.js readiness-report.json
+      - name: Upload readiness report
+        uses: actions/upload-artifact@v7
+        if: always() && github.event_name != 'pull_request'
+        with:
+          name: readiness-report-${{ github.run_id }}
+          path: readiness-report.json
+          retention-days: 30
+      - name: Testnet launch gate report (#2160, non-blocking)
+        # Deliberately does not gate this job or any other: this step's whole
+        # purpose is visibility into the launch-gate JSON, not another red/green
+        # signal layered onto a workflow that (per the banner at the top of this
+        # file) is currently parked to workflow_dispatch only. `|| true` keeps a
+        # gate failure from failing THIS step; the JSON itself still says
+        # `ready: false` and names every gate that isn't a clean pass.
+        if: always()
+        run: python3 scripts/testnet_gate_check.py --pretty > testnet-gate-report.json || true
+      - name: Upload testnet launch gate report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: testnet-gate-report-${{ github.run_id }}
+          path: testnet-gate-report.json
+          retention-days: 30
+      - name: Post canonical PR comment
+        # PR runs intentionally omit the non-PR readiness report; posting its
+        # default-empty fields would fabricate a red report after the terminal
+        # result gate already supplied the authoritative verdict.
+        if: ${{ false }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            let report;
+            try { report = JSON.parse(fs.readFileSync('readiness-report.json', 'utf8')); }
+            catch { report = { overall: 'fail', layers: {}, gates: {} }; }
+            const s = v => v === 'pass' ? ':white_check_mark:' : ':x:';
+            const l = report.layers || {}, g = report.gates || {};
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## CI Readiness Report', '',
+              `Overall: **${report.overall === 'pass' ? 'PASS' : 'FAIL'}** ${s(report.overall)}`, '',
+              '### Layers', '',
+              '| Layer | Status | Checks |',
+              '|-------|--------|--------|',
+              `| Backend | ${s(l.backend?.status)} | lint ${s(l.backend?.lint)} typecheck ${s(l.backend?.typecheck)} tests ${s(l.backend?.tests)} |`,
+              `| Frontend | ${s(l.frontend?.status)} | lint ${s(l.frontend?.lint)} typecheck ${s(l.frontend?.typecheck)} tests ${s(l.frontend?.tests)} |`,
+              `| Core (Rust) | ${s(l.core?.status)} | fmt ${s(l.core?.fmt)} clippy ${s(l.core?.clippy)} tests ${s(l.core?.tests)} |`,
+              '', '### Gates', '',
+              '| Gate | Status |', '|------|--------|',
+              `| Security scan | ${s(g.security_scan)} |`,
+              `| Lockfile integrity | ${s(g.lockfile_integrity)} |`,
+              `| Cross-layer consistency | ${s(g.cross_layer_consistency)} |`,
+              '', `[Workflow run](${run}) | commit \`${(report.commit || '').substring(0, 7)}\``,
+            ].join('\n');
+            const MARKER = 'CI Readiness Report';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body,
+              });
+            }

@@ -1,0 +1,171 @@
+# Artillery.io Load Testing Configuration
+# Location: tests/performance/api-load.yml
+# Purpose: API endpoint load testing configuration
+
+config:
+  target: 'http://localhost:3001'
+  phases:
+    - duration: 60
+      arrivalRate: 10
+      name: 'Warm up phase'
+    - duration: 120
+      arrivalRate: 50
+      name: 'Ramp up load'
+    - duration: 300
+      arrivalRate: 100
+      name: 'Sustained load'
+    - duration: 60
+      arrivalRate: 200
+      name: 'Peak load'
+  defaults:
+    headers:
+      Content-Type: 'application/json'
+      User-Agent: 'Wrfcoin-Load-Test/1.0'
+  plugins:
+    metrics-by-endpoint: {}
+    expect: {}
+
+scenarios:
+  # Health Check Endpoints
+  - name: 'Health Check'
+    weight: 10
+    flow:
+      - get:
+          url: '/health'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'status'
+
+  # Authentication Flow
+  - name: 'Authentication Flow'
+    weight: 15
+    flow:
+      - post:
+          url: '/api/auth/login'
+          json:
+            username: 'testuser_{{ $randomString() }}'
+            password: 'testpassword123'
+          capture:
+            - json: '$.token'
+              as: 'authToken'
+          expect:
+            - statusCode: [200, 401]
+
+      - get:
+          url: '/api/auth/profile'
+          headers:
+            Authorization: 'Bearer {{ authToken }}'
+          expect:
+            - statusCode: [200, 401]
+
+  # Weather Data Submission
+  - name: 'Weather Data Submission'
+    weight: 25
+    flow:
+      - post:
+          url: '/api/weather/submit'
+          json:
+            stationId: 'test_station_{{ $randomString() }}'
+            timestamp: '{{ $randomInt(1640995200000, 1672531200000) }}'
+            temperature: '{{ $randomInt(15, 35) }}.{{ $randomInt(0, 9) }}'
+            humidity: '{{ $randomInt(30, 90) }}'
+            pressure: '{{ $randomInt(980, 1040) }}.{{ $randomInt(0, 99) }}'
+            windSpeed: '{{ $randomInt(0, 30) }}.{{ $randomInt(0, 9) }}'
+            windDirection: '{{ $randomInt(0, 360) }}'
+          expect:
+            - statusCode: [200, 400, 422]
+            - hasProperty: 'success'
+
+  # Blockchain Operations
+  - name: 'Blockchain Status'
+    weight: 20
+    flow:
+      - get:
+          url: '/api/blockchain/status'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'blockHeight'
+            - hasProperty: 'networkHash'
+
+      - get:
+          url: '/api/blockchain/stats'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'totalTransactions'
+
+  # Wallet Operations
+  - name: 'Wallet Operations'
+    weight: 15
+    flow:
+      - post:
+          url: '/api/wallet/generate'
+          json:
+            entropy: '{{ $randomString() }}'
+          expect:
+            - statusCode: [200, 400]
+
+      - get:
+          url: '/api/wallet/balance/wrf{{ $randomString() }}'
+          expect:
+            - statusCode: [200, 404]
+
+  # Cross-Chain Bridge
+  - name: 'Cross-Chain Operations'
+    weight: 10
+    flow:
+      - get:
+          url: '/api/cross-chain/bridges'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'bridges'
+
+      - get:
+          url: '/api/cross-chain/status'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'activeConnections'
+
+  # NFT Operations
+  - name: 'NFT Operations'
+    weight: 5
+    flow:
+      - get:
+          url: '/api/nft/collection'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'nfts'
+
+      - get:
+          url: '/api/nft/{{ $randomInt(1, 1000) }}'
+          expect:
+            - statusCode: [200, 404]
+            - contentType: 'application/json'
+
+# Performance Thresholds
+expectations:
+  - name: 'Response time p95'
+    threshold: 500
+    metric: 'http.response_time.p95'
+
+  - name: 'Response time p99'
+    threshold: 1000
+    metric: 'http.response_time.p99'
+
+  - name: 'Error rate'
+    threshold: 1
+    metric: 'http.request_rate'
+
+  - name: 'Success rate'
+    threshold: 95
+    metric: 'http.codes.200'
+
+# Custom metrics
+custom:
+  weather_submissions:
+    counter: 'weather.submissions'
+
+  blockchain_requests:
+    counter: 'blockchain.requests'
+
+  auth_attempts:
+    counter: 'auth.attempts'

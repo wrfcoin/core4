@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WRFCoin API Explorer - Interactive Documentation</title>
+
+    <!-- Swagger UI CSS -->
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css"
+    />
+
+    <!-- Custom WRFCoin Styling -->
+    <style>
+      :root {
+        --wrfcoin-primary: #0066cc;
+        --wrfcoin-secondary: #00ccff;
+        --wrfcoin-success: #00cc66;
+        --wrfcoin-warning: #ffcc00;
+        --wrfcoin-danger: #ff6666;
+        --wrfcoin-dark: #1a1a1a;
+        --wrfcoin-light: #f8f9fa;
+      }
+
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+      }
+
+      .header {
+        background: linear-gradient(
+          135deg,
+          var(--wrfcoin-primary) 0%,
+          var(--wrfcoin-secondary) 100%
+        );
+        color: white;
+        padding: 2rem;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 2.5rem;
+        font-weight: 700;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      }
+
+      .header p {
+        margin: 0.5rem 0 0 0;
+        font-size: 1.2rem;
+        opacity: 0.9;
+      }
+
+      .server-selector {
+        background: white;
+        padding: 1rem 2rem;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+
+      .server-selector label {
+        font-weight: 600;
+        color: var(--wrfcoin-dark);
+      }
+
+      .server-selector select {
+        padding: 0.5rem 1rem;
+        border: 2px solid var(--wrfcoin-primary);
+        border-radius: 8px;
+        font-size: 1rem;
+        background: white;
+        color: var(--wrfcoin-dark);
+        min-width: 200px;
+      }
+
+      .server-selector select:focus {
+        outline: none;
+        border-color: var(--wrfcoin-secondary);
+        box-shadow: 0 0 0 3px rgba(0, 204, 255, 0.2);
+      }
+
+      .api-info {
+        background: white;
+        margin: 1rem 2rem;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      }
+
+      .api-info h3 {
+        color: var(--wrfcoin-primary);
+        margin-top: 0;
+        margin-bottom: 1rem;
+        font-size: 1.3rem;
+      }
+
+      .api-info .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin: 1rem 0;
+      }
+
+      .feature-card {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid var(--wrfcoin-primary);
+      }
+
+      .feature-card h4 {
+        margin: 0 0 0.5rem 0;
+        color: var(--wrfcoin-primary);
+        font-size: 1rem;
+      }
+
+      .feature-card p {
+        margin: 0;
+        font-size: 0.9rem;
+        color: #666;
+      }
+
+      #swagger-ui {
+        margin: 0 2rem 2rem 2rem;
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      }
+
+      /* Custom Swagger UI Styling */
+      .swagger-ui .topbar {
+        display: none;
+      }
+
+      .swagger-ui .info {
+        margin: 2rem 0;
+      }
+
+      .swagger-ui .info .title {
+        color: var(--wrfcoin-primary) !important;
+        font-size: 2rem !important;
+      }
+
+      .swagger-ui .scheme-container {
+        background: var(--wrfcoin-light) !important;
+        border: 1px solid var(--wrfcoin-primary) !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+      }
+
+      .swagger-ui .opblock.opblock-get {
+        border-color: var(--wrfcoin-success) !important;
+      }
+
+      .swagger-ui .opblock.opblock-post {
+        border-color: var(--wrfcoin-primary) !important;
+      }
+
+      .swagger-ui .opblock.opblock-put {
+        border-color: var(--wrfcoin-warning) !important;
+      }
+
+      .swagger-ui .opblock.opblock-delete {
+        border-color: var(--wrfcoin-danger) !important;
+      }
+
+      .swagger-ui .opblock.opblock-get .opblock-summary {
+        background: var(--wrfcoin-success) !important;
+      }
+
+      .swagger-ui .opblock.opblock-post .opblock-summary {
+        background: var(--wrfcoin-primary) !important;
+      }
+
+      .swagger-ui .opblock.opblock-put .opblock-summary {
+        background: var(--wrfcoin-warning) !important;
+      }
+
+      .swagger-ui .opblock.opblock-delete .opblock-summary {
+        background: var(--wrfcoin-danger) !important;
+      }
+
+      .swagger-ui .btn.authorize {
+        background-color: var(--wrfcoin-primary) !important;
+        border-color: var(--wrfcoin-primary) !important;
+      }
+
+      .swagger-ui .btn.execute {
+        background-color: var(--wrfcoin-secondary) !important;
+        border-color: var(--wrfcoin-secondary) !important;
+      }
+
+      /* Loading Animation */
+      .loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 200px;
+        font-size: 1.2rem;
+        color: var(--wrfcoin-primary);
+      }
+
+      .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid var(--wrfcoin-primary);
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin-right: 1rem;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Responsive Design */
+      @media (max-width: 768px) {
+        .header {
+          padding: 1.5rem 1rem;
+        }
+
+        .header h1 {
+          font-size: 2rem;
+        }
+
+        .server-selector,
+        .api-info,
+        #swagger-ui {
+          margin: 1rem;
+        }
+
+        .feature-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* Dark Mode Support */
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+        }
+
+        .api-info {
+          background: #2c3e50;
+          color: white;
+        }
+
+        .feature-card {
+          background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+          color: white;
+        }
+
+        .feature-card p {
+          color: #bdc3c7;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>🌦️ WRFCoin API Explorer</h1>
+      <p>
+        Interactive documentation for the Weather Forecasting Blockchain
+        Platform
+      </p>
+    </div>
+
+    <div class="server-selector">
+      <label for="server-select">API Server:</label>
+      <select id="server-select">
+        <option value="production">Production - https://api.wrfcoin.org</option>
+        <option value="testnet" selected>
+          Testnet - https://testnet-api.wrfcoin.org
+        </option>
+        <option value="local">Local Development - http://localhost:4001</option>
+      </select>
+
+      <div style="margin-left: auto; display: flex; gap: 1rem">
+        <button
+          onclick="downloadSpec()"
+          style="
+            padding: 0.5rem 1rem;
+            background: var(--wrfcoin-primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+          "
+        >
+          📥 Download OpenAPI Spec
+        </button>
+        <button
+          onclick="viewSchemas()"
+          style="
+            padding: 0.5rem 1rem;
+            background: var(--wrfcoin-secondary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+          "
+        >
+          📋 View Schemas
+        </button>
+      </div>
+    </div>
+
+    <div class="api-info">
+      <h3>🚀 Platform Overview</h3>
+      <p>
+        WRFCoin is an enterprise-grade weather forecasting blockchain platform
+        featuring 13+ specialized microservices, quantum-resistant security,
+        carbon credit trading, and AI/ML computing capabilities.
+      </p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <h4>🔗 Blockchain Core</h4>
+          <p>
+            High-performance blockchain with multiple consensus mechanisms and
+            weather data integration
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>🌉 Cross-Chain Bridges</h4>
+          <p>
+            Support for 13+ blockchain networks including Ethereum, Polygon,
+            Cosmos, and Polkadot
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>🌱 Carbon Credits</h4>
+          <p>
+            Complete carbon credit lifecycle management with trading,
+            retirement, and verification
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>🌦️ Weather Networks</h4>
+          <p>
+            Integration with 20+ IoT sensor platforms and weather station
+            networks
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>🧠 AI/ML Computing</h4>
+          <p>
+            Distributed computational NFTs and machine learning model deployment
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>🏛️ DeFi Suite</h4>
+          <p>
+            Complete DeFi ecosystem with AMM, yield farming, governance, and
+            insurance
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div id="swagger-ui">
+      <div class="loading">
+        <div class="spinner"></div>
+        Loading API Documentation...
+      </div>
+    </div>
+
+    <!-- Swagger UI Bundle -->
+    <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-standalone-preset.js"></script>
+
+    <script>
+      // Server configurations
+      const servers = {
+        production: {
+          url: 'https://api.wrfcoin.org',
+          description: 'Production server',
+        },
+        testnet: {
+          url: 'https://testnet-api.wrfcoin.org',
+          description: 'Testnet server',
+        },
+        local: {
+          url: 'http://localhost:4001',
+          description: 'Local development server',
+        },
+      };
+
+      let ui;
+
+      // Initialize Swagger UI
+      function initSwaggerUI(serverType = 'testnet') {
+        const server = servers[serverType];
+
+        // Load OpenAPI spec (adjust path as needed)
+        const specUrl = './openapi.yaml';
+
+        ui = SwaggerUIBundle({
+          url: specUrl,
+          dom_id: '#swagger-ui',
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+          layout: 'StandaloneLayout',
+          defaultModelRendering: 'model',
+          defaultModelsExpandDepth: 2,
+          defaultModelExpandDepth: 2,
+          displayOperationId: true,
+          displayRequestDuration: true,
+          docExpansion: 'list',
+          filter: true,
+          maxDisplayedTags: 20,
+          showExtensions: true,
+          showCommonExtensions: true,
+          tryItOutEnabled: true,
+          requestInterceptor: request => {
+            // Add custom headers or modify requests
+            request.headers['X-API-Client'] = 'WRFCoin-API-Explorer';
+            return request;
+          },
+          responseInterceptor: response => {
+            // Handle responses
+            console.log('API Response:', response);
+            return response;
+          },
+          onComplete: () => {
+            console.log('Swagger UI loaded successfully');
+            // Update server URL in the spec
+            updateServerUrl(server.url);
+          },
+          onFailure: error => {
+            console.error('Failed to load Swagger UI:', error);
+            document.getElementById('swagger-ui').innerHTML = `
+                        <div style="padding: 2rem; text-align: center; color: #dc3545;">
+                            <h3>❌ Failed to Load API Documentation</h3>
+                            <p>Unable to load the OpenAPI specification. Please check that the file exists and try again.</p>
+                            <p><strong>Error:</strong> ${error.message || 'Unknown error'}</p>
+                        </div>
+                    `;
+          },
+        });
+      }
+
+      // Update server URL in Swagger UI
+      function updateServerUrl(url) {
+        if (ui && ui.specActions) {
+          ui.specActions.updateSpec({
+            servers: [
+              {
+                url: url,
+                description:
+                  servers[document.getElementById('server-select').value]
+                    .description,
+              },
+            ],
+          });
+        }
+      }
+
+      // Handle server selection change
+      document.getElementById('server-select').addEventListener('change', e => {
+        const serverType = e.target.value;
+        updateServerUrl(servers[serverType].url);
+      });
+
+      // Download OpenAPI specification
+      function downloadSpec() {
+        const link = document.createElement('a');
+        link.href = './openapi.yaml';
+        link.download = 'wrfcoin-openapi-spec.yaml';
+        link.click();
+      }
+
+      // View schema definitions
+      function viewSchemas() {
+        window.open('./schemas.json', '_blank');
+      }
+
+      // Initialize on page load
+      document.addEventListener('DOMContentLoaded', () => {
+        initSwaggerUI();
+      });
+
+      // Handle authentication for protected endpoints
+      function handleAuth() {
+        // This would integrate with WRFCoin's authentication system
+        console.log('Authentication handler - integrate with WRFCoin auth');
+      }
+
+      // Utility function to copy example code
+      function copyExample(text) {
+        navigator.clipboard.writeText(text).then(() => {
+          console.log('Example copied to clipboard');
+        });
+      }
+
+      // Add keyboard shortcuts
+      document.addEventListener('keydown', e => {
+        // Ctrl/Cmd + K to focus search
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+          e.preventDefault();
+          const searchInput = document.querySelector(
+            '.swagger-ui .filter input'
+          );
+          if (searchInput) {
+            searchInput.focus();
+          }
+        }
+      });
+
+      // Add analytics tracking
+      function trackAPIUsage(endpoint, method) {
+        // Track API endpoint usage for analytics
+        console.log(`API Usage: ${method} ${endpoint}`);
+      }
+
+      // Add service worker for offline support
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker
+          .register('/sw.js')
+          .then(registration => console.log('SW registered'))
+          .catch(error => console.log('SW registration failed'));
+      }
+    </script>
+  </body>
+</html>

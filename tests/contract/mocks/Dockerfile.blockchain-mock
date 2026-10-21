@@ -1,0 +1,30 @@
+# Enhanced Blockchain RPC Mock with State Management
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install required packages including health check tools  
+RUN apk add --no-cache curl jq
+
+# Copy mock service files
+COPY package.json* ./
+RUN npm install express cors dotenv winston web3-utils
+
+# Copy enhanced mock implementation
+COPY enhanced-blockchain-mock.js ./mock-blockchain-rpc.js
+COPY blockchain-scenarios.json ./scenarios/blockchain-scenarios.json
+
+# Create data and logs directories
+RUN mkdir -p data logs scenarios
+
+# Health check using JSON-RPC call
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f -X POST -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+      http://localhost:${PORT:-8545} || exit 1
+
+# Expose port
+EXPOSE ${PORT:-8545}
+
+# Start the enhanced mock service
+CMD ["node", "mock-blockchain-rpc.js"]

@@ -1,0 +1,436 @@
+# WRFCoin Enterprise Documentation Configuration
+# Unified documentation system integrating all team deliverables
+
+site_name: WRFCoin Platform Documentation
+site_description: Enterprise Climate Blockchain Platform - Complete Documentation
+site_author: WRFCoin Development Team
+site_url: https://docs.wrfcoin.org
+
+# Repository information
+repo_name: wrfcoin/wrfcoin
+repo_url: https://github.com/wrfcoin/wrfcoin
+edit_uri: edit/main/docs/
+
+# Copyright
+copyright: Copyright &copy; 2025 WRFCoin Platform. All rights reserved.
+
+# Configuration
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  language: en
+  
+  # Colors and branding
+  palette:
+    # Light mode
+    - scheme: default
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    
+    # Dark mode
+    - scheme: slate
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  
+  # Typography
+  font:
+    text: Inter
+    code: JetBrains Mono
+  
+  # Enterprise features
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - content.tooltips
+    - header.autohide
+    - navigation.expand
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+    - toc.integrate
+  logo: docs/assets/logo.svg
+  favicon: docs/assets/logo.svg
+  
+  # Color scheme
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+  # Features
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - content.tooltips
+    - header.autohide
+    - navigation.expand
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+
+# Plugins
+plugins:
+  - search
+  - awesome-pages
+  - mermaid2:
+      arguments:
+        theme: base
+        themeVariables:
+          primaryColor: '#0066cc'
+          primaryTextColor: '#ffffff'
+          primaryBorderColor: '#004499'
+          lineColor: '#666666'
+
+# Markdown extensions
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:materialx.emoji.to_svg
+      emoji_index: !!python/name:materialx.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: wrfcoin
+      repo: platform
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Extra CSS and JavaScript
+extra_css:
+  - assets/stylesheets/extra.css
+  - assets/typedoc-custom.css
+
+extra_javascript:
+  - assets/javascripts/extra.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+# Extra
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/wrfcoin/platform
+    - icon: fontawesome/brands/twitter
+      link: https://twitter.com/wrfcoin
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/wrfcoin
+
+# Navigation structure
+nav:
+  - Home: 
+    - index.md
+    - getting-started.md
+    - QUICK_REFERENCE.md
+    
+  - Architecture:
+    - architecture/README.md
+    - Overview: architecture-overview.md
+    - Core Platform: architecture/Wrfcoin-Architecture.md
+    - Project Structure: architecture/PROJECT_STRUCTURE.md
+    - Database Design: architecture/database-tables.md
+    - Domain Categories: architecture/domain_categories.md
+    - Module Dependencies: architecture/module_dependencies.md
+    - Consensus Implementation: architecture/CONSENSUS_IMPLEMENTATION_SUMMARY.md
+    - Consensus Safety Readiness: consensus/testnet-consensus-safety-analysis.md
+    - Cross-Chain Bridges: architecture/cross-chain-bridge-implementation-plan.md
+    - Carbon Credit AMM: architecture/Carbon_Credit_AMM_Technical_Architecture.md
+    - Oracle Integration: architecture/ORACLE_INTEGRATION_SYSTEM.md
+    - Infrastructure Migration: architecture/INFRASTRUCTURE_MIGRATION_SUMMARY.md
+    - Workflow Architecture: architecture/workflow-architecture.md
+    - Workflow Optimization: architecture/workflow-optimization.md
+    - DAG Implementation: architecture/dag.md
+    
+  - Development:
+    - development/README.md
+    - Getting Started: developer-getting-started.md
+    - TypeScript Roadmap: development/TYPESCRIPT_ROADMAP_2025.md
+    - Compilation Fixes: development/COMPILATION_FIXES_REPORT.md
+    - Error Analysis: development/TYPESCRIPT_ERROR_ANALYSIS.md
+    - Storage Code Review: development/STORAGE_CODE_REVIEW_REPORT.md
+    - Validation Report: development/TYPESCRIPT_VALIDATION_REPORT.md
+    - Migration Report: development/ts-migration-report.md
+    - Webhook Setup: development/webhook_setup_guide.md
+    
+  - API Reference:
+    - API_DOCUMENTATION.md
+    - api-reference.md
+    - api_reference_complete.md
+    - Interactive Explorer: api-reference/interactive-api-explorer.md
+    - Smart Contracts API: api/smart-contracts-api.md
+    - SDK Complete Reference: sdk_reference_complete.md
+    
+  - SDK Documentation:
+    - sdk/README.md
+    - JavaScript/TypeScript: generated/index.html
+    - Python: sdk/python-sdk-guide.md
+    - Go: sdk/go-sdk-guide.md
+    - Android: sdk/android/README.md
+    - iOS: sdk/ios/README.md
+    - Cross-Platform: sdk/cross-platform/README.md
+    - Best Practices: sdk/best-practices/README.md
+    - SDK Portal: sdk/portal/index.html
+    
+  - Smart Contracts:
+    - smart-contracts.md
+    - smart_contract_development_guide.md
+    - Generated Docs: generated/contracts/
+    
+  - Security:
+    - SECURITY.md
+    - security/README.md
+    - Security Audit: security/SECURITY_AUDIT_REPORT.md
+    - Task 2.1 Security: security/TASK_2_1_SECURITY_AUDIT_REPORT.md
+    - XMSS Implementation: security/XMSS_IMPLEMENTATION_PLAN.md
+    - XMSS Security Audit: security/XMSS_SECURITY_AUDIT.md
+    - CI/CD Security: CICD_SECURITY_GATEKEEPING.md
+    - Compliance: advanced-blockchain-iso-implementation.md
+    
+  - Governance:
+    - governance/README.md
+    - Implementation Guide: governance/implementation_guide.md
+    - Expansion Plan: governance/governance_expansion_plan.md
+    - MakerDAO Comparison: governance/makerdao-comparison-analysis.md
+    
+  - Tutorials:
+    - tutorials/README.md
+    - Getting Started:
+      - Environment Setup: tutorials/getting-started/01-setup-environment.md
+      - First Transaction: tutorials/getting-started/02-first-transaction.md
+      - Understanding Concepts: tutorials/getting-started/03-understanding-concepts.md
+    - Intermediate:
+      - API Integration:
+        - REST API: tutorials/intermediate/api-integration/01-rest-api-integration.md
+        - GraphQL: tutorials/intermediate/api-integration/02-graphql-integration.md
+      - SDK Integration:
+        - JavaScript Advanced: tutorials/intermediate/sdk-integration/01-javascript-sdk-advanced.md
+        - Python Advanced: tutorials/intermediate/sdk-integration/02-python-sdk-advanced.md
+      - Smart Contracts:
+        - Contract Interaction: tutorials/intermediate/smart-contracts/01-basic-contract-interaction.md
+        - Contract Deployment: tutorials/intermediate/smart-contracts/02-contract-deployment.md
+      - Cross-Chain:
+        - Bridge Integration: tutorials/intermediate/cross-chain/01-bridge-integration.md
+      - IoT Integration:
+        - Weather Station Setup: tutorials/intermediate/iot-integration/01-weather-station-setup.md
+        - Air Quality Monitoring: tutorials/intermediate/iot-integration/02-air-quality-monitoring.md
+    - Advanced:
+      - Consensus Mechanisms: tutorials/advanced-consensus-mechanisms.md
+      - Privacy Features: tutorials/advanced-privacy-features.md
+      - Computational NFTs: tutorials/computational-nfts.md
+      - Cross-Chain Bridge: tutorials/cross-chain-bridge.md
+      - Governance: tutorials/governance.md
+      - Mining Guide: tutorials/mining-guide.md
+      - Wallet Management: tutorials/wallet-management.md
+      - Weather Integration: tutorials/weather-integration-tutorial.md
+    
+  - Testing:
+    - testing/README.md
+    - Testing Guide: testing/TESTING_GUIDE.md
+    - Contribution Guide: testing/CONTRIBUTION_GUIDE.md
+    - Troubleshooting: testing/TROUBLESHOOTING.md
+    
+  - Specifications:
+    - specifications/README.md
+    - Carbon Credit Tracking: specifications/CARBON_CREDIT_TRACKING_SYSTEM.md
+    - Compartmentalization Analysis: specifications/COMPARTMENTALIZATION_ANALYSIS.md
+    - Incomplete Features: specifications/INCOMPLETE_FEATURES_ANALYSIS.md
+    - ISO20022 TCFD Implementation: specifications/ISO20022_TCFD_IMPLEMENTATION_SUMMARY.md
+    - Playwright Test Analysis: specifications/PLAYWRIGHT_TEST_ANALYSIS_REPORT.md
+    - Test Results: specifications/test-results.md
+    - Test Results Comparison: specifications/test-results-comparison.md
+    
+  - Doc Center:
+    - doc_center/README.md
+    - Introduction: doc_center/introduction.md
+    - Developer Guide: doc_center/developer-guide.md
+    - Security:
+      - Overview: doc_center/Security-Overview.md
+      - Implementation Guide: doc_center/Security-Implementation-Guide.md
+      - Documentation: doc_center/Security-Documentation.md
+      - Attack Vectors: doc_center/Blockchain-Attack-Vectors.md
+      - Guidelines: doc_center/security-guidelines.md
+      - Cryptographic Hardening: doc_center/cryptographic-hardening.md
+      - Enterprise Security: doc_center/enterprise-security-infrastructure.md
+    - Compliance:
+      - Overview: doc_center/iso-compliance-overview.md
+      - ISO 27001: doc_center/iso-27001-security-compliance.md
+      - ISO 27701: doc_center/iso-27701-privacy-compliance.md
+      - ISO 20022: doc_center/iso-20022-financial-messaging.md
+      - ISO 14064: doc_center/iso-14064-ghg-emissions.md
+      - ISO 19115: doc_center/iso-19115-geographic-information.md
+      - ISO 22301: doc_center/iso-22301-business-continuity.md
+      - ISO 4217: doc_center/iso-4217-currency-codes.md
+      - Compliance Frameworks: doc_center/compliance-frameworks.md
+    - Protocols:
+      - Weather Data: doc_center/weather-data-protocol.md
+      - Weather Data Security: doc_center/weather-data-security.md
+      - WRFML Data Format: doc_center/wrfml-data-format.md
+      - WXM Protocol: doc_center/wxm-protocol.md
+      - IBC Protocol: doc_center/ibc-protocol-cross-chain.md
+      - XCMP Polkadot: doc_center/xcmp-polkadot-cross-chain.md
+    - Standards:
+      - ERC-721 NFTs: doc_center/erc-721-non-fungible-tokens.md
+      - ERC-1155 Multi-Token: doc_center/erc-1155-multi-token-standard.md
+      - ERC-4626 Vaults: doc_center/erc-4626-tokenized-vaults.md
+      - EIP-712 Typed Data: doc_center/eip-712-typed-data-signing.md
+    - Integration:
+      - Cross-Chain Guide: doc_center/cross_chain_integration_guide.md
+      - Distributed Computing: doc_center/distributed_computing_integration_guide.md
+      - AI-Powered Monitoring: doc_center/ai-powered-monitoring.md
+      - Computational NFTs: doc_center/computational-nfts.md
+      - Decentralized Identity: doc_center/decentralized-identity.md
+    - Governance: doc_center/governance.md
+    - Node Operation: doc_center/node-operation.md
+    - Node Strategy: doc_center/node_strategy.md
+    - Multi-Tab Interface: doc_center/multi-tab_interface.md
+    - Unstoppable: doc_center/unstoppable.md
+    - Dependencies: doc_center/dependencies.md
+    - Community Resources: doc_center/community-resources.md
+    
+  - Business:
+    - business_plan/00_index.md
+    - Executive Summary: business_plan/01_executive_summary.md
+    - Protocol Overview: business_plan/02_protocol_overview.md
+    - Use Cases: business_plan/03_use_cases_and_stakeholder_benefits.md
+    - Governance Structure: business_plan/04_governance_open_source_structure.md
+    - Economic Design: business_plan/05_economic_design.md
+    - Sustainability Model: business_plan/06_sustainability_model.md
+    - Development Roadmap: business_plan/07_development_roadmap.md
+    - Abstract and Figures: business_plan/08_abstract_and_figures.md
+    - Risk Analysis: business_plan/09_risk_analysis_security.md
+    - Conclusion: business_plan/10_conclusion.md
+    
+  - Guides:
+    - guides/README.md
+    - Development:
+      - guides/development/README.md
+      - API Reference: guides/development/api-reference.md
+      - Cross-Chain Capabilities: guides/development/cross-chain-capabilities.md
+      - Integration Guide: guides/development/integration-guide.md
+      - MCP Reference: guides/development/mcp-reference.md
+      - Node Operation: guides/development/node-operation-guide.md
+      - Testing Framework: guides/development/testing-framework.md
+      - Testing Network: guides/development/testing-network.md
+      - Testing Smart Contracts: guides/development/testing-smart-contracts.md
+      - Testing Transactions: guides/development/testing-transactions.md
+      - Testing Weather Data: guides/development/testing-weather-data.md
+      - Tutorials: guides/development/tutorials.md
+      - Weather Data Specs: guides/development/weather-data-specifications.md
+    - User:
+      - guides/user/README.md
+      - Quick Reference: user-guides/QUICK_REFERENCE.md
+      - Terminal Guide: user-guides/WRFCOIN_TERMINAL_GUIDE.md
+    - Deployment:
+      - guides/deployment/README.md
+    - UI Binding Requirements: guides/frontend-ui-binding-requirements.md
+    - Blockchain Features Needing UI: guides/blockchain-features-needing-ui.md
+    
+  - Examples:
+    - examples/README.md
+    - Complete Applications: examples/complete-applications/
+    - Custom Node Implementation: examples/custom-node-implementation.md
+    - Docker Development Setup: examples/docker-development-setup.md
+    - Enterprise Integrations: examples/enterprise-integrations.md
+    - Integration Patterns: examples/integration-patterns/
+    - Local Testnet Deployment: examples/local-testnet-deployment.md
+    - Testing Examples: examples/testing-examples/
+    
+  - Features:
+    - features/gamification-system.md
+    
+  - Infrastructure:
+    - Infrastructure Overview: infrastructure/wrfcoin-port-architecture.md
+    - Current Architecture: infrastructure/wrfcoin-port-architecture-current.md
+    - Architecture Audit: infrastructure/wrfcoin-port-architecture-audit.md
+    
+  - Visualizations:
+    - Architectural Diagrams: visualization/architectural_diagrams.html
+    - Dependency Graph: visualization/interactive_dependency_graph.html
+    - Unified Dashboard: visualization/unified_dashboard.html
+    
+  - Archive:
+    - archive/README.md
+
+# Watch files for changes during development
+watch:
+  - docs/
+  - mkdocs.yml

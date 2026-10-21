@@ -1,0 +1,86 @@
+# Renamed from "Rust Shared/Native Parity Gate" (#2302).
+#
+# This workflow never established parity. `native-chain/src/{accounts,identity,
+# staking,weather,invariants}/mod.rs` are one-line `pub use` re-exports of
+# shared-protocol, so both sides of every `native::X` vs `shared::X` comparison
+# resolve to the same item. `git log --follow` on all five returns exactly one
+# commit -- 0ef800231, the same commit that added this workflow. The aliases
+# were created by the parity work; there was never a native implementation.
+#
+# What it does establish, after #2302:
+#   * the re-export relationship still holds (no silent fork), and
+#   * every consensus invariant still DETECTS its violation
+# -- both in native-chain/src/parity_shared_detection.rs.
+#
+# NO `pull_request:` TRIGGER, deliberately. `ci-readiness.yml` already runs
+# `cargo test -p wrfcoin-native-chain --lib` on every PR touching `**/*.rs`,
+# which executes both new gates. Adding a trigger here would re-run them for
+# nothing -- the org Actions budget is finite and has been exhausted twice this
+# sprint.
+#
+# Steps 1 and 2 below are, for the same reason, already covered by
+# ci-readiness's `--lib` run. Only step 3 (`--test consensus_invariants`, an
+# integration test) is unique to this workflow. Folding step 3 into
+# ci-readiness's rust-tests would make this file redundant in full.
+name: Rust Shared/Native Invariant Detection Gate (parked)
+# NO-AUTOMATIC-TRIGGER: parked — weekly schedule commented out and the workflow
+# gh-disabled (2026-07-31, Actions budget). Register and restore: docs/ci/parked-workflows.txt +
+# docs/ci/reenable-parked-workflows.sh.
+
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: "0 5 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity-gate:
+    name: Shared/Native Parity Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: parity-gate-${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            parity-gate-${{ runner.os }}-cargo-
+
+      - name: Legacy parity suite
+        run: cargo test --locked -p wrfcoin-native-chain --lib parity -- --nocapture
+
+      - name: Shared/native parity matrix suite
+        run: cargo test --locked -p wrfcoin-native-chain --lib parity_shared -- --nocapture
+
+      - name: Shared invariants gate
+        run: cargo test --locked -p wrfcoin-shared-protocol --test consensus_invariants -- --nocapture
+
+      # #2302 acceptance gate. Named explicitly so a reader can see the property
+      # without reading the suite: forking a re-export, or disabling an
+      # invariant's detection, turns this red. Both probed -- see the module doc
+      # in native-chain/src/parity_shared_detection.rs.
+      - name: Alias + invariant-detection gate (#2302)
+        run: cargo test --locked -p wrfcoin-native-chain --lib parity_shared_detection -- --nocapture

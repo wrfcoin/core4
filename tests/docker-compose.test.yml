@@ -1,0 +1,514 @@
+version: '3.8'
+
+# WRFCoin Comprehensive Test Mock Harness
+# Provides enhanced mock services for Postgres, Blockchain RPC, Weather Oracle, and more
+# Supports multiple test scenarios, failure simulation, and edge case testing
+
+services:
+  # =============================================================================
+  # CORE MOCK SERVICES
+  # =============================================================================
+
+  # Enhanced PostgreSQL Mock with Multiple Scenarios
+  test-postgres-primary:
+    image: postgres:15-alpine
+    container_name: wrfcoin-test-postgres-primary
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: wrfcoin_test
+      POSTGRES_INITDB_ARGS: '--encoding=UTF-8 --lc-collate=C --lc-ctype=C'
+    ports:
+      - '5432:5432' # Primary test database
+    volumes:
+      - test-db-primary-data:/var/lib/postgresql/data
+      - ./test-data/postgres-init:/docker-entrypoint-initdb.d
+      - ./test-data/postgres-config:/etc/postgresql
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c max_connections=200
+      -c log_statement=all
+      -c log_duration=on
+      -c log_min_duration_statement=0
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d wrfcoin_test']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    profiles:
+      - testing
+      - full
+
+  # Secondary PostgreSQL for Replication Testing
+  test-postgres-replica:
+    image: postgres:15-alpine
+    container_name: wrfcoin-test-postgres-replica
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: wrfcoin_test
+      POSTGRES_REPLICA_MODE: 'replica'
+    ports:
+      - '5433:5432' # Replica database
+    volumes:
+      - test-db-replica-data:/var/lib/postgresql/data
+    depends_on:
+      test-postgres-primary:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - full
+      - replication
+
+  # Enhanced Blockchain RPC Mock with MockServer
+  blockchain-rpc-mock-enhanced:
+    image: node:20-alpine
+    container_name: wrfcoin-blockchain-rpc-enhanced
+    working_dir: /app
+    command: sh -c "npm install express cors body-parser uuid ws && node enhanced-blockchain-rpc.js"
+    ports:
+      - '8545:8545' # Standard Ethereum RPC port
+      - '8546:8546' # WebSocket port
+      - '8547:8547' # Alternative RPC port for failover testing
+    volumes:
+      - ./mocks-enhanced:/app
+    environment:
+      NODE_ENV: test
+      PORT: 8545
+      WS_PORT: 8546
+      FAILOVER_PORT: 8547
+      SERVICE_NAME: blockchain-rpc-enhanced
+      # Scenario configuration
+      CHAIN_ID: '0x1337'
+      BLOCK_TIME_MS: 1000
+      GAS_PRICE_GWEI: 20
+      MAX_GAS_LIMIT: 8000000
+      ENABLE_MINING: 'true'
+      SIMULATE_NETWORK_DELAYS: 'true'
+      FAILURE_RATE_PERCENT: 0 # 0% failure rate by default
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:8545/health',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - testing
+      - full
+      - blockchain
+
+  # Blockchain RPC Failure Simulator
+  blockchain-rpc-mock-failure:
+    image: node:20-alpine
+    container_name: wrfcoin-blockchain-rpc-failure
+    working_dir: /app
+    command: sh -c "npm install express cors && node enhanced-blockchain-rpc.js"
+    ports:
+      - '8548:8545' # Failure simulation port
+    volumes:
+      - ./mocks-enhanced:/app
+    environment:
+      NODE_ENV: test
+      PORT: 8545
+      SERVICE_NAME: blockchain-rpc-failure
+      FAILURE_RATE_PERCENT: 30 # 30% failure rate
+      SIMULATE_NETWORK_DELAYS: 'true'
+      RANDOM_ERRORS: 'true'
+      TIMEOUT_SCENARIOS: 'true'
+    restart: unless-stopped
+    networks:
+      - test-network
+    profiles:
+      - failure
+      - chaos
+
+  # Enhanced Weather Oracle Mock
+  weather-oracle-mock-enhanced:
+    image: node:20-alpine
+    container_name: wrfcoin-weather-oracle-enhanced
+    working_dir: /app
+    command: sh -c "npm install express cors body-parser uuid moment && node enhanced-weather-oracle.js"
+    ports:
+      - '3010:3010' # Primary weather API
+      - '3011:3011' # WebSocket for real-time data
+      - '3012:3012' # GRPC endpoint
+    volumes:
+      - ./mocks-enhanced:/app
+      - weather-data-volume:/app/data
+    environment:
+      NODE_ENV: test
+      PORT: 3010
+      WS_PORT: 3011
+      GRPC_PORT: 3012
+      SERVICE_NAME: weather-oracle-enhanced
+      # Weather data configuration
+      STATION_COUNT: 50
+      UPDATE_INTERVAL_SEC: 30
+      HISTORICAL_DAYS: 365
+      ENABLE_EXTREME_WEATHER: 'true'
+      ENABLE_REAL_TIME_UPDATES: 'true'
+      SIMULATE_SENSOR_FAILURES: 'false'
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:3010/health',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - testing
+      - full
+      - weather
+
+  # Carbon Credit Oracle Mock
+  carbon-credit-oracle-enhanced:
+    image: node:20-alpine
+    container_name: wrfcoin-carbon-oracle-enhanced
+    working_dir: /app
+    command: sh -c "npm install express cors body-parser uuid moment && node enhanced-carbon-oracle.js"
+    ports:
+      - '3020:3020' # Primary carbon API
+      - '3021:3021' # Carbon tracking API
+    volumes:
+      - ./mocks-enhanced:/app
+      - carbon-data-volume:/app/data
+    environment:
+      NODE_ENV: test
+      PORT: 3020
+      TRACKING_PORT: 3021
+      SERVICE_NAME: carbon-oracle-enhanced
+      # Carbon data configuration
+      PROJECT_COUNT: 25
+      EMISSION_FACTOR_SOURCES: 10
+      ENABLE_HISTORICAL_DATA: 'true'
+      CARBON_PRICE_VOLATILITY: 'medium'
+      ENABLE_OFFSET_VERIFICATION: 'true'
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:3020/health',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - testing
+      - full
+      - carbon
+
+  # =============================================================================
+  # ADVANCED MOCK SERVICES
+  # =============================================================================
+
+  # MockServer for Advanced HTTP Mocking
+  mockserver:
+    image: mockserver/mockserver:5.15.0
+    container_name: wrfcoin-mockserver
+    ports:
+      - '1080:1080' # MockServer management interface
+    environment:
+      MOCKSERVER_MAX_EXPECTATIONS: 1000
+      MOCKSERVER_MAX_HEADER_SIZE: 8192
+      MOCKSERVER_CORS_ALLOW_CREDENTIALS: 'true'
+      MOCKSERVER_CORS_ALLOW_METHODS: 'GET,PUT,POST,DELETE,HEAD,OPTIONS'
+      MOCKSERVER_CORS_ALLOW_HEADERS: '*'
+      MOCKSERVER_CORS_ALLOW_ORIGIN: '*'
+      MOCKSERVER_LOG_LEVEL: INFO
+      MOCKSERVER_PROPERTY_FILE: /config/mockserver.properties
+    volumes:
+      - ./mocks-enhanced/mockserver-config:/config
+      - ./mocks-enhanced/mockserver-expectations:/expectations
+    restart: unless-stopped
+    networks:
+      - test-network
+    profiles:
+      - advanced
+      - full
+
+  # Redis Mock for Caching and Session Testing
+  redis-mock:
+    image: redis:7-alpine
+    container_name: wrfcoin-redis-mock
+    ports:
+      - '6379:6379'
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel verbose
+      --maxmemory 256mb
+      --maxmemory-policy volatile-lru
+    volumes:
+      - redis-test-data:/data
+      - ./test-data/redis-config:/usr/local/etc/redis
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    profiles:
+      - testing
+      - full
+      - caching
+
+  # Message Queue Mock (RabbitMQ)
+  message-queue-mock:
+    image: rabbitmq:3-management-alpine
+    container_name: wrfcoin-rabbitmq-mock
+    ports:
+      - '5672:5672' # AMQP port
+      - '15672:15672' # Management interface
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: testpass
+      RABBITMQ_DEFAULT_VHOST: wrfcoin_test
+    volumes:
+      - rabbitmq-test-data:/var/lib/rabbitmq
+      - ./test-data/rabbitmq-config:/etc/rabbitmq
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test: rabbitmq-diagnostics check_running
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - messaging
+      - full
+
+  # Elasticsearch Mock for Search Testing
+  elasticsearch-mock:
+    image: elasticsearch:8.11.0
+    container_name: wrfcoin-elasticsearch-mock
+    environment:
+      - node.name=wrfcoin-es-test
+      - cluster.name=wrfcoin-test-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.license.self_generated.type=basic
+      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - '9200:9200'
+      - '9300:9300'
+    volumes:
+      - elasticsearch-test-data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9200/_cluster/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - search
+      - full
+
+  # =============================================================================
+  # MONITORING AND UTILITIES
+  # =============================================================================
+
+  # Test Runner Container
+  test-runner:
+    image: node:20-alpine
+    container_name: wrfcoin-test-runner
+    working_dir: /app
+    command: sh -c "npm install && npm run test:integration"
+    volumes:
+      - ../../:/app
+      - /var/run/docker.sock:/var/run/docker.sock # For docker commands in tests
+    environment:
+      NODE_ENV: test
+      # Database URLs
+      DATABASE_URL: postgresql://postgres:testpass@test-postgres-primary:5432/wrfcoin_test
+      DATABASE_REPLICA_URL: postgresql://postgres:testpass@test-postgres-replica:5432/wrfcoin_test
+      # Service URLs
+      BLOCKCHAIN_RPC_URL: http://blockchain-rpc-mock-enhanced:8545
+      BLOCKCHAIN_RPC_WS_URL: ws://blockchain-rpc-mock-enhanced:8546
+      BLOCKCHAIN_RPC_FAILOVER_URL: http://blockchain-rpc-mock-enhanced:8547
+      WEATHER_API_URL: http://weather-oracle-mock-enhanced:3010
+      WEATHER_WS_URL: ws://weather-oracle-mock-enhanced:3011
+      CARBON_ORACLE_URL: http://carbon-credit-oracle-enhanced:3020
+      # Cache and messaging
+      REDIS_URL: redis://redis-mock:6379
+      RABBITMQ_URL: amqp://admin:testpass@message-queue-mock:5672/wrfcoin_test
+      # Search
+      ELASTICSEARCH_URL: http://elasticsearch-mock:9200
+      # MockServer
+      MOCKSERVER_URL: http://mockserver:1080
+      # Test configuration
+      TEST_TIMEOUT_MS: 30000
+      TEST_PARALLEL_WORKERS: 4
+      ENABLE_INTEGRATION_TESTS: 'true'
+      ENABLE_E2E_TESTS: 'true'
+      ENABLE_PERFORMANCE_TESTS: 'false'
+    depends_on:
+      test-postgres-primary:
+        condition: service_healthy
+      blockchain-rpc-mock-enhanced:
+        condition: service_healthy
+      weather-oracle-mock-enhanced:
+        condition: service_healthy
+      carbon-credit-oracle-enhanced:
+        condition: service_healthy
+      redis-mock:
+        condition: service_healthy
+    networks:
+      - test-network
+    profiles:
+      - testing
+
+  # Health Check Dashboard
+  health-dashboard:
+    image: node:20-alpine
+    container_name: wrfcoin-health-dashboard
+    working_dir: /app
+    command: sh -c "npm install express cors body-parser && node health-dashboard.js"
+    ports:
+      - '4000:4000'
+    volumes:
+      - ./mocks-enhanced:/app
+    environment:
+      NODE_ENV: test
+      PORT: 4000
+      SERVICE_NAME: health-dashboard
+      # Services to monitor
+      POSTGRES_URL: postgresql://postgres:testpass@test-postgres-primary:5432/wrfcoin_test
+      BLOCKCHAIN_RPC_URL: http://blockchain-rpc-mock-enhanced:8545
+      WEATHER_API_URL: http://weather-oracle-mock-enhanced:3010
+      CARBON_ORACLE_URL: http://carbon-credit-oracle-enhanced:3020
+      REDIS_URL: redis://redis-mock:6379
+      MOCKSERVER_URL: http://mockserver:1080
+    restart: unless-stopped
+    networks:
+      - test-network
+    profiles:
+      - monitoring
+      - full
+
+  # Chaos Engineering Service
+  chaos-monkey:
+    image: node:20-alpine
+    container_name: wrfcoin-chaos-monkey
+    working_dir: /app
+    command: sh -c "npm install express docker-cli-js && node chaos-monkey.js"
+    volumes:
+      - ./mocks-enhanced:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      NODE_ENV: test
+      CHAOS_INTERVAL_MIN: 60 # Minimum seconds between chaos events
+      CHAOS_INTERVAL_MAX: 300 # Maximum seconds between chaos events
+      CHAOS_ENABLED: 'false' # Disabled by default
+      TARGET_SERVICES: 'blockchain-rpc-mock-enhanced,weather-oracle-mock-enhanced'
+    restart: unless-stopped
+    networks:
+      - test-network
+    profiles:
+      - chaos
+
+# =============================================================================
+# NETWORK AND VOLUME DEFINITIONS
+# =============================================================================
+
+networks:
+  test-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-wrfcoin-test
+      com.docker.network.bridge.enable_icc: 'true'
+      com.docker.network.bridge.enable_ip_masquerade: 'true'
+      com.docker.network.bridge.host_binding_ipv4: '127.0.0.1'
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  test-db-primary-data:
+    driver: local
+  test-db-replica-data:
+    driver: local
+  redis-test-data:
+    driver: local
+  rabbitmq-test-data:
+    driver: local
+  elasticsearch-test-data:
+    driver: local
+  weather-data-volume:
+    driver: local
+  carbon-data-volume:
+    driver: local
+# =============================================================================
+# USAGE EXAMPLES
+# =============================================================================
+#
+# Start basic testing stack:
+#   docker-compose -f docker-compose.test.yml --profile testing up -d
+#
+# Start full stack with all services:
+#   docker-compose -f docker-compose.test.yml --profile full up -d
+#
+# Start only blockchain testing:
+#   docker-compose -f docker-compose.test.yml --profile blockchain up -d
+#
+# Start chaos testing:
+#   docker-compose -f docker-compose.test.yml --profile chaos up -d
+#
+# Run integration tests:
+#   docker-compose -f docker-compose.test.yml --profile testing up test-runner
+#
+# Monitor service health:
+#   docker-compose -f docker-compose.test.yml --profile monitoring up -d health-dashboard
+#   # Access at http://localhost:4000
+#
+# Stop and cleanup:
+#   docker-compose -f docker-compose.test.yml down --volumes --remove-orphans

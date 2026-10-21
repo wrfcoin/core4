@@ -1,0 +1,31 @@
+{
+  "name": "wrfcoin-fuzz-testing",
+  "version": "1.0.0",
+  "description": "Comprehensive fuzz testing framework for Wrfcoin blockchain platform",
+  "main": "index.js",
+  "scripts": {
+    "fuzz:all": "npm run fuzz:rest && npm run fuzz:websocket && npm run fuzz:property",
+    "fuzz:rest": "node fuzzing/rest-api-fuzzer.js",
+    "fuzz:websocket": "node fuzzing/websocket-fuzzer.js",
+    "fuzz:property": "jest --config=fuzzing/property-based/jest.config.js",
+    "fuzz:jazzer": "node fuzzing/jazzer-core/run-fuzzer.js",
+    "fuzz:continuous": "node fuzzing/continuous-fuzzer.js",
+    "fuzz:report": "node reporting/generate-report.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "fast-check": "^3.15.1",
+    "ws": "^8.18.2",
+    "axios": "^1.7.9",
+    "ajv": "^8.12.0",
+    "ajv-formats": "^2.1.1",
+    "jsonschema": "^1.4.1",
+    "@faker-js/faker": "^9.3.0",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "@types/ws": "^8.5.10",
+    "@types/jest": "^29.5.8"
+  }
+}

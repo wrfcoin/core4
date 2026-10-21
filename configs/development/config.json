@@ -1,0 +1,79 @@
+{
+  "$schema": "../../backend/config/environment-schema.json",
+  "environment": "development",
+  "description": "Development environment configuration for local development",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 4001,
+    "trustProxy": false,
+    "requestTimeout": 30000,
+    "keepAliveTimeout": 5000
+  },
+
+  "database": {
+    "ssl": false,
+    "poolSize": 10,
+    "connectionTimeout": 10000,
+    "idleTimeout": 30000,
+    "logging": true
+  },
+
+  "redis": {
+    "enabled": true,
+    "host": "localhost",
+    "port": 6379,
+    "db": 0,
+    "keyPrefix": "wrfcoin:dev:"
+  },
+
+  "logging": {
+    "level": "debug",
+    "format": "pretty",
+    "includeTimestamp": true,
+    "includeStackTrace": true,
+    "sensitiveDataMasking": false
+  },
+
+  "security": {
+    "hsmRequired": false,
+    "mfaRequired": false,
+    "sessionDuration": 86400,
+    "rateLimit": {
+      "enabled": true,
+      "windowMs": 60000,
+      "max": 1000
+    },
+    "cors": {
+      "enabled": true,
+      "origins": ["http://localhost:5000", "http://localhost:3000"],
+      "credentials": true
+    }
+  },
+
+  "blockchain": {
+    "network": "testnet",
+    "confirmations": 1,
+    "gasMultiplier": 1.1,
+    "defaultGasLimit": 500000
+  },
+
+  "features": {
+    "experimentalBridges": true,
+    "betaAiModels": true,
+    "newCarbonCalculation": true,
+    "physicsValidationProfile": "realtime"
+  },
+
+  "iot": {
+    "dataValidationLevel": "relaxed",
+    "sensorTimeout": 60000,
+    "maxDataAge": 3600000
+  },
+
+  "monitoring": {
+    "metricsEnabled": true,
+    "tracingEnabled": false,
+    "healthCheckInterval": 30000
+  }
+}

@@ -1,0 +1,2 @@
+sprint,since,until,generated_at,merged_total,open_total,ready_count,review_needed_count,blocked_count,stale_count,draft_count,repo_breakdown
+520,2026-05-20T07:00:00Z,2026-05-20T11:00:00Z,2026-05-29T21:47:47Z,18,21,0,13,0,0,8,core4:15;backend:2;infra:1

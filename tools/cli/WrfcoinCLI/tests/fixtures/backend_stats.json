@@ -1,0 +1,7 @@
+{
+  "success": true,
+  "data": {
+    "totalTransactions": 12345,
+    "totalNodes": 12
+  }
+}

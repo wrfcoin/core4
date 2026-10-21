@@ -1,0 +1,48 @@
+{
+  "record_version": 1,
+  "recorded_at": "2026-10-02",
+  "chain": {
+    "chain_id": "777",
+    "network_id": "testnet",
+    "genesis_hash": "6ad436386cfc6c746146f6ef2f9d32ddb7a93f18efd3635606abd27c9ca17db8", "_public_genesis_note": "# pragma: allowlist secret -- public block-1 identity pinned in core4 LEGACY_CHAIN_BOOTSTRAP"
+  },
+  "genesis": {"activation_schedule": null, "signing_version": 1, "features": []},
+  "bootstrap": [{"feature": "schedule_extension", "activation_height": 29800}],
+  "extensions": [
+    {
+      "label": "E0",
+      "sequence": 0,
+      "carried_at_height": 29802,
+      "transaction_id": "7122087aea65f4cc702e4c510b2647ec5ab32fa0c670e9249a2e433db5e53b76",
+      "entries": [
+        {"feature": "reward_gross_outlier_guard", "activation_height": 32500},
+        {"feature": "weather_skew_block_time_allowance", "activation_height": 32500}
+      ],
+      "version_steps": [],
+      "min_protocol_version": 3,
+      "release_commit": "65134a64492135b6ac81344dd0d2edd8dfaf1309", "_public_release_note": "# pragma: allowlist secret -- public B3 Git revision from the reviewed E0/E0f record"
+    },
+    {
+      "label": "E0f",
+      "sequence": 1,
+      "carried_at_height": 30656,
+      "transaction_id": "01701cb0735df620960d53e37cafd77db2022f0222dac8b4683548a567c2cabf",
+      "entries": [{"feature": "faucet_sink_binding", "activation_height": 33000}],
+      "version_steps": [],
+      "min_protocol_version": 3,
+      "release_commit": "65134a64492135b6ac81344dd0d2edd8dfaf1309", "_public_release_note": "# pragma: allowlist secret -- public B3 Git revision from the reviewed E0/E0f record"
+    }
+  ],
+  "faucet_binding": {
+    "feature": "faucet_sink_binding",
+    "activation_height": 33000,
+    "address": "0xf72059c3b4a6d3c431920c3cf3e40dbf68a6b5d3"
+  },
+  "provenance": {
+    "genesis": "core4 #3277: block 1 omits protocol_activation_schedule; signing v1",
+    "bootstrap": "core4 shared-protocol/src/crypto/chain_binding.rs LEGACY_CHAIN_BOOTSTRAP",
+    "E0": "workspace STATUS.md 2026-10-01T23:45:10Z R7 inclusion; b3-e0f-block-v2.md pinned E0 facts",
+    "E0f": "workspace STATUS.md 2026-10-02 18:13Z admission and 18:36Z R7 inclusion; b3-e0f-block-v2.md",
+    "evidence_class": "existing owner/LEAD inclusion records; not a new live observation or signature verification"
+  }
+}

@@ -1,0 +1,344 @@
+# Artillery Load Testing Configuration
+# Tests GraphQL API performance under various load conditions
+
+config:
+  target: 'http://localhost:8080'
+  phases:
+    # Warm-up phase
+    - duration: 60
+      arrivalRate: 5
+      name: 'Warm-up'
+
+    # Ramp-up phase
+    - duration: 300
+      arrivalRate: 10
+      rampTo: 50
+      name: 'Ramp-up'
+
+    # Sustained load phase
+    - duration: 600
+      arrivalRate: 50
+      name: 'Sustained load'
+
+    # Peak load phase
+    - duration: 180
+      arrivalRate: 100
+      name: 'Peak load'
+
+    # Cool-down phase
+    - duration: 120
+      arrivalRate: 10
+      name: 'Cool-down'
+
+  payload:
+    path: './load-test-data.csv'
+    fields:
+      - 'userId'
+      - 'walletAddress'
+      - 'apiToken'
+
+  variables:
+    weatherStationId: 'STATION_001'
+    carbonProjectId: 'CARBON_001'
+    nftJobId: '1'
+
+scenarios:
+  # Core API performance tests
+  - name: 'GraphQL Query Performance'
+    weight: 40
+    flow:
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            query: |
+              query GetUserProfile($userId: ID!) {
+                user(id: $userId) {
+                  id
+                  email
+                  profile {
+                    firstName
+                    lastName
+                    walletAddress
+                  }
+                  weatherStations {
+                    id
+                    name
+                    location
+                    sensors
+                  }
+                }
+              }
+            variables:
+              userId: '{{ userId }}'
+          capture:
+            - json: '$.data.user.id'
+              as: 'retrievedUserId'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.user'
+
+  # Weather data operations
+  - name: 'Weather Data Operations'
+    weight: 25
+    flow:
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            query: |
+              query GetWeatherData($stationId: String!, $limit: Int) {
+                weatherStation(id: $stationId) {
+                  id
+                  name
+                  readings(limit: $limit) {
+                    timestamp
+                    temperature
+                    humidity
+                    pressure
+                    windSpeed
+                  }
+                }
+              }
+            variables:
+              stationId: '{{ weatherStationId }}'
+              limit: 50
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.weatherStation'
+
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            mutation: |
+              mutation SubmitWeatherReading($input: WeatherReadingInput!) {
+                submitWeatherReading(input: $input) {
+                  id
+                  timestamp
+                  temperature
+                  status
+                }
+              }
+            variables:
+              input:
+                stationId: '{{ weatherStationId }}'
+                temperature: '{{ $randomInt(15, 35) }}'
+                humidity: '{{ $randomInt(30, 80) }}'
+                pressure: '{{ $randomInt(980, 1040) }}'
+                windSpeed: '{{ $randomInt(0, 20) }}'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.submitWeatherReading'
+
+  # Wallet and transaction operations
+  - name: 'Wallet Operations'
+    weight: 20
+    flow:
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            query: |
+              query GetWalletBalance($address: String!) {
+                wallet(address: $address) {
+                  address
+                  balances {
+                    token
+                    amount
+                    decimals
+                  }
+                  transactions(limit: 10) {
+                    hash
+                    type
+                    amount
+                    timestamp
+                    status
+                  }
+                }
+              }
+            variables:
+              address: '{{ walletAddress }}'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.wallet'
+
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            mutation: |
+              mutation CreateTransaction($input: TransactionInput!) {
+                createTransaction(input: $input) {
+                  hash
+                  status
+                  estimatedGas
+                }
+              }
+            variables:
+              input:
+                from: '{{ walletAddress }}'
+                to: '0x742d35Cc6609C4532D2B5a3b4e0C8b8a8b6a1234'
+                amount: '{{ $randomInt(1, 100) }}'
+                token: 'WRF'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.createTransaction'
+
+  # Carbon credit operations
+  - name: 'Carbon Credit Operations'
+    weight: 10
+    flow:
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            query: |
+              query GetCarbonProjects($limit: Int) {
+                carbonProjects(limit: $limit) {
+                  id
+                  name
+                  type
+                  location
+                  credits {
+                    available
+                    price
+                    vintage
+                  }
+                  verification {
+                    status
+                    standard
+                    verifier
+                  }
+                }
+              }
+            variables:
+              limit: 20
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.carbonProjects'
+
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            mutation: |
+              mutation PurchaseCarbonCredits($input: CarbonPurchaseInput!) {
+                purchaseCarbonCredits(input: $input) {
+                  transactionHash
+                  credits {
+                    amount
+                    serialNumbers
+                  }
+                  cost {
+                    total
+                    unitPrice
+                    fees
+                  }
+                }
+              }
+            variables:
+              input:
+                projectId: '{{ carbonProjectId }}'
+                quantity: '{{ $randomInt(10, 100) }}'
+                maxPricePerCredit: '20.00'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.purchaseCarbonCredits'
+
+  # NFT marketplace operations
+  - name: 'NFT Marketplace Operations'
+    weight: 5
+    flow:
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            query: |
+              query GetNFTJobs($limit: Int) {
+                nftJobs(limit: $limit) {
+                  id
+                  name
+                  description
+                  computeRequirements
+                  reward
+                  status
+                  creator
+                }
+              }
+            variables:
+              limit: 20
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.nftJobs'
+
+      - post:
+          url: '/graphql'
+          headers:
+            Content-Type: 'application/json'
+            Authorization: 'Bearer {{ apiToken }}'
+          json:
+            mutation: |
+              mutation AssignNFTJob($input: JobAssignmentInput!) {
+                assignNFTJob(input: $input) {
+                  jobId
+                  providerId
+                  estimatedCompletion
+                  status
+                }
+              }
+            variables:
+              input:
+                jobId: '{{ nftJobId }}'
+                providerId: '{{ userId }}'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'data.assignNFTJob'
+
+# Performance thresholds and checks
+expect:
+  # Response time requirements
+  - p95: 500 # 95% of requests under 500ms
+  - p99: 1000 # 99% of requests under 1000ms
+
+  # Error rate requirements
+  - maxErrorRate: 1 # Less than 1% error rate
+
+# Custom metrics to track
+metrics:
+  - name: 'GraphQL Query Response Time'
+    selector: 'http.response_time'
+    aggregate: 'p95'
+
+  - name: 'Database Connection Pool'
+    selector: 'custom.db_pool_active'
+    aggregate: 'max'
+
+  - name: 'Memory Usage'
+    selector: 'custom.memory_usage_mb'
+    aggregate: 'max'
+
+# Performance analysis hooks
+before:
+  flow:
+    - log: 'Starting API load test...'
+
+after:
+  flow:
+    - log: 'Load test completed'

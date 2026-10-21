@@ -1,0 +1,262 @@
+[
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/weather/forecast",
+      "queryStringParameters": {
+        "location": [".*"],
+        "days": [".*"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": {
+        "Content-Type": ["application/json"],
+        "Cache-Control": ["max-age=300"]
+      },
+      "body": {
+        "success": true,
+        "data": {
+          "location": "Mock Location",
+          "forecast": [
+            {
+              "date": "2024-01-01",
+              "temperature": {
+                "min": 15,
+                "max": 25,
+                "avg": 20
+              },
+              "conditions": "sunny",
+              "humidity": 65,
+              "windSpeed": 5.2,
+              "precipitation": 0
+            }
+          ]
+        },
+        "timestamp": "2024-01-01T12:00:00Z"
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "POST",
+      "path": "/api/external/notifications/webhook",
+      "body": {
+        "type": ".*",
+        "payload": ".*"
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "success": true,
+        "message": "Notification received",
+        "id": "webhook-mock-123",
+        "timestamp": "2024-01-01T12:00:00Z"
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/exchange-rates",
+      "queryStringParameters": {
+        "from": [".*"],
+        "to": [".*"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": {
+        "Content-Type": ["application/json"]
+      },
+      "body": {
+        "success": true,
+        "data": {
+          "rate": 1.08,
+          "from": "USD",
+          "to": "EUR",
+          "timestamp": "2024-01-01T12:00:00Z"
+        }
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "POST",
+      "path": "/api/external/carbon/registry",
+      "body": {
+        "type": "offset",
+        "amount": ".*",
+        "projectId": ".*"
+      }
+    },
+    "httpResponse": {
+      "statusCode": 201,
+      "body": {
+        "success": true,
+        "data": {
+          "certificateId": "CERT-MOCK-123456",
+          "amount": 10.5,
+          "projectId": "PROJECT-MOCK-789",
+          "status": "issued",
+          "issuedAt": "2024-01-01T12:00:00Z"
+        }
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/weather/stations/.*",
+      "pathParameters": {
+        "stationId": [".*"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "id": "mock-station-001",
+          "name": "Mock Weather Station",
+          "location": {
+            "lat": 37.7749,
+            "lng": -122.4194,
+            "elevation": 52
+          },
+          "isActive": true,
+          "lastReported": "2024-01-01T12:00:00Z"
+        }
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "POST",
+      "path": "/api/external/blockchain/transaction",
+      "body": {
+        "to": ".*",
+        "value": ".*",
+        "data": ".*"
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "transactionHash": "0x1234567890abcdef1234567890abcdef12345678",
+          "status": "pending",
+          "gasUsed": "21000",
+          "blockNumber": null,
+          "timestamp": "2024-01-01T12:00:00Z"
+        }
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/compliance/.*",
+      "queryStringParameters": {
+        "regulation": [".*"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "regulation": "GDPR",
+          "compliance": true,
+          "lastAudit": "2024-01-01T00:00:00Z",
+          "nextReview": "2024-07-01T00:00:00Z",
+          "status": "compliant"
+        }
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/.*",
+      "headers": {
+        "Authorization": ["Bearer invalid-token"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 401,
+      "body": {
+        "success": false,
+        "error": "Invalid authentication token",
+        "code": "INVALID_TOKEN"
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "POST",
+      "path": "/api/external/slow-endpoint"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "delay": {
+        "timeUnit": "MILLISECONDS",
+        "value": 5000
+      },
+      "body": {
+        "success": true,
+        "message": "This is a slow response for testing timeouts",
+        "processingTime": "5000ms"
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/error-simulation",
+      "queryStringParameters": {
+        "type": ["500"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 500,
+      "body": {
+        "success": false,
+        "error": "Simulated internal server error",
+        "code": "INTERNAL_ERROR"
+      }
+    }
+  },
+
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/external/error-simulation",
+      "queryStringParameters": {
+        "type": ["timeout"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "delay": {
+        "timeUnit": "MILLISECONDS",
+        "value": 30000
+      },
+      "body": {
+        "success": true,
+        "message": "This response will timeout"
+      }
+    }
+  }
+]

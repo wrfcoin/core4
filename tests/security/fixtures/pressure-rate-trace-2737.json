@@ -1,0 +1,36 @@
+{
+  "case": "synthetic_relative_pressure_rate_rejection",
+  "station": {
+    "name": "synthetic-pressure-trace",
+    "elevation_m": 200,
+    "lat": 46.78,
+    "lon": -92.1
+  },
+  "previous": {
+    "dateutc": 1787500000000,
+    "tempf": 68,
+    "humidity": 50,
+    "baromrelin": 29.8,
+    "baromabsin": 29.1,
+    "windspeedmph": 2,
+    "dewPoint": 50
+  },
+  "current": {
+    "dateutc": 1787500060000,
+    "tempf": 68,
+    "humidity": 50,
+    "baromrelin": 29.93,
+    "baromabsin": 29.1,
+    "windspeedmph": 2,
+    "dewPoint": 50
+  },
+  "expected": {
+    "previous_pressure_hpa": 1009.1,
+    "current_pressure_hpa": 1013.5,
+    "elapsed_seconds": 60,
+    "absolute_delta_hpa": 4.4,
+    "rate_hpa_per_second": 0.07333333333333333,
+    "validator_limit_hpa_per_second": 0.05,
+    "validator_error": "pressure changed too quickly: 0.0733/s exceeds 0.0500/s"
+  }
+}

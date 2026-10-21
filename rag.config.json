@@ -1,0 +1,57 @@
+{
+  "user_id": "wrfcoin-dev",
+  "chunking": {
+    "rules": [
+      {
+        "maxLines": 300,
+        "chunkSize": 40,
+        "overlap": 10
+      },
+      {
+        "maxLines": 800,
+        "chunkSize": 80,
+        "overlap": 20
+      },
+      {
+        "maxLines": 99999,
+        "chunkSize": 120,
+        "overlap": 30
+      }
+    ]
+  },
+  "indexing": {
+    "skipDirectories": [
+      "node_modules",
+      "dist",
+      "build",
+      ".git",
+      ".cache",
+      "target"
+    ],
+    "concurrency": 5,
+    "batchSize": 20
+  },
+  "watching": {
+    "watchExtensions": [".js", ".ts", ".rs", ".md"],
+    "debounceMs": 2500
+  },
+  "tagging": {
+    "directoryMappings": {
+      "blockchain-core": ["blockchain", "core"],
+      "cli": ["cli", "tools"],
+      "frontend": ["ui", "frontend"],
+      "docs": ["documentation"],
+      "forecast": ["forecasting"],
+      "smart-contracts": ["contracts", "tokenomics"]
+    },
+    "keywordMappings": {
+      "blockchain": ["blockchain", "crypto"],
+      "token": ["tokenomics", "economics"],
+      "bridge": ["cross-chain", "bridge"],
+      "validator": ["consensus", "validation"],
+      "smart": ["contracts", "tokenomics"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "build", ".git"],
+  "extensions": [".js", ".ts", ".rs", ".md"]
+}

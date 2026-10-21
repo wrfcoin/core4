@@ -1,0 +1,1587 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WRFCoin SDK Documentation Portal</title>
+    <meta
+      name="description"
+      content="Comprehensive documentation for WRFCoin SDKs - Java, C#, Android, iOS, and cross-platform development"
+    />
+
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="WRFCoin SDK Documentation Portal" />
+    <meta
+      property="og:description"
+      content="Build weather, carbon, and DeFi applications with WRFCoin's comprehensive SDK ecosystem"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://docs.wrfcoin.com" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico" />
+
+    <!-- CSS -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+      rel="stylesheet"
+    />
+
+    <style>
+      .gradient-bg {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      }
+
+      .card-hover {
+        transition: all 0.3s ease;
+      }
+
+      .card-hover:hover {
+        transform: translateY(-5px);
+        box-shadow:
+          0 20px 25px -5px rgba(0, 0, 0, 0.1),
+          0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      }
+
+      .tech-icon {
+        width: 48px;
+        height: 48px;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+
+      .java-icon {
+        background-image: url('https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/openjdk.svg');
+      }
+      .csharp-icon {
+        background-image: url('https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/csharp.svg');
+      }
+      .android-icon {
+        background-image: url('https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/android.svg');
+      }
+      .ios-icon {
+        background-image: url('https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/apple.svg');
+      }
+      .web-icon {
+        background-image: url('https://cdn.jsdelivr.net/npm/simple-icons@v9/icons/javascript.svg');
+      }
+
+      .nav-link {
+        position: relative;
+        transition: color 0.3s ease;
+      }
+
+      .nav-link:after {
+        content: '';
+        position: absolute;
+        width: 0;
+        height: 2px;
+        bottom: -4px;
+        left: 50%;
+        background-color: #4f46e5;
+        transition: all 0.3s ease;
+      }
+
+      .nav-link:hover:after,
+      .nav-link.active:after {
+        width: 100%;
+        left: 0;
+      }
+
+      .feature-card {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 24px;
+        background: white;
+        transition: all 0.3s ease;
+      }
+
+      .feature-card:hover {
+        border-color: #6366f1;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+      }
+
+      .code-snippet {
+        background: #1a1a1a;
+        border-radius: 8px;
+        padding: 16px;
+        margin: 16px 0;
+        overflow-x: auto;
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      .tab-button {
+        padding: 8px 16px;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        background: white;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .tab-button.active {
+        background: #4f46e5;
+        color: white;
+        border-color: #4f46e5;
+      }
+
+      .search-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+      }
+
+      .search-modal {
+        position: absolute;
+        top: 20%;
+        left: 50%;
+        transform: translateX(-50%);
+        background: white;
+        padding: 24px;
+        border-radius: 12px;
+        width: 90%;
+        max-width: 600px;
+      }
+
+      @media (max-width: 768px) {
+        .tech-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .feature-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex justify-between items-center h-16">
+          <div class="flex items-center">
+            <div class="flex-shrink-0 flex items-center">
+              <i class="fas fa-cloud-sun text-2xl text-indigo-600 mr-3"></i>
+              <span class="text-xl font-bold text-gray-900">WRFCoin SDK</span>
+            </div>
+            <div class="hidden md:block ml-10">
+              <div class="flex items-baseline space-x-8">
+                <a
+                  href="#overview"
+                  class="nav-link text-gray-600 hover:text-indigo-600"
+                  >Overview</a
+                >
+                <a
+                  href="#platforms"
+                  class="nav-link text-gray-600 hover:text-indigo-600"
+                  >Platforms</a
+                >
+                <a
+                  href="#examples"
+                  class="nav-link text-gray-600 hover:text-indigo-600"
+                  >Examples</a
+                >
+                <a
+                  href="#guides"
+                  class="nav-link text-gray-600 hover:text-indigo-600"
+                  >Guides</a
+                >
+                <a
+                  href="#api-reference"
+                  class="nav-link text-gray-600 hover:text-indigo-600"
+                  >API Reference</a
+                >
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center space-x-4">
+            <button
+              onclick="openSearch()"
+              class="p-2 text-gray-500 hover:text-indigo-600"
+            >
+              <i class="fas fa-search"></i>
+            </button>
+            <a
+              href="https://github.com/wrfcoin/sdks"
+              class="text-gray-500 hover:text-indigo-600"
+            >
+              <i class="fab fa-github text-xl"></i>
+            </a>
+            <a
+              href="https://discord.gg/wrfcoin"
+              class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+            >
+              Get Started
+            </a>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <div class="gradient-bg">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div class="text-center">
+          <h1 class="text-4xl md:text-6xl font-bold text-white mb-6">
+            Build the Future of
+            <span
+              class="bg-clip-text text-transparent bg-gradient-to-r from-yellow-400 to-orange-500"
+            >
+              Climate Tech
+            </span>
+          </h1>
+          <p class="text-xl text-white opacity-90 mb-8 max-w-3xl mx-auto">
+            Comprehensive SDKs for weather data, carbon credit trading, and DeFi
+            operations. Build cross-platform applications with our
+            enterprise-grade blockchain infrastructure.
+          </p>
+          <div
+            class="flex flex-col sm:flex-row gap-4 justify-center items-center"
+          >
+            <a
+              href="#quickstart"
+              class="bg-white text-indigo-600 px-8 py-4 rounded-lg font-semibold hover:bg-gray-100 transition flex items-center"
+            >
+              <i class="fas fa-rocket mr-2"></i>
+              Quick Start Guide
+            </a>
+            <a
+              href="#examples"
+              class="border-2 border-white text-white px-8 py-4 rounded-lg font-semibold hover:bg-white hover:text-indigo-600 transition flex items-center"
+            >
+              <i class="fas fa-code mr-2"></i>
+              View Examples
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Section -->
+    <div class="bg-white py-16">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">4</div>
+            <div class="text-gray-600">Platform SDKs</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">20+</div>
+            <div class="text-gray-600">IoT Platforms</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">99.9%</div>
+            <div class="text-gray-600">Uptime SLA</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">24/7</div>
+            <div class="text-gray-600">Global Support</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Platform SDKs Section -->
+    <section id="platforms" class="py-20 bg-gray-50">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Cross-Platform SDKs
+          </h2>
+          <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+            Build applications for any platform with our comprehensive SDK
+            ecosystem. Consistent APIs, native performance, and
+            platform-specific optimizations.
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8 tech-grid">
+          <!-- Java SDK -->
+          <div class="feature-card card-hover">
+            <div class="tech-icon java-icon mb-6"></div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">Java SDK</h3>
+            <p class="text-gray-600 mb-4">
+              Enterprise-grade Java library for Spring Boot, Android, and server
+              applications.
+            </p>
+            <div class="space-y-2 mb-6">
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Spring Boot Integration
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Reactive Programming
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Maven/Gradle Support
+              </div>
+            </div>
+            <a
+              href="../java/"
+              class="inline-flex items-center text-indigo-600 font-medium hover:text-indigo-800"
+            >
+              View Documentation <i class="fas fa-arrow-right ml-2"></i>
+            </a>
+          </div>
+
+          <!-- C# SDK -->
+          <div class="feature-card card-hover">
+            <div class="tech-icon csharp-icon mb-6"></div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">C# SDK</h3>
+            <p class="text-gray-600 mb-4">
+              .NET library for ASP.NET Core, desktop applications, and Azure
+              integration.
+            </p>
+            <div class="space-y-2 mb-6">
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                .NET 6+ Support
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Async/Await Patterns
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                NuGet Package
+              </div>
+            </div>
+            <a
+              href="../csharp/"
+              class="inline-flex items-center text-indigo-600 font-medium hover:text-indigo-800"
+            >
+              View Documentation <i class="fas fa-arrow-right ml-2"></i>
+            </a>
+          </div>
+
+          <!-- Android SDK -->
+          <div class="feature-card card-hover">
+            <div class="tech-icon android-icon mb-6"></div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Android SDK
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Native Android library with Kotlin coroutines, Jetpack Compose,
+              and Material Design.
+            </p>
+            <div class="space-y-2 mb-6">
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Jetpack Compose UI
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Offline Support
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Biometric Auth
+              </div>
+            </div>
+            <a
+              href="../android/"
+              class="inline-flex items-center text-indigo-600 font-medium hover:text-indigo-800"
+            >
+              View Documentation <i class="fas fa-arrow-right ml-2"></i>
+            </a>
+          </div>
+
+          <!-- iOS SDK -->
+          <div class="feature-card card-hover">
+            <div class="tech-icon ios-icon mb-6"></div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">iOS SDK</h3>
+            <p class="text-gray-600 mb-4">
+              Native iOS framework with SwiftUI, Combine, and seamless Apple
+              ecosystem integration.
+            </p>
+            <div class="space-y-2 mb-6">
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                SwiftUI Components
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                Face ID / Touch ID
+              </div>
+              <div class="flex items-center text-sm text-gray-500">
+                <i class="fas fa-check text-green-500 mr-2"></i>
+                HealthKit Integration
+              </div>
+            </div>
+            <a
+              href="../ios/"
+              class="inline-flex items-center text-indigo-600 font-medium hover:text-indigo-800"
+            >
+              View Documentation <i class="fas fa-arrow-right ml-2"></i>
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quickstart" class="py-20 bg-white">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Get Started in Minutes
+          </h2>
+          <p class="text-xl text-gray-600">
+            Choose your platform and start building with WRFCoin SDKs
+          </p>
+        </div>
+
+        <!-- Platform Tabs -->
+        <div class="flex flex-wrap justify-center gap-2 mb-8">
+          <button class="tab-button active" onclick="showTab('java-tab', this)">
+            Java
+          </button>
+          <button class="tab-button" onclick="showTab('csharp-tab', this)">
+            C#
+          </button>
+          <button class="tab-button" onclick="showTab('android-tab', this)">
+            Android
+          </button>
+          <button class="tab-button" onclick="showTab('ios-tab', this)">
+            iOS
+          </button>
+        </div>
+
+        <!-- Tab Content -->
+        <div class="max-w-4xl mx-auto">
+          <!-- Java Tab -->
+          <div id="java-tab" class="tab-content active">
+            <div class="bg-gray-800 rounded-lg p-6 text-white">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold">Java Installation</h3>
+                <button
+                  onclick="copyCode('java-code')"
+                  class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
+                >
+                  <i class="fas fa-copy mr-1"></i> Copy
+                </button>
+              </div>
+              <pre id="java-code"><code class="language-xml"><!-- Maven -->
+&lt;dependency&gt;
+    &lt;groupId&gt;com.wrfcoin&lt;/groupId&gt;
+    &lt;artifactId&gt;wrfcoin-sdk&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+<!-- Gradle -->
+implementation 'com.wrfcoin:wrfcoin-sdk:1.0.0'</code></pre>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 text-white mt-4">
+              <h3 class="text-lg font-semibold mb-4">Basic Usage</h3>
+              <pre><code class="language-java">// Initialize SDK
+WRFCoinSDK sdk = new WRFCoinSDK.Builder()
+    .apiKey("your-api-key")
+    .environment(Environment.PRODUCTION)
+    .build();
+
+// Get current weather
+CompletableFuture&lt;WeatherData&gt; weather = sdk.getWeatherService()
+    .getCurrentWeather(40.7128, -74.0060);
+
+weather.thenAccept(data -> {
+    System.out.println("Temperature: " + data.getTemperature() + "°C");
+});</code></pre>
+            </div>
+          </div>
+
+          <!-- C# Tab -->
+          <div id="csharp-tab" class="tab-content">
+            <div class="bg-gray-800 rounded-lg p-6 text-white">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold">C# Installation</h3>
+                <button
+                  onclick="copyCode('csharp-code')"
+                  class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
+                >
+                  <i class="fas fa-copy mr-1"></i> Copy
+                </button>
+              </div>
+              <pre
+                id="csharp-code"
+              ><code class="language-bash"># NuGet Package Manager
+Install-Package WRFCoin.SDK
+
+# .NET CLI
+dotnet add package WRFCoin.SDK</code></pre>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 text-white mt-4">
+              <h3 class="text-lg font-semibold mb-4">Basic Usage</h3>
+              <pre><code class="language-csharp">// Initialize SDK
+var sdk = new WRFCoinSDK.Builder()
+    .WithApiKey("your-api-key")
+    .WithEnvironment(Environment.Production)
+    .Build();
+
+// Get current weather
+var weather = await sdk.WeatherService
+    .GetCurrentWeatherAsync(40.7128, -74.0060);
+
+Console.WriteLine($"Temperature: {weather.Temperature}°C");</code></pre>
+            </div>
+          </div>
+
+          <!-- Android Tab -->
+          <div id="android-tab" class="tab-content">
+            <div class="bg-gray-800 rounded-lg p-6 text-white">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold">Android Installation</h3>
+                <button
+                  onclick="copyCode('android-code')"
+                  class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
+                >
+                  <i class="fas fa-copy mr-1"></i> Copy
+                </button>
+              </div>
+              <pre
+                id="android-code"
+              ><code class="language-kotlin">// build.gradle.kts (Module: app)
+dependencies {
+    implementation("com.wrfcoin:sdk-android:1.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+}</code></pre>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 text-white mt-4">
+              <h3 class="text-lg font-semibold mb-4">Basic Usage</h3>
+              <pre><code class="language-kotlin">// Initialize in Application class
+val config = WRFCoinConfig.Builder()
+    .apiKey("your-api-key")
+    .environment(WRFCoinEnvironment.PRODUCTION)
+    .build()
+
+WRFCoinSDK.initialize(this, config)
+
+// Get current weather
+lifecycleScope.launch {
+    val weather = WRFCoinSDK.getInstance()
+        .weatherService
+        .getCurrentWeather(40.7128, -74.0060)
+    
+    Log.d("Weather", "Temperature: ${weather.temperature}°C")
+}</code></pre>
+            </div>
+          </div>
+
+          <!-- iOS Tab -->
+          <div id="ios-tab" class="tab-content">
+            <div class="bg-gray-800 rounded-lg p-6 text-white">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold">iOS Installation</h3>
+                <button
+                  onclick="copyCode('ios-code')"
+                  class="text-sm bg-gray-700 px-3 py-1 rounded hover:bg-gray-600"
+                >
+                  <i class="fas fa-copy mr-1"></i> Copy
+                </button>
+              </div>
+              <pre id="ios-code"><code class="language-swift">// Package.swift
+dependencies: [
+    .package(url: "https://github.com/wrfcoin/ios-sdk", from: "1.0.0")
+]
+
+// Or CocoaPods
+pod 'WRFCoinSDK', '~> 1.0'</code></pre>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-6 text-white mt-4">
+              <h3 class="text-lg font-semibold mb-4">Basic Usage</h3>
+              <pre><code class="language-swift">// Configure in App.swift
+let config = WRFCoinConfiguration(
+    apiKey: "your-api-key",
+    environment: .production
+)
+WRFCoinSDK.configure(with: config)
+
+// Get current weather
+Task {
+    do {
+        let weather = try await WRFCoinSDK.shared.weatherService
+            .getCurrentWeather(latitude: 40.7128, longitude: -74.0060)
+        print("Temperature: \(weather.temperature)°C")
+    } catch {
+        print("Error: \(error)")
+    }
+}</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="py-20 bg-gray-50">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Comprehensive Feature Set
+          </h2>
+          <p class="text-xl text-gray-600">
+            Everything you need to build next-generation climate and financial
+            applications
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8 feature-grid">
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-cloud-rain text-blue-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Weather Data
+            </h3>
+            <p class="text-gray-600">
+              Real-time and historical weather data from 20+ global sensor
+              platforms with forecast modeling.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-leaf text-green-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Carbon Credits
+            </h3>
+            <p class="text-gray-600">
+              Trade verified carbon credits with blockchain transparency and
+              automated offset calculations.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-coins text-purple-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              DeFi Operations
+            </h3>
+            <p class="text-gray-600">
+              Access liquidity pools, yield farming, staking, and governance
+              features on multiple blockchains.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-microchip text-orange-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              IoT Integration
+            </h3>
+            <p class="text-gray-600">
+              Connect and manage IoT sensors for environmental monitoring and
+              data collection.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-bolt text-red-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Real-time Updates
+            </h3>
+            <p class="text-gray-600">
+              WebSocket connections for live data streams, price alerts, and
+              weather notifications.
+            </p>
+          </div>
+
+          <div class="feature-card">
+            <div
+              class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-shield-alt text-indigo-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Enterprise Security
+            </h3>
+            <p class="text-gray-600">
+              HSM integration, biometric authentication, and SOC2/GDPR
+              compliance built-in.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Examples Section -->
+    <section id="examples" class="py-20 bg-white">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Real-World Examples
+          </h2>
+          <p class="text-xl text-gray-600">
+            Learn from complete application examples and best practices
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-cloud-sun text-2xl text-blue-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                Weather Dashboard
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Complete weather application with forecasts, maps, and alerts.
+              Available for all platforms.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded"
+                >Java</span
+              >
+              <span
+                class="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded"
+                >C#</span
+              >
+              <span
+                class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded"
+                >Android</span
+              >
+              <span class="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded"
+                >iOS</span
+              >
+            </div>
+            <a
+              href="../cross-platform/examples/weather-dashboard.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-seedling text-2xl text-green-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                Carbon Tracker
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Track personal carbon footprint with automatic activity detection
+              and offset recommendations.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span
+                class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded"
+                >Android</span
+              >
+              <span class="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded"
+                >iOS</span
+              >
+              <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded"
+                >HealthKit</span
+              >
+            </div>
+            <a
+              href="../ios/examples/carbon-tracker-app.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-chart-line text-2xl text-purple-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                DeFi Trading Bot
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Automated trading bot for carbon credits with strategy backtesting
+              and risk management.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded"
+                >Java</span
+              >
+              <span
+                class="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded"
+                >C#</span
+              >
+              <span
+                class="px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded"
+                >Spring Boot</span
+              >
+            </div>
+            <a
+              href="../java/examples/trading-bot.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-network-wired text-2xl text-orange-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                IoT Weather Station
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Complete IoT solution with sensor management, data collection, and
+              blockchain integration.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span
+                class="px-2 py-1 bg-orange-100 text-orange-700 text-xs rounded"
+                >Raspberry Pi</span
+              >
+              <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded"
+                >Python</span
+              >
+              <span
+                class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded"
+                >MQTT</span
+              >
+            </div>
+            <a
+              href="../cross-platform/examples/iot-station.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-building text-2xl text-indigo-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                Enterprise Dashboard
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Multi-tenant enterprise dashboard with role-based access and
+              advanced analytics.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span
+                class="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded"
+                >ASP.NET Core</span
+              >
+              <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded"
+                >React</span
+              >
+              <span class="px-2 py-1 bg-red-100 text-red-700 text-xs rounded"
+                >Azure</span
+              >
+            </div>
+            <a
+              href="../csharp/examples/enterprise-dashboard.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+
+          <div class="feature-card card-hover">
+            <div class="flex items-center mb-4">
+              <i class="fas fa-mobile-alt text-2xl text-pink-500 mr-3"></i>
+              <h3 class="text-xl font-semibold text-gray-900">
+                Cross-Platform App
+              </h3>
+            </div>
+            <p class="text-gray-600 mb-4">
+              Shared business logic across Android and iOS with
+              platform-specific UI components.
+            </p>
+            <div class="flex flex-wrap gap-2 mb-4">
+              <span
+                class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded"
+                >Kotlin MP</span
+              >
+              <span class="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded"
+                >SwiftUI</span
+              >
+              <span class="px-2 py-1 bg-pink-100 text-pink-700 text-xs rounded"
+                >Compose</span
+              >
+            </div>
+            <a
+              href="../cross-platform/examples/shared-logic.html"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Example →
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Documentation Links -->
+    <section id="guides" class="py-20 bg-gray-50">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Comprehensive Documentation
+          </h2>
+          <p class="text-xl text-gray-600">
+            Everything you need to know from getting started to advanced
+            implementation
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-rocket text-indigo-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Getting Started
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Installation guides, authentication setup, and your first API
+              calls for each platform.
+            </p>
+            <a
+              href="../getting-started/"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              Read Guide →
+            </a>
+          </div>
+
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-cogs text-green-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Best Practices
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Security guidelines, performance optimization, error handling, and
+              production deployment.
+            </p>
+            <a
+              href="../best-practices/"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              Read Guide →
+            </a>
+          </div>
+
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-code text-purple-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              API Reference
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Complete API documentation with parameters, response formats, and
+              interactive examples.
+            </p>
+            <a
+              href="https://api.wrfcoin.com/docs"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View API Docs →
+            </a>
+          </div>
+
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-layer-group text-blue-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Cross-Platform
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Strategies for building applications that work across multiple
+              platforms with shared logic.
+            </p>
+            <a
+              href="../cross-platform/"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              Read Guide →
+            </a>
+          </div>
+
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-bug text-yellow-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Troubleshooting
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Common issues, debugging techniques, and solutions for
+              platform-specific problems.
+            </p>
+            <a
+              href="../troubleshooting/"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              Read Guide →
+            </a>
+          </div>
+
+          <div
+            class="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition"
+          >
+            <div
+              class="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mb-4"
+            >
+              <i class="fas fa-graduation-cap text-red-600 text-xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">Tutorials</h3>
+            <p class="text-gray-600 mb-4">
+              Step-by-step tutorials for building complete applications from
+              scratch to deployment.
+            </p>
+            <a
+              href="../tutorials/"
+              class="text-indigo-600 hover:text-indigo-800 font-medium"
+            >
+              View Tutorials →
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Community Section -->
+    <section class="py-20 bg-white">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+          <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+            Join the Community
+          </h2>
+          <p class="text-xl text-gray-600">
+            Connect with developers, get support, and contribute to the
+            ecosystem
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-3 gap-8">
+          <div class="text-center">
+            <div
+              class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4"
+            >
+              <i class="fab fa-discord text-purple-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Discord Community
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Join our Discord server for real-time support, discussions, and
+              updates.
+            </p>
+            <a
+              href="https://discord.gg/wrfcoin"
+              class="inline-flex items-center text-white bg-purple-600 px-6 py-3 rounded-lg hover:bg-purple-700 transition"
+            >
+              <i class="fab fa-discord mr-2"></i>
+              Join Discord
+            </a>
+          </div>
+
+          <div class="text-center">
+            <div
+              class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4"
+            >
+              <i class="fab fa-github text-gray-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              GitHub Repository
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Access source code, report issues, and contribute to the SDK
+              development.
+            </p>
+            <a
+              href="https://github.com/wrfcoin/sdks"
+              class="inline-flex items-center text-white bg-gray-800 px-6 py-3 rounded-lg hover:bg-gray-900 transition"
+            >
+              <i class="fab fa-github mr-2"></i>
+              View GitHub
+            </a>
+          </div>
+
+          <div class="text-center">
+            <div
+              class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4"
+            >
+              <i class="fas fa-life-ring text-blue-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-semibold text-gray-900 mb-3">
+              Support Center
+            </h3>
+            <p class="text-gray-600 mb-4">
+              Access documentation, submit tickets, and get enterprise support.
+            </p>
+            <a
+              href="https://support.wrfcoin.com"
+              class="inline-flex items-center text-white bg-blue-600 px-6 py-3 rounded-lg hover:bg-blue-700 transition"
+            >
+              <i class="fas fa-headset mr-2"></i>
+              Get Support
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-16">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="grid md:grid-cols-4 gap-8">
+          <div>
+            <div class="flex items-center mb-6">
+              <i class="fas fa-cloud-sun text-2xl text-indigo-400 mr-3"></i>
+              <span class="text-xl font-bold">WRFCoin SDK</span>
+            </div>
+            <p class="text-gray-400 mb-6">
+              Building the future of climate technology with comprehensive
+              blockchain and IoT integration.
+            </p>
+            <div class="flex space-x-4">
+              <a
+                href="https://github.com/wrfcoin"
+                class="text-gray-400 hover:text-white"
+              >
+                <i class="fab fa-github text-xl"></i>
+              </a>
+              <a
+                href="https://twitter.com/wrfcoin"
+                class="text-gray-400 hover:text-white"
+              >
+                <i class="fab fa-twitter text-xl"></i>
+              </a>
+              <a
+                href="https://discord.gg/wrfcoin"
+                class="text-gray-400 hover:text-white"
+              >
+                <i class="fab fa-discord text-xl"></i>
+              </a>
+              <a
+                href="https://linkedin.com/company/wrfcoin"
+                class="text-gray-400 hover:text-white"
+              >
+                <i class="fab fa-linkedin text-xl"></i>
+              </a>
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-lg font-semibold mb-6">SDKs</h3>
+            <ul class="space-y-3 text-gray-400">
+              <li>
+                <a href="../java/" class="hover:text-white transition"
+                  >Java SDK</a
+                >
+              </li>
+              <li>
+                <a href="../csharp/" class="hover:text-white transition"
+                  >C# SDK</a
+                >
+              </li>
+              <li>
+                <a href="../android/" class="hover:text-white transition"
+                  >Android SDK</a
+                >
+              </li>
+              <li>
+                <a href="../ios/" class="hover:text-white transition"
+                  >iOS SDK</a
+                >
+              </li>
+              <li>
+                <a href="../cross-platform/" class="hover:text-white transition"
+                  >Cross-Platform</a
+                >
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h3 class="text-lg font-semibold mb-6">Resources</h3>
+            <ul class="space-y-3 text-gray-400">
+              <li>
+                <a
+                  href="../getting-started/"
+                  class="hover:text-white transition"
+                  >Getting Started</a
+                >
+              </li>
+              <li>
+                <a href="../best-practices/" class="hover:text-white transition"
+                  >Best Practices</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://api.wrfcoin.com/docs"
+                  class="hover:text-white transition"
+                  >API Reference</a
+                >
+              </li>
+              <li>
+                <a href="../tutorials/" class="hover:text-white transition"
+                  >Tutorials</a
+                >
+              </li>
+              <li>
+                <a
+                  href="../troubleshooting/"
+                  class="hover:text-white transition"
+                  >Troubleshooting</a
+                >
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h3 class="text-lg font-semibold mb-6">Company</h3>
+            <ul class="space-y-3 text-gray-400">
+              <li>
+                <a
+                  href="https://wrfcoin.com/about"
+                  class="hover:text-white transition"
+                  >About</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://wrfcoin.com/careers"
+                  class="hover:text-white transition"
+                  >Careers</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://wrfcoin.com/contact"
+                  class="hover:text-white transition"
+                  >Contact</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://wrfcoin.com/privacy"
+                  class="hover:text-white transition"
+                  >Privacy Policy</a
+                >
+              </li>
+              <li>
+                <a
+                  href="https://wrfcoin.com/terms"
+                  class="hover:text-white transition"
+                  >Terms of Service</a
+                >
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <div
+          class="border-t border-gray-800 mt-12 pt-8 text-center text-gray-400"
+        >
+          <p>&copy; 2024 WRFCoin. All rights reserved.</p>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Search Overlay -->
+    <div id="search-overlay" class="search-overlay">
+      <div class="search-modal">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-2xl font-bold text-gray-900">Search Documentation</h2>
+          <button
+            onclick="closeSearch()"
+            class="text-gray-500 hover:text-gray-700"
+          >
+            <i class="fas fa-times text-xl"></i>
+          </button>
+        </div>
+
+        <div class="relative mb-6">
+          <input
+            type="text"
+            id="search-input"
+            placeholder="Search for guides, examples, API methods..."
+            class="w-full px-4 py-3 pl-12 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+          />
+          <i
+            class="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"
+          ></i>
+        </div>
+
+        <div id="search-results" class="space-y-3">
+          <!-- Search results will be populated here -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+
+    <script>
+      // Tab functionality
+      function showTab(tabId, button) {
+        // Hide all tabs
+        document.querySelectorAll('.tab-content').forEach(tab => {
+          tab.classList.remove('active');
+        });
+
+        // Remove active class from all buttons
+        document.querySelectorAll('.tab-button').forEach(btn => {
+          btn.classList.remove('active');
+        });
+
+        // Show selected tab and mark button as active
+        document.getElementById(tabId).classList.add('active');
+        button.classList.add('active');
+      }
+
+      // Copy code functionality
+      function copyCode(elementId) {
+        const codeElement = document.getElementById(elementId);
+        const text = codeElement.textContent;
+
+        navigator.clipboard.writeText(text).then(() => {
+          // Show temporary feedback
+          const button = event.target.closest('button');
+          const originalText = button.innerHTML;
+          button.innerHTML = '<i class="fas fa-check mr-1"></i> Copied!';
+          button.classList.add('bg-green-600');
+
+          setTimeout(() => {
+            button.innerHTML = originalText;
+            button.classList.remove('bg-green-600');
+          }, 2000);
+        });
+      }
+
+      // Search functionality
+      function openSearch() {
+        document.getElementById('search-overlay').style.display = 'block';
+        document.getElementById('search-input').focus();
+      }
+
+      function closeSearch() {
+        document.getElementById('search-overlay').style.display = 'none';
+      }
+
+      // Close search on escape key
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+          closeSearch();
+        }
+      });
+
+      // Close search when clicking overlay
+      document
+        .getElementById('search-overlay')
+        .addEventListener('click', function (e) {
+          if (e.target === this) {
+            closeSearch();
+          }
+        });
+
+      // Search functionality
+      const searchData = [
+        {
+          title: 'Java SDK - Getting Started',
+          url: '../java/',
+          category: 'SDK',
+        },
+        { title: 'C# SDK - Installation', url: '../csharp/', category: 'SDK' },
+        {
+          title: 'Android SDK - Quick Start',
+          url: '../android/',
+          category: 'SDK',
+        },
+        { title: 'iOS SDK - Setup Guide', url: '../ios/', category: 'SDK' },
+        {
+          title: 'Weather API - getCurrentWeather',
+          url: '../api/weather.html#getCurrentWeather',
+          category: 'API',
+        },
+        {
+          title: 'Carbon Credits - Purchase',
+          url: '../api/carbon.html#purchaseCredits',
+          category: 'API',
+        },
+        {
+          title: 'DeFi - Liquidity Pools',
+          url: '../api/defi.html#liquidityPools',
+          category: 'API',
+        },
+        {
+          title: 'Best Practices - Security',
+          url: '../best-practices/#security',
+          category: 'Guide',
+        },
+        {
+          title: 'Cross-Platform Development',
+          url: '../cross-platform/',
+          category: 'Guide',
+        },
+        {
+          title: 'Weather Dashboard Example',
+          url: '../examples/weather-dashboard.html',
+          category: 'Example',
+        },
+        {
+          title: 'Carbon Tracker App',
+          url: '../examples/carbon-tracker.html',
+          category: 'Example',
+        },
+        {
+          title: 'Authentication Guide',
+          url: '../guides/authentication.html',
+          category: 'Guide',
+        },
+        {
+          title: 'Error Handling',
+          url: '../guides/error-handling.html',
+          category: 'Guide',
+        },
+        {
+          title: 'Real-time Features',
+          url: '../guides/realtime.html',
+          category: 'Guide',
+        },
+      ];
+
+      document
+        .getElementById('search-input')
+        .addEventListener('input', function (e) {
+          const query = e.target.value.toLowerCase();
+          const results = document.getElementById('search-results');
+
+          if (query.length < 2) {
+            results.innerHTML = '';
+            return;
+          }
+
+          const filtered = searchData.filter(
+            item =>
+              item.title.toLowerCase().includes(query) ||
+              item.category.toLowerCase().includes(query)
+          );
+
+          results.innerHTML = filtered
+            .map(
+              item => `
+                <a href="${item.url}" class="block p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <div class="font-medium text-gray-900">${item.title}</div>
+                            <div class="text-sm text-gray-500">${item.category}</div>
+                        </div>
+                        <i class="fas fa-arrow-right text-gray-400"></i>
+                    </div>
+                </a>
+            `
+            )
+            .join('');
+        });
+
+      // Smooth scrolling for navigation links
+      document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+          e.preventDefault();
+          const target = document.querySelector(this.getAttribute('href'));
+          if (target) {
+            target.scrollIntoView({
+              behavior: 'smooth',
+              block: 'start',
+            });
+          }
+        });
+      });
+
+      // Update active nav link based on scroll position
+      window.addEventListener('scroll', function () {
+        const sections = document.querySelectorAll('section[id]');
+        const navLinks = document.querySelectorAll('.nav-link');
+
+        let current = '';
+
+        sections.forEach(section => {
+          const sectionTop = section.offsetTop;
+          const sectionHeight = section.clientHeight;
+
+          if (pageYOffset >= sectionTop - 200) {
+            current = section.getAttribute('id');
+          }
+        });
+
+        navLinks.forEach(link => {
+          link.classList.remove('active');
+          if (link.getAttribute('href') === '#' + current) {
+            link.classList.add('active');
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,239 @@
+name: Named Test Targets (advisory)
+
+# Owner 2026-10-07: input-relevant PRs plus nightly on main and dispatch.
+# Inputs and evidence tradeoffs: WORKFLOW_JUSTIFICATION.md, relevance/nightly section.
+# Advisory named-target classifications and expected failure identities are unchanged.
+
+on:
+  pull_request:
+    paths:
+      - 'native-chain/tests/oracle_governance_rotation_2712.rs'
+      - 'native-chain/tests/oracle_governance_declaration_2712.rs'
+      - 'native-chain/tests/chain_identity_split_2713.rs'
+      - 'native-chain/tests/chain_identity_fail_closed_2713.rs'
+      - 'native-chain/tests/restored_producer_set_is_unbound_2290.rs'
+      - 'shared-protocol/src/crypto/domain_signing.rs'
+      - 'native-chain/src/bin/launch_api/main.rs'
+      - 'scripts/check_named_test_targets.py'
+      - 'scripts/named_test_targets.json'
+      - '.github/workflows/named-test-targets.yml'
+      - 'native-chain/tests/cut_composition_lifecycle_2498.rs'
+      - 'shared-protocol/src/consensus/proof_of_publishing.rs'
+      - 'native-chain/src/mining/collaborative_pools.rs'
+      - 'scripts/cargo_test_nonvacuous.py'
+      - 'scripts/test_cargo_test_nonvacuous.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '**/*.rs'
+      - 'scripts/check_named_test_targets.py'
+      - 'scripts/named_test_targets.json'
+      - '.github/workflows/named-test-targets.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '1 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Exactly one job, no `needs:` edges — so there is no fan-out in which a skipped
+  # dependency reads as success, and scripts/check_terminal_skip_guards.py has
+  # nothing to guard here. The check-run result IS the classifier's verdict.
+  named-test-targets:
+    name: advisory — integration targets nothing else runs
+    # Self-hosted, matching the repo's convention for heavy Rust legs: eight
+    # workflows already use `[self-hosted, n5pro]`, including test-target-compile.yml
+    # and ci-readiness.yml's own Rust job — ci-readiness keeps `ubuntu-latest` only
+    # for its light jobs. Two reasons this job has to be here rather than hosted:
+    #
+    #   1. The documented failure is hosted-specific. ci-readiness.yml's parking note
+    #      records a hosted runner dying with `No space left on device` building these
+    #      very targets — ~14G free on a hosted image against a measured 21G of
+    #      `target/`. That is a property of the runner image, not of the targets, and
+    #      #2490's dispatch input already offers n5pro for exactly this reason.
+    #   2. A gate that cannot run produces no evidence. Hosted minutes are exhausted
+    #      for the month, so a hosted-only gate whose purpose is to run the targets
+    #      nothing else runs would itself run nothing — the vacuous-gate recursion
+    #      docs/ci/VACUOUS_GATES.md is about.
+    #
+    # If the self-hosted runner is offline the job QUEUES rather than skipping, which
+    # is deliberate and matches ci-readiness.yml: a skipped job reads GREEN in rollups.
+    runs-on: ubuntu-latest
+    # 45, not 30: the #2861 steps below add the cut-composition-harness build
+    # (native-chain + shared-protocol/test-support). Warm-cache cost is minutes;
+    # the headroom is for a cold cache after a Cargo.lock change.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      # STEP 0 — DISK PREFLIGHT. Ahead of the toolchain and the cache, because an
+      # ENOSPC part-way through a cargo build surfaces as a compile failure and is
+      # indistinguishable from a real finding: an ambiguous red is worse than a loud
+      # refusal. This exits 2 — the workflow's VOID code — so a disk problem is never
+      # reported as evidence about the code in either direction.
+      - name: Preflight — enough disk for the build
+        run: |
+          set -euo pipefail
+          FLOOR_GB="${WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB:-40}"
+          if [[ ! "$FLOOR_GB" =~ ^[1-9][0-9]{0,3}$ ]]; then
+            echo "::error::GATE VOID — WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB must be a whole number of GiB."
+            exit 2
+          fi
+          # Measure the filesystem the BUILD lands on, not the runner's checkout disk:
+          # the self-hosted runners export CARGO_TARGET_DIR onto the 36T build pool while
+          # _work sits on the 236G root disk, so probing `.` voided every run once the
+          # root disk crossed the floor even though target/ had terabytes free. Walk up
+          # to the nearest existing ancestor so a first run (no target dir yet) still probes.
+          DISK_PROBE="${CARGO_TARGET_DIR:-.}"
+          while [ ! -e "${DISK_PROBE}" ]; do DISK_PROBE=$(dirname "${DISK_PROBE}"); done
+          echo "disk probe path=${DISK_PROBE} (CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>})"
+          AVAIL_GB=$(df -BG --output=avail "${DISK_PROBE}" | tail -1 | tr -dc '0-9')
+          echo "free=${AVAIL_GB}G floor=${FLOOR_GB}G"
+          if [ "$AVAIL_GB" -lt "$FLOOR_GB" ]; then
+            echo "::error::GATE VOID — only ${AVAIL_GB}G free, need ${FLOOR_GB}G." \
+                 "A debug build of these targets was measured at 21G of target/;" \
+                 "continuing would ENOSPC mid-compile and report as a test failure." \
+                 "This is NOT evidence about the code. Reclaim disk and re-run."
+            exit 2
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      # STEP 1 — CONTROL. Must pass. No cargo, so a toolchain problem cannot make
+      # it vacuously green.
+      - name: Control — the classifier can reach all three verdicts
+        run: python3 scripts/check_named_test_targets.py --self-test
+
+      # STEP 1b — structural control. A manifest that no longer describes the tree
+      # would let the observation cover less than it claims and still exit 0.
+      # Separate step so a stale manifest is distinguishable at a glance from a
+      # failing test.
+      - name: Control — the manifest still describes this tree
+        run: python3 scripts/check_named_test_targets.py --preflight-only
+
+      # STEP 2 — OBSERVATION. Exit 1 = attributable red; exit 2 = gate broken.
+      - name: Observe — run every named target and classify it
+        run: python3 scripts/check_named_test_targets.py
+
+      # ─── #2861: feature-gated payout tests nothing event-triggered runs ───
+      #
+      # `cargo test` EXITS 0 when a named filter matches nothing ("0 passed;
+      # N filtered out"), so a payout test behind an off-by-default cargo
+      # feature can go red with every gate green — #2851 merged over exactly
+      # that (fixed in #2863). Every invocation below goes through
+      # scripts/cargo_test_nonvacuous.py, the single enforcement point that
+      # fails loudly on a zero-match run. Same control-first shape as above:
+      # the wrapper proves it can reach RED before anything relies on it.
+      #
+      # When ci-readiness.yml's pull_request trigger is restored these steps
+      # move with the rest of this stopgap file (see the header).
+      - name: Control — the zero-match wrapper can reach RED
+        run: |
+          python3 scripts/test_cargo_test_nonvacuous.py
+          python3 scripts/cargo_test_nonvacuous.py --self-test
+
+      # The ADR-003 payout/emission lifecycle proof (#2498/#2863), behind
+      # `cut-composition-harness`. Named elsewhere only by ci-readiness's
+      # dispatch-only Rust job and by manual verify-cut-composition.sh runs,
+      # so this is its only event-triggered execution. The `id` is what the
+      # integration ratchet's `external_coverage` entry points at (#2888): the
+      # ratchet validator proves this workflow fires and this step is a hard
+      # step before it lets the target be subtracted from its own run.
+      - name: Cut-composition payout lifecycle (feature-enabled, nonvacuous)
+        id: cut_composition_lifecycle
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py -- test --locked \
+            -p wrfcoin-native-chain --features cut-composition-harness \
+            --test cut_composition_lifecycle_2498 -- --test-threads=1
+
+      # The `test-support` emission tests (#2861 enumeration): the full
+      # `_2492` battery, all eight of them, since #2866 re-targeted the two
+      # ADR-003 assertions and the whole set is green on main. The floor of
+      # exactly 8 is load-bearing: without the feature the same filter still
+      # matches (and passes) the 4 ungated tests — a partial-vacuity green
+      # that zero-match detection alone cannot see. This step originally ran
+      # only the two green tests with floor 2 under a recorded exemption;
+      # that exemption was executed and deleted when #2866 merged.
+      - name: test-support emission tests (feature-enabled, nonvacuous)
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 8 -- test --locked \
+            -p wrfcoin-shared-protocol --lib --features test-support \
+            _2492 -- --test-threads=1
+
+      # `full-mining` pool-reward tests (#2861 enumeration): the deployed image
+      # builds WITH full-mining (infra Dockerfile.core:31), yet these tests run
+      # only under ci-readiness's dispatch-only --all-features step. All three
+      # pass on main; the floor of 3 means the module silently compiling out
+      # (filter would match zero) cannot read as green.
+      - name: full-mining pool-reward tests (feature-enabled, nonvacuous)
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 3 -- test --locked \
+            -p wrfcoin-native-chain --lib --features full-mining \
+            -- --test-threads=1 collaborative_pools

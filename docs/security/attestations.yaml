@@ -1,0 +1,39 @@
+# Human-attested launch gates (#2160, #2165).
+#
+# `scripts/testnet_gate_check.py` reads this file and ONLY this file for every
+# HUMAN gate — it never infers a human gate from a machine signal, and it
+# never writes to this file itself. A gate id with no entry here is `missing`.
+# An entry older than the script's `--max-attestation-age-days` (default 30)
+# is `stale`, not `pass` — re-attest it rather than leaving the old date.
+#
+# Shape (every field required; an entry missing one is a parse error and
+# makes EVERY human gate MISSING, not just the broken entry — see the script's
+# docstring for why a partially-unreadable file is never partially trusted):
+#
+#   - gate_id: incident-response-plan-reviewed
+#     attested_by: <your name or handle>
+#     attested_at: "YYYY-MM-DD"
+#     evidence_url: "<link to the reviewed doc, the ceremony log, the report, etc.>"
+#
+# Gate ids the script currently reads (`testnet` set, always; `incentivized`
+# set, additionally, once #2165's higher bar applies):
+#
+# testnet:
+#   - incident-response-plan-reviewed
+#   - disaster-recovery-runbook-reviewed
+#   - key-ceremony-witnessed
+#   - mobile-launch-criteria-met
+# incentivized (adds to the above):
+#   - external-audit-remediated-and-retested
+#   - public-bug-bounty-live
+#   - extended-fuzzing-campaign-quantified
+#   - validator-key-rotation-exercised
+#   - multiparty-upgrade-key-custody-in-place
+#   - disaster-recovery-exercise-timed
+#   - adversarial-validator-ran-against-network
+#   - extended-run-without-unplanned-reset
+#
+# No entries yet — this file intentionally starts empty. An empty file is not
+# a parse error (it is a top-level empty list); every gate above reads as
+# MISSING until someone attests it, which is the fail-closed default the
+# story requires.

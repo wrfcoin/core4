@@ -1,0 +1,223 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WRF Workflow Metadata Schema",
+  "description": "Comprehensive workflow tagging and dependency mapping for Wrfcoin blockchain infrastructure",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique workflow name"
+    },
+    "port": {
+      "type": "integer",
+      "description": "Port number for network services",
+      "minimum": 1000,
+      "maximum": 65535
+    },
+    "tags": {
+      "type": "array",
+      "description": "Classification tags for smart filtering and operations",
+      "items": {
+        "type": "string",
+        "enum": [
+          "@critical",
+          "@realtime",
+          "@weather",
+          "@earnings",
+          "@cross-chain",
+          "@storage",
+          "@compute",
+          "@api",
+          "@frontend",
+          "@governance",
+          "@testnet",
+          "@mainnet",
+          "@optional",
+          "@bootstrap"
+        ]
+      }
+    },
+    "group": {
+      "type": "string",
+      "description": "Functional grouping",
+      "enum": [
+        "infrastructure",
+        "weather",
+        "crosschain",
+        "compute",
+        "storage",
+        "governance",
+        "frontend"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "description": "Environment scope",
+      "enum": ["testnet", "mainnet", "development", "universal"]
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "Services this workflow depends on",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dependents": {
+      "type": "array",
+      "description": "Services that depend on this workflow",
+      "items": {
+        "type": "string"
+      }
+    },
+    "start_condition": {
+      "type": "string",
+      "description": "Startup requirements",
+      "enum": ["dependencies_healthy", "immediate", "manual", "cascade"]
+    },
+    "restart_mode": {
+      "type": "string",
+      "description": "Restart behavior",
+      "enum": ["graceful", "immediate", "cascade", "manual"]
+    },
+    "health_check": {
+      "type": "object",
+      "properties": {
+        "interval": {
+          "type": "integer",
+          "description": "Health check interval in seconds",
+          "minimum": 10
+        },
+        "type": {
+          "type": "string",
+          "enum": ["http", "tcp", "websocket", "custom"]
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "Health check endpoint path"
+        },
+        "retry_on_fail": {
+          "type": "boolean",
+          "description": "Auto-retry on health check failure"
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Health check timeout in seconds",
+          "default": 30
+        }
+      }
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Whether workflow is currently enabled",
+      "default": true
+    },
+    "ephemeral": {
+      "type": "boolean",
+      "description": "Whether workflow is temporary/one-time",
+      "default": false
+    },
+    "backup_strategy": {
+      "type": "object",
+      "description": "Fallback configuration for critical services",
+      "properties": {
+        "has_backup": {
+          "type": "boolean"
+        },
+        "backup_port": {
+          "type": "integer"
+        },
+        "failover_timeout": {
+          "type": "integer",
+          "default": 60
+        }
+      }
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable workflow description"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "running",
+        "stopped",
+        "failed",
+        "starting",
+        "stopping",
+        "scaling"
+      ],
+      "description": "Current operational status"
+    },
+    "lifecycle_hooks": {
+      "type": "object",
+      "description": "Automated lifecycle management hooks",
+      "properties": {
+        "on_start": {
+          "type": "string",
+          "description": "Command to execute on startup"
+        },
+        "on_shutdown": {
+          "type": "string",
+          "description": "Graceful shutdown command"
+        },
+        "on_fail": {
+          "type": "string",
+          "description": "Failure recovery command"
+        },
+        "on_scale_up": {
+          "type": "string",
+          "description": "Horizontal scaling command"
+        },
+        "on_backup": {
+          "type": "string",
+          "description": "Backup/snapshot command"
+        }
+      }
+    },
+    "scaling_config": {
+      "type": "object",
+      "description": "Horizontal scaling configuration",
+      "properties": {
+        "scalable": {
+          "type": "boolean",
+          "description": "Whether service supports horizontal scaling",
+          "default": false
+        },
+        "scale_group": {
+          "type": "string",
+          "description": "Scaling group identifier for coordinated scaling"
+        },
+        "min_instances": {
+          "type": "integer",
+          "description": "Minimum number of instances",
+          "default": 1
+        },
+        "max_instances": {
+          "type": "integer",
+          "description": "Maximum number of instances",
+          "default": 1
+        },
+        "scale_trigger": {
+          "type": "object",
+          "properties": {
+            "metric": {
+              "type": "string",
+              "enum": [
+                "cpu",
+                "memory",
+                "requests_per_second",
+                "queue_depth",
+                "custom"
+              ]
+            },
+            "threshold": {
+              "type": "number",
+              "description": "Threshold value to trigger scaling"
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["name", "tags", "group", "scope", "enabled"]
+}

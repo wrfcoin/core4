@@ -1,0 +1,16 @@
+[package]
+name = "wrf-primitives"
+version = "0.1.0"
+edition = "2021"
+description = "Shared primitive types for the WRFCoin blockchain platform"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[features]
+# Test tooling only (core4#2888 story 5): the integration-target registration
+# guard and its one dependency. Enabled from [dev-dependencies] by the crates
+# that carry the guard; never part of the production dependency surface.
+integration-guard = ["dep:serde_json"]

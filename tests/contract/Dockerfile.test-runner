@@ -1,0 +1,63 @@
+# Integration Test Runner Dockerfile
+FROM node:18-alpine
+
+# Install system dependencies including Docker CLI
+RUN apk add --no-cache \
+    curl \
+    docker \
+    docker-compose \
+    git \
+    bash \
+    ca-certificates \
+    && rm -rf /var/cache/apk/*
+
+# Create app directory
+WORKDIR /app
+
+# Create required directories
+RUN mkdir -p /app/logs /app/reports /app/tests
+
+# Copy package configuration
+COPY package*.json ./
+
+# Install dependencies (including dev dependencies for testing)
+RUN npm ci && npm cache clean --force
+
+# Copy test runner and related files
+COPY integration-test-runner.js ./
+COPY docker-compose.test.yml ./
+COPY mocks/ ./mocks/
+COPY scripts/ ./scripts/
+COPY utils/ ./utils/
+
+# Copy any test files
+COPY tests/ ./tests/ 2>/dev/null || true
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S testrunner -u 1001 -G nodejs && \
+    addgroup testrunner docker
+
+# Change ownership of app directory
+RUN chown -R testrunner:nodejs /app
+
+# Switch to non-root user
+USER testrunner
+
+# Set environment variables
+ENV NODE_ENV=test
+ENV DOCKER_HOST=unix:///var/run/docker.sock
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD node -e "console.log('Test runner container is healthy')" || exit 1
+
+# Labels for metadata
+LABEL maintainer="WRFCoin Development Team" \
+      description="Integration Test Runner for Contract Testing" \
+      version="1.0.0" \
+      service.name="test-runner" \
+      service.type="testing"
+
+# Default command runs integration tests
+CMD ["node", "integration-test-runner.js", "--verbose", "--profile=integration-test"]

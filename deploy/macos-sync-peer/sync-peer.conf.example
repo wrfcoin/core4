@@ -1,0 +1,31 @@
+# Copy this file to ~/Library/Application Support/WRFCoinSyncPeer/sync-peer.conf
+# and replace only the explicitly marked inputs. This is a configuration
+# template, not a release artifact and not a credential store.
+
+# Immutable identity for the current public testnet cut.
+WRFCOIN_NETWORK_ID=testnet
+WRFCOIN_CHAIN_ID=777
+WRFCOIN_GENESIS_HASH=805efc973fe50829ae2abf7c73bde0a5ed8511f3dfa97ff50a86615703442625
+
+# Required public input from the reference operator. It must be a complete
+# public multiaddr, for example: /ip4/<host>/tcp/<port>/p2p/<peer-id>
+WRFCOIN_P2P_BOOTSTRAP=REPLACE_WITH_APPROVED_PUBLIC_MULTIADDR
+
+# Local-only API endpoint used by health checks. Do not expose it publicly.
+WRFCOIN_API_ADDR=127.0.0.1:8556
+
+# These role locks are mandatory. The launcher passes only this sync-only role.
+WRFCOIN_SYNC_ONLY=true
+WRFCOIN_PRODUCER_MODE=false
+WRFCOIN_ORACLE_MODE=false
+
+# Required release inputs: the raw arm64 executable and its exact build
+# manifest/signatures from the approved native build packet.
+WRFCOIN_ARTIFACT_PATH=REPLACE_WITH_ABSOLUTE_ARTIFACT_PATH
+WRFCOIN_ARTIFACT_SHA256=REPLACE_WITH_64_HEX_SHA256
+
+WRFCOIN_ARTIFACT_SIGNATURE_PATH=REPLACE_WITH_ARTIFACT_SIGNATURE_PATH
+WRFCOIN_BUILD_MANIFEST_PATH=REPLACE_WITH_BUILD_MANIFEST_PATH
+WRFCOIN_BUILD_MANIFEST_SIGNATURE_PATH=REPLACE_WITH_MANIFEST_SIGNATURE_PATH
+WRFCOIN_RELEASE_KEY_FINGERPRINT=REPLACE_WITH_APPROVED_PRIMARY_FINGERPRINT
+WRFCOIN_SOURCE_COMMIT=REPLACE_WITH_EXACT_SOURCE_COMMIT

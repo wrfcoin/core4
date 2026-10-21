@@ -1,0 +1,273 @@
+# cli-test-gate.yml — the gate that RUNS `tools/cli/WrfcoinCLI`'s tests (#2741).
+#
+# WHAT WAS ACTUALLY MISSING
+# -------------------------
+# #2741 was filed as "no CI job compiles the crate or runs its tests". The
+# first half of that is not true and was not true when it was filed — the
+# inventory below was enumerated from `cargo metadata` and the Actions API,
+# not from grepping workflow text for the crate name:
+#
+#   * test-target-compile.yml (since #2888 story 7: the compile step inside
+#     integration-ratchet.yml) runs `cargo test --locked --workspace
+#     --features hsm --no-run` on [self-hosted, n5pro]. `cargo metadata`
+#     reports `wrfcoin_cli` in BOTH `workspace_members` and
+#     `workspace_default_members` (21 == 21, no `default-members` key in the
+#     root manifest), so `--workspace` selects it. That job COMPILES the CLI's
+#     lib, bin and three integration test targets on every PR touching
+#     `**/*.rs`. The crate's name appears nowhere in that file — the exact
+#     reason a name-grep is not the instrument here.
+#   * wrfcoin-cli-integration.yml DID compile and test the crate on #2739's
+#     head: check-run 92481686991 (`mocked-integration`) executed 15 steps,
+#     step 5 "Build wrfcoin CLI binary" succeeded in 35s, and steps 6-7 ran
+#     two integration targets. It was REAL, not VOID, on 2026-08-06.
+#
+# What is missing is narrower and worse: **nothing executes a `wrfcoin_cli`
+# test on a runner that can produce evidence.**
+#
+#   * that compile step is `--no-run` by construction. It proves the
+#     tests COMPILE and says nothing about whether they PASS.
+#   * wrfcoin-cli-integration.yml runs both its jobs on `ubuntu-latest`.
+#     Hosted runners on this repo are billing-VOID: run 33361037125 on `main`
+#     (2026-08-31T05:34) shows `input-panic-lint` with runner="", steps=0,
+#     three seconds wall clock, annotated "The job was not started because
+#     recent account payments have failed". Every hosted job on that push
+#     failed identically; every self-hosted job succeeded. A hosted job is
+#     not a gate tonight.
+#   * ci-readiness.yml's `cargo test --locked --workspace --lib
+#     --all-features` would cover the CLI's lib tests — but that workflow
+#     resolves to `workflow_dispatch` only; both `pull_request` and
+#     `schedule` are commented out. It never fires on a PR.
+#   * named-test-targets.yml runs on n5pro but names only
+#     wrfcoin-native-chain (5 targets) and wrfcoin-shared-protocol (1) in
+#     scripts/named_test_targets.json. Zero CLI targets.
+#
+# Measured on `main` 09abcd20c: `cargo test --locked -p wrfcoin_cli` executes
+# 103 tests across six harnesses — lib 38, bin 44, api_client_integration 2,
+# cli_api_contract 3, command_group_integration 16, doc-tests 0. **82 of them
+# (lib + bin) are executed by nothing at all**, on any runner, hosted or not.
+# The bin half is where #2735's wallet-state money-migration regression test
+# lives (`wallet_state_2735_tests`, src/cli/commands.rs): `mod cli` is
+# declared in main.rs and not in lib.rs, so `--lib` cannot reach it and no
+# workflow names the bin. That is the test guarding the f64 -> u64 balance
+# conversion #2741 was filed about.
+#
+# WHY THE PATH FILTER IS BROAD
+# ----------------------------
+# wrfcoin-cli-integration.yml filters on `tools/cli/WrfcoinCLI/**` and
+# `native-chain/src/bin/launch_api/**`. The CLI has a path dependency on
+# `../../../shared-protocol`, so a shared-protocol change that breaks the CLI
+# fires no CLI job under that filter. A filter derived from the dependency
+# closure would fix today's instance and rot the next time the closure moves,
+# silently and in the direction of less coverage. This uses the same broad
+# filter as integration-ratchet.yml's compile step instead: it costs zero Actions minutes on
+# a self-hosted runner, and the failure mode of "too many runs" is visible
+# while the failure mode of "stale closure" is not.
+#
+# RUNNER: [self-hosted, n5pro] resolves to runner `n5pro-ct102` (labels
+# self-hosted,Linux,X64,n5pro,wrfcoin). If it is offline this job QUEUES
+# rather than skipping — deliberate, and the reason this job declares no
+# `needs:`: a skipped job reads GREEN in a rollup, and a `needs:` fan-out
+# turns an upstream failure into a downstream SKIP, which is the same false
+# green one level up.
+
+name: CLI test gate
+#
+# SEQUENCING — one prerequisite remains. Merging ahead of it lands a RED gate
+# on main for a reason that is not this crate's fault.
+#
+#   #2899  SATISFIED. `--min-summaries` landed on main in a9257ac93, so the
+#          wrapper accepts the flag and the floor below is live machinery
+#          rather than a forward reference. Retired from this list rather than
+#          left standing: a prerequisite that has been met but still reads as
+#          blocking is a worse signal than no note at all.
+#   #2898  OPEN, and this gate cannot go green on CT 102 without it. It fixes
+#          tools/cli/WrfcoinCLI/tests/command_group_integration.rs, whose
+#          helper hardcodes `$CARGO_MANIFEST_DIR/../../../target/debug/wrfcoin`.
+#          CT 102 sets CARGO_TARGET_DIR=/build/target, so that path does not
+#          exist there and all 16 of that target's tests die with
+#          `run wrfcoin: NotFound` (#2894). This PR originally carried that fix
+#          and gave it up to #2898 by the manager's decision, so the gate now
+#          depends on it rather than shipping it.
+#
+#          This is also the whole content of this gate's first RED (job
+#          99398276948) — see the calibration note below. That RED was REAL
+#          but it was NOT a crate defect.
+
+
+on:
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cli-test-gate.yml'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'dataset-manifest/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cli-test-gate.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  cli-tests:
+    name: cargo test -p wrfcoin_cli (nonvacuous)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # sccache is not installed on CT 102; an inherited wrapper aborts the
+      # build before a single test compiles. Same reason integration-ratchet.yml's
+      # compile step clears it.
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Put rustup's cargo on PATH
+        # The runner service's non-interactive environment does not source
+        # ~/.cargo/env. Fail loudly here rather than as "cargo: command not
+        # found" inside the observation step, where it is one line away from
+        # looking like a compile failure in the CLI.
+        run: |
+          test -x "${HOME}/.cargo/bin/cargo" || { echo "FATAL: no cargo at ${HOME}/.cargo/bin" >&2; exit 1; }
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      - name: Disk preflight
+        # An ENOSPC part-way through a cargo build surfaces as a compile
+        # failure and is indistinguishable from a real finding. Refuse first.
+        # Floor is 12G: the CLI's dependency closure (rusqlite bundled, ring,
+        # ratatui, reqwest, shared-protocol) built to well under that from
+        # cold, and this job does not build the whole workspace.
+        run: |
+          set -euo pipefail
+          df -h .
+          avail_kb=$(df --output=avail -k . | tail -1)
+          if [ "${avail_kb}" -lt 12582912 ]; then
+            echo "::error::GATE VOID — under 12G free; the build would ENOSPC" \
+                 "mid-compile and report as a test failure. Not evidence about" \
+                 "the code in either direction." >&2
+            exit 1
+          fi
+
+      # STEP 1 — CONTROL. Must pass, and invokes no cargo, so a broken
+      # toolchain cannot make it vacuously green. Proves the anti-vacuity
+      # wrapper this gate depends on can reach RED before anything relies on
+      # its green (docs/ci/VACUOUS_GATES.md check 1).
+      - name: Control — the zero-match wrapper can reach RED
+        run: |
+          python3 scripts/test_cargo_test_nonvacuous.py
+          python3 scripts/cargo_test_nonvacuous.py --self-test
+
+      # STEP 2 — OBSERVATION. Every target of the crate: lib unit tests, bin
+      # unit tests, all three integration targets, doc-tests. No `--lib`, no
+      # `--test <name>`, no filter — a name filter that matches nothing exits
+      # 0, and naming targets is how the bin half went uncovered in the first
+      # place.
+      #
+      # CALIBRATION LOG — append-only. A bare integer with no record of what it
+      # was measured against is the decay #2889 documents.
+      #   2026-08-31, main 09abcd20c, Rust 1.88:  103 executed / 6 summaries
+      #   2026-08-31, main ec870fd87, Rust 1.98:  103 executed / 6 summaries
+      #   2026-08-31, main a9257ac93, Rust 1.98:  103 executed / 6 summaries
+      # Per-harness: lib 38, bin 44, api_client_integration 2, cli_api_contract
+      # 3, command_group_integration 16, doc-tests 0. Measured with the DEFAULT
+      # target directory; an external CARGO_TARGET_DIR false-REDs
+      # command_group_integration until #2894 lands (see the sequencing note in
+      # this file's header).
+      #
+      # TWO DIMENSIONS, because the executed count alone provably misses a
+      # whole target. Alice demonstrated it on this very gate: omitting
+      # `cli_api_contract` entirely still exited 0 at `executed=100`, because
+      # its 3 tests leave 100 behind and 100 clears a floor of 95. A dropped
+      # BINARY takes its tests with it and the remainder still clears the bar.
+      #
+      # THE FLOOR HAS BEEN FIRED, not just declared. A floor that has never
+      # rejected a missing target has not been tested, so it was made to reject
+      # one — on 47d042fe7 against main a9257ac93, Rust 1.98, default target
+      # dir, direct exit codes:
+      #
+      #   A  omission, executed floor only   executed=100 summaries=4  rc=0  GREEN
+      #      (Alice's disproof, reproduced exactly)
+      #   B  omission, + --min-summaries 6   summaries=4 (< 6), executed=100  rc=1  RED
+      #   C  cli_api_contract.rs DELETED so
+      #      the target vanishes from the
+      #      build, not merely deselected    summaries=5 (< 6), executed=100  rc=1  RED
+      #   D  restored, full target set       executed=103 summaries=6  rc=0  GREEN
+      #
+      # C is the tightest case and the one that matters: losing exactly ONE
+      # harness, where 100 executed still clears 95. The executed floor is
+      # satisfied in every RED cell above, so the rejection is attributable to
+      # the summaries dimension alone and to nothing else.
+      #
+      #   --min-executed 95  guards against the suite being filtered or gutted.
+      #                      95 of 103 leaves room to delete a test honestly.
+      #   --min-summaries 6  guards against a whole harness disappearing. Set
+      #                      EXACTLY at the measured 6, not below: the binary
+      #                      count is stable where the test count is not — test
+      #                      targets are added and removed constantly, harnesses
+      #                      almost never. Exact calibration is the same model
+      #                      named-test-targets.yml uses (8 against 8, 3 against
+      #                      3). Adding a target raises the count and still
+      #                      passes; losing one is RED, which is the point.
+      - name: Observe — run every wrfcoin_cli test target
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 95 --min-summaries 6 -- \
+            test --locked -p wrfcoin_cli

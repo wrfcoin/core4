@@ -1,0 +1,36 @@
+Something went wrong
+We're having trouble rendering this component.
+
+Error: ReferenceError: useMemo is not defined
+
+View error details
+
+    at StatusMonitorGrid (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/components/Integrations/StatusMonitorGrid.tsx:58:3)
+    at div
+    at https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/chunk-PYXJBAR5.js?v=30f8af59:1550:45
+    at CardContent2 (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/@mui_material.js?v=05c5b944:13265:17)
+    at div
+    at https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/chunk-PYXJBAR5.js?v=30f8af59:1550:45
+    at Paper2 (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/@mui_material.js?v=05c5b944:1469:17)
+    at https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/chunk-PYXJBAR5.js?v=30f8af59:1550:45
+    at Card2 (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/@mui_material.js?v=05c5b944:12924:17)
+    at div
+    at https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/chunk-PYXJBAR5.js?v=30f8af59:1550:45
+    at Box3 (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/chunk-BSJVTRD6.js?v=30f8af59:2509:19)
+    at EnhancedIntegrationsHub (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/components/Integrations/EnhancedIntegrationsHub.tsx:55:3)
+    at div
+    at div
+    at PageWrapper (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/App.jsx:270:24)
+    at RenderedRoute (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=05c5b944:4103:5)
+    at Routes (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=05c5b944:4574:5)
+    at Suspense
+    at div
+    at div
+    at AppContent (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/App.jsx:284:35)
+    at Router (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=05c5b944:4517:15)
+    at BrowserRouter (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=05c5b944:5266:5)
+    at StatusMetricsProvider (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/contexts/StatusMetricsContext.jsx:46:41)
+    at IntegrationsProvider (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/contexts/IntegrationsContext.jsx:99:40)
+    at ErrorBoundary (https://78d83de6-3c2e-4513-8977-f64d83a9e3cb-00-33g6fqpn548lr.worf.replit.dev/src/components/Common/ErrorBoundary.jsx:7:5)
+    at App
+    at Suspense

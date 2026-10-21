@@ -1,0 +1,156 @@
+# PerformanceApi
+
+All URIs are relative to *https://api.wrfcoin.com/v1*
+
+| Method                                                                                 | HTTP request                           | Description                      |
+| -------------------------------------------------------------------------------------- | -------------------------------------- | -------------------------------- |
+| [**apiPerformanceMetricsGet**](PerformanceApi.md#apiPerformanceMetricsGet)             | **GET** /api/performance/metrics       | Get performance metrics          |
+| [**apiPerformanceOptimizationPost**](PerformanceApi.md#apiPerformanceOptimizationPost) | **POST** /api/performance/optimization | Trigger performance optimization |
+
+## apiPerformanceMetricsGet
+
+> ApiPerformanceMetricsGet200Response apiPerformanceMetricsGet()
+
+Get performance metrics
+
+Retrieve comprehensive performance metrics
+
+### Example
+
+```java
+// Import classes:
+import com.wrfcoin.sdk.ApiClient;
+import com.wrfcoin.sdk.ApiException;
+import com.wrfcoin.sdk.Configuration;
+import com.wrfcoin.sdk.auth.*;
+import com.wrfcoin.sdk.models.*;
+import com.wrfcoin.sdk.api.PerformanceApi;
+
+public class Example {
+    public static void main(String[] args) {
+        ApiClient defaultClient = Configuration.getDefaultApiClient();
+        defaultClient.setBasePath("https://api.wrfcoin.com/v1");
+
+        // Configure API key authorization: ApiKeyAuth
+        ApiKeyAuth ApiKeyAuth = (ApiKeyAuth) defaultClient.getAuthentication("ApiKeyAuth");
+        ApiKeyAuth.setApiKey("YOUR API KEY");
+        // Uncomment the following line to set a prefix for the API key, e.g. "Token" (defaults to null)
+        //ApiKeyAuth.setApiKeyPrefix("Token");
+
+        // Configure HTTP bearer authorization: BearerAuth
+        HttpBearerAuth BearerAuth = (HttpBearerAuth) defaultClient.getAuthentication("BearerAuth");
+        BearerAuth.setBearerToken("BEARER TOKEN");
+
+        PerformanceApi apiInstance = new PerformanceApi(defaultClient);
+        try {
+            ApiPerformanceMetricsGet200Response result = apiInstance.apiPerformanceMetricsGet();
+            System.out.println(result);
+        } catch (ApiException e) {
+            System.err.println("Exception when calling PerformanceApi#apiPerformanceMetricsGet");
+            System.err.println("Status code: " + e.getCode());
+            System.err.println("Reason: " + e.getResponseBody());
+            System.err.println("Response headers: " + e.getResponseHeaders());
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+### Parameters
+
+This endpoint does not need any parameter.
+
+### Return type
+
+[**ApiPerformanceMetricsGet200Response**](ApiPerformanceMetricsGet200Response.md)
+
+### Authorization
+
+[ApiKeyAuth](../README.md#ApiKeyAuth), [BearerAuth](../README.md#BearerAuth)
+
+### HTTP request headers
+
+- **Content-Type**: Not defined
+- **Accept**: application/json
+
+### HTTP response details
+
+| Status code | Description                                | Response headers |
+| ----------- | ------------------------------------------ | ---------------- |
+| **200**     | Performance metrics retrieved successfully | -                |
+
+## apiPerformanceOptimizationPost
+
+> ApiPerformanceOptimizationPost200Response
+> apiPerformanceOptimizationPost(apiPerformanceOptimizationPostRequest)
+
+Trigger performance optimization
+
+Initiate performance optimization procedures
+
+### Example
+
+```java
+// Import classes:
+import com.wrfcoin.sdk.ApiClient;
+import com.wrfcoin.sdk.ApiException;
+import com.wrfcoin.sdk.Configuration;
+import com.wrfcoin.sdk.auth.*;
+import com.wrfcoin.sdk.models.*;
+import com.wrfcoin.sdk.api.PerformanceApi;
+
+public class Example {
+    public static void main(String[] args) {
+        ApiClient defaultClient = Configuration.getDefaultApiClient();
+        defaultClient.setBasePath("https://api.wrfcoin.com/v1");
+
+        // Configure API key authorization: ApiKeyAuth
+        ApiKeyAuth ApiKeyAuth = (ApiKeyAuth) defaultClient.getAuthentication("ApiKeyAuth");
+        ApiKeyAuth.setApiKey("YOUR API KEY");
+        // Uncomment the following line to set a prefix for the API key, e.g. "Token" (defaults to null)
+        //ApiKeyAuth.setApiKeyPrefix("Token");
+
+        // Configure HTTP bearer authorization: BearerAuth
+        HttpBearerAuth BearerAuth = (HttpBearerAuth) defaultClient.getAuthentication("BearerAuth");
+        BearerAuth.setBearerToken("BEARER TOKEN");
+
+        PerformanceApi apiInstance = new PerformanceApi(defaultClient);
+        ApiPerformanceOptimizationPostRequest apiPerformanceOptimizationPostRequest = new ApiPerformanceOptimizationPostRequest(); // ApiPerformanceOptimizationPostRequest |
+        try {
+            ApiPerformanceOptimizationPost200Response result = apiInstance.apiPerformanceOptimizationPost(apiPerformanceOptimizationPostRequest);
+            System.out.println(result);
+        } catch (ApiException e) {
+            System.err.println("Exception when calling PerformanceApi#apiPerformanceOptimizationPost");
+            System.err.println("Status code: " + e.getCode());
+            System.err.println("Reason: " + e.getResponseBody());
+            System.err.println("Response headers: " + e.getResponseHeaders());
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+### Parameters
+
+| Name                                      | Type                                                                                  | Description | Notes |
+| ----------------------------------------- | ------------------------------------------------------------------------------------- | ----------- | ----- |
+| **apiPerformanceOptimizationPostRequest** | [**ApiPerformanceOptimizationPostRequest**](ApiPerformanceOptimizationPostRequest.md) |             |       |
+
+### Return type
+
+[**ApiPerformanceOptimizationPost200Response**](ApiPerformanceOptimizationPost200Response.md)
+
+### Authorization
+
+[ApiKeyAuth](../README.md#ApiKeyAuth), [BearerAuth](../README.md#BearerAuth)
+
+### HTTP request headers
+
+- **Content-Type**: application/json
+- **Accept**: application/json
+
+### HTTP response details
+
+| Status code | Description                         | Response headers |
+| ----------- | ----------------------------------- | ---------------- |
+| **200**     | Optimization initiated successfully | -                |

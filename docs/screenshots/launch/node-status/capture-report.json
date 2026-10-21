@@ -1,0 +1,252 @@
+[
+  {
+    "name": "desktop-1440-dark-locked",
+    "viewport": "1440x900@1",
+    "scheme": "dark",
+    "token": false,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 8,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "",
+      "tokenState": false,
+      "errNode": "",
+      "locked": true
+    }
+  },
+  {
+    "name": "desktop-1440-dark-token",
+    "viewport": "1440x900@1",
+    "scheme": "dark",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "12.4%",
+      "errHost": "",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  },
+  {
+    "name": "desktop-1440-light-locked",
+    "viewport": "1440x900@1",
+    "scheme": "light",
+    "token": false,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 8,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "",
+      "tokenState": false,
+      "errNode": "",
+      "locked": true
+    }
+  },
+  {
+    "name": "desktop-1440-light-token",
+    "viewport": "1440x900@1",
+    "scheme": "light",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "12.4%",
+      "errHost": "",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  },
+  {
+    "name": "phone-390-dark-locked",
+    "viewport": "390x844@2",
+    "scheme": "dark",
+    "token": false,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 8,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "",
+      "tokenState": false,
+      "errNode": "",
+      "locked": true
+    }
+  },
+  {
+    "name": "phone-390-dark-token",
+    "viewport": "390x844@2",
+    "scheme": "dark",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "12.4%",
+      "errHost": "",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  },
+  {
+    "name": "phone-390-light-locked",
+    "viewport": "390x844@2",
+    "scheme": "light",
+    "token": false,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 8,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "",
+      "tokenState": false,
+      "errNode": "",
+      "locked": true
+    }
+  },
+  {
+    "name": "phone-390-light-token",
+    "viewport": "390x844@2",
+    "scheme": "light",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "12.4%",
+      "errHost": "",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  },
+  {
+    "name": "desktop-1440-dark-endpoint-503",
+    "viewport": "1440x900@1",
+    "scheme": "dark",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    ],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "endpoint unavailable (HTTP 503): /node/metrics/host",
+      "tokenState": true,
+      "errNode": "endpoint unavailable (HTTP 503): /node/resources",
+      "locked": false
+    }
+  },
+  {
+    "name": "phone-390-light-endpoint-503",
+    "viewport": "390x844@2",
+    "scheme": "light",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    ],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "endpoint unavailable (HTTP 503): /node/metrics/host",
+      "tokenState": true,
+      "errNode": "endpoint unavailable (HTTP 503): /node/resources",
+      "locked": false
+    }
+  },
+  {
+    "name": "desktop-1440-dark-origin-guard-403",
+    "viewport": "1440x900@1",
+    "scheme": "dark",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [
+      "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+    ],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "this node's origin guard refuses browser reads of host metrics (ORIGIN_REQUIRED); see WRFCOIN_API_ALLOWED_HOSTS / WRFCOIN_API_ALLOW_NO_ORIGIN, or a node built before core4#3602",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  },
+  {
+    "name": "phone-390-light-origin-guard-403",
+    "viewport": "390x844@2",
+    "scheme": "light",
+    "token": true,
+    "horizontalScroll": false,
+    "pageErrors": [
+      "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+    ],
+    "externalRequests": [],
+    "requests": 9,
+    "text": {
+      "pill": "synced",
+      "height": "49,120",
+      "bpm": "0.8",
+      "cpu": "—",
+      "errHost": "this node's origin guard refuses browser reads of host metrics (ORIGIN_REQUIRED); see WRFCOIN_API_ALLOWED_HOSTS / WRFCOIN_API_ALLOW_NO_ORIGIN, or a node built before core4#3602",
+      "tokenState": true,
+      "errNode": "",
+      "locked": false
+    }
+  }
+]

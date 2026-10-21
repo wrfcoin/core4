@@ -1,0 +1,111 @@
+
+graph TB
+    subgraph "🌐 WRFCoin Blockchain Platform"
+        subgraph "Core Infrastructure"
+            BC[🦀 Blockchain Core<br/>Rust | Consensus | Mining]
+            HSM[🔐 Hardware Security Module<br/>Cryptographic Operations]
+            BC --> HSM
+        end
+        
+        subgraph "Backend Services (15+ Microservices)"
+            API[📡 Main API Server<br/>Port 4001]
+            XC[🌉 Cross-Chain Protocol<br/>Port 3000]
+            WALLET[💰 Wallet Server<br/>Port 4000]
+            COMP[🧠 Compute Networks<br/>Port 6000]
+            AIML[🤖 AI/ML Networks<br/>Port 6001]
+            STORAGE[💾 Storage Networks<br/>Port 7000]
+            IOT[🌡️ IoT Sensor Networks<br/>Port 3002]
+            EARN[💎 Weather Earnings<br/>Port 8080]
+            GOV[🏛️ Governance Server<br/>Port 8000]
+        end
+        
+        subgraph "Frontend Interface"
+            WEB[⚛️ React Dashboard<br/>Material-UI | Vite]
+            MOBILE[📱 Mobile Interface<br/>React Native]
+        end
+        
+        subgraph "Smart Contracts"
+            DEFI[🏦 DeFi Suite<br/>AMM | Yield Farming]
+            NFT[🎨 Computational NFTs<br/>Weather Data Assets]
+            CARBON[🌱 Carbon Credits<br/>Trading Protocol]
+            GOV_SC[🗳️ Governance<br/>DAO Contracts]
+        end
+        
+        subgraph "External Integrations"
+            WEATHER[🌦️ Weather APIs<br/>Multiple Providers]
+            ORACLE[🔮 Oracle Networks<br/>Chainlink | Band]
+            BRIDGES[🌉 Cross-Chain Bridges<br/>13+ Networks]
+            STORAGE_EXT[📦 Decentralized Storage<br/>IPFS | Arweave | Filecoin]
+        end
+        
+        subgraph "Data Layer"
+            PG[(🐘 PostgreSQL<br/>21 Consolidated Tables)]
+            REDIS[(⚡ Redis Cache<br/>Sessions | Performance)]
+            IPFS[(🌐 IPFS Storage<br/>Distributed Data)]
+        end
+        
+        subgraph "Infrastructure"
+            DOCKER[🐳 Docker Containers<br/>Service Orchestration]
+            K8S[☸️ Kubernetes<br/>Container Management]
+            MONITOR[📊 Monitoring Stack<br/>Grafana | Prometheus]
+        end
+        
+        %% Core connections
+        BC --> API
+        API --> PG
+        API --> REDIS
+        
+        %% Backend service connections
+        API --> XC
+        API --> WALLET
+        API --> COMP
+        API --> AIML
+        API --> STORAGE
+        API --> IOT
+        API --> EARN
+        API --> GOV
+        
+        %% Frontend connections
+        WEB --> API
+        MOBILE --> API
+        
+        %% Smart contract connections
+        BC --> DEFI
+        BC --> NFT
+        BC --> CARBON
+        BC --> GOV_SC
+        
+        %% External integrations
+        IOT --> WEATHER
+        API --> ORACLE
+        XC --> BRIDGES
+        STORAGE --> STORAGE_EXT
+        
+        %% Infrastructure connections
+        DOCKER --> K8S
+        MONITOR --> API
+        MONITOR --> BC
+        
+        %% Data flows
+        IOT --> PG
+        EARN --> PG
+        GOV --> PG
+        COMP --> IPFS
+        STORAGE --> IPFS
+    end
+    
+    classDef coreService fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    classDef backendService fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff
+    classDef frontendService fill:#f39c12,stroke:#e67e22,stroke-width:2px,color:#fff
+    classDef smartContract fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+    classDef externalService fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff
+    classDef dataService fill:#34495e,stroke:#2c3e50,stroke-width:2px,color:#fff
+    classDef infraService fill:#95a5a6,stroke:#7f8c8d,stroke-width:2px,color:#fff
+    
+    class BC,HSM coreService
+    class API,XC,WALLET,COMP,AIML,STORAGE,IOT,EARN,GOV backendService
+    class WEB,MOBILE frontendService
+    class DEFI,NFT,CARBON,GOV_SC smartContract
+    class WEATHER,ORACLE,BRIDGES,STORAGE_EXT externalService
+    class PG,REDIS,IPFS dataService
+    class DOCKER,K8S,MONITOR infraService

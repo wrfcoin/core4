@@ -1,0 +1,57 @@
+name: Re-run pending repository-input admission
+
+# Re-evaluates a PENDING admission verdict when the integration ratchet completes (Refs #3446, #2433)
+#
+# WHY: `repository-input integration admission` reads the ratchet's run for the head through the API. If the ratchet
+# is still queued/running it fails PENDING (fail-closed, and it must not poll: that would hold a CT102 runner while
+# the ratchet queues behind it). Without this workflow that red stays until someone re-runs it by hand, so the
+# context was red purely on timing for about half of recent PRs. This workflow is the event-driven half: it fires
+# when "Integration Target Ratchet" COMPLETES and re-runs the admission JOB, so there is still ONE producer of the
+# context and nothing waits.
+#
+# WHAT IT RE-RUNS: only the admission job of the newest admission run for the same head SHA and event, and only when
+# that job failed with the structured PENDING marker step (see scripts/rerun_pending_admission.py). A real REFUSE,
+# an error, a success, a cancelled run, or any other workflow is never touched. One event posts at most one re-run.
+# The verdict logic is unchanged: the re-run re-reads live evidence, so a failed or cancelled ratchet still REFUSES.
+#
+# TRUST: `workflow_run` runs in the BASE repository from the default branch's copy of this file, so fork PRs get it
+# too. It checks out the default branch (never the PR head), executes no PR code, and uses only the head SHA and event
+# name (validated against ^[0-9a-f]{40}$ and an allowlist) from the triggering run. `actions: write` is held by this
+# one job only. NOTE: a workflow_run workflow only takes effect once it is on the default branch.
+#
+# NOT SELECTED RATCHET: if the ratchet's path filter does not select a change there is no ratchet run, so no event
+# and no re-run; the admission job then refuses "no run for head" exactly as designed (#3446 is that gap).
+
+on:
+  workflow_run:
+    workflows: ["Integration Target Ratchet"]
+    types: [completed]
+
+concurrency:
+  group: rerun-pending-admission-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rerun:
+    name: rerun pending admission
+    if: ${{ github.event.workflow_run.event == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Unit tests
+        run: python3 scripts/test_rerun_pending_admission.py
+
+      - name: Re-run the admission job if (and only if) it failed PENDING
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RATCHET_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RATCHET_EVENT: ${{ github.event.workflow_run.event }}
+        run: python3 scripts/rerun_pending_admission.py

@@ -1,0 +1,4 @@
+fn ok(handle: &KeyHandle) {
+    let fp = handle.fingerprint();
+    log::info!("key fingerprint {}", hex::encode(fp));
+}

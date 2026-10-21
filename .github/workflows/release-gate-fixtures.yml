@@ -1,0 +1,76 @@
+name: Release Gate Fixtures
+
+# The release-signing (#2300) and deploy-gate (#2301) verification scripts each used to
+# approve unconditionally: verify_release_signatures.sh looped over *discovered* .asc files
+# (so an unsigned release verified nothing and printed success), and deploy_gate_smoke.sh
+# emitted result=pass from both branches. scripts/test_release_gates.py is the committed
+# fixture harness that reproduces both defects and asserts the fix.
+#
+# Until #2331 (successor to #2300/#2301, criterion "a PR-safe fixture test gating changes to
+# these workflows") NO workflow invoked it. A change to either gate's verification logic
+# could merge with the harness unrun and the fail-open behaviour return silently -- a dormant
+# test cannot prevent the gate from regressing (the #2315 line, same pattern #2312/#2316/#2317
+# followed). This wires it in.
+#
+# PR-safe and PATH-FILTERED: it fires ONLY when one of the two gate scripts, the harness, or
+# the two workflows it guards changes, so Actions cost is proportional to churn in exactly
+# those files (the org budget is under pressure). No build step and no language toolchain --
+# the harness is Python + shell fixtures; gpg is preinstalled on ubuntu-latest and pyyaml is
+# the single dependency.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/test_release_gates.py'
+      - 'scripts/verify_release_signatures.sh'
+      - 'scripts/deploy_gate_smoke.sh'
+      - '.github/workflows/release-signing.yml'
+      - '.github/workflows/deploy-gate.yml'
+      - '.github/workflows/release-gate-fixtures.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/test_release_gates.py'
+      - 'scripts/verify_release_signatures.sh'
+      - 'scripts/deploy_gate_smoke.sh'
+      - '.github/workflows/release-signing.yml'
+      - '.github/workflows/deploy-gate.yml'
+      - '.github/workflows/release-gate-fixtures.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: github.ref is constant on main; unconditional cancellation cancels the previous main verdict on every merge.
+
+jobs:
+  release-gate-fixtures:
+    name: Release/deploy gate fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pyyaml
+        # Lets the deploy-gate startup-probe case run. Without it the harness SKIPS that
+        # case (loudly) rather than silently passing; gpg is preinstalled on ubuntu-latest.
+        run: pip install pyyaml==6.0.2
+
+      - name: Assert gpg and pyyaml are present (no case may silently skip in CI)
+        # The harness skips-not-fails when a dependency is missing -- correct locally, but in
+        # CI a skipped signature/startup case would quietly shrink the gate. Fail closed if
+        # the runner cannot execute every case, so "green" always means every case ran.
+        run: |
+          command -v gpg >/dev/null || { echo "::error::gpg is missing on the runner; the signature-validity cases would skip"; exit 1; }
+          python3 -c 'import yaml' || { echo "::error::pyyaml is missing; the deploy-gate startup-probe case would skip"; exit 1; }
+
+      - name: Run release/deploy gate fixtures
+        # Fail-closed: the harness exits non-zero if either gate stops enforcing, failing this job.
+        run: python3 scripts/test_release_gates.py

@@ -1,0 +1,14 @@
+// #3287: C-string raw literals (`cr"..."`, `cr#"..."#`) have no
+// escapes. Lexed as an ordinary string, `cr"C:\"` swallows the closing quote
+// and desynchronises every span after it.
+fn windows_root() -> String {
+    format!("{:?}", cr"C:\")
+}
+
+fn leak(private_key: &str) -> String {
+    format!("key={private_key}")
+}
+
+fn unrelated(height: u64) -> String {
+    format!("height={height}") // secret-leak-ok: unrelated, legitimately allowlisted line below the leak
+}

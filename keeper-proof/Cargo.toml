@@ -1,0 +1,17 @@
+[package]
+name = "wrfcoin-keeper-proof"
+version = "0.1.0"
+edition = "2021"
+description = "Keeper storage attestation, retrieval proof, and health monitoring types for WRFCoin"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wrf-primitives.workspace = true
+wrfcoin-dataset-manifest = { path = "../dataset-manifest" }
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+
+[dev-dependencies]
+rand.workspace = true

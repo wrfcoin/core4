@@ -1,0 +1,6 @@
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StealthKeysLike {
+    pub public_spend_key: [u8; 32],
+    pub private_spend_key: [u8; 32],
+    pub private_view_key: [u8; 32],
+}

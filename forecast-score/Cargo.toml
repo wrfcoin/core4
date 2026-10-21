@@ -1,0 +1,27 @@
+[package]
+name = "wrfcoin-forecast-score"
+version = "0.1.0"
+edition = "2021"
+description = "Forecast scoring types and algorithms for WRFCoin ecosystem tooling"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+sha3.workspace = true
+ed25519-dalek.workspace = true
+rustc-hash.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[features]
+ts = ["dep:ts-rs"]
+
+[dev-dependencies]
+# #2883/#2913 wire-layout fixtures: these types cross the gossip mesh as
+# bincode (ForecastTaskAssignment manifest_bytes / ForecastTaskResult
+# receipt_bytes); the fixtures pin that layout beside the definitions. Also
+# used by the #2922 regression test for the same reason: the real codec,
+# not a serde_json stand-in that would not have caught this defect.
+bincode = "1.3"

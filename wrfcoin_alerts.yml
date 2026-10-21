@@ -1,0 +1,33 @@
+groups:
+  - name: wrfcoin_chain_health
+    interval: 30s
+    rules:
+      - alert: WrfcoinChainStateDiverged
+        expr: increase(wrfcoin_chain_state_diverged_total[5m]) > 0
+        labels:
+          severity: warning
+          category: blockchain
+        annotations:
+          summary: 'Node detected same-height chain divergence'
+          description: 'wrfcoin_chain_state_diverged_total increased on {{ $labels.instance }} in the last 5 minutes.'
+
+      # #2199: an empty local mempool is not evidence of fair ordering. Page
+      # the operator when the signal itself stays unavailable, before relying
+      # on zero-valued exclusion/reordering series.
+      - alert: OrderingFairnessObservationUnavailable
+        expr: wrfcoin_ordering_assessment_available == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'WRFCoin ordering fairness observation is unavailable'
+          description: 'The node has not observed a block with a non-empty local mempool for 15 minutes; do not interpret zero ordering metrics as fair ordering.'
+
+      - alert: PossibleProposerFeeExclusion
+        expr: increase(wrfcoin_ordering_excluded_sufficient_fee_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'A proposer omitted locally visible sufficient-fee transactions'
+          description: 'This is a local, probabilistic censorship signal: compare independent nodes before attributing intent.'

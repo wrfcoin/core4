@@ -1,0 +1,43 @@
+{
+  "milestone": {
+    "title": "Testnet Launch Readiness",
+    "html_url": "https://github.com/wrfcoin/core4/milestone/2",
+    "open_issues": 2,
+    "closed_issues": 1
+  },
+  "issues": [
+    {
+      "number": 720,
+      "title": "Formal consensus safety analysis",
+      "state": "open",
+      "html_url": "https://github.com/wrfcoin/core4/issues/720",
+      "labels": [
+        {
+          "name": "launch-blocker"
+        }
+      ]
+    },
+    {
+      "number": 721,
+      "title": "Validator key ceremony procedures",
+      "state": "closed",
+      "html_url": "https://github.com/wrfcoin/core4/issues/721",
+      "labels": [
+        {
+          "name": "testnet-hardening"
+        }
+      ]
+    },
+    {
+      "number": 724,
+      "title": "Oracle trust bootstrap",
+      "state": "open",
+      "html_url": "https://github.com/wrfcoin/core4/issues/724",
+      "labels": [
+        {
+          "name": "P1"
+        }
+      ]
+    }
+  ]
+}

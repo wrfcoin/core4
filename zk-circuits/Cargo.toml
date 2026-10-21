@@ -1,0 +1,39 @@
+[package]
+name = "wrfcoin-zk-circuits"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ark-groth16   = { workspace = true }
+ark-bn254     = { workspace = true }
+ark-relations = "=0.6.0"
+ark-r1cs-std  = "=0.6.0"
+ark-serialize = { workspace = true }
+ark-std       = "=0.6.0"
+ark-snark     = { workspace = true }
+ark-ff        = { workspace = true }
+ark-ec        = "=0.6.0"
+ark-crypto-primitives = { version = "=0.6.0", features = ["crh", "sponge", "constraints"] }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "proof_bench"
+harness = false
+
+# Story #2177: wall-clock sweep over the `bench_matrix` measurement matrix.
+[[bench]]
+name = "proving"
+harness = false
+
+# Story #2177: memory / key-size / proof-size harness. Runs each phase in its
+# own process so peak RSS is attributable; criterion cannot measure this.
+[[bin]]
+name = "zk-proving-report"
+path = "src/bin/zk-proving-report.rs"

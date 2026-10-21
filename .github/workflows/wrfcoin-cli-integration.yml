@@ -1,0 +1,147 @@
+name: wrfcoin-cli-integration
+
+# Owner 2026-10-07: input-relevant PRs plus nightly on main and dispatch.
+# Inputs and evidence tradeoffs: WORKFLOW_JUSTIFICATION.md, relevance/nightly section.
+# Executes CLI mocks and real launch_api boundary smoke; includes shared-protocol dependencies.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wrfcoin-cli-integration.yml'
+      - 'native-chain/src/bin/launch_api/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '28 3 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Named for what it is: these tests use a mock server, not a live API.
+  mocked-integration:
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
+      - name: Build wrfcoin CLI binary
+        run: cargo build --locked -p wrfcoin_cli
+      - name: Mocked API client tests
+        run: cargo test --locked -p wrfcoin_cli --test api_client_integration -- --nocapture
+      - name: Mocked command group tests
+        run: cargo test --locked -p wrfcoin_cli --test command_group_integration -- --nocapture
+
+  live-launch-api-contract:
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
+      - name: Build CLI and launch_api
+        run: |
+          cargo build --locked -p wrfcoin_cli
+          cargo build --locked -p wrfcoin-native-chain --bin launch_api
+      - name: Recorded boundary contract
+        run: cargo test --locked -p wrfcoin_cli --test cli_api_contract -- --nocapture
+      - name: Live launch_api contract
+        run: bash tools/cli/WrfcoinCLI/scripts/launch_api_contract_smoke.sh

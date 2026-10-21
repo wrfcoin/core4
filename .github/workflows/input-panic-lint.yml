@@ -1,0 +1,92 @@
+name: Input Panic Lint
+
+# Blocks NEW panic-on-input risk (unwrap/expect/unchecked-index/unbounded-alloc) across the
+# attacker-controlled input surface (peer/gossip messages, the peer-event consumer, RF/IoT
+# ingest, API bodies, contract calldata). A remotely triggered panic is a launch blocker.
+# See docs/security/PANIC_POLICY.md and scripts/check_no_panic_on_input.py.
+#
+# Triggers on ANY Rust change (plus the script/baseline/migrations) — not a hand-listed set
+# of files — so a new decoder cannot land without the gate running. The scan itself covers
+# the input surface at directory level (SCANNED_MODULES), and the ratchet prevents the
+# baseline from silently growing.
+# WORKFLOW-GATE: rejects remotely-triggerable panic paths before they reach main
+
+on:
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - 'scripts/check_no_panic_on_input.py'
+      - 'scripts/panic_input_baseline.json'
+      - 'scripts/panic_input_baseline.migrations'
+      - '.github/workflows/input-panic-lint.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'scripts/**'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '**/*.rs'
+      - 'scripts/check_no_panic_on_input.py'
+      - 'scripts/panic_input_baseline.json'
+      - 'scripts/panic_input_baseline.migrations'
+      - '.github/workflows/input-panic-lint.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '12 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# PRs supersede only their own runs; main/nightly/manual verdicts are retained.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  input-panic-lint:
+    # CT102 self-hosted (2026-09-24): mirrors the owner's decision for the
+    # secret-leak scan (#3294). On ubuntu-latest this job ran 0 steps (VOID) once
+    # hosted minutes were exhausted, and 10 NEW findings reached main unseen
+    # (#3308). Same move as the detect-secrets audit (#2921 decision 2).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # need history to diff the baseline against the merge base
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+
+      - name: Detector self-test
+        run: python3 scripts/check_no_panic_on_input.py --self-test
+
+      - name: Gate — no new panic-on-input risk
+        run: python3 scripts/check_no_panic_on_input.py --baseline scripts/panic_input_baseline.json
+
+      - name: Ratchet — baseline may not grow without a reviewed migration
+        run: |
+          set -euo pipefail
+          BASE_REF="origin/${{ github.base_ref || 'main' }}"
+          git fetch origin "${{ github.base_ref || 'main' }}" --depth=1 || true
+          # Base baseline from the merge target ([] if the file is not there yet, e.g. first PR).
+          if git show "${BASE_REF}:scripts/panic_input_baseline.json" > "${RUNNER_TEMP}/base_baseline.json" 2>/dev/null; then
+            echo "base baseline: ${BASE_REF}"
+          else
+            echo "[]" > "${RUNNER_TEMP}/base_baseline.json"
+            echo "base baseline absent on ${BASE_REF}; treating as empty"
+          fi
+          # Authorization is per fingerprint, read from the migration log itself — NOT from
+          # "did that file change". The previous form set --allow-migration on any diff to
+          # the migrations file, so a one-word comment edit authorized arbitrary baseline
+          # growth: the escape hatch was an off switch (review of #2248). The script now
+          # matches each added fingerprint against the `+ <fingerprint>` lines in the log,
+          # so migrating debt means writing down exactly which debt, in the diff.
+          python3 scripts/check_no_panic_on_input.py \
+            --ratchet "${RUNNER_TEMP}/base_baseline.json" scripts/panic_input_baseline.json \
+            --migrations scripts/panic_input_baseline.migrations

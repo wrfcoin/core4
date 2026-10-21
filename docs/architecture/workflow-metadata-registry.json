@@ -1,0 +1,321 @@
+{
+  "metadata_version": "1.0.0",
+  "last_updated": "2025-05-28T21:21:00Z",
+  "total_workflows": 74,
+  "active_workflows": 17,
+  "workflows": {
+    "acurite_weather_station_collector": {
+      "name": "AcuRite Weather Station Collector",
+      "tags": ["@critical", "@weather", "@earnings", "@realtime"],
+      "group": "weather",
+      "scope": "testnet",
+      "dependencies": [],
+      "dependents": [
+        "enhanced_weather_rewards",
+        "weather_earnings_transfer_api"
+      ],
+      "start_condition": "immediate",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 60,
+        "type": "custom",
+        "retry_on_fail": true,
+        "timeout": 30
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "backup_strategy": {
+        "has_backup": false,
+        "failover_timeout": 300
+      },
+      "description": "Automated weather data collection earning 0.1 WRF per 60-second cycle",
+      "status": "running",
+      "current_earnings": "3.20 WRF",
+      "collection_stats": {
+        "successful": 32,
+        "failed": 0
+      }
+    },
+    "frontend_application": {
+      "name": "Frontend Application",
+      "port": 5000,
+      "tags": ["@critical", "@frontend", "@realtime"],
+      "group": "frontend",
+      "scope": "universal",
+      "dependencies": [
+        "main_api_server",
+        "unified_api_server",
+        "websocket_server_fixed"
+      ],
+      "dependents": [],
+      "start_condition": "dependencies_healthy",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 30,
+        "type": "http",
+        "endpoint": "/",
+        "retry_on_fail": true,
+        "timeout": 15
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Main user interface for decentralized weather network",
+      "status": "running"
+    },
+    "cross_chain_protocol_server": {
+      "name": "Cross-Chain Protocol Server",
+      "port": 3000,
+      "tags": ["@critical", "@cross-chain", "@bootstrap"],
+      "group": "crosschain",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": [
+        "cross_chain_websocket_port_5001",
+        "enhanced_cross_chain_server_port_8002"
+      ],
+      "start_condition": "immediate",
+      "restart_mode": "cascade",
+      "health_check": {
+        "interval": 15,
+        "type": "http",
+        "endpoint": "/health",
+        "retry_on_fail": true,
+        "timeout": 10
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "backup_strategy": {
+        "has_backup": true,
+        "backup_port": 8002,
+        "failover_timeout": 60
+      },
+      "description": "Managing 13+ bridge protocols processing transfers every 15-30 seconds",
+      "status": "running"
+    },
+    "compute_networks_server": {
+      "name": "Compute Networks Server",
+      "port": 6000,
+      "tags": ["@compute", "@realtime", "@scalable"],
+      "group": "compute",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": [],
+      "start_condition": "immediate",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 45,
+        "type": "http",
+        "endpoint": "/status",
+        "retry_on_fail": true,
+        "timeout": 20
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Distributed computing operations managing 10 networks (Flux, Akash, Golem, etc.)",
+      "status": "running",
+      "lifecycle_hooks": {
+        "on_start": "node backend/server/compute_networks_server.js --initialize",
+        "on_shutdown": "curl -X POST http://localhost:6000/api/graceful-shutdown",
+        "on_fail": "node scripts/restart-compute-networks.js",
+        "on_scale_up": "node scripts/scale-compute-instance.js --port {{NEW_PORT}}",
+        "on_backup": "node scripts/backup-compute-state.js"
+      },
+      "scaling_config": {
+        "scalable": true,
+        "scale_group": "compute_nodes",
+        "min_instances": 1,
+        "max_instances": 5,
+        "scale_trigger": {
+          "metric": "requests_per_second",
+          "threshold": 100
+        }
+      }
+    },
+    "ai_ml_networks_port_6001": {
+      "name": "AI ML Networks Port 6001",
+      "port": 6001,
+      "tags": ["@ai", "@realtime", "@scalable"],
+      "group": "compute",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": [],
+      "start_condition": "immediate",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 60,
+        "type": "http",
+        "endpoint": "/api/status",
+        "retry_on_fail": true,
+        "timeout": 30
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "AI/ML network integration managing 4 AI/ML networks",
+      "status": "running",
+      "lifecycle_hooks": {
+        "on_start": "node backend/server/ai_ml_networks_server.js --initialize",
+        "on_shutdown": "curl -X POST http://localhost:6001/api/shutdown",
+        "on_fail": "node scripts/restart-ai-ml-networks.js",
+        "on_scale_up": "node scripts/scale-ai-ml-instance.js --port {{NEW_PORT}}",
+        "on_backup": "node scripts/backup-ai-ml-models.js"
+      },
+      "scaling_config": {
+        "scalable": true,
+        "scale_group": "ai_ml_nodes",
+        "min_instances": 1,
+        "max_instances": 4,
+        "scale_trigger": {
+          "metric": "cpu",
+          "threshold": 80
+        }
+      }
+    },
+    "storage_networks_port_7000": {
+      "name": "Storage Networks Port 7000",
+      "port": 7000,
+      "tags": ["@storage", "@realtime"],
+      "group": "storage",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": [],
+      "start_condition": "immediate",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 60,
+        "type": "http",
+        "endpoint": "/networks/status",
+        "retry_on_fail": true,
+        "timeout": 30
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Managing 7 storage networks providing 94.5 PB capacity",
+      "status": "running"
+    },
+    "main_api_server": {
+      "name": "Main API Server",
+      "port": 4000,
+      "tags": ["@critical", "@api", "@bootstrap"],
+      "group": "infrastructure",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": ["frontend_application", "unified_api_server"],
+      "start_condition": "immediate",
+      "restart_mode": "cascade",
+      "health_check": {
+        "interval": 20,
+        "type": "http",
+        "endpoint": "/api/health",
+        "retry_on_fail": true,
+        "timeout": 10
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "backup_strategy": {
+        "has_backup": true,
+        "backup_port": 3001,
+        "failover_timeout": 45
+      },
+      "description": "Primary RESTful API for blockchain operations",
+      "status": "running"
+    },
+    "websocket_server_fixed": {
+      "name": "WebSocket Server Fixed",
+      "port": 4002,
+      "tags": ["@critical", "@realtime", "@api"],
+      "group": "infrastructure",
+      "scope": "universal",
+      "dependencies": ["main_api_server"],
+      "dependents": ["frontend_application"],
+      "start_condition": "dependencies_healthy",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 15,
+        "type": "websocket",
+        "retry_on_fail": true,
+        "timeout": 10
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Real-time blockchain event broadcasting with 30+ transactions per session",
+      "status": "running"
+    },
+    "enhanced_weather_rewards": {
+      "name": "Enhanced Weather Rewards",
+      "port": 8001,
+      "tags": ["@weather", "@earnings"],
+      "group": "weather",
+      "scope": "testnet",
+      "dependencies": ["acurite_weather_station_collector"],
+      "dependents": ["weather_earnings_transfer_api"],
+      "start_condition": "dependencies_healthy",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 120,
+        "type": "http",
+        "endpoint": "/rewards/status",
+        "retry_on_fail": true,
+        "timeout": 30
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Advanced weather reward calculation managing 5 achievement categories",
+      "status": "running"
+    },
+    "governance_server": {
+      "name": "Governance Server",
+      "port": 8000,
+      "tags": ["@governance", "@optional"],
+      "group": "governance",
+      "scope": "universal",
+      "dependencies": [],
+      "dependents": [],
+      "start_condition": "manual",
+      "restart_mode": "graceful",
+      "health_check": {
+        "interval": 300,
+        "type": "http",
+        "endpoint": "/governance/health",
+        "retry_on_fail": false,
+        "timeout": 60
+      },
+      "enabled": true,
+      "ephemeral": false,
+      "description": "Decentralized governance operations managing proposals and voting",
+      "status": "running"
+    }
+  },
+  "dependency_groups": {
+    "critical_path": [
+      "main_api_server",
+      "cross_chain_protocol_server",
+      "acurite_weather_station_collector"
+    ],
+    "earnings_chain": [
+      "acurite_weather_station_collector",
+      "enhanced_weather_rewards",
+      "weather_earnings_transfer_api"
+    ],
+    "frontend_dependencies": [
+      "main_api_server",
+      "unified_api_server",
+      "websocket_server_fixed"
+    ]
+  },
+  "restart_strategies": {
+    "earnings_protection": {
+      "never_restart": ["acurite_weather_station_collector"],
+      "graceful_only": [
+        "enhanced_weather_rewards",
+        "weather_earnings_transfer_api"
+      ]
+    },
+    "cascade_prevention": {
+      "isolated": [
+        "compute_networks_server",
+        "storage_networks_port_7000",
+        "governance_server"
+      ]
+    }
+  }
+}

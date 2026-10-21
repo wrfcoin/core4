@@ -1,0 +1,103 @@
+# merge-admission-contract.yml — fail when the live ruleset stops matching the
+# written merge-admission contract (merge-admission epic story 7; #2896).
+#
+# WHAT IT ASSERTS
+#   scripts/check_merge_admission.py reads the LIVE effective rules on `main`
+#   (`gh api repos/wrfcoin/core4/rules/branches/main`) and fails when they differ
+#   from .github/merge-admission.json — required contexts, strict policy, rule
+#   set, pull-request parameters — or when docs/ci/MERGE_ADMISSION.md stops
+#   naming a required context verbatim. Drift in EITHER direction is RED: an
+#   owner adding a required context without the document, or a document
+#   promising one the owner has not enabled (MERGE_ADMISSION.md §5).
+#
+# WHAT IT NEVER DOES
+#   Edit a ruleset. That is owner-only. This workflow only reads.
+#
+# WHY IT RUNS ON EVERY PUSH TO MAIN AND NOT ON A SCHEDULE
+#   A ruleset edit produces no commit, so the honest trigger would be time; but a
+#   `schedule:` is exactly what schedule-lint (a required context) forbids under
+#   the zero-spend constraint. Every push to main is the next-best clock: main
+#   moved 14 times on 2026-09-01 and 62 times the day before, so drift is
+#   surfaced within hours at zero hosted cost (self-hosted, ~10 s). On PRs it
+#   runs only when the contract itself changes — a PR cannot change a ruleset,
+#   so running it on every PR would add a job to a contended queue that could
+#   only ever repeat main's answer.
+#
+# STEP ORDER: control first (the comparator is shown to reach both answers on
+# synthetic fixtures), then the recorded-fixture tests, then the live check —
+# so a green here is known to come from a comparator that can go red
+# (docs/ci/VACUOUS_GATES.md, check 1).
+#
+# ADVISORY (2026-10-04 owner ruling, #3198): the LIVE step is non-blocking. It keeps
+# running and reporting (step conclusion, ::warning, job summary); the self-test and the
+# fixture tests stay blocking. The "TOKEN NOTE" below describes the checker's own exit
+# codes, which are unchanged; only this workflow's treatment of that exit is softened.
+#
+# TOKEN NOTE — FAIL CLOSED: both reads must succeed. `rules/branches/main` is
+# readable with the default token. `rulesets/<id>` (name, enforcement, bypass
+# actors) may answer 403 for `github.token`; if it does, the live step is VOID
+# (exit 2) and this check is RED — deliberately. A checker that exits 0 while it
+# cannot read what it asserts is a checker that passes when blind (#3018
+# review). The fix for that RED is a token that can read the endpoint, never a
+# softer check.
+
+name: Merge admission contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/merge-admission.json
+      - docs/ci/MERGE_ADMISSION.md
+      - scripts/check_merge_admission.py
+      - scripts/test_check_merge_admission.py
+      - .github/workflows/merge-admission-contract.yml
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: never cancel a main verdict
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: live ruleset matches docs/ci/MERGE_ADMISSION.md
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Control — comparator reaches both answers on synthetic fixtures
+        run: python3 scripts/check_merge_admission.py --self-test
+
+      - name: Recorded-fixture tests (owner adds a context; document ahead of ruleset; strict flipped; VOID paths)
+        run: python3 scripts/test_check_merge_admission.py
+
+      # ADVISORY (owner ruling 2026-10-04, #3198): this step still RUNS and still REPORTS
+      # every drift, but its exit status no longer fails the job. The rulesets are
+      # owner-only, and github.token cannot read bypass_actors (false drift), so a hard
+      # fail here only reddened main without anyone being able to act on it. The step
+      # keeps its own failure conclusion (visible in the run), a ::warning annotation and
+      # the full report in the job summary; the control + fixture steps above stay blocking.
+      - name: ADVISORY - Live ruleset == manifest == document (reports drift, does not block; #3198)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          report="$RUNNER_TEMP/merge-admission-live.txt"
+          rc=0
+          python3 scripts/check_merge_admission.py --repo wrfcoin/core4 >"$report" 2>&1 || rc=$?
+          cat "$report"
+          {
+            echo "### Merge admission contract (ADVISORY) - checker exit code ${rc}"
+            echo '```'
+            cat "$report"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=merge admission contract drift (advisory, exit ${rc})::Live ruleset differs from .github/merge-admission.json or the checker could not read it. Not blocking (#3198); see the job summary."
+          fi
+          exit "$rc"

@@ -1,0 +1,38 @@
+[package]
+name = "wrfcoin-execution-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+env_logger.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+blake3 = "1.5"
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3.10"
+bollard = "0.18"
+async-trait = "0.1"
+hex.workspace = true
+rand.workspace = true
+futures-util = "0.3"
+rustc-hash.workspace = true
+memmap2 = "0.9"
+rayon.workspace = true
+
+[features]
+docker-tests = []
+
+[dev-dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard"] }
+mockall = "0.13"
+criterion = { workspace = true }
+
+[[bench]]
+name = "netcdf_bench"
+harness = false

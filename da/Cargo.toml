@@ -1,0 +1,23 @@
+[package]
+name = "wrfcoin-da"
+version = "0.1.0"
+edition = "2021"
+description = "Data availability for WRFCoin: canonical chunk layout, blake3 chunk commitments with inclusion proofs, and unpredictable data-availability sampling (#2183)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait = "0.1"
+# `zeroize`: the node-secret-derived sampling key and the hasher state that
+# holds it are wiped after use (review of core4#3124).
+blake3 = { version = "1.5", features = ["zeroize"] }
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+zeroize = "1.7"
+
+[dev-dependencies]
+chrono.workspace = true
+rand.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,4 @@
+fn ok(signer_id: &str, height: u64) {
+    log::info!("signer {signer_id} produced block {height}");
+    assert!(height > 0, "private key must round-trip");
+}

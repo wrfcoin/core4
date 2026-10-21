@@ -1,0 +1,13 @@
+// #3284: an invocation whose parentheses never balance (truncated or
+// mis-parsed source) must be bounded, not swallow the rest of the file.
+fn broken() {
+    log::error!("unterminated {}", (1
+}
+
+fn leak(signing_key: &str) {
+    log::error!("key={signing_key}");
+}
+
+fn unrelated(height: u64) {
+    log::error!("height={height}"); // secret-leak-ok: unrelated, legitimately allowlisted line below the leak
+}

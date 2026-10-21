@@ -1,0 +1,8 @@
+// Clean: the derive sits over secret-named material but carries an inline
+// audited justification — the allowlist must apply to DERIVED EXPOSURE
+// findings exactly as it does at call sites. (The first scanner version
+// recommended this annotation in its failure message while ignoring it.)
+#[derive(Clone)] // secret-leak-ok: handle is an opaque HSM key REFERENCE, not key material
+pub struct HsmSigningHandle {
+    pub signing_key_id: String,
+}

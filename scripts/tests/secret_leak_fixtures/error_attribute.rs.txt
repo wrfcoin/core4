@@ -1,0 +1,7 @@
+// thiserror's `#[error("...")]` is a Display impl: a named capture of a secret
+// field reaches every place the error is printed or logged.
+#[derive(Debug, thiserror::Error)]
+pub enum SignerError {
+    #[error("rejected signing key {signing_key}")]
+    Rejected { signing_key: String },
+}

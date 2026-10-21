@@ -1,0 +1,15 @@
+# Paths excluded from `git archive` output (the genesis source bundle).
+#
+# The source bundle is transferred to a third party's machine for a native
+# build, so tracked non-example env files must not travel with it.
+#
+# `git archive` has no `--exclude`, and post-processing the tar with
+# `tar --delete` would break reproducibility: the bundle's SHA-256 is cut
+# evidence, so the bundle has to stay derivable from git alone. `export-ignore`
+# keeps that property.
+#
+# SCOPE: `export-ignore` affects ARCHIVES ONLY. These files remain present in
+# the repository and in git history, readable by anyone with repo access. This
+# stops them shipping in the bundle; it is not a secret-removal mechanism.
+configs/development/.env.cache export-ignore
+tests/load/.env.k6 export-ignore

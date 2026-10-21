@@ -1,0 +1,157 @@
+{
+  "default": {
+    "description": "Standard carbon market testing scenario",
+    "marketCount": 6,
+    "volatilityMultiplier": 1.0,
+    "updateFrequency": "normal",
+    "features": [
+      "all_carbon_markets",
+      "realistic_price_movements",
+      "regular_updates",
+      "stable_spreads"
+    ]
+  },
+
+  "volatile": {
+    "description": "High volatility market conditions",
+    "marketCount": 6,
+    "volatilityMultiplier": 3.0,
+    "updateFrequency": "high",
+    "features": [
+      "extreme_price_swings",
+      "wide_spreads",
+      "frequent_updates",
+      "market_instability"
+    ]
+  },
+
+  "bear-market": {
+    "description": "Bear market with declining prices",
+    "marketCount": 4,
+    "volatilityMultiplier": 1.5,
+    "updateFrequency": "normal",
+    "features": [
+      "declining_prices",
+      "reduced_liquidity",
+      "market_pessimism",
+      "lower_volumes"
+    ]
+  },
+
+  "bull-market": {
+    "description": "Bull market with rising prices",
+    "marketCount": 6,
+    "volatilityMultiplier": 0.8,
+    "updateFrequency": "normal",
+    "features": [
+      "rising_prices",
+      "increased_liquidity",
+      "market_optimism",
+      "higher_volumes"
+    ]
+  },
+
+  "compliance-only": {
+    "description": "Only compliance carbon markets active",
+    "marketCount": 2,
+    "volatilityMultiplier": 0.5,
+    "updateFrequency": "low",
+    "features": [
+      "compliance_markets_only",
+      "regulatory_stability",
+      "predictable_pricing",
+      "institutional_trading"
+    ]
+  },
+
+  "voluntary-only": {
+    "description": "Only voluntary carbon markets active",
+    "marketCount": 3,
+    "volatilityMultiplier": 1.2,
+    "updateFrequency": "normal",
+    "features": [
+      "voluntary_markets_only",
+      "corporate_demand",
+      "varied_project_types",
+      "quality_premiums"
+    ]
+  },
+
+  "disrupted": {
+    "description": "Market disruption with intermittent data",
+    "marketCount": 4,
+    "volatilityMultiplier": 2.0,
+    "updateFrequency": "irregular",
+    "features": [
+      "intermittent_data_feeds",
+      "market_fragmentation",
+      "price_discrepancies",
+      "liquidity_issues"
+    ]
+  },
+
+  "premium-focus": {
+    "description": "Focus on premium nature-based solutions",
+    "marketCount": 2,
+    "volatilityMultiplier": 0.7,
+    "updateFrequency": "normal",
+    "features": [
+      "nature_based_credits",
+      "premium_pricing",
+      "limited_supply",
+      "high_demand"
+    ]
+  },
+
+  "minimal": {
+    "description": "Minimal setup for basic testing",
+    "marketCount": 1,
+    "volatilityMultiplier": 0.1,
+    "updateFrequency": "low",
+    "features": [
+      "single_market",
+      "stable_pricing",
+      "predictable_behavior",
+      "minimal_complexity"
+    ]
+  },
+
+  "offline": {
+    "description": "Offline scenario - no market data available",
+    "marketCount": 0,
+    "volatilityMultiplier": 0,
+    "updateFrequency": "none",
+    "features": [
+      "service_unavailable",
+      "no_market_data",
+      "connection_failures",
+      "timeout_errors"
+    ]
+  },
+
+  "recovery": {
+    "description": "Market recovery after disruption",
+    "marketCount": 5,
+    "volatilityMultiplier": 1.8,
+    "updateFrequency": "increasing",
+    "features": [
+      "gradual_recovery",
+      "improving_liquidity",
+      "stabilizing_prices",
+      "increased_participation"
+    ]
+  },
+
+  "regional-focus": {
+    "description": "Focus on specific regional markets",
+    "marketCount": 3,
+    "volatilityMultiplier": 1.1,
+    "updateFrequency": "normal",
+    "features": [
+      "regional_markets",
+      "currency_variations",
+      "local_regulations",
+      "geographic_premiums"
+    ]
+  }
+}

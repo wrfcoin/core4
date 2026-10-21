@@ -1,0 +1,9 @@
+{"height": 1, "ops": [{"op": "reward", "address": "0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "amount": 200, "reason": "genesis-airdrop"}]}
+{"height": 2, "ops": [{"op": "stake", "address": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "amount": 300}, {"op": "transfer", "from": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "to": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "amount": 50, "nonce": 0}]}
+{"height": 3, "ops": [{"op": "unstake", "address": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "amount": 100}, {"op": "transfer", "from": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "to": "0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "amount": 25, "nonce": 0}]}
+{"height": 4, "ops": [{"op": "slash", "address": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "amount": 40, "reason": "equivocation"}]}
+{"height": 5, "ops": [{"op": "reward", "address": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "amount": 10, "reason": "block-reward"}]}
+{"height": 6, "ops": [{"op": "commit", "station_id": "station-det", "timestamp": 1700000000, "contribution_type": "contribution", "data": {"temperature": 21.0, "humidity": 0.5}, "nonce": "n6"}]}
+{"height": 7, "ops": [{"op": "reveal", "station_id": "station-det", "timestamp": 1700000000, "contribution_type": "contribution", "data": {"temperature": 21.0, "humidity": 0.5}, "nonce": "n6"}]}
+{"height": 8, "ops": [{"op": "set_oracle_config", "oracle_seeds": [1, 2], "quorum": 2}]}
+{"height": 9, "ops": [{"op": "oracle_attest", "oracle_seed": 1, "commit_id": "attest-c1", "approved": true, "confidence": 0.8, "timestamp": 1}, {"op": "oracle_attest", "oracle_seed": 2, "commit_id": "attest-c1", "approved": true, "confidence": 1.0, "timestamp": 2}]}

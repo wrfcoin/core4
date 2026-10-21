@@ -1,0 +1,65 @@
+{
+  "name": "wrfcoin-enhanced-mocks",
+  "version": "1.0.0",
+  "description": "Enhanced mock services for WRFCoin comprehensive testing environment",
+  "main": "index.js",
+  "scripts": {
+    "start": "node integration-test-runner.js",
+    "start:blockchain": "node enhanced-blockchain-rpc.js",
+    "start:weather": "node enhanced-weather-oracle.js",
+    "start:carbon": "node enhanced-carbon-oracle.js",
+    "start:health": "node health-dashboard.js",
+    "start:tests": "node integration-test-runner.js",
+    "test": "npm run test:smoke && npm run test:integration",
+    "test:smoke": "curl -X POST http://localhost:5000/api/test/run/smoke",
+    "test:integration": "curl -X POST http://localhost:5000/api/test/run/integration",
+    "test:load": "curl -X POST http://localhost:5000/api/test/run/load",
+    "test:chaos": "curl -X POST http://localhost:5000/api/test/run/chaos",
+    "test:e2e": "curl -X POST http://localhost:5000/api/test/run/e2e",
+    "test:all": "curl -X POST http://localhost:5000/api/test/run-all",
+    "dev": "concurrently \"npm run start:blockchain\" \"npm run start:weather\" \"npm run start:carbon\" \"npm run start:health\" \"npm run start:tests\"",
+    "health-check": "curl http://localhost:4000/api/health",
+    "status": "curl http://localhost:5000/api/test/status"
+  },
+  "keywords": [
+    "wrfcoin",
+    "blockchain",
+    "weather",
+    "carbon",
+    "mock",
+    "testing",
+    "integration"
+  ],
+  "author": "WRFCoin Development Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.1",
+    "moment": "^2.29.4",
+    "ws": "^8.14.2",
+    "axios": "^1.6.0",
+    "lodash": "^4.17.21",
+    "node-cron": "^3.0.3",
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wrfcoin/wrfcoin.git",
+    "directory": "tests/mocks-enhanced"
+  },
+  "bugs": {
+    "url": "https://github.com/wrfcoin/wrfcoin/issues"
+  },
+  "homepage": "https://github.com/wrfcoin/wrfcoin#readme"
+}

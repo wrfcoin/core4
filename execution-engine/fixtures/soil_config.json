@@ -1,0 +1,7 @@
+{
+  "region": "us-midwest",
+  "horizon_hours": 72,
+  "variables": ["soil_moisture", "organic_carbon", "ph", "nitrogen", "crop_yield_estimate"],
+  "grid_resolution": 1000,
+  "depth_layers": [0.1, 0.3, 0.6, 1.0, 2.0]
+}

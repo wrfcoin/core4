@@ -1,0 +1,416 @@
+name: Phase 3C TDD Gate
+
+# Wires the Phase 3C next-wave TDD suite into CI.
+#
+# INCREMENTAL STRATEGY
+# ─────────────────────────────────────────────────────────────────────────────
+# Runnable now — pure Rust. Runs on push/PR, but only when the change touches the
+# path-filtered `on:` block below (this workflow, the phase3b/3c scripts, shared-protocol/**,
+# tests/security/**, or the Cargo manifests/lockfile); a PR touching nothing else does not
+# trigger it. NOT "every push/PR":
+#   TDD-12.2  cargo test --test slashing_integration
+#   TDD-12.3  cargo test --test reward_integration
+#   TDD-12.4  cargo test -p wrfcoin-shared-protocol verify_block_allows_low_quality_with_quorum_attestation_at_active_height
+#   TDD-12.5  cargo test -p wrfcoin-shared-protocol create_next_block_keeps_low_quality_reveal_when_quorum_attested
+#
+# Ephemeral localhost node — manual dispatch only. The `tdd-phase3c-api` job builds
+# launch_api and runs it itself on 127.0.0.1:8556 for the duration of the job, then tears it
+# down; it does NOT require a pre-existing or remote live testnet. Gated on
+# workflow_dispatch + run_api_tests=true + the protected testnet-api environment:
+#   TDD-12.1  bash scripts/run-phase3b-security-api.sh (against the job's localhost launch_api at :8556)
+#             Runs: test-quality-slashing.cjs + test-reputation-decay.cjs
+#
+# API-only (run on an explicitly requested workflow_dispatch):
+#   TDD-12.6  test-quality-slashing-no-quorum.cjs
+#   TDD-12.7  test-quality-slashing-duplicate-attestation.cjs
+#   TDD-12.8  test-quality-slashing-distinct-oracle-quorum.cjs
+#   TDD-12.9  test-quality-events-pagination.cjs
+#   TDD-12.10 test-quality-events-restart-consistency.sh
+#   TDD-12.11 test-trust-reward-timeline-pagination.cjs
+#
+# LOCAL EQUIVALENT
+#   bash scripts/run-phase3c-security-api.sh --rust-only   # TDD-12.2–12.5 only
+#   bash scripts/run-phase3b-security-api.sh               # TDD-12.1 API gate (needs a local launch_api at :8556)
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/tdd-phase3c.yml'
+      - 'scripts/run-phase3b-security-api.sh'
+      - 'scripts/run-phase3c-security-api.sh'
+      - 'shared-protocol/**'
+      - 'tests/security/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '.github/workflows/tdd-phase3c.yml'
+      - 'scripts/run-phase3b-security-api.sh'
+      - 'scripts/run-phase3c-security-api.sh'
+      - 'shared-protocol/**'
+      - 'tests/security/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_api_tests:
+        description: Run the localhost launch_api gate (requires the testnet-api secret)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: '1.98.0'
+  # Disable TLS-dependent integration tests that need a live node
+  WRFCOIN_RUN_TLS_INTEGRATION_TESTS: '0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── TDD-12.2 through 12.5: pure Rust, run on every push/PR ─────────────────
+  tdd-phase3c-rust:
+    name: "Phase 3C TDD 12.2–12.5 (Rust)"
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    # Hosted main/PR spent 17m01s/17m37s in Rust steps; both reached the
+    # 20m deadline during cache upload. 35m exceeds 1.5x that observed bound
+    # and includes setup, compilation, tests and the cache-save post step.
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: "Ambient collector — fail-closed mining behavior"
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP}/ambient-collector-tests.log"
+          node tests/security/fetch-ambient-weather-multi.test.cjs 2>&1 | tee "$log"
+          ok_count="$(grep -Ec '^  ok - ' "$log")"
+          summary_count="$(grep -Ec '^[0-9]+ passed$' "$log")"
+          summary_passed="$(awk '/^[0-9]+ passed$/ { print $1 }' "$log")"
+          test "$ok_count" -ge 31
+          test "$summary_count" -eq 1
+          test "$summary_passed" -eq "$ok_count"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: runner.environment != 'self-hosted'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-phase3c-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-phase3c-${{ runner.os }}-
+
+      # ── TDD-12.2 ────────────────────────────────────────────────────────────
+      - name: "TDD-12.2 — Low-quality streak slashing determinism"
+        run: cargo test --locked --test slashing_integration -- --nocapture
+        env:
+          RUST_BACKTRACE: '1'
+
+      # ── TDD-12.3 ────────────────────────────────────────────────────────────
+      - name: "TDD-12.3 — Reputation-weighted reward scaling"
+        run: cargo test --locked --test reward_integration -- --nocapture
+        env:
+          RUST_BACKTRACE: '1'
+
+      # ── TDD-12.4 ────────────────────────────────────────────────────────────
+      - name: "TDD-12.4 — Low-band reveal quorum (verify path)"
+        run: >
+          cargo test --locked -p wrfcoin-shared-protocol
+          verify_block_allows_low_quality_with_quorum_attestation_at_active_height
+          -- --nocapture
+        env:
+          RUST_BACKTRACE: '1'
+
+      # ── TDD-12.5 ────────────────────────────────────────────────────────────
+      - name: "TDD-12.5 — Low-band reveal quorum (mining path)"
+        run: >
+          cargo test --locked -p wrfcoin-shared-protocol
+          create_next_block_keeps_low_quality_reveal_when_quorum_attested
+          -- --nocapture
+        env:
+          RUST_BACKTRACE: '1'
+
+  # ── TDD-12.1 + 12.6–12.11: ephemeral localhost API, manual trigger only ────
+  tdd-phase3c-api:
+    name: "Phase 3C TDD 12.1, 12.6–12.11 (API — manual)"
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 30
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_api_tests == true &&
+      vars.PHASE3C_API_TESTS_ENABLED == 'true'
+    environment: testnet-api  # requires WRFCOIN_OPERATOR_TOKEN secret
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: runner.environment != 'self-hosted'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-phase3c-api-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-phase3c-api-${{ runner.os }}-
+
+      - name: "Phase 3C API preflight — token contract"
+        env:
+          WRFCOIN_OPERATOR_TOKEN: ${{ secrets.WRFCOIN_OPERATOR_TOKEN }}
+        run: |
+          printf '%s' "$WRFCOIN_OPERATOR_TOKEN" | grep -Eq '^[0-9a-f]{64}$' \
+            && echo "TOKEN_OK" \
+            || { echo "::error::WRFCOIN_OPERATOR_TOKEN missing or invalid"; exit 1; }
+
+      - name: "TDD-12.1, 12.6–12.11 — localhost launch API gate"
+        env:
+          WRFCOIN_OPERATOR_TOKEN: ${{ secrets.WRFCOIN_OPERATOR_TOKEN }}
+          WRFCOIN_API_HOST: 127.0.0.1
+          WRFCOIN_API_PORT: '8556'
+          WRFCOIN_DATA_DIR: ${{ runner.temp }}/phase3c-data
+          WRFCOIN_PHASE3B_LOG_DIR: ${{ runner.temp }}/phase3c-api
+          WRFCOIN_PHASE3C_LOG_DIR: ${{ runner.temp }}/phase3c-restart
+          WRFCOIN_ENABLE_ORACLE_ADMIN_API: '1'
+          WRFCOIN_MIN_WORK_FACTOR: '0'
+          ALLOW_UNENCRYPTED_STORAGE: 'true'
+        run: |
+          mkdir -p "$WRFCOIN_DATA_DIR" "$WRFCOIN_PHASE3B_LOG_DIR"
+          cargo build --locked -p wrfcoin-native-chain --bin launch_api
+          "$GITHUB_WORKSPACE/target/debug/launch_api" \
+            >"$WRFCOIN_PHASE3B_LOG_DIR/launch_api.log" 2>&1 &
+          API_PID=$!
+          cleanup() {
+            if [ -n "${API_PID:-}" ]; then
+              kill "$API_PID" 2>/dev/null || true
+              wait "$API_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 150); do
+            HTTP=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8556/health || true)
+            [ "$HTTP" = "200" ] && break
+            if [ "$attempt" = "150" ]; then
+              cat "$WRFCOIN_PHASE3B_LOG_DIR/launch_api.log"
+              echo "::error::localhost launch_api did not become healthy"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          bash scripts/run-phase3c-security-api.sh --no-color
+
+          # The combined runner correctly skips process restart when it does not
+          # own launch_api. Stop our fixture, then run the restart test in owner
+          # mode so TDD-12.10 proves durable state across an actual restart.
+          cleanup
+          API_PID=''
+          export WRFCOIN_DATA_DIR="${RUNNER_TEMP}/phase3c-restart-data"
+          mkdir -p "$WRFCOIN_DATA_DIR"
+          bash tests/security/test-quality-events-restart-consistency.sh
+
+  # ── Manual API terminal guard ───────────────────────────────────────────────
+  # The API leg can only run on workflow_dispatch, and phase3c-summary above
+  # deliberately excludes that event — so without this guard a FAILING manual
+  # API execution has no terminal assertion at all (#2619 review). The job is
+  # CONDITIONAL, not required: it self-skips unless run_api_tests=true, so a
+  # skip is legitimate on a plain dispatch; a failed execution is what must
+  # never pass silently.
+  phase3c-dispatch-terminal-guard:
+    name: "Phase 3C manual API terminal guard"
+    needs: [tdd-phase3c-api]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject failed manual API gate
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: ''
+          GATE_CONDITIONAL: tdd-phase3c-api
+        run: python3 scripts/assert_gate_results.py
+
+  # ── Summary comment on PR ───────────────────────────────────────────────────
+  phase3c-summary:
+    # Job-scoped API/artifact publication; forks retain read-only tokens.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    name: "Phase 3C Gate Summary"
+    # Automatic evidence is Rust-only. The API leg is manual/input-gated and
+    # must never be counted as a skipped automatic gate.
+    needs: [tdd-phase3c-rust]
+    if: always() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: tdd-phase3c-rust
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py
+      - uses: actions/github-script@v8
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          script: |
+            const rust = '${{ needs.tdd-phase3c-rust.result }}';
+            const s = v => v === 'success' ? ':white_check_mark:' : v === 'skipped' ? ':dash:' : ':x:';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const body = [
+              '## Phase 3C TDD Gate',
+              '',
+              '| Job | Status | Coverage |',
+              '|-----|--------|----------|',
+              `| TDD-12.2–12.5 (Rust) | ${s(rust)} | slashing_integration · reward_integration · verify_block quorum · mining quorum |`,
+              `| TDD-12.1, 12.6–12.11 (API) | :dash: | manual dispatch only — not automatic gate evidence |`,
+              '',
+              '> API coverage is intentionally skipped on PRs. It runs only when `run_api_tests=true` and the protected `testnet-api` environment is enabled.',
+              '',
+              '**Run locally** (Rust tests only, no testnet needed):',
+              '```bash',
+              'bash scripts/run-phase3c-security-api.sh --rust-only',
+              '```',
+              '',
+              '**Full gate** (requires running testnet at :8556):',
+              '```bash',
+              'bash scripts/run-phase3c-security-api.sh',
+              '```',
+              '',
+              `[Workflow run](${run})`,
+            ].join('\n');
+
+            const MARKER = 'Phase 3C TDD Gate';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

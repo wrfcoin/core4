@@ -1,0 +1,49 @@
+Okay, here are key questions you should ask your coding agent when working on the Wrfcoin blockchain wallet         │
+│  integration, focusing on the requirements outlined in Task 3 and considering dependencies for other tasks like      │
+│  data submission (Task 5). These questions aim to guide the agent through the implementation process effectively.    │
+│                                                                                                                      │
+│  ### Core Setup and Library Choice                                                                                   │
+│                                                                                                                      │
+│  1.  **Library Selection:** "Given the project uses React/TypeScript, which Web3 library (ethers.js or web3.js) do   │
+│  you recommend for interacting with the Wrfcoin blockchain, and why? What are the key considerations for Wrfcoin's   │
+│  specific needs?"                                                                                                    │
+│  2.  **Initial Configuration:** "How should the chosen Web3 library be initialized and configured within the React   │
+│  application to connect to the Wrfcoin network? What are the necessary provider URLs or configurations?"             │
+│                                                                                                                      │
+│  ### Wallet Connection (MetaMask & WalletConnect)                                                                    │
+│                                                                                                                      │
+│  3.  **MetaMask Integration:** "What are the specific steps to implement MetaMask connection logic? How should we    │
+│  handle user prompts for connection, detect if MetaMask is installed, and listen for account or network changes?"    │
+│  4.  **WalletConnect Integration:** "How do we integrate WalletConnect to support mobile wallets? What are the       │
+│  required dependencies and the flow for initiating a WalletConnect session?"                                         │
+│  5.  **Connection State Management:** "How should the connection status (connected/disconnected), connected account  │
+│  address, and current network ID be managed and made accessible throughout the application, potentially using React  │
+│  Context as specified in Task 3?"                                                                                    │
+│                                                                                                                      │
+│  ### Wrfcoin Specifics & Data Display                                                                                │
+│                                                                                                                      │
+│  6.  **Wrfcoin Network Detection:** "How can we detect if the user's wallet is connected to the correct Wrfcoin      │
+│  network? What is the recommended way to prompt or guide the user to switch networks if they are on the wrong one?"  │
+│  7.  **Account Balance Retrieval:** "What is the standard method using the chosen library to fetch the balance of    │
+│  the connected account for the native Wrfcoin token? How should this balance be displayed and updated?"              │
+│                                                                                                                      │
+│  ### User Experience & Functionality                                                                                 │
+│                                                                                                                      │
+│  8.  **UI Component Structure:** "What is a good structure for the wallet connection UI components? How should we    │
+│  handle different states (connecting, connected, disconnected, error) and display relevant information like the      │
+│  connected account and balance?"                                                                                     │
+│  9.  **Disconnection and Account Switching:** "How should the wallet disconnection logic be implemented? How can we  │
+│  handle scenarios where the user switches accounts directly within their wallet?"                                    │
+│                                                                                                                      │
+│  ### Integration with Other Tasks                                                                                    │
+│                                                                                                                      │
+│  10. **Transaction Signing (Task 5 Dependency):** "Once a wallet is connected, how will it be used to sign           │
+│  transactions for submitting weather data to the Wrfcoin smart contract (as required by Task 5)? What is the         │
+│  typical flow for initiating a transaction and getting the user's signature?"                                        │
+│  11. **Error Handling:** "What are common errors during wallet connection or interaction (e.g., user rejects         │
+│  connection, network issues, unsupported wallet) and how should these be handled and communicated to the user?"      │
+│                                                                                                                      │
+│  By asking these questions, you guide the agent through the technical implementation details, state management, UI   │
+│  considerations, and crucial aspects like network handling and integration points with other core functionalities    │
+│  like transaction signing. This ensures the agent focuses on delivering a robust and project-aligned wallet          │
+│  integration.

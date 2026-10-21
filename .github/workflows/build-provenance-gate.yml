@@ -1,0 +1,105 @@
+name: Build provenance gate
+
+# Owner 2026-10-07: input-relevant PRs plus nightly on main and dispatch.
+# Inputs and evidence tradeoffs: WORKFLOW_JUSTIFICATION.md, relevance/nightly section.
+
+on:
+  pull_request:
+    paths:
+      - 'build-provenance/**'
+      - 'scripts/attest_build.sh'
+      - 'scripts/cargo_test_nonvacuous.py'
+      - 'scripts/test_cargo_test_nonvacuous.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/build-provenance-gate.yml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'scripts/**'
+      - 'tests/**'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'build-provenance/**'
+      - 'scripts/attest_build.sh'
+      - 'scripts/cargo_test_nonvacuous.py'
+      - 'scripts/test_cargo_test_nonvacuous.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/build-provenance-gate.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '11 2 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  provenance-tests:
+    name: cargo test -p wrfcoin-build-provenance (nonvacuous)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # sccache is not installed on CT 102; an inherited wrapper aborts the build
+      # before anything compiles. Same reason integration-ratchet.yml's compile step clears it.
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Put rustup's cargo on PATH
+        run: |
+          test -x "${HOME}/.cargo/bin/cargo" || { echo "FATAL: no cargo at ${HOME}/.cargo/bin" >&2; exit 1; }
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      # STEP 1 — CONTROL. Proves the anti-vacuity wrapper can reach RED before
+      # anything depends on its green (docs/ci/VACUOUS_GATES.md check 1).
+      - name: Control — the zero-match wrapper can reach RED
+        run: |
+          python3 scripts/test_cargo_test_nonvacuous.py
+          python3 scripts/cargo_test_nonvacuous.py --self-test
+
+      # STEP 2 — the attestation wrapper's own detection proof. It must accept an
+      # unchanged tree, and reject a mid-build change, an edit reverted inside the
+      # window, and a dirty start. Runs in a temporary repository, so it asserts
+      # real behaviour without touching this checkout.
+      - name: Attestation wrapper detects a tree that moves mid-build
+        run: bash scripts/attest_build.sh --self-test
+
+      # STEP 3 — the classifier suite that round 3 wrongly reported as running.
+      # Floors calibrated 2026-08-31 against a measured 13 executed / 2 summaries.
+      # `--min-summaries 2` is set EXACTLY at the measured value: harness count is
+      # stable where test count is not, so an exact floor turns a whole harness
+      # disappearing into a RED (#2889, #2899).
+      - name: Observe — run every wrfcoin-build-provenance test
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 12 --min-summaries 2 -- \
+            test --locked -p wrfcoin-build-provenance

@@ -1,0 +1,242 @@
+{
+  "ci-readiness.yml": {
+    "job": "readiness-gate",
+    "needs": [
+      "preflight",
+      "preflight-js",
+      "preflight-rust",
+      "js-lint",
+      "rust-lint",
+      "typecheck",
+      "security",
+      "js-tests",
+      "rust-tests"
+    ],
+    "events": {
+      "pull_request": {
+        "required": [
+          "preflight",
+          "preflight-rust",
+          "rust-lint",
+          "typecheck",
+          "security",
+          "rust-tests"
+        ],
+        "conditional": [
+          "preflight-js",
+          "js-lint",
+          "js-tests"
+        ]
+      },
+      "default": {
+        "required": [
+          "preflight",
+          "preflight-js",
+          "preflight-rust",
+          "js-lint",
+          "rust-lint",
+          "typecheck",
+          "security",
+          "js-tests",
+          "rust-tests"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "tdd-phase3c.yml": {
+    "job": "phase3c-summary",
+    "needs": [
+      "tdd-phase3c-rust"
+    ],
+    "events": {
+      "default": {
+        "required": [
+          "tdd-phase3c-rust"
+        ],
+        "conditional": []
+      }
+    },
+    "additional_guards": [
+      {
+        "job": "phase3c-dispatch-terminal-guard",
+        "if_contains": "github.event_name == 'workflow_dispatch'",
+        "needs": [
+          "tdd-phase3c-api"
+        ],
+        "required": [],
+        "conditional": [
+          "tdd-phase3c-api"
+        ]
+      }
+    ]
+  },
+  "adversarial-tests.yml": {
+    "job": "terminal-skip-guard",
+    "context": "Adversarial terminal guard",
+    "needs": [
+      "corpus-guard",
+      "adversarial-suite"
+    ],
+    "events": {
+      "pull_request": {
+        "required": [
+          "corpus-guard"
+        ],
+        "conditional": [
+          "adversarial-suite"
+        ]
+      },
+      "default": {
+        "required": [
+          "corpus-guard",
+          "adversarial-suite"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "determinism-matrix.yml": {
+    "job": "terminal-skip-guard",
+    "context": "Determinism matrix gate",
+    "needs": [
+      "emit-roots",
+      "compare"
+    ],
+    "events": {
+      "default": {
+        "required": [
+          "emit-roots",
+          "compare"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "fuzz-nightly.yml": {
+    "job": "terminal-skip-guard",
+    "context": "Fuzz terminal guard",
+    "needs": [
+      "fuzz",
+      "fuzz-build-smoke",
+      "corpus-replay"
+    ],
+    "events": {
+      "pull_request": {
+        "required": [
+          "fuzz-build-smoke",
+          "corpus-replay"
+        ],
+        "conditional": [
+          "fuzz"
+        ]
+      },
+      "default": {
+        "required": [
+          "fuzz",
+          "fuzz-build-smoke",
+          "corpus-replay"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "release-signing.yml": {
+    "job": "release-terminal-skip-guard",
+    "needs": [
+      "build-binaries",
+      "generate-provenance",
+      "sign-binaries",
+      "attach-to-release",
+      "verify-signatures"
+    ],
+    "events": {
+      "default": {
+        "required": [
+          "build-binaries",
+          "generate-provenance",
+          "sign-binaries",
+          "attach-to-release",
+          "verify-signatures"
+        ],
+        "conditional": []
+      }
+    },
+    "additional_guards": [
+      {
+        "job": "dispatch-terminal-skip-guard",
+        "if_contains": "github.event_name == 'workflow_dispatch'",
+        "needs": [
+          "build-binaries",
+          "build-binaries-macos",
+          "generate-provenance",
+          "sign-binaries"
+        ],
+        "required": [
+          "build-binaries",
+          "build-binaries-macos",
+          "generate-provenance",
+          "sign-binaries"
+        ],
+        "conditional": []
+      }
+    ]
+  },
+  "sbom-generate.yml": {
+    "job": "terminal-skip-guard",
+    "needs": [
+      "generate-sbom",
+      "verify-sbom"
+    ],
+    "events": {
+      "default": {
+        "required": [
+          "generate-sbom",
+          "verify-sbom"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "secret-scanning.yml": {
+    "job": "secret-scanning-summary",
+    "context": "Secret Scanning summary",
+    "needs": [
+      "detect-secrets",
+      "secret-leak-scan"
+    ],
+    "events": {
+      "push": {
+        "required": [
+          "detect-secrets"
+        ],
+        "conditional": [
+          "secret-leak-scan"
+        ]
+      },
+      "default": {
+        "required": [
+          "detect-secrets",
+          "secret-leak-scan"
+        ],
+        "conditional": []
+      }
+    }
+  },
+  "public-pr-admission.yml": {
+    "job": "admission",
+    "needs": [
+      "rust",
+      "policy"
+    ],
+    "events": {
+      "default": {
+        "required": [
+          "rust",
+          "policy"
+        ],
+        "conditional": []
+      }
+    }
+  }
+}

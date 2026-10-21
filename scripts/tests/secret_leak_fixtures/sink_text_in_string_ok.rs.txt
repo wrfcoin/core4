@@ -1,0 +1,7 @@
+// #3284: sink-shaped text INSIDE a string literal is data, not a call. Only a
+// real macro invocation is a sink.
+const NEEDLE: &str = "format!(\"{private_key}\") must never appear in production";
+
+fn label(height: u64) -> String {
+    format!("height={height}")
+}

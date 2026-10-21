@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>WRFCoin node status</title>
+<link rel="icon" href="data:,">
+<style>
+/* Design tokens ported from the website design system
+   (frontend/src/components/DesignSystem/tokens.ts). Dark is the website's
+   default; light follows the operating system. No font is fetched: the stack
+   uses Inter when it is installed and the system UI face otherwise. */
+:root {
+  --bg: #0F172A;
+  --bg-2: #1E293B;
+  --bg-3: #334155;
+  --bg-hover: #475569;
+  --text: #F8FAFC;
+  --text-2: #94A3B8;
+  --muted: #64748B;
+  --disabled: #475569;
+  --border: rgba(51, 65, 85, 0.5);
+  --border-hover: rgba(59, 130, 246, 0.5);
+  --focus: rgba(59, 130, 246, 0.8);
+  --primary: #3B82F6;
+  --primary-light: #60A5FA;
+  --primary-dark: #2563EB;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --error: #EF4444;
+  --info: #0EA5E9;
+  --purple: #8B5CF6;
+  --cyan: #06B6D4;
+  --orange: #F97316;
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --r-xs: 4px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 24px; --r-full: 9999px;
+  --s-xs: 4px; --s-sm: 8px; --s-md: 16px; --s-lg: 24px; --s-xl: 32px; --s-xxl: 48px;
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #F8FAFC;
+    --bg-2: #FFFFFF;
+    --bg-3: #F1F5F9;
+    --bg-hover: #E2E8F0;
+    --text: #0F172A;
+    --text-2: #475569;
+    --muted: #64748B;
+    --disabled: #94A3B8;
+    --border: rgba(148, 163, 184, 0.3);
+    --border-hover: rgba(59, 130, 246, 0.4);
+    --focus: rgba(59, 130, 246, 0.6);
+    --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.08), 0 2px 4px -1px rgba(15, 23, 42, 0.06);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-width: 320px;
+  overflow-x: hidden;
+}
+a { color: var(--primary-light); }
+button, input { font: inherit; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: var(--s-md); }
+@media (min-width: 900px) { .wrap { padding: var(--s-xl); } }
+
+/* Header */
+.top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s-md); margin-bottom: var(--s-lg); }
+.brand { display: flex; align-items: center; gap: var(--s-md); min-width: 0; }
+.logo { width: 44px; height: 44px; border-radius: var(--r-md); flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--primary), var(--cyan)); position: relative; }
+.logo::after { content: ""; position: absolute; inset: 12px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.9); border-right-color: transparent; }
+h1 { font-size: 1.25rem; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.sub { margin: 2px 0 0; color: var(--text-2); font-size: 0.875rem; }
+.asof { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-xs); font-size: 0.875rem; color: var(--text-2); }
+@media (min-width: 600px) { .asof { align-items: flex-end; text-align: right; } }
+.asof strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: middle; }
+.dot.live { background: var(--success); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2); }
+.dot.stale { background: var(--warning); }
+.dot.down { background: var(--error); }
+
+/* Panels */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: var(--s-md); }
+@media (min-width: 900px) { .grid { gap: var(--s-lg); } }
+.panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s-md); min-width: 0; display: flex; flex-direction: column; gap: var(--s-md); }
+@media (min-width: 600px) { .panel { padding: var(--s-lg); } }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm); flex-wrap: wrap; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: var(--r-full); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; background: var(--bg-3); color: var(--text-2); white-space: nowrap; }
+.pill.ok { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+.pill.warn { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+.pill.bad { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+.pill.info { background: rgba(14, 165, 233, 0.15); color: var(--info); }
+
+/* Stat cards, after WrfStatCard: accent line, uppercase label, large value */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: var(--s-sm); }
+/* Three cards in two columns: the odd one out spans the row instead of standing alone. */
+.cards.three > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.stat { position: relative; overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-md); min-width: 0; transition: box-shadow 0.2s ease; }
+.stat:hover { box-shadow: var(--shadow-md); }
+.stat::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--accent, var(--primary)); }
+.stat .label { font-size: 0.75rem; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--s-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .value { font-size: 1.75rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .value .frac, .stat .value .unit { font-size: 0.95rem; font-weight: 600; color: var(--text-2); }
+.stat .value .unit { margin-left: 3px; }
+.stat .value.empty { color: var(--muted); font-weight: 500; font-size: 1.25rem; }
+.stat .value.text { font-size: 1.375rem; }
+.stat .hint { font-size: 0.75rem; color: var(--muted); margin-top: var(--s-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Key/value rows */
+.kv { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: var(--s-xs) var(--s-md); margin: 0; font-size: 0.875rem; }
+.kv dt { color: var(--text-2); white-space: nowrap; }
+.kv dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 0.8125rem; }
+.hash { display: inline-flex; align-items: center; justify-content: flex-end; gap: var(--s-sm); max-width: 100%; }
+.hash .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hash .btn { flex: 0 0 auto; white-space: nowrap; }
+.btn { border: 1px solid var(--border); background: var(--bg-3); color: var(--text); border-radius: var(--r-sm); padding: 4px 10px; font-size: 0.8125rem; font-weight: 500; cursor: pointer; line-height: 1.4; }
+.btn:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.primary:hover { background: var(--primary-dark); }
+.btn.ghost { background: transparent; }
+
+/* Bars */
+.bar { height: 8px; background: var(--bg-3); border-radius: var(--r-full); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--primary); border-radius: var(--r-full); transition: width 0.4s ease; }
+.bar.warn > i { background: var(--warning); }
+.bar.bad > i { background: var(--error); }
+.meter { display: grid; gap: var(--s-xs); }
+.meter .row { display: flex; justify-content: space-between; gap: var(--s-sm); font-size: 0.875rem; }
+.meter .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.meter .row span { color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: var(--s-sm); }
+.core { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 8px; min-width: 0; }
+.core .n { font-size: 0.6875rem; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; display: flex; justify-content: space-between; gap: 4px; }
+.core .n b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.core .bar { height: 6px; margin-top: 4px; }
+.section-title { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0; }
+.stack { display: grid; gap: var(--s-sm); }
+
+/* States */
+.err { margin: 0; font-size: 0.8125rem; color: var(--error); background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--r-sm); padding: var(--s-sm) var(--s-md); overflow-wrap: anywhere; }
+.note { margin: 0; font-size: 0.8125rem; color: var(--text-2); }
+.locked { display: grid; gap: var(--s-md); background: var(--bg); border: 1px dashed var(--border-hover); border-radius: var(--r-md); padding: var(--s-md); }
+.locked h3 { margin: 0; font-size: 0.9375rem; font-weight: 600; display: flex; align-items: center; gap: var(--s-sm); }
+.lock { display: inline-block; width: 14px; height: 10px; border: 2px solid var(--warning); border-radius: 3px; position: relative; top: 2px; }
+.lock::before { content: ""; position: absolute; left: 2px; top: -8px; width: 6px; height: 8px; border: 2px solid var(--warning); border-bottom: 0; border-radius: 5px 5px 0 0; }
+.locked p { margin: 0; font-size: 0.875rem; color: var(--text-2); }
+.token-form { display: flex; flex-wrap: wrap; gap: var(--s-sm); }
+.token-form input { flex: 1 1 180px; min-width: 0; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 10px; font-family: var(--mono); font-size: 0.875rem; }
+.token-form input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2); }
+.token-state { display: inline-flex; align-items: center; gap: var(--s-sm); font-size: 0.8125rem; color: var(--text-2); }
+[hidden] { display: none !important; }
+footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>WRFCoin node</h1>
+        <p class="sub">Operator status, served by this node at <span class="mono">/dashboard</span></p>
+      </div>
+    </div>
+    <div class="asof" aria-live="polite">
+      <div><span class="dot" id="live-dot"></span>Data as of <strong id="asof-time">—</strong></div>
+      <div id="asof-age">waiting for the first sample</div>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel" id="panel-chain" aria-labelledby="h-chain">
+      <div class="panel-head">
+        <h2 id="h-chain">Chain</h2>
+        <span class="pill" id="chain-pill">no data</span>
+      </div>
+      <div class="cards">
+        <div class="stat" style="--accent: var(--primary)">
+          <div class="label">Height</div>
+          <div class="value empty" id="st-height">—</div>
+          <div class="hint" id="st-height-hint">no sample yet</div>
+        </div>
+        <div class="stat" style="--accent: var(--cyan)">
+          <div class="label">Peers</div>
+          <div class="value empty" id="st-peers">—</div>
+          <div class="hint" id="st-peers-hint">connected</div>
+        </div>
+        <div class="stat" style="--accent: var(--purple)">
+          <div class="label">Blocks / min</div>
+          <div class="value empty" id="st-bpm">warming up</div>
+          <div class="hint" id="st-bpm-hint">from successive height samples</div>
+        </div>
+        <div class="stat" style="--accent: var(--orange)">
+          <div class="label">Last block</div>
+          <div class="value empty" id="st-age">—</div>
+          <div class="hint">age of the tip</div>
+        </div>
+      </div>
+      <dl class="kv">
+        <dt>Genesis hash</dt>
+        <dd><span class="hash"><span class="mono" id="genesis-short" title="">—</span><button class="btn ghost" type="button" id="copy-genesis" hidden>Copy</button></span></dd>
+        <dt>Protocol version</dt><dd id="kv-protocol">—</dd>
+        <dt>Network</dt><dd id="kv-network">—</dd>
+        <dt>Sync (p2p)</dt><dd id="kv-p2p">—</dd>
+        <dt>Blocks received</dt><dd id="kv-blocks-rx">—</dd>
+      </dl>
+      <p class="err" id="err-chain" hidden></p>
+    </section>
+
+    <section class="panel" id="panel-host" aria-labelledby="h-host">
+      <div class="panel-head">
+        <h2 id="h-host">Host</h2>
+        <span class="token-state" id="token-state" hidden>
+          <span class="pill ok">operator token set</span>
+          <button class="btn ghost" type="button" id="forget-token">Forget</button>
+        </span>
+      </div>
+      <div class="locked" id="host-locked">
+        <h3><span class="lock" aria-hidden="true"></span>Operator token required</h3>
+        <p>CPU, memory, swap and disk come from <span class="mono">/node/metrics/host</span>, which only the operator role may read. Paste this node's operator API token: it is kept in this tab's session storage only, sent to this node as an <span class="mono">Authorization</span> header, never placed in the URL and never logged.</p>
+        <form class="token-form" id="token-form" autocomplete="off">
+          <input id="token-input" type="password" placeholder="operator token" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Operator token">
+          <button class="btn primary" type="submit">Unlock</button>
+        </form>
+      </div>
+      <div id="host-metrics" hidden>
+        <div class="cards three">
+          <div class="stat" style="--accent: var(--primary)">
+            <div class="label">CPU</div>
+            <div class="value empty" id="st-cpu">—</div>
+            <div class="hint" id="st-cpu-hint">average across cores</div>
+          </div>
+          <div class="stat" style="--accent: var(--success)">
+            <div class="label">Memory</div>
+            <div class="value empty" id="st-mem">—</div>
+            <div class="hint" id="st-mem-hint">—</div>
+          </div>
+          <div class="stat" style="--accent: var(--warning)">
+            <div class="label">Swap</div>
+            <div class="value empty" id="st-swap">—</div>
+            <div class="hint" id="st-swap-hint">—</div>
+          </div>
+        </div>
+        <div class="stack" style="margin-top: var(--s-md)">
+          <p class="section-title">Per core</p>
+          <div class="cores" id="cores"></div>
+        </div>
+        <div class="stack" style="margin-top: var(--s-md)">
+          <p class="section-title">Disks</p>
+          <div class="stack" id="disks"></div>
+        </div>
+      </div>
+      <p class="err" id="err-host" hidden></p>
+    </section>
+
+    <section class="panel" id="panel-node" aria-labelledby="h-node">
+      <div class="panel-head">
+        <h2 id="h-node">Node</h2>
+        <span class="pill" id="node-pill">no data</span>
+      </div>
+      <div class="cards three">
+        <div class="stat" style="--accent: var(--info)">
+          <div class="label">Version</div>
+          <div class="value empty" id="st-version">—</div>
+          <div class="hint" id="st-version-hint">node software</div>
+        </div>
+        <div class="stat" style="--accent: var(--success)">
+          <div class="label">Uptime</div>
+          <div class="value empty" id="st-uptime">—</div>
+          <div class="hint" id="st-uptime-hint">—</div>
+        </div>
+        <div class="stat" style="--accent: var(--purple)">
+          <div class="label">Pending tx</div>
+          <div class="value empty" id="st-mempool">—</div>
+          <div class="hint">in the mempool</div>
+        </div>
+      </div>
+      <dl class="kv">
+        <dt>Capability</dt><dd id="kv-cap">—</dd>
+        <dt>WAN link</dt><dd id="kv-wan">—</dd>
+        <dt>Mesh peers</dt><dd id="kv-mesh">—</dd>
+        <dt>Blocks in memory</dt><dd id="kv-blocks-mem">—</dd>
+        <dt>Accounts</dt><dd id="kv-accounts">—</dd>
+        <dt>Upgrade</dt><dd id="kv-upgrade">—</dd>
+      </dl>
+      <p class="err" id="err-node" hidden></p>
+    </section>
+  </main>
+
+  <footer>
+    <span>Refreshes every <span id="refresh-every">10</span> s from this node's own API. Nothing leaves this origin.</span>
+    <span id="budget-note"></span>
+  </footer>
+</div>
+
+<script>
+'use strict';
+// Every path the page may request. The Rust self-check in status_page.rs
+// parses this object and refuses a path that routes/mod.rs does not register.
+const ROUTES = {
+  info: '/network/info',
+  sync: '/node/sync/status',
+  stats: '/network/stats',
+  resources: '/node/resources',
+  capability: '/node/capability',
+  upgrade: '/network/upgrade',
+  health: '/health',
+  host: '/node/metrics/host'
+};
+const TOKEN_KEY = 'wrfcoin.dashboard.operatorToken';
+const TICK_MS = 10000;
+const SLOW_TICK_MS = 20000;
+const SLOW_EVERY = 6; // /network/upgrade and /health once a minute
+const SAMPLE_WINDOW_MS = 5 * 60 * 1000;
+
+const $ = (id) => document.getElementById(id);
+const last = {};        // route key -> last successful JSON
+const failed = {};      // route key -> HTTP status of the last failure (0 = no response)
+const failedCode = {};  // route key -> the envelope's error.code, when the node sent one
+// require_role answers these when the bearer token is missing or wrong.
+const TOKEN_CODES = ['UNAUTHORIZED', 'FORBIDDEN'];
+// The #2136 origin guard answers these before any handler runs: the token is not the problem.
+const GUARD_CODES = ['ORIGIN_REQUIRED', 'ORIGIN_NOT_ALLOWED', 'HOST_NOT_ALLOWED'];
+const samples = [];     // { t, h } height samples for blocks per minute
+let lastOkAt = null;
+let tickCount = 0;
+let timer = null;
+let intervalMs = TICK_MS;
+let token = null;
+try { token = sessionStorage.getItem(TOKEN_KEY) || null; } catch (_) { token = null; }
+
+// ---------- fetch ----------
+async function getJson(path, withToken) {
+  const headers = { 'Accept': 'application/json' };
+  if (withToken && token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const res = await fetch(path, { method: 'GET', headers, cache: 'no-store', credentials: 'omit' });
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+    return { ok: res.ok, status: res.status, data };
+  } catch (_) {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+function errorCode(data) {
+  return data && data.error && typeof data.error.code === 'string' ? data.error.code : null;
+}
+function describe(status) {
+  if (status === 0) return 'endpoint unavailable (no response)';
+  if (status === 429) return 'rate limited (HTTP 429), slowing the refresh';
+  return 'endpoint unavailable (HTTP ' + status + ')';
+}
+
+// ---------- formatting ----------
+function fmtInt(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return null;
+  return Math.round(n).toLocaleString('en-US');
+}
+function setStat(el, value, opts) {
+  // Integer part large; fraction and unit small, after WrfStatCard.
+  opts = opts || {};
+  if (value === null || value === undefined || (typeof value === 'number' && !isFinite(value))) {
+    el.className = 'value empty';
+    el.textContent = opts.empty || '—';
+    return;
+  }
+  el.className = 'value';
+  el.textContent = '';
+  if (typeof value === 'number') {
+    const digits = opts.digits || 0;
+    const fixed = value.toFixed(digits);
+    const dot = fixed.indexOf('.');
+    const intPart = Number(dot >= 0 ? fixed.slice(0, dot) : fixed).toLocaleString('en-US');
+    const span = document.createElement('span');
+    span.className = 'int';
+    span.textContent = intPart;
+    el.appendChild(span);
+    if (dot >= 0) {
+      const frac = document.createElement('span');
+      frac.className = 'frac';
+      frac.textContent = fixed.slice(dot);
+      el.appendChild(frac);
+    }
+  } else {
+    el.className = 'value text';
+    const span = document.createElement('span');
+    span.className = 'int';
+    span.textContent = String(value);
+    el.appendChild(span);
+  }
+  if (opts.unit) {
+    const unit = document.createElement('span');
+    unit.className = 'unit';
+    unit.textContent = opts.unit;
+    el.appendChild(unit);
+  }
+}
+function humanDuration(secs) {
+  if (typeof secs !== 'number' || !isFinite(secs) || secs < 0) return null;
+  const d = Math.floor(secs / 86400), h = Math.floor((secs % 86400) / 3600), m = Math.floor((secs % 3600) / 60), s = Math.floor(secs % 60);
+  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+function compactDuration(secs) {
+  const full = humanDuration(secs);
+  if (full === null) return null;
+  return full.split(' ').slice(0, 2).join(' ');
+}
+function shortHash(h) {
+  if (typeof h !== 'string' || h.length < 18) return h || null;
+  return h.slice(0, 8) + '…' + h.slice(-6);
+}
+function gib(mb) { return typeof mb === 'number' ? mb / 1024 : null; }
+function setPill(el, text, cls) { el.textContent = text; el.className = 'pill' + (cls ? ' ' + cls : ''); }
+function setErr(el, messages) {
+  if (!messages.length) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false;
+  el.textContent = messages.join(' · ');
+}
+function barClass(pct) { return pct >= 90 ? 'bar bad' : pct >= 75 ? 'bar warn' : 'bar'; }
+
+// ---------- blocks per minute ----------
+function recordHeight(h) {
+  if (typeof h !== 'number' || !isFinite(h)) return;
+  const now = Date.now();
+  samples.push({ t: now, h });
+  while (samples.length > 2 && now - samples[0].t > SAMPLE_WINDOW_MS) samples.shift();
+}
+function blocksPerMinute() {
+  if (samples.length < 2) return null;
+  const a = samples[0], b = samples[samples.length - 1];
+  const minutes = (b.t - a.t) / 60000;
+  if (minutes <= 0) return null;
+  return Math.max(0, (b.h - a.h) / minutes);
+}
+
+// ---------- rendering ----------
+function renderAsOf() {
+  const dot = $('live-dot');
+  if (!lastOkAt) {
+    $('asof-time').textContent = '—';
+    $('asof-age').textContent = Object.keys(failed).length ? 'no endpoint answered yet' : 'waiting for the first sample';
+    dot.className = 'dot' + (Object.keys(failed).length ? ' down' : '');
+    return;
+  }
+  const age = Math.max(0, Math.round((Date.now() - lastOkAt) / 1000));
+  $('asof-time').textContent = new Date(lastOkAt).toLocaleTimeString();
+  $('asof-age').textContent = age + ' s ago · refresh every ' + Math.round(intervalMs / 1000) + ' s';
+  dot.className = 'dot ' + (age > intervalMs / 1000 * 3 ? 'stale' : 'live');
+}
+
+function renderChain() {
+  const info = last.info, sync = last.sync, stats = last.stats, upgrade = last.upgrade;
+  const height = (sync && sync.chain_height) ?? (info && info.chain_height) ?? null;
+  const status = (sync && sync.sync_status) || (info && info.sync_status) || null;
+  const peers = (stats && stats.connected_peers) ?? (sync && sync.peer_count) ?? (info && info.peer_count) ?? null;
+
+  setStat($('st-height'), typeof height === 'number' ? height : null);
+  $('st-height-hint').textContent = typeof height === 'number'
+    ? (sync && sync.p2p_sync && typeof sync.p2p_sync.target_height === 'number' && sync.p2p_sync.target_height > height
+        ? 'target ' + fmtInt(sync.p2p_sync.target_height) : 'local tip')
+    : 'no sample yet';
+  setStat($('st-peers'), typeof peers === 'number' ? peers : null);
+  $('st-peers-hint').textContent = stats ? 'connected (p2p)' : (failed.stats === 503 ? 'p2p not enabled' : 'connected');
+
+  const bpm = blocksPerMinute();
+  if (bpm === null) {
+    setStat($('st-bpm'), null, { empty: 'warming up' });
+    $('st-bpm-hint').textContent = samples.length < 2 ? 'needs two height samples' : 'from successive height samples';
+  } else {
+    setStat($('st-bpm'), bpm, { digits: 1 });
+    const span = Math.round((samples[samples.length - 1].t - samples[0].t) / 1000);
+    $('st-bpm-hint').textContent = 'over the last ' + humanDuration(span);
+  }
+
+  const ageSecs = sync && typeof sync.block_age_secs === 'number' ? sync.block_age_secs : null;
+  setStat($('st-age'), ageSecs === null ? null : humanDuration(ageSecs), { unit: ageSecs === null ? '' : 'ago' });
+
+  if (status === 'synced') setPill($('chain-pill'), 'synced', 'ok');
+  else if (status === 'syncing') setPill($('chain-pill'), 'syncing', 'warn');
+  else if (status === 'genesis') setPill($('chain-pill'), 'genesis', 'info');
+  else if (status) setPill($('chain-pill'), status, '');
+  else setPill($('chain-pill'), 'no data', '');
+
+  const genesis = info && typeof info.genesis_hash === 'string' ? info.genesis_hash : null;
+  const gEl = $('genesis-short');
+  if (genesis && genesis !== 'unknown') {
+    gEl.textContent = shortHash(genesis);
+    gEl.title = genesis;
+    gEl.dataset.full = genesis;
+    $('copy-genesis').hidden = false;
+  } else {
+    gEl.textContent = genesis === 'unknown' ? 'unknown (still resolving)' : '—';
+    gEl.title = '';
+    delete gEl.dataset.full;
+    $('copy-genesis').hidden = true;
+  }
+  $('kv-protocol').textContent = upgrade && typeof upgrade.local_protocol_version === 'number'
+    ? String(upgrade.local_protocol_version) + (typeof upgrade.min_protocol_version === 'number' ? ' (network minimum ' + upgrade.min_protocol_version + ')' : '')
+    : '—';
+  $('kv-network').textContent = info
+    ? [info.network_id, info.chain_id ? 'chain ' + info.chain_id : null].filter(Boolean).join(' · ') || '—'
+    : '—';
+  $('kv-p2p').textContent = sync && sync.p2p_sync
+    ? (sync.p2p_sync.state || '—') + (typeof sync.p2p_sync.local_height === 'number' && typeof sync.p2p_sync.target_height === 'number'
+        ? ' · ' + fmtInt(sync.p2p_sync.local_height) + ' / ' + fmtInt(sync.p2p_sync.target_height) : '')
+    : (sync ? 'not reported' : '—');
+  $('kv-blocks-rx').textContent = stats && typeof stats.blocks_received === 'number'
+    ? fmtInt(stats.blocks_received) + (typeof stats.blocks_published === 'number' ? ' · published ' + fmtInt(stats.blocks_published) : '')
+    : '—';
+
+  const errs = [];
+  for (const k of ['info', 'sync', 'stats', 'upgrade']) {
+    if (k in failed && !(k === 'stats' && failed.stats === 503)) errs.push(describe(failed[k]) + ': ' + ROUTES[k]);
+  }
+  setErr($('err-chain'), errs);
+}
+
+function renderHost() {
+  const locked = $('host-locked'), metrics = $('host-metrics'), state = $('token-state');
+  if (!token) {
+    locked.hidden = false; metrics.hidden = true; state.hidden = true;
+    setErr($('err-host'), []);
+    return;
+  }
+  state.hidden = false;
+  const m = last.host;
+  const errs = [];
+  let tokenRejected = false;
+  if ('host' in failed) {
+    const s = failed.host, code = failedCode.host;
+    if (GUARD_CODES.includes(code)) {
+      // The node's origin guard, not the token: keep the token, do not re-lock.
+      errs.push("this node's origin guard refuses browser reads of host metrics (" + code + '); see WRFCOIN_API_ALLOWED_HOSTS / WRFCOIN_API_ALLOW_NO_ORIGIN, or a node built before core4#3602');
+    } else if ((s === 401 || s === 403) && (code === null || TOKEN_CODES.includes(code))) {
+      tokenRejected = true;
+      errs.push('token rejected (HTTP ' + s + (code ? ', ' + code : '') + '): check the operator token, then unlock again');
+    } else {
+      errs.push(describe(s) + ': ' + ROUTES.host);
+    }
+  }
+  if (!m) {
+    // Never show a populated host panel from nothing; show the field again only on a rejected token.
+    locked.hidden = !tokenRejected;
+    metrics.hidden = true;
+    setErr($('err-host'), errs);
+    return;
+  }
+  locked.hidden = true; metrics.hidden = false;
+
+  const cpu = typeof m.cpu_usage_avg_percent === 'number' ? m.cpu_usage_avg_percent : null;
+  setStat($('st-cpu'), cpu, { digits: 1, unit: '%' });
+  $('st-cpu-hint').textContent = Array.isArray(m.cpu_per_core) ? 'average of ' + m.cpu_per_core.length + ' cores' : 'average across cores';
+
+  const memPct = typeof m.memory_used_percent === 'number' ? m.memory_used_percent : null;
+  setStat($('st-mem'), memPct, { digits: 0, unit: '%' });
+  $('st-mem-hint').textContent = typeof m.memory_used_mb === 'number' && typeof m.memory_total_mb === 'number'
+    ? gib(m.memory_used_mb).toFixed(1) + ' of ' + gib(m.memory_total_mb).toFixed(1) + ' GiB' : '—';
+
+  if (typeof m.swap_total_mb === 'number' && m.swap_total_mb > 0) {
+    const swapPct = (m.swap_used_mb || 0) / m.swap_total_mb * 100;
+    setStat($('st-swap'), swapPct, { digits: 0, unit: '%' });
+    $('st-swap-hint').textContent = gib(m.swap_used_mb || 0).toFixed(1) + ' of ' + gib(m.swap_total_mb).toFixed(1) + ' GiB';
+  } else {
+    setStat($('st-swap'), null, { empty: 'none' });
+    $('st-swap-hint').textContent = 'no swap configured';
+  }
+
+  const cores = $('cores');
+  cores.textContent = '';
+  if (Array.isArray(m.cpu_per_core) && m.cpu_per_core.length) {
+    for (const c of m.cpu_per_core) {
+      const pct = typeof c.usage_percent === 'number' ? Math.max(0, Math.min(100, c.usage_percent)) : 0;
+      const el = document.createElement('div');
+      el.className = 'core';
+      const n = document.createElement('div');
+      n.className = 'n';
+      const name = document.createElement('span');
+      name.textContent = c.name || '';
+      const val = document.createElement('b');
+      val.textContent = Math.round(pct) + '%';
+      n.appendChild(name); n.appendChild(val);
+      const bar = document.createElement('div');
+      bar.className = barClass(pct);
+      const fill = document.createElement('i');
+      fill.style.width = pct + '%';
+      bar.appendChild(fill);
+      el.appendChild(n); el.appendChild(bar);
+      cores.appendChild(el);
+    }
+  } else {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = 'no per-core readings reported';
+    cores.appendChild(p);
+  }
+
+  const disks = $('disks');
+  disks.textContent = '';
+  if (Array.isArray(m.disks) && m.disks.length) {
+    for (const d of m.disks) {
+      const pct = typeof d.used_percent === 'number' ? Math.max(0, Math.min(100, d.used_percent)) : 0;
+      const el = document.createElement('div');
+      el.className = 'meter';
+      const row = document.createElement('div');
+      row.className = 'row';
+      const mount = document.createElement('span');
+      mount.className = 'mono';
+      mount.textContent = d.mount_point || '?';
+      const val = document.createElement('b');
+      val.textContent = Math.round(pct) + '% · ' + (typeof d.used_gb === 'number' ? d.used_gb.toFixed(0) : '?') + ' of ' + (typeof d.total_gb === 'number' ? d.total_gb.toFixed(0) : '?') + ' GiB';
+      row.appendChild(mount); row.appendChild(val);
+      const bar = document.createElement('div');
+      bar.className = barClass(pct);
+      const fill = document.createElement('i');
+      fill.style.width = pct + '%';
+      bar.appendChild(fill);
+      el.appendChild(row); el.appendChild(bar);
+      disks.appendChild(el);
+    }
+  } else {
+    const p = document.createElement('p');
+    p.className = 'note';
+    p.textContent = 'no mounts reported';
+    disks.appendChild(p);
+  }
+  setErr($('err-host'), errs);
+}
+
+function renderNode() {
+  const info = last.info, res = last.resources, cap = last.capability, health = last.health, stats = last.stats, upgrade = last.upgrade;
+  const version = (info && info.node_version) || (health && health.version) || null;
+  setStat($('st-version'), version ? 'v' + version : null);
+  $('st-version-hint').textContent = info && info.network_id ? info.network_id + ' node' : 'node software';
+
+  // Prefer the swarm's own uptime; /health only reports it to loopback or operator callers;
+  // /node/resources counts from its first request.
+  let uptime = null, src = '—';
+  if (stats && typeof stats.uptime_secs === 'number') { uptime = stats.uptime_secs; src = 'p2p service'; }
+  else if (health && typeof health.uptime_seconds === 'number') { uptime = health.uptime_seconds; src = 'process'; }
+  else if (res && typeof res.uptime_secs === 'number') { uptime = res.uptime_secs; src = 'since first poll'; }
+  setStat($('st-uptime'), uptime === null ? null : compactDuration(uptime));
+  $('st-uptime-hint').textContent = uptime === null ? 'not reported' : humanDuration(uptime);
+  $('st-uptime-hint').title = uptime === null ? '' : 'source: ' + src;
+
+  setStat($('st-mempool'), res && typeof res.pending_transactions === 'number' ? res.pending_transactions : null);
+
+  if (cap) {
+    const bits = [];
+    if (cap.ap_mode_enabled) bits.push('access point');
+    if (cap.is_metered) bits.push('metered link');
+    if (cap.capability_profile && cap.capability_profile.telemetry_lte_active) bits.push('cellular');
+    $('kv-cap').textContent = bits.length ? bits.join(' · ') : 'standard';
+    $('kv-wan').textContent = (cap.wan_state || '—') + (typeof cap.failover_count === 'number' ? ' · ' + cap.failover_count + ' failover' + (cap.failover_count === 1 ? '' : 's') : '');
+    $('kv-mesh').textContent = typeof cap.mesh_peer_count === 'number' ? fmtInt(cap.mesh_peer_count) : '—';
+  } else {
+    $('kv-cap').textContent = '—'; $('kv-wan').textContent = '—'; $('kv-mesh').textContent = '—';
+  }
+  $('kv-blocks-mem').textContent = res && typeof res.blocks_in_memory === 'number' ? fmtInt(res.blocks_in_memory) : '—';
+  $('kv-accounts').textContent = res && typeof res.account_count === 'number' ? fmtInt(res.account_count) + (typeof res.nft_count === 'number' ? ' · ' + fmtInt(res.nft_count) + ' NFTs' : '') : '—';
+  if (upgrade) {
+    let t = upgrade.status || '—';
+    if (typeof upgrade.activation_height === 'number') t += ' · activation at ' + fmtInt(upgrade.activation_height);
+    if (typeof upgrade.blocks_remaining === 'number' && upgrade.blocks_remaining > 0) t += ' · ' + fmtInt(upgrade.blocks_remaining) + ' blocks to go';
+    $('kv-upgrade').textContent = t;
+  } else {
+    $('kv-upgrade').textContent = '—';
+  }
+
+  const anyNode = !!(info || res || cap || health);
+  if (!anyNode) setPill($('node-pill'), 'no data', '');
+  else if (upgrade && upgrade.status && upgrade.status !== 'ready' && upgrade.status !== 'none') setPill($('node-pill'), 'upgrade ' + upgrade.status, 'warn');
+  else setPill($('node-pill'), 'running', 'ok');
+
+  const errs = [];
+  for (const k of ['resources', 'capability', 'health']) {
+    if (k in failed) errs.push(describe(failed[k]) + ': ' + ROUTES[k]);
+  }
+  setErr($('err-node'), errs);
+}
+
+function renderAll() { renderChain(); renderHost(); renderNode(); renderAsOf(); }
+
+// ---------- tick ----------
+async function tick() {
+  tickCount += 1;
+  const slow = tickCount === 1 || tickCount % SLOW_EVERY === 1;
+  const keys = ['info', 'sync', 'stats', 'resources', 'capability'];
+  if (slow) keys.push('upgrade', 'health');
+  if (token) keys.push('host');
+  const results = await Promise.all(keys.map((k) => getJson(ROUTES[k], k === 'host')));
+  let anyOk = false, any429 = false;
+  results.forEach((r, i) => {
+    const k = keys[i];
+    if (r.ok && r.data && typeof r.data === 'object') {
+      last[k] = r.data;
+      delete failed[k];
+      delete failedCode[k];
+      anyOk = true;
+    } else {
+      failed[k] = r.status;
+      failedCode[k] = errorCode(r.data);
+      if (r.status === 429) any429 = true;
+      // A refused read means no current host data, whichever layer refused it.
+      if (k === 'host' && (r.status === 401 || r.status === 403)) delete last.host;
+    }
+  });
+  if (anyOk) lastOkAt = Date.now();
+  const h = (last.sync && last.sync.chain_height) ?? (last.info && last.info.chain_height);
+  if (typeof h === 'number') recordHeight(h);
+  // Back off while the node's per-IP read limiter is refusing us; recover on a clean tick.
+  intervalMs = any429 ? SLOW_TICK_MS : (Object.values(failed).includes(429) ? SLOW_TICK_MS : TICK_MS);
+  $('refresh-every').textContent = String(Math.round(intervalMs / 1000));
+  $('budget-note').textContent = keys.length + ' requests this tick';
+  renderAll();
+  schedule();
+}
+function schedule() {
+  if (timer) clearTimeout(timer);
+  if (document.hidden) { timer = null; return; }
+  timer = setTimeout(tick, intervalMs);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { if (timer) clearTimeout(timer); tick(); }
+  else if (timer) { clearTimeout(timer); timer = null; }
+});
+setInterval(renderAsOf, 1000);
+
+// ---------- token handling ----------
+$('token-form').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const v = $('token-input').value.trim();
+  if (!v) return;
+  token = v;
+  $('token-input').value = '';
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch (_) { /* a private window may refuse; the token still works for this page load */ }
+  delete failed.host;
+  delete failedCode.host;
+  renderHost();
+  if (timer) clearTimeout(timer);
+  tick();
+});
+$('forget-token').addEventListener('click', () => {
+  token = null;
+  delete last.host;
+  delete failed.host;
+  delete failedCode.host;
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* nothing stored */ }
+  renderHost();
+});
+
+// ---------- copy genesis ----------
+$('copy-genesis').addEventListener('click', async () => {
+  const full = $('genesis-short').dataset.full;
+  if (!full) return;
+  const btn = $('copy-genesis');
+  let done = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(full); done = true; }
+  } catch (_) { done = false; }
+  if (!done) {
+    // Plain-HTTP origins other than localhost have no clipboard API; fall back to a selection copy.
+    const ta = document.createElement('textarea');
+    ta.value = full; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { done = document.execCommand('copy'); } catch (_) { done = false; }
+    document.body.removeChild(ta);
+  }
+  btn.textContent = done ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+renderAll();
+tick();
+</script>
+</body>
+</html>

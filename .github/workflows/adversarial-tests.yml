@@ -1,0 +1,211 @@
+name: Adversarial Simulation Suite
+
+# #2311: this workflow used to run only the 258 `launch_api` UNIT tests
+# (`cargo test --bin launch_api`), never the adversarial integration targets; its
+# "determinism" step compared pass COUNTS; and its regression script did not exist,
+# so it printed "skipping". A deliberately failing adversarial test left it green.
+#
+# It now runs an explicit adversarial corpus (scripts/adversarial_suite.py) that
+# fails closed if a target is missing, executes the real `--test` targets, and
+# compares an ordered test-identity artifact across two runs — not a count.
+#
+# Triggers: the CHEAP corpus guard (Python, no compile) runs on PRs that touch the
+# adversarial tests / manifest, so removing a target can no longer pass unnoticed.
+# The FULL suite (which compiles native-chain, ~15 min) stays schedule/dispatch —
+# commit 27103f64 removed the per-PR heavy run deliberately for Actions cost, and
+# that decision is preserved here.
+on:
+  pull_request:
+    paths:
+      - 'native-chain/tests/**'
+      - 'consensus-engines/tests/**'
+      - 'scripts/adversarial_suite.py'
+      - '.github/workflows/adversarial-tests.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'tests/integration/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '45 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Cheap, PR-reachable fail-closed guard: the adversarial corpus must be present
+  # and the checker itself must be sound. No cargo build, so it costs seconds.
+  corpus-guard:
+    name: Adversarial corpus guard (fail-closed)
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Acceptance probe — the checker can still turn red
+        run: python3 scripts/adversarial_suite.py --self-test
+      - name: Acceptance probe — piped steps fail closed (pipefail is load-bearing)
+        run: bash scripts/adversarial_pipefail_probe.sh
+      - name: Corpus present — fail if any adversarial target is absent
+        run: python3 scripts/adversarial_suite.py --check-corpus
+
+  # The real suite. Heavy (compiles native-chain), so schedule/dispatch only.
+  adversarial-suite:
+    name: Run Adversarial Tests
+    if: github.event_name != 'pull_request'
+    needs: corpus-guard
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.0"
+
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - name: Cache Cargo registry and build
+        if: runner.environment != 'self-hosted'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: adversarial-${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            adversarial-${{ runner.os }}-cargo-
+
+      # Executes every adversarial `--test` target in the manifest (replay,
+      # partition, reorg, oracle, churn, bridge). A failing adversarial test now
+      # fails the job — the #2311 negative control.
+      #
+      # `set -o pipefail` is mandatory: GitHub's default shell is `bash -e {0}`
+      # (no pipefail), so `python ... | tee` would exit with tee's 0 and mask a
+      # target failure — the exact false-green this gate exists to prevent
+      # (review of #2352). Every piped step below sets it.
+      - name: Run adversarial suite (real integration targets)
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/adversarial_suite.py --run 2>&1 | tee adversarial-output.txt
+
+      # Determinism: re-run the producer-vs-WAL-replay state_root parity target and
+      # Compare TWO load-bearing artifacts per leg: the ORDERED test identities and
+      # results, AND the raw per-height state roots.
+      #
+      # Identities alone were VACUOUS for determinism (#2311): the comparator only
+      # matched libtest names and ok/FAILED strings, so two runs whose state_root
+      # genuinely differed compared EQUAL and printed "determinism verified", exit 0.
+      # Each leg now also emits its own roots, and those are compared byte-for-byte.
+      - name: Determinism run 1
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture 2>&1 | tee det-run1.txt
+          cargo run --locked -q -p test_server --example emit_roots > roots-run1.json
+      - name: Determinism run 2
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture 2>&1 | tee det-run2.txt
+          cargo run --locked -q -p test_server --example emit_roots > roots-run2.json
+      - name: Compare determinism artifact (identities AND raw state roots)
+        # --require-anchor is intentionally NOT passed: the committed
+        # expected_roots.json oracle is known-red at every height, and that is stale
+        # drift from the post-oracle gamification_claims_seen root material rather
+        # than nondeterminism. It is reported loudly by this step but does not gate.
+        # Reconciliation is a tracked follow-up gated on #2398, which bumps the state
+        # root v8 -> v9 and will change the roots again.
+        run: |
+          python3 scripts/adversarial_suite.py --compare det-run1.txt det-run2.txt \
+            --roots roots-run1.json roots-run2.json
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: adversarial-test-output
+          path: |
+            adversarial-output.txt
+            det-run1.txt
+            det-run2.txt
+          retention-days: 30
+
+  terminal-skip-guard:
+    name: Adversarial terminal guard
+    needs: [corpus-guard, adversarial-suite]
+    if: always()
+    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: ${{ github.event_name == 'pull_request' && 'corpus-guard' || 'corpus-guard adversarial-suite' }}
+          GATE_CONDITIONAL: ${{ github.event_name == 'pull_request' && 'adversarial-suite' || '' }}
+        run: python3 scripts/assert_gate_results.py

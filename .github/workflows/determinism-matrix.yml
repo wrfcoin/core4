@@ -1,0 +1,275 @@
+name: Determinism Matrix
+
+# Replays the committed determinism fixture (#2103) on multiple OS images,
+# architectures, build profiles and Rust toolchains, then fails if any two legs
+# produce a different state_root at any height. Different distributions, CPU
+# architectures and compiler versions are where hash-map ordering, CPU-feature
+# and float differences actually surface — one machine proves nothing.
+#
+# Depends on #2103 (test_server's `replay_fixture` + `emit_roots` example),
+# merged as PR #2242, and on the toolchain pin from #2150, merged as PR #2214.
+# Both are on main; the example target and the fixture resolve.
+#
+# #2214 added `rust-toolchain.toml` (now channel 1.98.0), which OVERRIDES
+# `rustup default`. Legs therefore set RUSTUP_TOOLCHAIN and assert the running
+# rustc matches what they declare — see the verify step. Without that the
+# 1.97.0 leg would silently run 1.98.0 and vary nothing.
+#
+# Every leg is additionally checked against the committed expected_roots.json,
+# not just against the other legs. See the compare job.
+
+on:
+  pull_request:
+    paths:
+      - 'tests/integration/**'
+      - 'shared-protocol/**'
+      - 'primitives/**'
+      - 'native-chain/**'
+      - 'scripts/node_share_matrix.py'
+      - 'scripts/node_share_rehearsal.py'
+      - 'scripts/test_node_share_operator.py'
+      - 'scripts/emit_determinism_matrix.py'
+      - 'scripts/integration_test_ratchet.json'
+      - 'scripts/compare_state_roots.py'
+      - 'scripts/test_compare_state_roots.py'
+      - '.github/workflows/determinism-matrix.yml'
+      - 'Cross.toml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/integration/**'
+      - 'shared-protocol/**'
+      - 'primitives/**'
+      - 'native-chain/**'
+      - 'scripts/node_share_matrix.py'
+      - 'scripts/node_share_rehearsal.py'
+      - 'scripts/test_node_share_operator.py'
+      - 'scripts/emit_determinism_matrix.py'
+      - 'scripts/integration_test_ratchet.json'
+      - 'scripts/compare_state_roots.py'
+      - 'scripts/test_compare_state_roots.py'
+      - '.github/workflows/determinism-matrix.yml'
+      - 'Cross.toml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: github.ref is constant on main; unconditional cancellation cancels the previous main verdict on every merge.
+
+jobs:
+  emit-roots:
+    name: ${{ matrix.leg }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 debug (pinned toolchain)
+          - leg: ubuntu-latest-x86_64-debug-1.98.0
+            os: ubuntu-latest
+            profile: dev
+            toolchain: '1.98.0'
+            arch: x86_64
+          # x86_64 release (pinned toolchain)
+          - leg: ubuntu-latest-x86_64-release-1.98.0
+            os: ubuntu-latest
+            profile: release
+            toolchain: '1.98.0'
+            arch: x86_64
+          # x86_64 release on a second distribution image (pinned toolchain)
+          - leg: ubuntu-22.04-x86_64-release-1.98.0
+            os: ubuntu-22.04
+            profile: release
+            toolchain: '1.98.0'
+            arch: x86_64
+          # x86_64 release on the PREVIOUS stable toolchain — proves the roots
+          # do not depend on compiler version.
+          - leg: ubuntu-latest-x86_64-release-1.97.0
+            os: ubuntu-latest
+            profile: release
+            toolchain: '1.97.0'
+            arch: x86_64
+          # aarch64 release via QEMU cross-run (the point of this workflow).
+          # cross runs the built binary under emulation so the roots reflect a
+          # genuinely different architecture, not just a different target triple.
+          - leg: ubuntu-latest-aarch64-release-1.98.0
+            os: ubuntu-latest
+            profile: release
+            toolchain: '1.98.0'
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+
+      # GitHub-hosted images leave ~13 GiB free on the root disk, and /mnt is
+      # the same filesystem there. scripts/node_share_matrix.py's heavy-build
+      # disk guard requires 40 GiB free before EVERY cargo/cross command, sized
+      # for long-lived self-hosted and workstation disks that must never fill.
+      # On an ephemeral hosted runner, only the space the rest of the leg needs
+      # matters. On hosted runners only, this step:
+      #   1. removes ~30 GiB of preinstalled toolchains this job never uses
+      #      (measured on runs 39323702963/39327447920: 13-14 GiB -> 41-43 GiB);
+      #   2. sets WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB to the hosted floor below.
+      # Every guarded command logs NODE_SHARE_DISK_GUARD free_gib/min_gib, so
+      # each run shows the margin it actually had. Self-hosted runners skip
+      # this step and keep the unchanged 40 GiB default.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain ${{ matrix.toolchain }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+
+      # rust-toolchain.toml (now channel 1.98.0) OVERRIDES `rustup default`,
+      # which is all dtolnay/rust-toolchain sets — so without RUSTUP_TOOLCHAIN below,
+      # the 1.97.0 leg installs 1.97.0 and then silently runs 1.98.0, making it a
+      # duplicate of the release leg and the toolchain dimension vacuous.
+      # RUSTUP_TOOLCHAIN outranks the file (rustup override precedence).
+      - name: Verify the leg actually runs the toolchain it claims
+        if: matrix.arch == 'x86_64'
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          set -euo pipefail
+          actual="$(rustc --version | awk '{print $2}')"
+          echo "leg declares ${{ matrix.toolchain }}; rustc reports ${actual}"
+          if [ "${actual}" != "${{ matrix.toolchain }}" ]; then
+            echo "::error::VACUOUS LEG — declares ${{ matrix.toolchain }} but runs ${actual}."
+            echo "  A leg that does not run the toolchain it names varies nothing."
+            exit 1
+          fi
+
+      - name: Install cross (aarch64 leg only)
+        if: matrix.arch == 'aarch64'
+        run: cargo install cross --locked
+
+      # The node-share ON fixture re-runs its own test binary as a child process
+      # (test_env.rs isolated_chain_domain, #3521). Under cross only the top-level
+      # binary is started through QEMU, so the child, an aarch64 executable,
+      # needs the host kernel's binfmt_misc entry. Ubuntu's qemu-user-static
+      # registers it with the fix-binary flag, which also works inside cross's
+      # container. Without it the child exits silently and the fixture fails
+      # (run 39337854827).
+      - name: Register aarch64 binfmt for nested executions (aarch64 leg only)
+        if: matrix.arch == 'aarch64'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static > /dev/null
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64
+          grep -q '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Emit roots (x86_64)
+        if: matrix.arch == 'x86_64'
+        env:
+          # Must match the verify step above; without it rust-toolchain.toml
+          # silently wins and this leg builds with 1.98.0 whatever it declares.
+          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          set -euo pipefail
+          rustc --version
+          if [ "${{ matrix.profile }}" = "release" ]; then
+            python3 scripts/emit_determinism_matrix.py --profile release --out "roots-${{ matrix.leg }}.json"
+          else
+            python3 scripts/emit_determinism_matrix.py --out "roots-${{ matrix.leg }}.json"
+          fi
+          cat "roots-${{ matrix.leg }}.json"
+
+      # No RUSTUP_TOOLCHAIN here: `cross` builds inside its own container and
+      # honours rust-toolchain.toml (channel 1.98.0), which is exactly what this
+      # leg declares. Forcing the host's toolchain env into the container would
+      # misrepresent what actually compiled the binary. This leg's variable is
+      # the ARCHITECTURE, not the toolchain.
+      - name: Emit roots (aarch64 via QEMU)
+        if: matrix.arch == 'aarch64'
+        env:
+          # See Cross.toml: keeps libtest's x86_64 output mode under QEMU so the
+          # ON fixture's exact child-line check reads a passing child correctly.
+          RUST_TEST_THREADS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/emit_determinism_matrix.py --cross --target aarch64-unknown-linux-gnu \
+            --profile release --out "roots-${{ matrix.leg }}.json"
+          cat "roots-${{ matrix.leg }}.json"
+
+      - name: Upload roots artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: roots-${{ matrix.leg }}
+          path: |
+            roots-${{ matrix.leg }}.json
+            node-share-roots-${{ matrix.leg }}.json
+          if-no-files-found: error
+
+  compare:
+    name: Compare state roots across legs
+    needs: emit-roots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Download all leg artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: roots-*
+          merge-multiple: true
+          path: roots
+      # The comparator is the only thing standing between five agreeing legs and
+      # a readable answer. On run 30139096624 it crashed on its own input and
+      # reported nothing about the roots at all (#2410), so it gets its own
+      # regression test before it is trusted to judge anything.
+      - name: Self-test the comparator
+        run: python3 scripts/test_compare_state_roots.py
+
+      - name: Compare legs against each other AND against the committed anchor
+        run: |
+          set -euo pipefail
+          # --expected is what makes this gate falsifiable. Without it the job
+          # only asks whether the legs agree with each other, so a deterministic
+          # change to state-transition semantics shifts all five legs identically
+          # and passes. The anchor is committed, so it does not move with them.
+          # scripts/determinism_probe.sh proves this check turns the gate red.
+          python3 scripts/compare_state_roots.py \
+            --expected tests/integration/fixtures/determinism/expected_roots.json \
+            roots/roots-*.json
+          python3 scripts/compare_state_roots.py \
+            --expected tests/integration/fixtures/determinism/expected_node_share_roots.json \
+            roots/node-share-roots-*.json
+
+  terminal-skip-guard:
+    # Stable, version-free context for branch protection. This job is the
+    # aggregate: it runs even after dependency failures/skips and rejects every
+    # non-success result from both the matrix fan-out and its comparator.
+    name: Determinism matrix gate
+    needs: [emit-roots, compare]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: emit-roots compare
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py

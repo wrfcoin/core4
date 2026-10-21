@@ -1,0 +1,69 @@
+{
+  "$schema": "https://v2-7-6.turborepo.dev/schema.json",
+  "globalDependencies": [
+    ".env",
+    ".env.local",
+    ".env.production",
+    "docker-compose.yml",
+    "hardhat.config.js",
+    "tsconfig.json",
+    "Cargo.toml",
+    "rust-toolchain.toml"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "build/**", "target/**", "artifacts/**"]
+    },
+    "type-check": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "lint": {
+      "dependsOn": ["^lint"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "dependsOn": ["^lint:fix"],
+      "outputs": []
+    },
+    "contracts#compile": {
+      "dependsOn": [],
+      "inputs": ["contracts/**", "hardhat.config.js", "package.json"],
+      "outputs": ["artifacts/**", "cache/**"]
+    },
+    "contracts#test": {
+      "dependsOn": ["compile"],
+      "inputs": ["contracts/**", "test/**", "hardhat.config.js"],
+      "outputs": ["coverage/**"]
+    },
+    "contracts#deploy": {
+      "dependsOn": ["compile"],
+      "cache": false,
+      "inputs": ["contracts/**", "scripts/**", "deploy/**"]
+    },
+    "sdk#build": {
+      "dependsOn": [],
+      "inputs": ["src/**", "lib/**", "package.json", "tsconfig.json"],
+      "outputs": ["dist/**", "build/**"]
+    },
+    "sdk#test": {
+      "dependsOn": ["build"],
+      "inputs": ["src/**", "__tests__/**", "test/**"],
+      "outputs": ["coverage/**"]
+    },
+    "docs#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["docs/**", "*.md", "typedoc.config.js"],
+      "outputs": ["docs/generated/**"]
+    }
+  },
+  "globalEnv": [
+    "NODE_ENV",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "BLOCKCHAIN_NODE_URL",
+    "NETWORK_ID",
+    "CI"
+  ]
+}

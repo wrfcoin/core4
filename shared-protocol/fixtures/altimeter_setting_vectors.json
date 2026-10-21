@@ -1,0 +1,56 @@
+{
+  "description": "Golden vectors for the NWS altimeter-setting reduction (#3285). Consumed by shared-protocol weather::station_reference::altimeter_setting_hpa (Rust) and by the core4 collectors' JS port (tests/security), so the collector that computes pressure_sea_level_hpa and the attester that re-checks it reduce identically.",
+  "formula": "altimeter_hpa = (p - 0.3) * (1 + ((1013.25^0.190284 * 0.0065 / 288) * (h / (p - 0.3)^0.190284)))^(1 / 0.190284); p = station pressure hPa, h = elevation m (NWS altimeter setting formula)",
+  "tolerance_hpa": 1e-06,
+  "vectors": [
+    {
+      "name": "example_ws5000_replay_2026_09_24",
+      "note": "the reference station’s WS-5000 raw station pressure at 227.7 m (747 ft); KDLH altimeter setting that hour was 1027.8 hPa",
+      "station_pressure_hpa": 1001.2,
+      "elevation_m": 227.7,
+      "altimeter_setting_hpa": 1028.293402581
+    },
+    {
+      "name": "example_ws5000_2026_09_11",
+      "note": "the reference station’s WS-5000 lower-pressure day (collector log: 981 hPa submitted)",
+      "station_pressure_hpa": 981.0,
+      "elevation_m": 227.7,
+      "altimeter_setting_hpa": 1007.646033399
+    },
+    {
+      "name": "sea_level_station",
+      "note": "a station at 0 m: the formula's 0.3 hPa station-pressure offset is the only change",
+      "station_pressure_hpa": 1013.25,
+      "elevation_m": 0.0,
+      "altimeter_setting_hpa": 1012.95
+    },
+    {
+      "name": "example_dem_ground_plus_2m",
+      "note": "Example terrain: DEM 240.5 m ground plus a 2 m sensor height",
+      "station_pressure_hpa": 992.4,
+      "elevation_m": 242.5,
+      "altimeter_setting_hpa": 1021.087262376
+    },
+    {
+      "name": "kdlh_field_elevation",
+      "note": "KDLH field elevation 434.9 m",
+      "station_pressure_hpa": 975.0,
+      "elevation_m": 434.9,
+      "altimeter_setting_hpa": 1026.427693829
+    },
+    {
+      "name": "denver_high_elevation",
+      "note": "a high-elevation station",
+      "station_pressure_hpa": 840.0,
+      "elevation_m": 1609.0,
+      "altimeter_setting_hpa": 1019.636777351
+    },
+    {
+      "name": "below_sea_level",
+      "note": "a station below sea level",
+      "station_pressure_hpa": 1020.0,
+      "elevation_m": -30.0,
+      "altimeter_setting_hpa": 1016.081213135
+    }
+  ]
+}

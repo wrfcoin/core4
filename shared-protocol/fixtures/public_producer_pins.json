@@ -1,0 +1,20 @@
+{
+  "description": "Public genesis producer pin regression fixture. Contains only identifiers and public keys from genesis_producer_pins.rs; not evidence of custody or possession.",
+  "entries": [
+    {
+      "role": "producer",
+      "identity": "n5-node-a",
+      "public_key": "1e5180e7add06bbe07cf2698ec9d4882ae1cfb54b13de67bae92a4e625ceec1a"
+    },
+    {
+      "role": "producer",
+      "identity": "producer-standby",
+      "public_key": "cd77a1f439ec6896727f585e81228795c8008c8f8db7763bb9c42afa8d119aaa"
+    },
+    {
+      "role": "producer",
+      "identity": "mango-mini",
+      "public_key": "1f7a4ec7699e361390cb89297a2b4441e676b17c95b122063eda25b1f64e0f1e"
+    }
+  ]
+}

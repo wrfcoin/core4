@@ -1,0 +1,223 @@
+warning: unused imports: `error` and `warn`
+ --> shared-protocol/src/data_hub/mod.rs:9:18
+  |
+9 | use log::{debug, error, info, warn};
+  |                  ^^^^^        ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `debug`, `error`, `info`, and `warn`
+ --> shared-protocol/src/data_hub/adapters.rs:7:11
+  |
+7 | use log::{debug, error, info, warn};
+  |           ^^^^^  ^^^^^  ^^^^  ^^^^
+
+warning: unused import: `DateTime`
+ --> shared-protocol/src/data_hub/providers.rs:7:14
+  |
+7 | use chrono::{DateTime, Utc};
+  |              ^^^^^^^^
+
+warning: unexpected `cfg` condition value: `data_hub`
+  --> shared-protocol/src/data_hub/sources.rs:10:7
+   |
+10 | #[cfg(feature = "data_hub")]
+   |       ^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+   |
+   = note: no expected values for `feature`
+   = help: consider adding `data_hub` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused imports: `error` and `info`
+ --> shared-protocol/src/data_hub/sources.rs:9:18
+  |
+9 | use log::{debug, error, info, warn};
+  |                  ^^^^^  ^^^^
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:187:7
+    |
+187 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:199:7
+    |
+199 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:244:7
+    |
+244 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:171:7
+    |
+171 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:180:7
+    |
+180 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:199:7
+    |
+199 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: methods `mine_block`, `calculate_target`, `meets_target`, `should_stop_mining`, and `verify_block_pow` are never used
+    --> shared-protocol/src/consensus/proof_of_publishing.rs:2016:8
+     |
+215  | impl ProofOfPublishing {
+     | ---------------------- methods in this implementation
+...
+2016 |     fn mine_block(&self, block: &mut Block) -> Result<Hash> {
+     |        ^^^^^^^^^^
+...
+2120 |     fn calculate_target(&self, difficulty: u32) -> [u8; 32] {
+     |        ^^^^^^^^^^^^^^^^
+...
+2143 |     fn meets_target(&self, hash: &Hash, target: &[u8; 32]) -> bool {
+     |        ^^^^^^^^^^^^
+...
+2159 |     fn should_stop_mining(&self) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+2488 |     fn verify_block_pow(&self, block: &Block) -> Result<bool> {
+     |        ^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: fields `sources`, `providers`, `credentials`, `schemas`, `validators`, and `response_cache` are never read
+  --> shared-protocol/src/data_hub/simple.rs:9:5
+   |
+7  | pub struct SimpleDataHub {
+   |            ------------- fields in this struct
+8  |     /// Available data sources - Using string placeholders
+9  |     sources: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^
+10 |     /// Registered data providers
+11 |     providers: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^
+12 |     /// Stored credentials for data sources
+13 |     credentials: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^^^
+14 |     /// Available schemas
+15 |     schemas: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^
+16 |     /// Schema validators - Using Box<dyn Any> to avoid type issues
+17 |     validators: Arc<RwLock<HashMap<String, Box<dyn std::any::Any + Send + Sync>>>>,
+   |     ^^^^^^^^^^
+18 |     /// Cache of recent data responses
+19 |     response_cache: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^^^^^^
+
+warning: `wrfcoin-shared-protocol` (lib) generated 13 warnings (run `cargo fix --lib -p wrfcoin-shared-protocol` to apply 4 suggestions)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.15s
+     Running benches/consensus_bench.rs (target/release/deps/consensus_bench-bd143b47ffb2cdbc)
+Gnuplot not found, using plotters backend
+Benchmarking mempool_add/tx_count/100
+Benchmarking mempool_add/tx_count/100: Warming up for 3.0000 s
+Benchmarking mempool_add/tx_count/100: Collecting 100 samples in estimated 8.3706 s (10k iterations)
+Benchmarking mempool_add/tx_count/100: Analyzing
+mempool_add/tx_count/100
+                        time:   [751.67 µs 755.14 µs 759.02 µs]
+Found 19 outliers among 100 measurements (19.00%)
+  12 (12.00%) high mild
+  7 (7.00%) high severe
+Benchmarking mempool_add/tx_count/500
+Benchmarking mempool_add/tx_count/500: Warming up for 3.0000 s
+Benchmarking mempool_add/tx_count/500: Collecting 100 samples in estimated 5.4055 s (1200 iterations)
+Benchmarking mempool_add/tx_count/500: Analyzing
+mempool_add/tx_count/500
+                        time:   [4.4446 ms 4.4560 ms 4.4675 ms]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking mempool_add/tx_count/1000
+Benchmarking mempool_add/tx_count/1000: Warming up for 3.0000 s
+Benchmarking mempool_add/tx_count/1000: Collecting 100 samples in estimated 5.1320 s (500 iterations)
+Benchmarking mempool_add/tx_count/1000: Analyzing
+mempool_add/tx_count/1000
+                        time:   [10.226 ms 10.292 ms 10.359 ms]
+Found 26 outliers among 100 measurements (26.00%)
+  13 (13.00%) low severe
+  1 (1.00%) high mild
+  12 (12.00%) high severe
+
+Benchmarking mempool_get_with_limit/pool_size/100
+Benchmarking mempool_get_with_limit/pool_size/100: Warming up for 3.0000 s
+Benchmarking mempool_get_with_limit/pool_size/100: Collecting 100 samples in estimated 9.9638 s (10k iterations)
+Benchmarking mempool_get_with_limit/pool_size/100: Analyzing
+mempool_get_with_limit/pool_size/100
+                        time:   [122.58 µs 123.21 µs 123.79 µs]
+Benchmarking mempool_get_with_limit/pool_size/500
+Benchmarking mempool_get_with_limit/pool_size/500: Warming up for 3.0000 s
+Benchmarking mempool_get_with_limit/pool_size/500: Collecting 100 samples in estimated 5.1159 s (1000 iterations)
+Benchmarking mempool_get_with_limit/pool_size/500: Analyzing
+mempool_get_with_limit/pool_size/500
+                        time:   [614.06 µs 616.67 µs 619.09 µs]
+Found 12 outliers among 100 measurements (12.00%)
+  8 (8.00%) low severe
+  1 (1.00%) low mild
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+Benchmarking mempool_get_with_limit/pool_size/1000
+Benchmarking mempool_get_with_limit/pool_size/1000: Warming up for 3.0000 s
+Benchmarking mempool_get_with_limit/pool_size/1000: Collecting 100 samples in estimated 5.5694 s (500 iterations)
+Benchmarking mempool_get_with_limit/pool_size/1000: Analyzing
+mempool_get_with_limit/pool_size/1000
+                        time:   [1.2023 ms 1.2053 ms 1.2086 ms]
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking mempool_get_all/pool_size/100
+Benchmarking mempool_get_all/pool_size/100: Warming up for 3.0000 s
+Benchmarking mempool_get_all/pool_size/100: Collecting 100 samples in estimated 9.1347 s (10k iterations)
+Benchmarking mempool_get_all/pool_size/100: Analyzing
+mempool_get_all/pool_size/100
+                        time:   [13.283 µs 13.946 µs 14.647 µs]
+Found 15 outliers among 100 measurements (15.00%)
+  3 (3.00%) low mild
+  3 (3.00%) high mild
+  9 (9.00%) high severe
+Benchmarking mempool_get_all/pool_size/500
+Benchmarking mempool_get_all/pool_size/500: Warming up for 3.0000 s
+Benchmarking mempool_get_all/pool_size/500: Collecting 100 samples in estimated 5.1446 s (1100 iterations)
+Benchmarking mempool_get_all/pool_size/500: Analyzing
+mempool_get_all/pool_size/500
+                        time:   [64.068 µs 64.587 µs 65.199 µs]
+Found 5 outliers among 100 measurements (5.00%)
+  3 (3.00%) high mild
+  2 (2.00%) high severe
+

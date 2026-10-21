@@ -1,0 +1,47 @@
+config:
+  target: 'http://localhost:3001'
+  phases:
+    # Warm-up (2 minutes)
+    - duration: 120
+      arrivalRate: 5
+      name: 'Warm-up'
+    # Ramp-up (5 minutes)
+    - duration: 300
+      arrivalRate: 5
+      rampTo: 30
+      name: 'Ramp-up'
+    # Sustained load (4 hours)
+    - duration: 14400
+      arrivalRate: 30
+      name: 'Sustained (4hr)'
+    # Peak (15 minutes)
+    - duration: 900
+      arrivalRate: 50
+      name: 'Peak load'
+    # Cool-down (5 minutes)
+    - duration: 300
+      arrivalRate: 10
+      name: 'Cool-down'
+  plugins:
+    expect: {}
+
+scenarios:
+  - name: 'Health Check'
+    weight: 50
+    flow:
+      - get:
+          url: '/health'
+          expect:
+            - statusCode: 200
+  - name: 'Bridge API'
+    weight: 30
+    flow:
+      - get:
+          url: '/api/bridge/status'
+          expect:
+            - statusCode: 200
+  - name: 'Generic API'
+    weight: 20
+    flow:
+      - get:
+          url: '/api/status'

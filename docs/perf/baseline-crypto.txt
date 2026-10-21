@@ -1,0 +1,196 @@
+warning: unused imports: `error` and `warn`
+ --> shared-protocol/src/data_hub/mod.rs:9:18
+  |
+9 | use log::{debug, error, info, warn};
+  |                  ^^^^^        ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `debug`, `error`, `info`, and `warn`
+ --> shared-protocol/src/data_hub/adapters.rs:7:11
+  |
+7 | use log::{debug, error, info, warn};
+  |           ^^^^^  ^^^^^  ^^^^  ^^^^
+
+warning: unused import: `DateTime`
+ --> shared-protocol/src/data_hub/providers.rs:7:14
+  |
+7 | use chrono::{DateTime, Utc};
+  |              ^^^^^^^^
+
+warning: unexpected `cfg` condition value: `data_hub`
+  --> shared-protocol/src/data_hub/sources.rs:10:7
+   |
+10 | #[cfg(feature = "data_hub")]
+   |       ^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+   |
+   = note: no expected values for `feature`
+   = help: consider adding `data_hub` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused imports: `error` and `info`
+ --> shared-protocol/src/data_hub/sources.rs:9:18
+  |
+9 | use log::{debug, error, info, warn};
+  |                  ^^^^^  ^^^^
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:187:7
+    |
+187 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:199:7
+    |
+199 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/implementation.rs:244:7
+    |
+244 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:171:7
+    |
+171 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:180:7
+    |
+180 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition value: `governance`
+   --> shared-protocol/src/governance/voting.rs:199:7
+    |
+199 | #[cfg(feature = "governance")]
+    |       ^^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `governance` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: methods `mine_block`, `calculate_target`, `meets_target`, `should_stop_mining`, and `verify_block_pow` are never used
+    --> shared-protocol/src/consensus/proof_of_publishing.rs:2016:8
+     |
+215  | impl ProofOfPublishing {
+     | ---------------------- methods in this implementation
+...
+2016 |     fn mine_block(&self, block: &mut Block) -> Result<Hash> {
+     |        ^^^^^^^^^^
+...
+2120 |     fn calculate_target(&self, difficulty: u32) -> [u8; 32] {
+     |        ^^^^^^^^^^^^^^^^
+...
+2143 |     fn meets_target(&self, hash: &Hash, target: &[u8; 32]) -> bool {
+     |        ^^^^^^^^^^^^
+...
+2159 |     fn should_stop_mining(&self) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+2488 |     fn verify_block_pow(&self, block: &Block) -> Result<bool> {
+     |        ^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: fields `sources`, `providers`, `credentials`, `schemas`, `validators`, and `response_cache` are never read
+  --> shared-protocol/src/data_hub/simple.rs:9:5
+   |
+7  | pub struct SimpleDataHub {
+   |            ------------- fields in this struct
+8  |     /// Available data sources - Using string placeholders
+9  |     sources: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^
+10 |     /// Registered data providers
+11 |     providers: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^
+12 |     /// Stored credentials for data sources
+13 |     credentials: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^^^
+14 |     /// Available schemas
+15 |     schemas: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^
+16 |     /// Schema validators - Using Box<dyn Any> to avoid type issues
+17 |     validators: Arc<RwLock<HashMap<String, Box<dyn std::any::Any + Send + Sync>>>>,
+   |     ^^^^^^^^^^
+18 |     /// Cache of recent data responses
+19 |     response_cache: Arc<RwLock<HashMap<String, String>>>,
+   |     ^^^^^^^^^^^^^^
+
+warning: `wrfcoin-shared-protocol` (lib) generated 13 warnings (run `cargo fix --lib -p wrfcoin-shared-protocol` to apply 4 suggestions)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.15s
+     Running benches/crypto_bench.rs (target/release/deps/crypto_bench-fd65b9c761c91338)
+Gnuplot not found, using plotters backend
+Benchmarking hash_blake3_256b
+Benchmarking hash_blake3_256b: Warming up for 3.0000 s
+Benchmarking hash_blake3_256b: Collecting 100 samples in estimated 5.0002 s (26M iterations)
+Benchmarking hash_blake3_256b: Analyzing
+hash_blake3_256b        time:   [192.05 ns 192.41 ns 192.79 ns]
+Found 6 outliers among 100 measurements (6.00%)
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking hash_sha3_256b
+Benchmarking hash_sha3_256b: Warming up for 3.0000 s
+Benchmarking hash_sha3_256b: Collecting 100 samples in estimated 5.0001 s (9.8M iterations)
+Benchmarking hash_sha3_256b: Analyzing
+hash_sha3_256b          time:   [524.86 ns 526.09 ns 527.15 ns]
+
+Benchmarking hash_sha256_256b
+Benchmarking hash_sha256_256b: Warming up for 3.0000 s
+Benchmarking hash_sha256_256b: Collecting 100 samples in estimated 5.0001 s (36M iterations)
+Benchmarking hash_sha256_256b: Analyzing
+hash_sha256_256b        time:   [139.09 ns 140.32 ns 141.85 ns]
+
+Benchmarking hash_default_256b
+Benchmarking hash_default_256b: Warming up for 3.0000 s
+Benchmarking hash_default_256b: Collecting 100 samples in estimated 5.0002 s (9.9M iterations)
+Benchmarking hash_default_256b: Analyzing
+hash_default_256b       time:   [493.32 ns 493.84 ns 494.34 ns]
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high severe
+
+Benchmarking ed25519_sign
+Benchmarking ed25519_sign: Warming up for 3.0000 s
+Benchmarking ed25519_sign: Collecting 100 samples in estimated 5.0340 s (394k iterations)
+Benchmarking ed25519_sign: Analyzing
+ed25519_sign            time:   [12.787 µs 12.832 µs 12.884 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  3 (3.00%) low mild
+  5 (5.00%) high severe
+
+Benchmarking ed25519_verify
+Benchmarking ed25519_verify: Warming up for 3.0000 s
+Benchmarking ed25519_verify: Collecting 100 samples in estimated 5.1069 s (217k iterations)
+Benchmarking ed25519_verify: Analyzing
+ed25519_verify          time:   [23.468 µs 23.616 µs 23.780 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) high mild
+  7 (7.00%) high severe
+

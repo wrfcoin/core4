@@ -1,0 +1,68 @@
+# Rustfmt configuration for WRFCoin blockchain platform
+# Enforces consistent Rust code formatting across the project
+
+# Basic formatting
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+
+# Function definitions
+fn_args_layout = "Tall"
+brace_style = "SameLineWhere"
+fn_single_line = false
+
+# Control flow
+control_brace_style = "AlwaysSameLine"
+match_block_trailing_comma = true
+match_arm_blocks = true
+
+# Imports
+imports_granularity = "Module"
+imports_layout = "Vertical"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Structs and enums
+struct_field_align_threshold = 0
+enum_discrim_align_threshold = 0
+struct_lit_single_line = true
+
+# Comments and documentation
+comment_width = 80
+wrap_comments = true
+format_code_in_doc_comments = true
+doc_comment_code_block_width = 80
+
+# Strings and arrays
+string_lit_style = "Auto"
+array_width = 60
+chain_width = 60
+
+# Spacing and alignment
+spaces_around_ranges = false
+type_punctuation_density = "Wide"
+use_small_heuristics = "Default"
+
+# Advanced formatting
+condense_wildcard_suffixes = false
+format_strings = false
+format_macro_matchers = false
+hex_literal_case = "Preserve"
+
+# Trailing commas
+trailing_comma = "Vertical"
+trailing_semicolon = true
+
+# Where clauses
+where_single_line = false
+force_explicit_abi = true
+
+# Error handling
+error_on_line_overflow = false
+error_on_unformatted = false
+
+# Version-specific settings
+version = "Two"
+newline_style = "Unix"

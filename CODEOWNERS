@@ -1,0 +1,145 @@
+# WRFCoin Codebase Ownership
+# This file defines code ownership for automatic review assignment
+# Enhanced for comprehensive contribution workflow - Task 45.6
+# Updated: 2025-01-23
+
+# Global ownership - all files require at least one review
+* @wrfcoin/maintainers
+
+# Frontend/UI Components
+/frontend/ @wrfcoin/frontend-team
+/frontend/src/components/ @wrfcoin/ui-team
+/frontend/src/pages/ @wrfcoin/frontend-team
+/frontend/src/styles/ @wrfcoin/ui-team
+/frontend/src/hooks/ @wrfcoin/frontend-team
+*.css @wrfcoin/ui-team
+*.scss @wrfcoin/ui-team
+*.tsx @wrfcoin/frontend-team
+*.jsx @wrfcoin/frontend-team
+
+# Backend/API
+/backend/ @wrfcoin/backend-team
+/backend/server/ @wrfcoin/api-team
+/backend/api/ @wrfcoin/api-team
+/backend/services/ @wrfcoin/backend-team
+/backend/middleware/ @wrfcoin/security-team
+/backend/graphql/ @wrfcoin/api-team
+/backend/routes/ @wrfcoin/api-team
+
+# Blockchain Core (Rust)
+/blockchain-core/ @wrfcoin/blockchain-team
+/blockchain-core/consensus/ @wrfcoin/blockchain-team @wrfcoin/security-team
+/blockchain-core/crypto/ @wrfcoin/security-team
+/blockchain-core/privacy/ @wrfcoin/security-team
+/blockchain-core/security/ @wrfcoin/security-team
+*.rs @wrfcoin/blockchain-team
+
+# Smart Contracts
+/contracts/ @wrfcoin/contracts-team @wrfcoin/security-team
+*.sol @wrfcoin/contracts-team @wrfcoin/security-team
+
+# Database & Schema
+/backend/database/ @wrfcoin/database-team
+/backend/drizzle/ @wrfcoin/database-team
+schema.ts @wrfcoin/database-team
+schema.sql @wrfcoin/database-team
+
+# Security Critical Files
+/security/ @wrfcoin/security-team
+**/security/ @wrfcoin/security-team
+*.env.example @wrfcoin/security-team
+.env.* @wrfcoin/security-team
+/backend/middleware/security* @wrfcoin/security-team
+hsm-* @wrfcoin/security-team
+
+# Infrastructure & DevOps
+/infra/ @wrfcoin/devops-team
+/infrastructure/ @wrfcoin/devops-team
+docker-compose*.yml @wrfcoin/devops-team
+Dockerfile* @wrfcoin/devops-team
+.dockerignore @wrfcoin/devops-team
+/scripts/ @wrfcoin/devops-team
+kubernetes*.yaml @wrfcoin/devops-team
+terraform*.tf @wrfcoin/devops-team
+
+# CI/CD & Build
+/.github/ @wrfcoin/devops-team
+.github/workflows/ @wrfcoin/devops-team @wrfcoin/security-team
+package.json @wrfcoin/maintainers
+package-lock.json @wrfcoin/maintainers
+Cargo.toml @wrfcoin/blockchain-team
+Cargo.lock @wrfcoin/blockchain-team
+turbo.json @wrfcoin/devops-team
+jest.config.js @wrfcoin/qa-team
+playwright.config.js @wrfcoin/qa-team
+
+# Testing
+/tests/ @wrfcoin/qa-team
+/test/ @wrfcoin/qa-team
+*.test.* @wrfcoin/qa-team
+*.spec.* @wrfcoin/qa-team
+/frontend/src/**/*.test.* @wrfcoin/frontend-team @wrfcoin/qa-team
+/backend/**/*.test.* @wrfcoin/backend-team @wrfcoin/qa-team
+/blockchain-core/tests/ @wrfcoin/blockchain-team @wrfcoin/qa-team
+
+# Documentation
+README.md @wrfcoin/maintainers @wrfcoin/docs-team
+CONTRIBUTING.md @wrfcoin/maintainers @wrfcoin/docs-team
+/docs/ @wrfcoin/docs-team
+*.md @wrfcoin/docs-team
+CLAUDE.md @wrfcoin/docs-team
+SECURITY.md @wrfcoin/security-team @wrfcoin/docs-team
+
+# Configuration Files
+.eslintrc* @wrfcoin/maintainers
+.prettierrc* @wrfcoin/maintainers
+tsconfig.json @wrfcoin/maintainers
+rust-toolchain.toml @wrfcoin/blockchain-team
+clippy.toml @wrfcoin/blockchain-team
+rustfmt.toml @wrfcoin/blockchain-team
+hardhat.config.js @wrfcoin/contracts-team
+
+# Climate/Weather Related
+/backend/api/environmental* @wrfcoin/climate-team
+/backend/server/weather* @wrfcoin/climate-team
+/backend/server/iot* @wrfcoin/climate-team
+/scripts/*weather* @wrfcoin/climate-team
+/scripts/*climate* @wrfcoin/climate-team
+/blockchain-core/iot/ @wrfcoin/climate-team @wrfcoin/blockchain-team
+
+# Performance Critical
+/backend/server/memory* @wrfcoin/performance-team
+/backend/server/enhanced* @wrfcoin/performance-team
+/scripts/*performance* @wrfcoin/performance-team
+/scripts/*optimization* @wrfcoin/performance-team
+
+# Cross-Chain/Bridge
+/backend/server/cross_chain* @wrfcoin/bridges-team
+/blockchain-core/cross_chain/ @wrfcoin/bridges-team @wrfcoin/blockchain-team
+
+# DeFi/Financial
+/contracts/Carbon* @wrfcoin/defi-team @wrfcoin/contracts-team
+/contracts/Yield* @wrfcoin/defi-team @wrfcoin/contracts-team
+/contracts/WRF* @wrfcoin/defi-team @wrfcoin/contracts-team
+
+# Governance
+/backend/server/governance* @wrfcoin/governance-team
+/blockchain-core/governance/ @wrfcoin/governance-team @wrfcoin/blockchain-team
+
+# Mobile & SDK
+/sdks/ @wrfcoin/sdk-team
+/mobile/ @wrfcoin/mobile-team
+
+# Monitoring & Analytics
+/scripts/*monitoring* @wrfcoin/monitoring-team
+/scripts/*metrics* @wrfcoin/monitoring-team
+prometheus.yml @wrfcoin/monitoring-team
+
+# Critical Files (require multiple approvers)
+CODEOWNERS @wrfcoin/maintainers @wrfcoin/devops-team
+.gitignore @wrfcoin/maintainers
+
+# Shared/native parity drift gate ownership
+/native-chain/src/parity.rs @wrfcoin/blockchain-team @wrfcoin/qa-team
+/native-chain/src/parity_shared.rs @wrfcoin/blockchain-team @wrfcoin/qa-team
+/.github/workflows/rust-shared-native-parity.yml @wrfcoin/blockchain-team @wrfcoin/devops-team @wrfcoin/qa-team

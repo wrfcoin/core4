@@ -1,0 +1,274 @@
+name: Docker Security Scan (parked)
+# NO-AUTOMATIC-TRIGGER: parked — the weekly `schedule` is commented out and the
+# workflow is gh-disabled (2026-07-31, Actions budget). The 'runs WEEKLY' sentence
+# in the banner below is therefore STALE: nothing is scheduled and nothing has run
+# since. Register and restore: docs/ci/parked-workflows.txt +
+# docs/ci/reenable-parked-workflows.sh.
+
+# COVERAGE, STATED EXPLICITLY (core4#2312)
+#
+# This workflow runs WEEKLY and on manual dispatch only. It has NO
+# `pull_request` trigger: `08a0a79374860eec7ec523d010dbd5369220e118` removed the
+# path-scoped PR/push triggers to control Actions spend, deliberately. Nothing
+# here blocks a PR that adds a vulnerable image or a malformed compose file; a
+# regression is caught at the next Sunday 02:00 UTC run at the earliest.
+#
+# That gap is recorded rather than quietly widened. Before #2312 the workflow
+# ALSO carried a HIGH/CRITICAL-blocking Trivy step guarded by
+# `if: github.event_name == 'pull_request'` — enforcement gated on an event the
+# workflow never receives, so it never ran. That unreachable step is deleted;
+# enforcement now runs on the events the workflow actually gets (schedule +
+# dispatch). Restoring a path-scoped `pull_request` trigger on Dockerfiles /
+# compose files has a recurring cost that belongs to whoever owns the Actions
+# budget, not to a gate repair.
+#
+# `.github/workflows/WORKFLOW_JUSTIFICATION.md` still describes push/PR coverage
+# this workflow no longer has; that catalogue drift is tracked separately and is
+# not touched here.
+
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: "0 2 * * 0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Trivy is pinned to an immutable SHA at each `uses:` site below
+# (aquasecurity/trivy-action@ed142fd… = v0.36.0). It is deliberately NOT a
+# workflow-level env var: GitHub Actions requires `uses:` to be a string
+# literal, so an env value could not actually drive the action ref — it would be
+# dead config that looks authoritative, a drift point (#2338 review). Bump the
+# SHA and its trailing `# vX.Y.Z` comment together, at all sites, in a reviewed
+# diff.
+
+jobs:
+  discover-dockerfiles:
+    name: Discover Dockerfiles
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set Dockerfile matrix (pinned list — update when Dockerfiles are added/removed)
+        id: set-matrix
+        run: |
+          DOCKERFILES='["./.devcontainer/Dockerfile.dev","./.devcontainer/Dockerfile.hardhat","./dev-mocks/Dockerfile.weather-oracle","./dev-tools/Dockerfile.dashboard","./dev-tools/Dockerfile.seeder","./native-chain/Dockerfile","./services/meshtastic-gateway/Dockerfile","./tests/contract/Dockerfile.test-runner","./tests/contract/mocks/Dockerfile.blockchain-mock","./tests/contract/mocks/Dockerfile.carbon-mock","./tests/contract/mocks/Dockerfile.weather-mock","./tests/contract/utils/Dockerfile.health-checker","./zen-mcp-server/Dockerfile"]'
+          echo "matrix=$DOCKERFILES" >> $GITHUB_OUTPUT
+          echo "Pinned Dockerfiles: $DOCKERFILES"
+
+  trivy-scan:
+    # Job-scoped API/artifact publication; forks retain read-only tokens.
+    permissions:
+      contents: read
+      security-events: write
+    name: Trivy Security Scan
+    needs: discover-dockerfiles
+    runs-on: ubuntu-latest
+    if: ${{ needs.discover-dockerfiles.outputs.matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: ${{ fromJson(needs.discover-dockerfiles.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Extract image name
+        id: image-name
+        run: |
+          # Convert Dockerfile path to image name
+          DOCKERFILE="${{ matrix.dockerfile }}"
+          IMAGE_NAME=$(echo "$DOCKERFILE" | sed 's|^\./||' | sed 's|/|_|g' | sed 's|Dockerfile\.||' | sed 's|Dockerfile||')
+          if [ -z "$IMAGE_NAME" ]; then
+            IMAGE_NAME="wrfcoin-main"
+          fi
+          echo "name=wrfcoin/$IMAGE_NAME:scan" >> $GITHUB_OUTPUT
+          echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
+
+      # continue-on-error lets the per-image classification step below run so it
+      # can distinguish a build failure from a scan finding. But the `|| echo
+      # "Build failed"` that used to swallow the exit code is GONE (#2312): the
+      # real `docker build` exit code now sets `steps.build.outcome`, so a failed
+      # build is `failure`, not a masked `success`.
+      - name: Build Docker image
+        id: build
+        continue-on-error: true
+        run: |
+          DOCKERFILE="${{ matrix.dockerfile }}"
+          CONTEXT_DIR=$(dirname "$DOCKERFILE")
+          docker build \
+            -f "$DOCKERFILE" \
+            -t "${{ steps.image-name.outputs.name }}" \
+            "$CONTEXT_DIR"
+
+      # BLOCKING on this workflow's real events (#2312). Was two steps: a
+      # non-blocking SARIF scan that ran on schedule, and an `exit-code: '1'`
+      # scan gated on `pull_request` — an event this workflow never receives, so
+      # HIGH/CRITICAL blocked on nothing. This single step scans on every event
+      # the workflow actually gets AND exits nonzero on a finding.
+      - name: Run Trivy vulnerability scanner (blocking on HIGH/CRITICAL)
+        id: scan
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image-name.outputs.name }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # Second run, SARIF for the Security tab. Non-blocking by design — the
+      # blocking decision is the step above; this is for triage/history.
+      - name: Generate SARIF for the Security tab
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image-name.outputs.name }}
+          format: 'sarif'
+          output: 'trivy-results-${{ hashFiles(matrix.dockerfile) }}.sarif'
+          severity: 'CRITICAL,HIGH'
+          vuln-type: 'os,library'
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        if: steps.build.outcome == 'success' && hashFiles(format('trivy-results-{0}.sarif', hashFiles(matrix.dockerfile))) != ''
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        with:
+          sarif_file: 'trivy-results-${{ hashFiles(matrix.dockerfile) }}.sarif'
+          category: 'trivy-${{ hashFiles(matrix.dockerfile) }}'
+        continue-on-error: true
+
+      # Classify and enforce. Runs regardless (always), reads the two step
+      # outcomes, writes one labelled summary line distinguishing BUILD FAILURE
+      # from SCAN FINDING, and exits nonzero on either — so this matrix leg goes
+      # red for a real reason and the summary says which. The decision is
+      # scripts/docker-scan-enforce.sh so it is testable outside Actions.
+      - name: Classify and enforce
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: bash scripts/docker-scan-enforce.sh
+
+  config-scan:
+    # Job-scoped API/artifact publication; forks retain read-only tokens.
+    permissions:
+      contents: read
+      security-events: write
+    name: Dockerfile Config Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # BLOCKING (#2312). Was `continue-on-error: true`, so a misconfiguration
+      # finding — or a scanner error — left the job green and the summary said
+      # "Config scan: PASSED". `exit-code: '1'` makes a HIGH/CRITICAL
+      # misconfiguration fail the job; the SARIF upload below still runs via
+      # `if: always()` for the Security tab.
+      - name: Run Trivy config scanner (blocking on HIGH/CRITICAL)
+        id: config
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore'
+          exit-code: '1'
+
+      - name: Generate config SARIF for the Security tab
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          trivyignores: '.trivyignore'
+
+      - name: Upload config scan results
+        if: always() && hashFiles('trivy-config-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        with:
+          sarif_file: 'trivy-config-results.sarif'
+          category: 'trivy-config'
+        continue-on-error: true
+
+  compose-validation:
+    name: Docker Compose Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Hermetic structural validation (#2312). Was a bare `docker compose
+      # config` loop, permanently red on six files: two dangling symlinks into
+      # the extracted infra/ tree (now removed from the repo) and four
+      # well-formed files needing `${SECRET:?}` values. The script injects
+      # clearly-fake placeholders so interpolation resolves and the check is
+      # structural, FAILS on dangling symlinks (a discovered compose file that
+      # can't resolve was never validated — #2338 review), and stays falsifiable:
+      # a malformed file, a dangling symlink, or a NEW unlisted required secret
+      # all turn it red.
+      - name: Validate docker-compose files
+        run: bash scripts/validate-compose.sh
+
+  summary:
+    name: Security Scan Summary
+    needs: [trivy-scan, config-scan, compose-validation]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check scan results
+        run: |
+          echo "## Docker Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          TRIVY="${{ needs.trivy-scan.result }}"
+          CONFIG="${{ needs.config-scan.result }}"
+          COMPOSE="${{ needs.compose-validation.result }}"
+
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image build + vulnerability scan | ${TRIVY} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dockerfile config scan | ${CONFIG} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Compose validation | ${COMPOSE} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # The summary now reflects the ACTUAL job results (#2312). Each of
+          # these jobs fails on a real finding — the per-image classification
+          # step, the config scan's exit-code, and the compose script — so
+          # `result != success` here is a genuine red, not a post-
+          # continue-on-error green. The per-image build-vs-scan breakdown is
+          # written by scripts/docker-scan-enforce.sh above.
+          FAILED=false
+          for pair in "image-scan:${TRIVY}" "config-scan:${CONFIG}" "compose:${COMPOSE}"; do
+            name="${pair%%:*}"; result="${pair##*:}"
+            if [ "${result}" != "success" ]; then
+              echo "::error::${name} did not pass (result: ${result})"
+              FAILED=true
+            fi
+          done
+
+          if [ "${FAILED}" = "true" ]; then
+            echo "**FAILED** — at least one Docker security check did not pass." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "**PASSED** — image scan, config scan and compose validation all succeeded." >> $GITHUB_STEP_SUMMARY

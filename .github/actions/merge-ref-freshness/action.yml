@@ -1,0 +1,35 @@
+name: Merge-ref freshness guard
+description: >
+  #3005: a pull_request run checks out refs/pull/<N>/merge, computed when the
+  run was created; `gh run rerun` replays the same stale ref, so a "(merge
+  tree)" check can pass against a tree that no longer exists while
+  strict_required_status_checks_policy is off. This step fails the job when the
+  merge ref's base is no longer the tip of the target branch, turning a
+  misleading stale green into an actionable red without serializing the merge
+  queue. The base is read from the checked-out merge commit's first parent —
+  NEVER from the event payload, whose pull_request.base.sha is frozen at event
+  creation and lies about exactly the staleness this guard detects.
+runs:
+  using: composite
+  steps:
+    - name: Assert the merge ref's base is the current target-branch tip
+      shell: bash
+      run: |
+        set -euo pipefail
+        parents=$(git cat-file -p HEAD | awk '/^parent /{print $2}')
+        parent_count=$(printf '%s\n' "$parents" | grep -c . || true)
+        if [ "$parent_count" -ne 2 ]; then
+          echo "::error::merge-ref freshness guard (#3005): HEAD ($(git rev-parse HEAD)) has ${parent_count} parent(s), not 2 — this pull_request job is not examining a merge tree at all. Failing closed."
+          exit 1
+        fi
+        merge_base=$(printf '%s\n' "$parents" | head -1)
+        current_tip=$(git ls-remote origin "refs/heads/${GITHUB_BASE_REF}" | cut -f1)
+        if [ -z "$current_tip" ]; then
+          echo "::error::merge-ref freshness guard (#3005): could not resolve the current tip of '${GITHUB_BASE_REF}' via ls-remote. Failing closed rather than attesting freshness blind."
+          exit 1
+        fi
+        if [ "$merge_base" != "$current_tip" ]; then
+          echo "::error::base is stale, push to refresh — this run's merge ref was computed against ${GITHUB_BASE_REF}@${merge_base}, but ${GITHUB_BASE_REF} is now at ${current_tip}. Re-running replays the same stale merge ref (#3005); push a commit or rebase to trigger a synchronize event, which recomputes it."
+          exit 1
+        fi
+        echo "::notice::merge-ref freshness guard (#3005): fresh — merge ref base ${merge_base} is the current ${GITHUB_BASE_REF} tip."

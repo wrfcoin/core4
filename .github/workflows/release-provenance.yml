@@ -1,0 +1,104 @@
+name: Release Provenance (reusable)
+# NO-AUTOMATIC-TRIGGER: `workflow_call` only — this file has no `on: push` or
+# `on: pull_request` of its own. It exists so release-signing.yml (and any
+# future release-path workflow) can generate provenance without three stories
+# touching the release path colliding in one file (#2151's own stated reason
+# for a separate file).
+#
+# CALLED AT THE JOB LEVEL, DELIBERATELY. #312 found a reusable SLSA-generator
+# workflow used as a STEP inside a job — reusable workflows must be called via
+# `jobs.<id>.uses:`, not as a step, or GitHub silently treats the whole run as
+# a workflow-file error before anything executes. This file is designed to be
+# called the correct way: `some-job: uses: ./.github/workflows/release-provenance.yml`.
+#
+# WHAT THIS PRODUCES AND WHAT IT DOES NOT
+# See scripts/generate_provenance.py's module docstring for the full caveat.
+# Short version: an in-toto/SLSA-v1-shaped statement per artifact, self-attested
+# by this run's own GitHub Actions context — not routed through
+# slsa-framework/slsa-github-generator's keyless-signing pipeline. The
+# statement's own integrity comes from being covered by the GPG signature over
+# SHA256SUMS in release-signing.yml's sign-binaries job, the same key that
+# signs the binaries themselves.
+
+on:
+  workflow_call:
+    inputs:
+      artifacts-path:
+        description: "Directory containing the built artifacts to generate provenance for"
+        required: true
+        type: string
+      artifact-glob:
+        description: "Glob (relative to artifacts-path) selecting which files get a provenance statement"
+        required: true
+        type: string
+    outputs:
+      provenance-artifact-name:
+        description: "Name of the uploaded actions/upload-artifact bundle holding the *.provenance.json files"
+        value: ${{ jobs.generate.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate provenance statements
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: provenance-statements
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: ${{ inputs.artifacts-path }}
+          pattern: binary-*
+          merge-multiple: true
+
+      # No toolchain is installed here. `toolchain` and `buildCommand` are not
+      # this job's facts: each build job measured them (rustc -vV and the exact
+      # command it ran) into <artifact>.buildinfo.json with
+      # scripts/write_build_info.py, which also refuses a toolchain that is not
+      # the pinned RUST_VERSION. This job only copies them in.
+      - name: Generate one provenance statement per artifact
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          BUILDER_ID: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=0
+          for artifact in ${{ inputs.artifacts-path }}/${{ inputs.artifact-glob }}; do
+            [[ -f "$artifact" ]] || continue
+            case "$artifact" in
+              *.sha256|*.sha512|*.sig|*.asc|*.provenance.json|*.buildinfo.json|*.build-manifest.env) continue ;;
+            esac
+            found=$((found + 1))
+            python3 scripts/generate_provenance.py \
+              --artifact "$artifact" \
+              --out "${artifact}.provenance.json" \
+              --source-repo "$SOURCE_REPO" \
+              --source-commit "$SOURCE_COMMIT" \
+              --workflow-ref "$WORKFLOW_REF" \
+              --run-id "$RUN_ID" \
+              --run-attempt "$RUN_ATTEMPT" \
+              --builder-id "$BUILDER_ID" \
+              --build-info "${artifact}.buildinfo.json"
+          done
+          echo "generated provenance for $found artifact(s)"
+          if [[ "$found" -eq 0 ]]; then
+            echo "::error::no artifacts matched ${{ inputs.artifacts-path }}/${{ inputs.artifact-glob }} — refusing to report success over zero subjects"
+            exit 1
+          fi
+
+      - name: Upload provenance statements
+        uses: actions/upload-artifact@v7
+        with:
+          name: provenance-statements
+          path: ${{ inputs.artifacts-path }}/**/*.provenance.json
+          retention-days: 90

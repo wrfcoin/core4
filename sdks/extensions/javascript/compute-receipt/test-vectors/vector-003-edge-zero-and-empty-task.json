@@ -1,0 +1,23 @@
+{
+  "description": "compute-receipt fixture: vector-003-edge-zero-and-empty-task",
+  "fixture_version": 1,
+  "receipt": {
+    "task_id": "",
+    "worker_id": "5cceaad9c202c236cd8c977290a844e3f2f0a15a9b3189220dbe0f9121eb0cd2",
+    "work_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "work_factor": 1,
+    "completed_at": 0,
+    "nonce": "0",
+    "signature": "aea30dde855dcf0ed919f08cceeb74ea477cda876975f80a756df6d1cf9ebaf5133823dd2336ef731460e89b4ac1ac7f8ee04107473200499f3944a30f49b00d"
+  },
+  "signing_message": "wrfcoin-sign-v1|wrfcoin.compute_receipt.v1|wrfcoin-main|mainnet|5cceaad9c202c236cd8c977290a844e3f2f0a15a9b3189220dbe0f9121eb0cd2|0|0|a52e9c247f242757eb593e69e3a79aa228621447ead494f182fec53401c3d6da",
+  "inputs": {
+    "task_id": "",
+    "worker_secret_key": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "worker_public_key": "5cceaad9c202c236cd8c977290a844e3f2f0a15a9b3189220dbe0f9121eb0cd2",
+    "work_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "work_factor": 1,
+    "completed_at": 0,
+    "nonce": "0"
+  }
+}

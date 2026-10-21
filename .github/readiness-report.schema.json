@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/wrfcoin/wrfcoin/.github/readiness-report.schema.json",
+  "title": "WRFCoin CI Readiness Report",
+  "description": "Canonical format for CI readiness reports across all project layers.",
+  "type": "object",
+  "required": [
+    "version",
+    "generated_at",
+    "commit",
+    "branch",
+    "layers",
+    "gates",
+    "overall"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "Schema version identifier."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp of when the report was generated."
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 7,
+      "description": "Git commit SHA (abbreviated or full) the report was generated against."
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git branch name the report was generated on."
+    },
+    "layers": {
+      "type": "object",
+      "required": ["backend", "frontend", "core"],
+      "additionalProperties": false,
+      "description": "Per-layer CI check results.",
+      "properties": {
+        "backend": { "$ref": "#/definitions/jsLayer" },
+        "frontend": { "$ref": "#/definitions/jsLayer" },
+        "core": { "$ref": "#/definitions/rustLayer" },
+        "contracts": { "$ref": "#/definitions/contractLayer" }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "required": ["security_scan", "lockfile_integrity", "cross_layer_consistency"],
+      "additionalProperties": false,
+      "description": "Cross-cutting quality gates.",
+      "properties": {
+        "security_scan": { "$ref": "#/definitions/passFailStatus" },
+        "lockfile_integrity": { "$ref": "#/definitions/passFailStatus" },
+        "cross_layer_consistency": { "$ref": "#/definitions/passFailStatus" }
+      }
+    },
+    "overall": {
+      "$ref": "#/definitions/passFailStatus",
+      "description": "Aggregate result: pass only if all layers and gates pass."
+    }
+  },
+  "definitions": {
+    "passFailStatus": {
+      "type": "string",
+      "enum": ["pass", "fail"],
+      "description": "Binary pass/fail status."
+    },
+    "jsLayer": {
+      "type": "object",
+      "required": ["status", "lint", "typecheck", "tests"],
+      "additionalProperties": false,
+      "description": "CI results for a JavaScript/TypeScript layer (backend or frontend).",
+      "properties": {
+        "status": { "$ref": "#/definitions/passFailStatus" },
+        "lint": { "$ref": "#/definitions/passFailStatus" },
+        "typecheck": { "$ref": "#/definitions/passFailStatus" },
+        "tests": { "$ref": "#/definitions/passFailStatus" }
+      }
+    },
+    "rustLayer": {
+      "type": "object",
+      "required": ["status", "fmt", "clippy", "tests"],
+      "additionalProperties": false,
+      "description": "CI results for the Rust blockchain core layer.",
+      "properties": {
+        "status": { "$ref": "#/definitions/passFailStatus" },
+        "fmt": { "$ref": "#/definitions/passFailStatus" },
+        "clippy": { "$ref": "#/definitions/passFailStatus" },
+        "tests": { "$ref": "#/definitions/passFailStatus" }
+      }
+    },
+    "contractLayer": {
+      "type": "object",
+      "required": ["status", "compile", "tests"],
+      "additionalProperties": false,
+      "description": "CI results for the Solidity smart contracts layer.",
+      "properties": {
+        "status": { "$ref": "#/definitions/passFailStatus" },
+        "compile": { "$ref": "#/definitions/passFailStatus" },
+        "tests": { "$ref": "#/definitions/passFailStatus" }
+      }
+    }
+  }
+}

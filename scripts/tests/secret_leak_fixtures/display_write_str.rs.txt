@@ -1,0 +1,13 @@
+// Planted: a custom Display impl leaking through FORMATTER METHODS rather
+// than any macro. No `write!`, no `format!` — `f.write_str(&self.private_key)`
+// is the whole leak, which the macro-pattern sinks cannot see (#2239 review,
+// blocker 3). Synthetic type; no real key material.
+pub struct ExportHandle {
+    private_key: String,
+}
+
+impl std::fmt::Display for ExportHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.private_key)
+    }
+}

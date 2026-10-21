@@ -1,0 +1,136 @@
+[package]
+name = "wrfcoin-shared-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Forwards the primitives test-tooling feature so downstream crates can reach the
+# #2888 registration guard through this crate's re-export (dev-dependencies only).
+integration-guard = ["wrf-primitives/integration-guard"]
+default = []
+test-support = []
+# HSM (PKCS#11) block-signer impl. Required for release builds; excluded
+# from default to keep the minimal build surface small and to allow tests
+# to run without a PKCS#11 module installed. See core4#1394 and
+# `docs/operator/hsm-migration.md`.
+hsm = ["dep:cryptoki", "dep:cryptoki-sys"]
+# External data-hub connectors (HTTP/CSV ingestion of third-party weather
+# feeds). OFF by default — see the note on `reqwest`/`csv` below.
+# `src/data_hub/sources.rs` already carried `#[cfg(feature = "data_hub")]` on
+# its `reqwest` import for a feature that was never declared, so that gate was
+# dead code; this is the declaration it was waiting for (core4#2316).
+data-hub = ["dep:reqwest", "dep:csv"]
+# Alternative governance strategies: `QuadraticVoting` (an `impl VotingSystem`)
+# and `DelayedImplementation` (an `impl GovernanceImplementor`). OFF by default —
+# the live governance path in `src/blockchain/state.rs` does not use them, and
+# they are opt-in alternatives rather than a replacement for it.
+# Six `#[cfg(feature = "governance")]` sites in `src/governance/voting.rs` and
+# `src/governance/implementation.rs` gated a feature that was never declared, so
+# that code was never compiled, type-checked or tested. Same class as the
+# `data-hub` note above (core4#2316); this is the declaration those gates were
+# waiting for (core4#2975). No extra dependencies — the gated code uses only
+# what the crate already pulls in.
+governance = []
+
+[dependencies]
+# S1 bonded-node contract wire: bounded fixed-integer bincode codec.
+bincode = "1.3"
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+hex.workspace = true
+# #3288: canonical binary (CBOR) values for the whole-State snapshot codec.
+# Floats are encoded bit-exactly (f16/f32 only when widening reproduces the
+# identical bits), so no global serde_json float-parse change is needed.
+ciborium = "0.2"
+sha2.workspace = true
+sha3.workspace = true
+rand.workspace = true
+# Secret zeroization for key material (#2128). Same version the privacy crate
+# already pins; secret-bearing types derive ZeroizeOnDrop.
+zeroize = { version = "1.7", features = ["derive"] }
+blake3 = "1.5"
+ed25519-dalek = { workspace = true }
+log.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+prometheus = "0.14"
+num-traits = "0.2"
+rustc-hash = "2.0"
+im.workspace = true
+async-trait = "0.1"
+rayon = { workspace = true }
+uuid = { version = "1.0", features = ["v4"] }
+# Optional: the ONLY consumer of these two is `src/data_hub`, an external-feed
+# ingestion module with no in-tree caller (core4#2316). Unconditional, they put
+# an HTTP client — reqwest's whole hyper/TLS tree included — in the default
+# build of the consensus-critical crate, which is exactly the surface
+# `scripts/check-dep-budget.sh` exists to bound. Behind `data-hub` they leave
+# the default dependency graph entirely.
+reqwest = { version = "0.12", features = ["json"], optional = true }
+csv = { version = "1.3", optional = true }
+# NOT optional: `src/iso20022` parses and writes ISO 20022 XML and is reachable
+# from `fuzz/fuzz_targets/fuzz_iso20022_parse.rs`, so quick-xml stays in the
+# default graph — which made RUSTSEC-2026-0194/0195 (quick-xml DoS) the most
+# reachable of the seven advisories in the #2336 triage. Bumped 0.36 -> 0.41 to
+# close both; the Writer/Reader event API used here is unchanged across the range.
+quick-xml = "0.41"
+wrf-primitives.workspace = true
+wrfcoin-meteo-types = { path = "../meteo-types" }
+wrfcoin-forecast-score = { path = "../forecast-score" }
+wrfcoin-dataset-manifest = { path = "../dataset-manifest" }
+wrfcoin-geo-grid = { path = "../geo-grid" }
+wrfcoin-reputation-engine = { path = "../reputation-engine" }
+wrfcoin-privacy = { path = "../privacy" }
+# Optional: PKCS#11 client for the HSM-backed block signer (core4#1394).
+cryptoki = { version = "0.7", optional = true }
+cryptoki-sys = { version = "0.1", optional = true }
+
+[dev-dependencies]
+# Integration tests link the library without cfg(test). Enable its test-only
+# helpers for test targets, without exposing them to normal library consumers.
+wrfcoin-shared-protocol = { path = ".", features = ["test-support"] }
+wrf-primitives = { workspace = true, features = ["integration-guard"] }
+proptest = "1.0"
+criterion = { workspace = true }
+dhat = { workspace = true }
+ark-bn254 = "=0.6.0"
+wrfcoin-zk-circuits = { path = "../zk-circuits" }
+# #2721: DEV-dependency, deliberately. The two ceremony examples need build
+# provenance, but this crate's lib is depended on by native-chain, p2p,
+# consensus-engines, privacy, the SDK and the CLI. A regular dependency would
+# put a git-watching build script in front of all of them, and every commit
+# would recompile the workspace. A dev-dependency is linked only into this
+# package's example/test/bench targets, so the lib unit that downstream
+# crates consume is untouched.
+wrfcoin-build-provenance = { path = "../build-provenance" }
+# #2143 calibration: the verification-cost table prices MLSAG ring MEMBERS, so
+# the benchmark that produces the ratio must measure the real verifier.
+# `wrfcoin-privacy` is already a normal dependency above; only the curve is
+# needed here, to build ring decoys the privacy verifier will accept.
+curve25519-dalek = { version = "4", features = ["rand_core"] }
+
+[[bench]]
+name = "zk_bench"
+harness = false
+
+[[bench]]
+name = "verify_cost"
+harness = false
+
+[[bench]]
+name = "consensus_bench"
+harness = false
+
+[[bench]]
+name = "crypto_bench"
+harness = false
+
+[[bench]]
+name = "mempool_bench"
+harness = false
+
+[dev-dependencies.loom]
+version = "0.7"

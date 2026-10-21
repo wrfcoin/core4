@@ -1,0 +1,11 @@
+[package]
+name = "wrfcoin-dataset-manifest"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical dataset manifest and provenance chain types for WRFCoin"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

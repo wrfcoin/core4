@@ -1,0 +1,36 @@
+[package]
+name = "wrfcoin-consensus-engines"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+wrfcoin-execution-engine = { path = "../execution-engine" }
+async-trait = "0.1"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+sha3 = "0.10"
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard"] }
+tokio = { workspace = true, features = ["test-util"] }
+serial_test = "3"
+# #2883 wire-layout fixtures: this crate's FinalityVote/FinalityCertificate/
+# EquivocationEvidence cross boundaries as bincode encoded elsewhere; the
+# fixtures pin that layout here, next to the type definitions.
+bincode = "1.3"
+
+# `#[cfg(kani)]` is set by the Kani verifier, not by cargo, so declare it or
+# every build warns `unexpected_cfgs` (#2108 review).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

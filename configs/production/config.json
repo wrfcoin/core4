@@ -1,0 +1,81 @@
+{
+  "$schema": "../../backend/config/environment-schema.json",
+  "environment": "production",
+  "description": "Production environment configuration - maximum security and reliability",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 4001,
+    "trustProxy": true,
+    "requestTimeout": 30000,
+    "keepAliveTimeout": 65000
+  },
+
+  "database": {
+    "ssl": true,
+    "poolSize": 50,
+    "connectionTimeout": 5000,
+    "idleTimeout": 30000,
+    "logging": false
+  },
+
+  "redis": {
+    "enabled": true,
+    "host": "redis-cluster",
+    "port": 6379,
+    "db": 0,
+    "keyPrefix": "wrfcoin:prod:",
+    "tls": true,
+    "cluster": true
+  },
+
+  "logging": {
+    "level": "warn",
+    "format": "json",
+    "includeTimestamp": true,
+    "includeStackTrace": false,
+    "sensitiveDataMasking": true
+  },
+
+  "security": {
+    "hsmRequired": true,
+    "mfaRequired": true,
+    "sessionDuration": 28800,
+    "rateLimit": {
+      "enabled": true,
+      "windowMs": 60000,
+      "max": 100
+    },
+    "cors": {
+      "enabled": true,
+      "origins": ["https://wrfcoin.io", "https://app.wrfcoin.io"],
+      "credentials": true
+    }
+  },
+
+  "blockchain": {
+    "network": "mainnet",
+    "confirmations": 12,
+    "gasMultiplier": 1.5,
+    "defaultGasLimit": 500000
+  },
+
+  "features": {
+    "experimentalBridges": false,
+    "betaAiModels": false,
+    "newCarbonCalculation": true,
+    "physicsValidationProfile": "climate"
+  },
+
+  "iot": {
+    "dataValidationLevel": "strict",
+    "sensorTimeout": 30000,
+    "maxDataAge": 900000
+  },
+
+  "monitoring": {
+    "metricsEnabled": true,
+    "tracingEnabled": true,
+    "healthCheckInterval": 10000
+  }
+}

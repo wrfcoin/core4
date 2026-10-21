@@ -1,0 +1,948 @@
+{
+  "4": {
+    "ApplyContributionRewardDecision": {
+      "current_block": 0,
+      "record": {
+        "address": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "amount": 0,
+        "provenance_class": "real",
+        "reason": "",
+        "station_id": ""
+      }
+    }
+  },
+  "5": {
+    "RejectInvalidContributionRewardMetadata": {
+      "reason": ""
+    }
+  },
+  "6": {
+    "ApplyGamificationReward": {
+      "address": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "amount": 0,
+      "claim_id": "",
+      "current_block": 0
+    }
+  },
+  "7": {
+    "ApplyAttesterSettlements": {
+      "records": []
+    }
+  },
+  "8": {
+    "RegisterCommit": {
+      "block_height": 0,
+      "payload": {
+        "commit_id": "",
+        "contribution_type": "",
+        "station_id": "",
+        "timestamp": 0
+      }
+    }
+  },
+  "12": {
+    "ApplyShieldedWithdrawal": {
+      "current_block": 0,
+      "payload": {
+        "authorization_proof": "",
+        "nullifier": "",
+        "range_proof": "",
+        "shielded_commitment": "",
+        "transparent_amount": 0,
+        "transparent_recipient": ""
+      }
+    }
+  },
+  "13": {
+    "ApplyRewardClaim": {
+      "current_block": 0,
+      "payload": {
+        "amount_commitment": "",
+        "destination": "",
+        "epoch": 0,
+        "key_image": "",
+        "range_proof": "",
+        "ring_signature": ""
+      }
+    }
+  },
+  "14": {
+    "RecordOracleAttestation": {
+      "current_block": 0,
+      "payload": {
+        "approved": false,
+        "commit_id": "",
+        "confidence": null,
+        "nonce": null,
+        "oracle_id": "",
+        "signature": null,
+        "timestamp": 0
+      }
+    }
+  },
+  "16": {
+    "ApplyProducerSetChange": {
+      "block_height": 0,
+      "change": {
+        "effective_height": 0,
+        "epoch": 0,
+        "members": []
+      }
+    }
+  },
+  "18": {
+    "ApplyStationRegistration": {
+      "station": {
+        "calibrationDate": null,
+        "dataQualityTier": "unverified",
+        "hardwareModel": "",
+        "isActive": false,
+        "location": {
+          "elevationMeters": null,
+          "latitude": 0.0,
+          "longitude": 0.0
+        },
+        "ownerAddress": "",
+        "provenanceClass": "real",
+        "reputationScore": 0,
+        "ringPublicKey": null,
+        "stationId": ""
+      }
+    }
+  },
+  "24": {
+    "ProcessGovernanceTransaction": {
+      "current_block": 3,
+      "tx": {
+        "amount": 0,
+        "data": "{\"approve\":false,\"proposal_id\":\"sweep\"}",
+        "fee": 0,
+        "id": {
+          "bytes": [
+            40,
+            187,
+            82,
+            168,
+            91,
+            170,
+            89,
+            232,
+            227,
+            12,
+            116,
+            78,
+            53,
+            213,
+            83,
+            87,
+            60,
+            123,
+            20,
+            169,
+            49,
+            139,
+            241,
+            168,
+            142,
+            175,
+            33,
+            147,
+            147,
+            101,
+            60,
+            71
+          ],
+          "hash_type": "Sha3"
+        },
+        "inputs": [],
+        "lock_time": null,
+        "nonce": 0,
+        "operation": {
+          "Transfer": {
+            "amount": 0
+          }
+        },
+        "outputs": [],
+        "recipient_address": null,
+        "sender_address": [
+          240,
+          237,
+          247,
+          190,
+          229,
+          87,
+          144,
+          84,
+          163,
+          158,
+          240,
+          59,
+          162,
+          34,
+          202,
+          136,
+          167,
+          21,
+          108,
+          227
+        ],
+        "timestamp": "1970-01-01T00:00:00Z",
+        "tx_type": "GovernanceVote",
+        "version": 1
+      }
+    }
+  },
+  "25": {
+    "ProcessSlashingReport": {
+      "current_block": 3,
+      "tx": {
+        "amount": 0,
+        "data": "{\"approve\":false,\"proposal_id\":\"sweep\"}",
+        "fee": 0,
+        "id": {
+          "bytes": [
+            40,
+            187,
+            82,
+            168,
+            91,
+            170,
+            89,
+            232,
+            227,
+            12,
+            116,
+            78,
+            53,
+            213,
+            83,
+            87,
+            60,
+            123,
+            20,
+            169,
+            49,
+            139,
+            241,
+            168,
+            142,
+            175,
+            33,
+            147,
+            147,
+            101,
+            60,
+            71
+          ],
+          "hash_type": "Sha3"
+        },
+        "inputs": [],
+        "lock_time": null,
+        "nonce": 0,
+        "operation": {
+          "Transfer": {
+            "amount": 0
+          }
+        },
+        "outputs": [],
+        "recipient_address": null,
+        "sender_address": [
+          240,
+          237,
+          247,
+          190,
+          229,
+          87,
+          144,
+          84,
+          163,
+          158,
+          240,
+          59,
+          162,
+          34,
+          202,
+          136,
+          167,
+          21,
+          108,
+          227
+        ],
+        "timestamp": "1970-01-01T00:00:00Z",
+        "tx_type": "SlashingReport",
+        "version": 1
+      }
+    }
+  },
+  "26": {
+    "RecordAuditEvent": {
+      "event": {
+        "actor_id": null,
+        "block_height": 0,
+        "details": null,
+        "event_id": 0,
+        "kind": "GovernanceProposalCreated",
+        "subject_id": null,
+        "timestamp": 0
+      }
+    }
+  },
+  "27": {
+    "RecordQualityPolicyEvent": {
+      "event": {
+        "block_height": 0,
+        "commit_id": "",
+        "counts_toward_low_quality_streak": false,
+        "event_id": 0,
+        "event_type": "ChallengeTriggered",
+        "low_quality_slash_threshold": null,
+        "low_quality_streak": null,
+        "participant": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "policy_snapshot": {
+          "borderline_reward_multiplier": 0.0,
+          "borderline_scoring_multiplier": 0.0,
+          "high_quality_threshold": 0.0,
+          "low_quality_reward_multiplier": 0.0,
+          "low_quality_scoring_multiplier": 0.0,
+          "low_quality_slash_amount": 0,
+          "low_quality_slash_streak": 0,
+          "min_acceptance_threshold": 0.0,
+          "quality_enforcement_activation_height": 0,
+          "warning_only_reward_multiplier": 0.0,
+          "warning_only_scoring_multiplier": 0.0,
+          "warning_only_threshold": 0.0
+        },
+        "quality_band": "High",
+        "quality_score": null,
+        "reward_multiplier": 0.0,
+        "scoring_multiplier": 0.0,
+        "slashed_amount": null,
+        "trigger_challenge": false,
+        "warning_only": false
+      }
+    }
+  },
+  "28": {
+    "RecordOracleLocalAccuracy": {
+      "oracle_id": "",
+      "score_bps": 0,
+      "station_id": "",
+      "window": 0
+    }
+  },
+  "34": {
+    "RecordCalibrationAttestation": {
+      "payload": {
+        "calibrator_id": "",
+        "calibrator_key_epoch": null,
+        "expires_at": 0,
+        "issued_at": 0,
+        "nonce": null,
+        "signature": null,
+        "station_id": ""
+      }
+    }
+  },
+  "39": {
+    "RecordGenesisEmissionConfig": {
+      "config": {
+        "chain_id": "",
+        "faucet_address": null
+      }
+    }
+  },
+  "40": "ApplyFaucetReward",
+  "41": {
+    "ApplyProducerSettlement": {
+      "producer_pubkey": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "record": {
+        "amount": 0,
+        "height": 0,
+        "payout_address": ""
+      }
+    }
+  },
+  "42": {
+    "ApplyAccountRecovery": {
+      "account": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "action": {
+        "SetPolicy": {
+          "owner_public_key": "",
+          "policy": {
+            "cooldown_blocks": 0,
+            "guardians": [],
+            "threshold": 0,
+            "time_lock_blocks": 0
+          },
+          "policy_nonce": 0,
+          "signature": ""
+        }
+      },
+      "block_height": 0
+    }
+  },
+  "44": {
+    "DeclareAuthorization": {
+      "block_height": 0,
+      "block_timestamp": 0,
+      "declaration": {
+        "account": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "authorization": null,
+        "generation": 0,
+        "nonce": 0,
+        "signature": "",
+        "signer_public_key": ""
+      }
+    }
+  },
+  "45": {
+    "ApplyPaymasterAction": {
+      "action": {
+        "Stake": {
+          "amount": 0,
+          "paymaster": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "unstake_delay_blocks": 0
+        }
+      },
+      "block_height": 0
+    }
+  },
+  "46": {
+    "ApplyFeatureScheduleExtension": {
+      "block_height": 0,
+      "extension": {
+        "extension": {
+          "chain_id": "",
+          "entries": [],
+          "genesis_hash": "",
+          "min_protocol_version": 0,
+          "network_id": "",
+          "release_commit": "",
+          "sequence": 0,
+          "version_steps": []
+        },
+        "signatures": []
+      }
+    }
+  },
+  "47": {
+    "ApplyStationRegistrationWithOwnerConsent": {
+      "block_height": 0,
+      "station": {
+        "calibrationDate": null,
+        "dataQualityTier": "unverified",
+        "hardwareModel": "",
+        "isActive": false,
+        "location": {
+          "elevationMeters": null,
+          "latitude": 0.0,
+          "longitude": 0.0
+        },
+        "ownerAddress": "",
+        "provenanceClass": "real",
+        "reputationScore": 0,
+        "ringPublicKey": null,
+        "stationId": ""
+      }
+    }
+  },
+  "48": {
+    "ApplyStationOwnerTransfer": {
+      "block_height": 0,
+      "from_owner_address": "",
+      "station_id": "",
+      "to_owner_address": "",
+      "transfer_nonce": 0
+    }
+  },
+  "49": {
+    "ApplyStationOwnerAction": {
+      "action": "report_stolen",
+      "action_nonce": 0,
+      "block_height": 0,
+      "owner_address": "",
+      "station_id": ""
+    }
+  },
+  "50": {
+    "ApplyStationOwnerRecoveryFiling": {
+      "block_height": 0,
+      "from_owner_address": "",
+      "recovery_nonce": 0,
+      "station_id": "",
+      "to_owner_address": ""
+    }
+  },
+  "51": {
+    "ApplyStationOwnerRecoveryCancel": {
+      "block_height": 0,
+      "owner_address": "",
+      "recovery_nonce": 0,
+      "station_id": ""
+    }
+  },
+  "52": {
+    "ApplyStationOwnerRecoveryExecute": {
+      "block_height": 0,
+      "recovery_nonce": 0,
+      "station_id": ""
+    }
+  },
+  "53": {
+    "ApplyStationRegistrationV2": {
+      "block_height": 0,
+      "expected_nonce": 0,
+      "station": {
+        "calibrationDate": null,
+        "dataQualityTier": "unverified",
+        "hardwareModel": "",
+        "isActive": false,
+        "location": {
+          "elevationMeters": null,
+          "latitude": 0.0,
+          "longitude": 0.0
+        },
+        "ownerAddress": "",
+        "provenanceClass": "real",
+        "reputationScore": 0,
+        "ringPublicKey": null,
+        "stationId": ""
+      }
+    }
+  },
+  "56": {
+    "ApplyNodeServiceBatch": {
+      "block_height": 0,
+      "payload": {
+        "authorization": {
+          "batch_hash": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "genesis_hash": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "nonce": 0,
+          "sender": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "batch": {
+          "claims": []
+        },
+        "owner_key": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "owner_signature": []
+      }
+    }
+  },
+  "57": {
+    "ApplyNodeFraudReport": {
+      "block_height": 0,
+      "payload": {
+        "authorization": {
+          "batch_hash": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "genesis_hash": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "nonce": 0,
+          "sender": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "batch": {
+          "claims": []
+        },
+        "owner_key": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "owner_signature": []
+      }
+    }
+  }
+}

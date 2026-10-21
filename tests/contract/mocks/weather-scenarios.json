@@ -1,0 +1,120 @@
+{
+  "default": {
+    "description": "Standard testing scenario with moderate data load",
+    "stationCount": 5,
+    "historyCount": 24,
+    "failureRate": 0,
+    "latencyMs": 0,
+    "dataQuality": "high",
+    "features": [
+      "realistic_weather_patterns",
+      "seasonal_variations",
+      "diurnal_temperature_cycles"
+    ]
+  },
+
+  "high-load": {
+    "description": "High load scenario with many stations and historical data",
+    "stationCount": 50,
+    "historyCount": 168,
+    "failureRate": 0.02,
+    "latencyMs": 100,
+    "dataQuality": "mixed",
+    "features": [
+      "large_dataset",
+      "mixed_data_quality",
+      "occasional_failures",
+      "moderate_latency"
+    ]
+  },
+
+  "failure": {
+    "description": "Failure scenario with high error rates and service instability",
+    "stationCount": 10,
+    "historyCount": 12,
+    "failureRate": 0.3,
+    "latencyMs": 2000,
+    "dataQuality": "low",
+    "features": [
+      "high_failure_rate",
+      "high_latency",
+      "degraded_data_quality",
+      "intermittent_connectivity"
+    ]
+  },
+
+  "degraded": {
+    "description": "Degraded performance scenario simulating partial system failure",
+    "stationCount": 8,
+    "historyCount": 48,
+    "failureRate": 0.1,
+    "latencyMs": 500,
+    "dataQuality": "degraded",
+    "features": [
+      "moderate_failure_rate",
+      "increased_latency",
+      "partial_data_loss",
+      "inconsistent_timestamps"
+    ]
+  },
+
+  "minimal": {
+    "description": "Minimal scenario for basic functionality testing",
+    "stationCount": 2,
+    "historyCount": 6,
+    "failureRate": 0,
+    "latencyMs": 0,
+    "dataQuality": "perfect",
+    "features": [
+      "minimal_dataset",
+      "perfect_data_quality",
+      "no_failures",
+      "instant_responses"
+    ]
+  },
+
+  "chaos": {
+    "description": "Chaos engineering scenario with unpredictable failures",
+    "stationCount": 15,
+    "historyCount": 72,
+    "failureRate": 0.2,
+    "latencyMs": 1000,
+    "dataQuality": "chaotic",
+    "features": [
+      "random_failures",
+      "variable_latency",
+      "data_corruption",
+      "timeout_errors",
+      "malformed_responses"
+    ]
+  },
+
+  "offline": {
+    "description": "Offline scenario simulating complete service unavailability",
+    "stationCount": 0,
+    "historyCount": 0,
+    "failureRate": 1.0,
+    "latencyMs": 30000,
+    "dataQuality": "unavailable",
+    "features": [
+      "service_unavailable",
+      "connection_timeouts",
+      "no_data_available"
+    ]
+  },
+
+  "recovery": {
+    "description": "Recovery scenario simulating gradual service restoration",
+    "stationCount": 20,
+    "historyCount": 96,
+    "failureRate": 0.05,
+    "latencyMs": 200,
+    "dataQuality": "recovering",
+    "features": [
+      "gradual_recovery",
+      "improving_response_times",
+      "data_backfill",
+      "increasing_availability"
+    ]
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "name": "wrfcoin-contract-tests",
+  "version": "1.0.0",
+  "description": "WRFCoin Smart Contract Integration Testing Suite",
+  "main": "integration-test-runner.js",
+  "scripts": {
+    "start": "node integration-test-runner.js",
+    "test": "npm run test:integration",
+    "test:integration": "node integration-test-runner.js --profile=integration-test --verbose",
+    "test:full": "node integration-test-runner.js --profile=full-test --verbose --parallel=2",
+    "test:monitoring": "node integration-test-runner.js --profile=monitoring --verbose",
+    "test:chaos": "node integration-test-runner.js --profile=chaos-testing --verbose",
+    "services:start": "docker-compose -f docker-compose.test.yml --profile integration-test up -d --build",
+    "services:stop": "docker-compose -f docker-compose.test.yml down -v",
+    "services:logs": "docker-compose -f docker-compose.test.yml logs -f",
+    "services:health": "curl http://localhost:3100/health | jq",
+    "mock:weather": "node mocks/enhanced-weather-mock.js",
+    "mock:blockchain": "node mocks/enhanced-blockchain-mock.js",
+    "mock:carbon": "node mocks/enhanced-carbon-mock.js",
+    "health:check": "node utils/health-checker.js",
+    "reports:clean": "rm -rf reports/*",
+    "docker:build": "docker-compose -f docker-compose.test.yml build",
+    "docker:pull": "docker-compose -f docker-compose.test.yml pull"
+  },
+  "keywords": [
+    "blockchain",
+    "testing",
+    "integration",
+    "smart-contracts",
+    "weather",
+    "carbon",
+    "defi",
+    "mock",
+    "docker"
+  ],
+  "author": "WRFCoin Development Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "winston": "^3.11.0",
+    "pg": "^8.11.3",
+    "ioredis": "^5.3.2",
+    "node-cron": "^3.0.3",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "mocha": "^10.2.0",
+    "chai": "^4.3.10",
+    "supertest": "^6.3.3",
+    "sinon": "^17.0.1",
+    "@types/jest": "^29.5.8",
+    "@types/mocha": "^10.0.4",
+    "@types/node": "^20.9.0",
+    "eslint": "^8.53.0",
+    "prettier": "^3.1.0",
+    "nodemon": "^3.0.1",
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wrfcoin/wrfcoin"
+  },
+  "bugs": {
+    "url": "https://github.com/wrfcoin/wrfcoin/issues"
+  },
+  "homepage": "https://wrfcoin.com",
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/__tests__/**/*.js",
+      "**/?(*.)+(spec|test).js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/reports/",
+      "/logs/"
+    ],
+    "coverageDirectory": "reports/coverage",
+    "collectCoverageFrom": [
+      "**/*.js",
+      "!**/node_modules/**",
+      "!**/reports/**",
+      "!**/logs/**",
+      "!docker-compose*.yml",
+      "!Dockerfile*"
+    ],
+    "setupFilesAfterEnv": [
+      "./jest.setup.js"
+    ],
+    "testTimeout": 30000
+  },
+  "mocha": {
+    "timeout": 30000,
+    "recursive": true,
+    "spec": "**/*.test.js",
+    "ignore": [
+      "node_modules/**",
+      "reports/**",
+      "logs/**"
+    ]
+  },
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "es2021": true,
+      "jest": true,
+      "mocha": true
+    },
+    "extends": [
+      "eslint:recommended"
+    ],
+    "parserOptions": {
+      "ecmaVersion": "latest",
+      "sourceType": "module"
+    },
+    "rules": {
+      "no-console": "off",
+      "no-unused-vars": "warn"
+    }
+  }
+}

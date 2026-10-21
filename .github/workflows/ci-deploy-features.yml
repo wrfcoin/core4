@@ -1,0 +1,559 @@
+name: Deploy Feature-Gate CI
+
+# Closes the CI gap where feature-gated breakage under the production deploy
+# feature set (full-mining + p2p + hsm) and test-compile rot in
+# wrfcoin-shared-protocol / wrfcoin-p2p can land undetected.
+#
+# The existing HSM gate runs only `--features hsm`; the p2p-only check in
+# ci-readiness runs `cargo check -p wrfcoin-native-chain --features p2p` but
+# never compiles the p2p or shared-protocol test suites.  This job fills both
+# gaps without requiring softhsm2 — the `hsm` feature compile path is exercised
+# purely at the source level.
+
+on:
+  pull_request:
+    paths:
+      - 'native-chain/**'
+      - 'shared-protocol/**'
+      - 'p2p/**'
+      - 'consensus-engines/**'
+      - 'primitives/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docs/security/RPC_SURFACE.md'
+      - 'scripts/check_rpc_surface.py'
+      - 'scripts/launch_api_routes.py'
+      - 'scripts/check_launch_api_spec.py'
+      - 'scripts/test_check_launch_api_spec.py'
+      - 'docs/api/launch-api.openapi.yaml'
+      - 'rust-toolchain.toml'
+      - 'scripts/check_toolchain_pin.py'
+      - '**/Dockerfile*'
+      - '.github/workflows/**'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - '.github/workflows/ci-deploy-features.yml'
+      - 'build-provenance/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'keeper-proof/**'
+      - 'meteo-types/**'
+      - 'oracle-packet/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'sdks/generated/rust/**'
+      - 'security-demo/**'
+      - 'sensor-attestation/**'
+      - 'tests/integration/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'tools/forecast-proto/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'native-chain/**'
+      - 'shared-protocol/**'
+      - 'p2p/**'
+      - 'consensus-engines/**'
+      - 'primitives/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docs/security/RPC_SURFACE.md'
+      - 'scripts/check_rpc_surface.py'
+      - 'scripts/launch_api_routes.py'
+      - 'scripts/check_launch_api_spec.py'
+      - 'scripts/test_check_launch_api_spec.py'
+      - 'docs/api/launch-api.openapi.yaml'
+      - 'rust-toolchain.toml'
+      - 'scripts/check_toolchain_pin.py'
+      - '**/Dockerfile*'
+      - '.github/workflows/**'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '22 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy-feature-gate:
+    name: deploy feature set compile + test --no-run
+    # Public launch: hosted PR execution with a bounded cold-build budget.
+    runs-on: ubuntu-latest
+    # Hosted W.2 cold run spent 12m15s compiling shared tests, 12m11s on
+    # oracle runtime, and 8m49s on P2P before the 40m limit interrupted native
+    # integration targets. Leave time for those targets and the API checks.
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Verify RPC surface inventory
+        run: python3 scripts/check_rpc_surface.py
+
+      # `if: !cancelled()` so an RPC-surface failure cannot MASK a pin failure.
+      # Both are cheap independent static checks; running them in sequence meant
+      # the pin step reported `skipped` for three days while #2413 was red, which
+      # is why this gate's own breakage went untriaged (#2419).
+      - name: Verify PyYAML for the toolchain-pin checker
+        # The checker resolves job ownership from the PARSED workflow rather than by
+        # scanning lines (#2419). It fails closed without a parser, so the dependency
+        # is verified explicitly. CT102 provides PyYAML but intentionally has no pip;
+        # attempting a hosted-image-style install makes the free runner fail before
+        # any Cargo gate executes. Accept only the audited 6.0.x series used by the
+        # other workflow pin, and fail before the checker if it is absent or drifts.
+        run: |
+          python3 - <<'PY'
+          import yaml
+
+          version = tuple(int(part) for part in yaml.__version__.split('.')[:2])
+          if version != (6, 0):
+              raise SystemExit(f"PyYAML 6.0.x required, found {yaml.__version__}")
+          print(f"PyYAML {yaml.__version__} available")
+          PY
+      - name: Check launch_api OpenAPI route contract
+        run: |
+          python3 scripts/test_check_launch_api_spec.py
+          python3 scripts/check_launch_api_spec.py
+      - name: Verify Rust toolchain pin
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_toolchain_pin.py --self-test
+          python3 scripts/check_toolchain_pin.py
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      - name: Verify runtime Rust compiler matches the repository pin
+        run: python3 scripts/check_toolchain_pin.py --runtime
+
+      # CT102 data cap (infra#1113, core4#2955): skip the GitHub cache on
+      # self-hosted runners. CT102's per-runner CARGO_HOME, RUSTUP_HOME and
+      # CARGO_TARGET_DIR (/build/*-<runner>) persist between jobs, so this restore
+      # re-downloaded 127-384 MB per job over a metered line for nothing. Hosted
+      # runners keep the cache.
+      - name: Cache Cargo registry and build artifacts
+        if: runner.environment != 'self-hosted'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deploy-feature-gate
+          save-if: false
+
+      # Gate 1: full deploy feature combination.
+      # Catches cross-feature unification errors (e.g. a type that compiles
+      # under `p2p` alone but breaks when `full-mining` or `hsm` are added).
+      - name: cargo check --workspace --features full-mining,p2p,hsm
+        run: cargo check --locked --workspace --features full-mining,p2p,hsm
+
+      # Gate 2: wrfcoin-shared-protocol test-compile.
+      # --no-run compiles all test binaries without executing them.
+      # Catches test-code rot (imports, type mismatches) that only appear
+      # when the test profile is compiled — invisible to `cargo check`.
+      - name: cargo test -p wrfcoin-shared-protocol --no-run (compile gate)
+        run: cargo test --locked -p wrfcoin-shared-protocol --no-run
+
+      # Gate 3: execute #2464's authenticated API-to-attester HTTP cycle.
+      # The shared-protocol e2e never starts the Actix handlers or reqwest
+      # client. Count the exact result line because Cargo exits 0 when a test
+      # filter matches nothing.
+      - name: oracle attester authenticated HTTP runtime (#2464)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain \
+            --test oracle_attester_runtime_2464 \
+            real_http_cycle_covers_auth_retry_restart_prompt_and_deferred_lanes \
+            -- --exact --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test real_http_cycle_covers_auth_retry_restart_prompt_and_deferred_lanes \.\.\. ok$' "$test_log")" -eq 1
+
+      # Gate 4: execute wrfcoin-p2p tests. Compiling the tests alone cannot
+      # catch runtime P2P regressions, including socket-backed test failures.
+      #
+      # FLOOR CALIBRATION (#2889). Measured on main f2adb752f, 2026-08-31:
+      #   executed = 486   summaries(binaries) = 10   failed = 0   filtered = 0
+      #   per-binary: [470, 3, 0, 5, 3, 1, 1, 1, 1, 1]
+      #
+      # This step carried `--min-executed 1` against those 486 — it would have
+      # passed with 485 of 486 tests gone, and it is cited as evidence in PR
+      # reviews (#2878 quoted its "executed=486"), so the formality was doing
+      # real persuasive work.
+      #
+      # TWO DIMENSIONS, because one cannot cover this shape. 470 of the 486
+      # tests live in a single binary and the other nine hold 16 between them.
+      # Any count floor loose enough to survive ordinary churn is also loose
+      # enough to miss an entire integration target dropping out; the binary
+      # count catches that and is far more stable, since tests come and go
+      # constantly while binaries almost never do.
+      #
+      # MARGIN: 430 is 486 less ~11.5%, the same relative margin this repo
+      # already uses in test-target-compile.yml (110 against a measured 124).
+      # Tight enough that losing the lib binary (486 -> 16) is RED; loose
+      # enough that ignoring or deleting a handful of tests does not red the
+      # gate for an honest reason and train people to lower it. Raising it as
+      # the suite grows is fine; lowering it needs the same scrutiny as
+      # deleting a test.
+      #
+      # BINARY FLOOR 10 -> 9 (#2888 story 6): `tests/tdd_4_2_resource_isolation.rs`
+      # was deleted on purpose. It imported nothing from this crate and asserted
+      # only that tokio's scheduler lets a `yield_now` task run beside a
+      # `spawn_blocking` hog — a property of tokio, not of wrfcoin-p2p. The
+      # binary count was 10 = lib + doc-tests + 8 integration targets; it is now
+      # 9 with 7 targets, and the executed floor (430) is untouched because that
+      # binary held one test. This is the "same scrutiny as deleting a test"
+      # the paragraph above asks for, written down where the number lives.
+      - name: cargo test -p wrfcoin-p2p (execution gate)
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 430 --min-summaries 9 -- \
+            test --locked -p wrfcoin-p2p
+
+      # Gate 4b (#2888): the native-chain integration surfaces that only exist
+      # under `--features p2p`. `peer_churn_e2e` is entirely p2p-gated (two
+      # in-process libp2p nodes: IBD under disconnect/reconnect, the
+      # chain-diverged metric); `network_routes` and `transactions_routes` each
+      # carry p2p-gated tests (peer-reputation operator auth, WeatherData v2
+      # broadcast on commit) that the integration ratchet compiles OUT because
+      # it runs the workspace with `hsm,zk` only. This job already builds
+      # native-chain with `p2p` for the launch_api gates above, so the test
+      # binaries are an incremental compile here and a full libp2p build
+      # anywhere else. The ratchet's `external_coverage` entry for
+      # `peer_churn_e2e` points at this step by id; the ratchet validator
+      # proves this workflow fires and this step is hard before honouring it.
+      #
+      # FLOOR: measured locally at 1f183c566 -- peer_churn_e2e 3, network_routes
+      # 76, transactions_routes 71 = 150 across 3 binaries; 130 is ~13% under.
+      # #2606/#2391 (July) recorded these as red; at 1f183c566 all 150 pass.
+      - name: native-chain p2p-gated integration targets (#2888)
+        id: p2p_churn
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 130 --min-summaries 3 -- \
+            test --locked -p wrfcoin-native-chain --features p2p \
+            --test peer_churn_e2e --test network_routes --test transactions_routes \
+            -- --test-threads=1
+
+      # #2786: the downloader owns only a context-free height/tip shadow, while
+      # launch_api owns authoritative oracle/quorum state. Execute both sides of
+      # that handoff and count exact result lines: one P2P forwarding control,
+      # then the honest authoritative apply plus hostile below-quorum rejection.
+      # Keep libtest output captured: --nocapture lets concurrent diagnostics
+      # split the result lines and makes these exact counts flaky.
+      - name: P2P sync shadow to authoritative oracle-state boundary (#2786)
+        run: |
+          set -o pipefail
+          p2p_log="$(mktemp)"
+          launch_log="$(mktemp)"
+          trap 'rm -f "$p2p_log" "$launch_log"' EXIT
+          cargo test --locked -p wrfcoin-p2p \
+            2786 2>&1 | tee "$p2p_log"
+          test "$(grep -Ec '^test .*_2786 \.\.\. ok$' "$p2p_log")" -eq 1
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            2786 2>&1 | tee "$launch_log"
+          test "$(grep -Ec '^test .*_2786 \.\.\. ok$' "$launch_log")" -eq 2
+
+      # #2760: launch_api owns the source distinction between live gossip and
+      # historical sync. `cargo check` does not compile cfg(test), and the
+      # parked ci-readiness workflow is not a PR executor, so this focused gate
+      # must execute here alongside the p2p suite.
+      - name: launch_api IBD ChainStatus coalescing (--features p2p)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            2760 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2760 \.\.\. ok$' "$test_log")" -eq 3
+
+      # #2780: ci-readiness's pull_request trigger is parked, so the normal
+      # launch_api bin-test step does not execute on PRs. Run the canonical
+      # station Reader surface here and count exact successes so a stale filter
+      # or renamed test cannot pass vacuously.
+      - name: canonical station Reader API (#2780)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            canonical_station_reader_ -- --nocapture 2>&1 | tee "$test_log"
+          expected_tests=(
+            canonical_station_reader_requires_auth_and_returns_context_2780
+            canonical_station_reader_follows_registry_state_change_2780
+            canonical_station_reader_blocks_inflight_writer_for_coherent_snapshot_2780
+            canonical_station_reader_distinguishes_invalid_and_missing_ids_2780
+          )
+          for test_name in "${expected_tests[@]}"; do
+            test "$(grep -Fxc "test tests::${test_name} ... ok" "$test_log")" -eq 1
+          done
+          test "$(grep -Ec '^test tests::canonical_station_reader_.*_2780 \.\.\. ok$' "$test_log")" \
+            -eq "${#expected_tests[@]}"
+
+      # #2782: no exact-head job executed these two tests. The workspace step
+      # above is `cargo check` (never compiles cfg(test)), the shared-protocol
+      # step is `--no-run`, and every other launch_api/attester step filters by a
+      # different selector, so a green rollup did not cover the changed
+      # behaviour at all.
+      #
+      # `--features p2p` deliberately matches the step above: the same test
+      # binary is already built there, so this reuses those artifacts instead of
+      # compiling a second feature permutation on a runner that has hit its disk
+      # ceiling before.
+      #
+      # The exact count is load-bearing in both directions — `cargo test` exits 0
+      # when a filter matches nothing, so a rename or deletion would otherwise
+      # pass silently, and a third `_2782` test would go unnoticed. `pipefail`
+      # preserves cargo's own failure through the `tee`.
+      - name: launch_api keep-alive reuse race (#2782, --features p2p)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            2782 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2782 \.\.\. ok$' "$test_log")" -eq 2
+
+      # #2787: same parked-trigger reason as #2780 — the launch_api bin tests do
+      # not run on PRs, and this projection is the quorum proof's only source of
+      # canonical oracle identity. Count exact successes so a stale filter, a
+      # renamed test, or a silently dropped case cannot pass vacuously.
+      - name: canonical block transaction proof projection (#2787)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin launch_api --features p2p \
+            chain_block_detail_ -- --nocapture 2>&1 | tee "$test_log"
+          expected_tests=(
+            chain_block_detail_projects_canonical_quorum_payloads_2787
+            chain_block_detail_projects_duplicate_oracle_identity_faithfully_2787
+            chain_block_detail_marks_undecodable_proof_payload_2787
+            chain_block_detail_omits_projection_for_unrelated_transactions_2787
+          )
+          for test_name in "${expected_tests[@]}"; do
+            test "$(grep -Fxc "test tests::${test_name} ... ok" "$test_log")" -eq 1
+          done
+          test "$(grep -Ec '^test tests::chain_block_detail_.*_2787 \.\.\. ok$' "$test_log")" \
+            -eq "${#expected_tests[@]}"
+
+      # #3095: the upgrade-notice peer fetch is an OPT-IN cargo feature
+      # (`upgrade-notice-fetch`), off by default so the shipped node binary
+      # carries no notice client. Nothing else in the matrix compiles it, so
+      # without this step it would be dead code from the day it merged — the
+      # #2888 failure applied to a feature instead of a test target. `cargo
+      # check` is the right depth: the behaviour under the feature is one
+      # HTTP fetch whose decisions are all made by `accept_upgrade_notice`,
+      # which `--test upgrade_notice_runtime` executes in the ratchet.
+      - name: upgrade-notice peer fetch compiles (#3095, --features p2p,upgrade-notice-fetch)
+        run: |
+          cargo check --locked -p wrfcoin-native-chain --bin launch_api \
+            --features p2p,upgrade-notice-fetch
+
+  oracle-attester-custody-inventory:
+    name: oracle attester plural custody inventory (#2766)
+    runs-on: ubuntu-latest
+    # Hosted W.2 compiled the oracle tests for ~12m, then reached the
+    # per-commit runtime target at the 15m limit. Keep the remaining target
+    # substantive while allowing its cold compilation to finish.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      # #2766: execute the production attester wrapper on CT102 without using
+      # hosted Actions minutes. Count exact result lines because Cargo exits 0
+      # when a filter matches no tests; pipefail preserves a Cargo test failure.
+      - name: Execute plural custody inventory tests
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            2766 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2766 \.\.\. ok$' "$test_log")" -eq 2
+
+      # #2775: two independent attesters naturally process the same commit at
+      # the same timestamp. Their consensus-global nonces must still differ.
+      - name: Execute cross-attester nonce uniqueness test
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            2775 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2775 \.\.\. ok$' "$test_log")" -eq 1
+
+      # #2784: the client half of the #2782 keep-alive reuse race. The steps
+      # above filter by their own issue number, so neither of them executes
+      # these tests — without this step the change would ship untested on a PR.
+      # Exactly three are expected: the behavioural pool test, the
+      # single-construction guard, and the adversarial control proving a
+      # commented-out setting does not satisfy that guard. Counting them is what
+      # makes this non-vacuous, since `cargo test` exits 0 when a filter matches
+      # nothing.
+      - name: Execute attester connection-pool idle timeout tests (#2784)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            2784 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2784 \.\.\. ok$' "$test_log")" -eq 3
+
+      # #3240: per-commit NWS reference selection. The mock-NWS cycle tests
+      # (selection by coordinates, caches, configured-station and
+      # physics-only fallbacks, radius, budget, rate-limit backoff, shadow)
+      # plus the pure config/parse tests. Exactly twelve; counted because
+      # Cargo exits 0 when a filter matches nothing.
+      - name: Execute per-commit reference selection tests (#3240)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            3240 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_3240 \.\.\. ok$' "$test_log")" -eq 12
+
+      # #3240 end to end: the production /transactions/oracle/pending handler
+      # over a real station registry feeding the production attester cycle,
+      # with a mock api.weather.gov: the route surface (station_location
+      # present/omitted), the dark-ship golden pinned from main, per-station
+      # pairing for two cities, the radius (with its mutation control),
+      # shadow, the lookup-timeout bound, the no-location fallback, the
+      # observation-timeout bound (review N1, narrowed by the #3341 review: a
+      # hung station caps no healthy station and no configured-station
+      # fallback) and the shadow log's fixed_tier (review N4). Exactly eleven
+      # top-level tests; the bin's own _3240 tests, which this target
+      # also compiles, are counted by the step above.
+      - name: Execute per-commit reference selection end-to-end tests (#3240)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --test oracle_attester_runtime_2464 \
+            3240 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test (per_station_3240::)?[a-z_]*_3240 \.\.\. ok$' "$test_log")" -eq 11
+
+  rich-ambient-reward-activation:
+    name: rich Ambient reward activation (#2768)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      # #2768: run the consensus reward path on CT102. Cargo accepts a filter
+      # that matches zero tests, so count exact result lines; pipefail also
+      # preserves any test-process failure hidden behind tee.
+      - name: Execute rich Ambient reward tests
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-shared-protocol --lib \
+            2768 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2768 \.\.\. ok$' "$test_log")" -eq 5
+
+      # #2777: execute the producer and peer-verifier real-reveal quorum fence on CT102.
+      # Count exact result lines so a renamed or missing test fails closed;
+      # pipefail preserves Cargo failures hidden behind tee.
+      - name: Execute real-reveal producer quorum fence tests
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-shared-protocol --lib \
+            2777 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_2777 \.\.\. ok$' "$test_log")" -eq 8

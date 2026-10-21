@@ -1,0 +1,7 @@
+{
+  "accounts": [
+    { "address": "0x0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a", "balance": 1000 },
+    { "address": "0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "balance": 500 },
+    { "address": "0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c", "balance": 0 }
+  ]
+}

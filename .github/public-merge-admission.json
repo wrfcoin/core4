@@ -1,0 +1,12 @@
+{
+  "status": "proposed-owner-activation-required",
+  "required_status_checks": [
+    "public PR admission",
+    "schedule-lint",
+    "detect-secrets baseline audit (merge tree)",
+    "verify-terminal-skip-guards"
+  ],
+  "retired_pr_context": "repository-input integration admission",
+  "strict_required_status_checks_policy": true,
+  "integration_evidence": "post-merge or manual; not PR admission"
+}

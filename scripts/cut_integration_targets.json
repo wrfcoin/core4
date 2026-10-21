@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "targets": [
+    {"package":"wrfcoin-native-chain","target":"cut_composition_lifecycle_2498","features":["cut-composition-harness"],"hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"genesis_oracle_registration_s4","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"genesis_state_wal_replay_recovery_2501","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"hsm_producer_keypair_selfcheck_2405","features":["hsm"],"hosted_runner":"unavailable","reason":"requires HSM_TEST_ENABLED plus a provisioned two-key PKCS#11 token; hosted runner has neither"},
+    {"package":"wrfcoin-native-chain","target":"late_quorum_reward_wal_replay_2464","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"oracle_registration_wal_replay_2055","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"oracle_routes","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"producer_auth_append_boundary_2290","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"producer_auth_persisted_boot_2290","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"producer_signed_wal_parity_2226","hosted_runner":"supported"},
+    {"package":"wrfcoin-native-chain","target":"signing_keys_routes","hosted_runner":"supported"},
+    {"package":"wrfcoin-p2p","target":"cold_start_convergence","hosted_runner":"unavailable","reason":"ignored live-peer test; requires WRF_TEST_PEER_ADDR and an externally running node"},
+    {"package":"wrfcoin-p2p","target":"missing_genesis_parent_regression","hosted_runner":"supported","known_failures":["note_request_failure_during_halt_does_not_dispatch_new_requests","plan_requests_returns_empty_while_stalled_even_with_many_peers"]},
+    {"package":"wrfcoin-p2p","target":"uninstalled_signing_version_refusal_2275","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"block_producer_authority","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"block_producer_authority_v2","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"block_producer_signing","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"consensus_invariants","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"earn_loop_oracle_gate_e2e","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"oracle_quorum","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"partition_convergence","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"producer_auth_enforcement_e2e_2290","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"reorg_convergence","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"reward_integration","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"signing_preimage_v2_golden","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"state_root_commitment_2219","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"tdd_reward_determinism","hosted_runner":"supported"},
+    {"package":"wrfcoin-shared-protocol","target":"weather_reward_e2e","hosted_runner":"supported"}
+  ]
+}

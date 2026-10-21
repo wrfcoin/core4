@@ -1,0 +1,28 @@
+# Enhanced Carbon Oracle Mock with Real-Time Data Simulation
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install required packages including health check tools
+RUN apk add --no-cache curl
+
+# Copy mock service files
+COPY package.json* ./
+RUN npm install express cors dotenv winston node-cron
+
+# Copy enhanced mock implementation
+COPY enhanced-carbon-mock.js ./mock-carbon-oracle.js
+COPY carbon-scenarios.json ./scenarios/carbon-scenarios.json
+
+# Create data and logs directories
+RUN mkdir -p data logs scenarios
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-3020}/health || exit 1
+
+# Expose port
+EXPOSE ${PORT:-3020}
+
+# Start the enhanced mock service
+CMD ["node", "mock-carbon-oracle.js"]

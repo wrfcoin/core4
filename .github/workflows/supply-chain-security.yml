@@ -1,0 +1,630 @@
+name: Supply Chain Security (parked)
+# NO-AUTOMATIC-TRIGGER: parked — the weekly `schedule` is commented out and the
+# workflow is gh-disabled (2026-07-31, Actions budget). The 'runs WEEKLY' sentence
+# in the banner below is therefore STALE: nothing is scheduled and nothing has run
+# since. Register and restore: docs/ci/parked-workflows.txt +
+# docs/ci/reenable-parked-workflows.sh.
+
+# COVERAGE, STATED EXPLICITLY (core4#2316)
+#
+# This workflow runs WEEKLY and on manual dispatch. It does NOT run on pull
+# requests or pushes: `08a0a79374860eec7ec523d010dbd5369220e118` removed those
+# triggers to control Actions spend, deliberately. Nothing here blocks a PR
+# that adds a vulnerable dependency; the regression is caught at the next
+# Monday 04:00 UTC run at the earliest.
+#
+# That is a real gap and it is recorded rather than quietly widened — restoring
+# a path-scoped `pull_request` trigger on `Cargo.lock`/`package-lock.json` has a
+# recurring cost that belongs to whoever owns the Actions budget, not to a gate
+# repair. `.github/workflows/WORKFLOW_JUSTIFICATION.md` still describes push and
+# pull-request coverage this workflow no longer has; that catalogue drift is
+# tracked separately.
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: "0 4 * * 1"
+  workflow_dispatch: {}
+
+env:
+  NODE_VERSION: '20'
+  RUST_VERSION: '1.98.0'
+  OSV_SCANNER_VERSION: '1.9.1'
+  SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'HIGH' }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # OSV Scanner for comprehensive vulnerability detection
+  osv-scanner:
+    name: OSV Vulnerability Scanner
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+
+    outputs:
+      npm_vulnerabilities: ${{ steps.npm-scan.outputs.vulnerabilities }}
+      rust_vulnerabilities: ${{ steps.rust-scan.outputs.vulnerabilities }}
+      has_critical: ${{ steps.analyze.outputs.has_critical }}
+      has_high: ${{ steps.analyze.outputs.has_high }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install OSV-Scanner
+        run: |
+          curl -sSfL https://github.com/google/osv-scanner/releases/download/v${{ env.OSV_SCANNER_VERSION }}/osv-scanner_linux_amd64 \
+            -o /tmp/osv-scanner
+          chmod +x /tmp/osv-scanner
+          sudo mv /tmp/osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      # NOT continue-on-error, and no `|| true` (#2316). osv-scanner exits 1
+      # when it finds vulnerabilities and >1 when the scan itself failed; both
+      # used to be discarded. The report is now required to exist and parse
+      # before any count is believed — a missing or truncated report used to
+      # become `vulnerabilities=0`, which reads exactly like a clean scan.
+      - name: Scan npm lockfile
+        id: npm-scan
+        run: |
+          echo "Scanning npm dependencies..."
+          mkdir -p reports
+
+          set +e
+          osv-scanner --lockfile package-lock.json \
+            --format json \
+            --output reports/npm-osv-report.json
+          OSV_EXIT=$?
+          set -e
+
+          if [ "$OSV_EXIT" -gt 1 ]; then
+            echo "::error::osv-scanner failed to run on package-lock.json (exit $OSV_EXIT)"
+            exit 1
+          fi
+
+          VULN_COUNT=$(bash scripts/require-json-report.sh reports/npm-osv-report.json \
+            '[.results[].packages[].vulnerabilities // []] | flatten | length')
+          echo "vulnerabilities=$VULN_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $VULN_COUNT npm vulnerabilities"
+
+      # Same treatment as the npm scan. A missing Cargo.lock is a hard failure
+      # rather than a zero: this is a Rust workspace, so no lockfile means the
+      # checkout is wrong, not that there is nothing to scan.
+      - name: Scan Rust lockfile
+        id: rust-scan
+        run: |
+          echo "Scanning Rust dependencies..."
+
+          if [ ! -f Cargo.lock ]; then
+            echo "::error::Cargo.lock is missing — cannot scan Rust dependencies"
+            exit 1
+          fi
+
+          set +e
+          osv-scanner --lockfile Cargo.lock \
+            --format json \
+            --output reports/rust-osv-report.json
+          OSV_EXIT=$?
+          set -e
+
+          if [ "$OSV_EXIT" -gt 1 ]; then
+            echo "::error::osv-scanner failed to run on Cargo.lock (exit $OSV_EXIT)"
+            exit 1
+          fi
+
+          VULN_COUNT=$(bash scripts/require-json-report.sh reports/rust-osv-report.json \
+            '[.results[].packages[].vulnerabilities // []] | flatten | length')
+          echo "vulnerabilities=$VULN_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $VULN_COUNT Rust vulnerabilities"
+
+      - name: Generate human-readable reports
+        run: |
+          echo "Generating human-readable reports..."
+
+          # npm report
+          if [ -f reports/npm-osv-report.json ]; then
+            osv-scanner --lockfile package-lock.json \
+              --format table \
+              --output reports/npm-osv-report.txt 2>&1 || true
+          fi
+
+          # Rust report
+          if [ -f Cargo.lock ]; then
+            osv-scanner --lockfile Cargo.lock \
+              --format table \
+              --output reports/rust-osv-report.txt 2>&1 || true
+          fi
+
+      - name: Analyze vulnerability severity
+        id: analyze
+        run: |
+          HAS_CRITICAL=false
+          HAS_HIGH=false
+
+          # Analyze npm vulnerabilities
+          if [ -f reports/npm-osv-report.json ]; then
+            CRITICAL_COUNT=$(jq '[.results[].packages[].vulnerabilities // [] | .[] | select(.database_specific.severity == "CRITICAL")] | length' reports/npm-osv-report.json 2>/dev/null || echo 0)
+            HIGH_COUNT=$(jq '[.results[].packages[].vulnerabilities // [] | .[] | select(.database_specific.severity == "HIGH")] | length' reports/npm-osv-report.json 2>/dev/null || echo 0)
+
+            if [ "$CRITICAL_COUNT" -gt 0 ]; then
+              HAS_CRITICAL=true
+              echo "::error::Found $CRITICAL_COUNT CRITICAL npm vulnerabilities"
+            fi
+            if [ "$HIGH_COUNT" -gt 0 ]; then
+              HAS_HIGH=true
+              echo "::warning::Found $HIGH_COUNT HIGH npm vulnerabilities"
+            fi
+          fi
+
+          # Analyze Rust vulnerabilities
+          if [ -f reports/rust-osv-report.json ]; then
+            CRITICAL_COUNT=$(jq '[.results[].packages[].vulnerabilities // [] | .[] | select(.database_specific.severity == "CRITICAL")] | length' reports/rust-osv-report.json 2>/dev/null || echo 0)
+            HIGH_COUNT=$(jq '[.results[].packages[].vulnerabilities // [] | .[] | select(.database_specific.severity == "HIGH")] | length' reports/rust-osv-report.json 2>/dev/null || echo 0)
+
+            if [ "$CRITICAL_COUNT" -gt 0 ]; then
+              HAS_CRITICAL=true
+              echo "::error::Found $CRITICAL_COUNT CRITICAL Rust vulnerabilities"
+            fi
+            if [ "$HIGH_COUNT" -gt 0 ]; then
+              HAS_HIGH=true
+              echo "::warning::Found $HIGH_COUNT HIGH Rust vulnerabilities"
+            fi
+          fi
+
+          echo "has_critical=$HAS_CRITICAL" >> $GITHUB_OUTPUT
+          echo "has_high=$HAS_HIGH" >> $GITHUB_OUTPUT
+
+      - name: Upload OSV reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: osv-scanner-reports-${{ github.sha }}
+          path: reports/
+          retention-days: 30
+
+      - name: Generate SARIF for GitHub Security
+        run: |
+          # Generate SARIF output for npm
+          if [ -f package-lock.json ]; then
+            osv-scanner --lockfile package-lock.json \
+              --format sarif \
+              --output reports/npm-osv.sarif 2>/dev/null || true
+          fi
+
+          # Generate SARIF output for Rust
+          if [ -f Cargo.lock ]; then
+            osv-scanner --lockfile Cargo.lock \
+              --format sarif \
+              --output reports/rust-osv.sarif 2>/dev/null || true
+          fi
+
+      - name: Upload npm SARIF to GitHub Security
+        if: always() && hashFiles('reports/npm-osv.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        continue-on-error: true
+        with:
+          sarif_file: reports/npm-osv.sarif
+          category: osv-npm
+
+      - name: Upload Rust SARIF to GitHub Security
+        if: always() && hashFiles('reports/rust-osv.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4.38.3
+        continue-on-error: true
+        with:
+          sarif_file: reports/rust-osv.sarif
+          category: osv-rust
+
+  # Cargo audit for Rust-specific advisory database
+  cargo-audit:
+    name: Cargo Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo-audit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-v0.21
+
+      - name: Install cargo-audit
+        run: |
+          if ! command -v cargo-audit &> /dev/null; then
+            cargo install cargo-audit --version 0.21.2 --locked
+          fi
+
+      # The whole step is scripts/cargo-audit-gate.sh so that CI and
+      # scripts/supply_chain_gate_probe.sh run the SAME code (#2316). It fails
+      # on findings (exit 1) and on an unusable report (exit 2) — the previous
+      # `|| true` plus `2>&1`-into-the-JSON pair turned both into "0 vulns".
+      - name: Run cargo audit (blocking)
+        run: bash scripts/cargo-audit-gate.sh reports
+
+      # Advisory, and labelled as such. `--deny warnings` promotes unmaintained
+      # / unsound / yanked notices to errors; those are maintenance signals
+      # rather than known-exploitable advisories, and the repository has open
+      # ones today. Blocking on them here would make the vulnerability gate red
+      # for a non-vulnerability reason — the exact "red without discrimination"
+      # this change is removing from the dependency budget.
+      - name: Check for unmaintained crates (advisory)
+        continue-on-error: true
+        run: |
+          echo "Checking for unmaintained crates (advisory — does not gate)..."
+          cargo audit --deny warnings 2>&1 | tee reports/cargo-audit-warnings.txt \
+            || echo "::warning::Some crates are unmaintained, unsound, or yanked — see report"
+
+      - name: Upload cargo-audit report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cargo-audit-report-${{ github.sha }}
+          path: reports/cargo-audit.*
+          retention-days: 30
+
+  # Cargo-vet for supply chain auditing
+  # ADVISORY — see scripts/supply-chain-gate.sh for why this one does not
+  # block: cargo-vet has never been initialised in this repository (there is no
+  # supply-chain/ directory; the step below runs `cargo vet init` when it finds
+  # none), so enforcing it today fails on every unaudited transitive crate.
+  cargo-vet:
+    name: Cargo Supply Chain Audit (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo-vet
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-vet
+            ~/.cargo/registry
+          key: cargo-vet-${{ runner.os }}-v0.9
+
+      - name: Install cargo-vet
+        run: |
+          if ! command -v cargo-vet &> /dev/null; then
+            cargo install cargo-vet --version 0.9.1
+          fi
+
+      - name: Run cargo-vet check
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+
+          echo "Running cargo-vet supply chain audit..."
+
+          # Check if supply-chain directory exists
+          if [ ! -d "supply-chain" ]; then
+            echo "::warning::supply-chain directory not found, initializing..."
+            cargo vet init
+          fi
+
+          # Run the audit
+          cargo vet --locked 2>&1 | tee reports/cargo-vet.txt
+
+          VET_EXIT_CODE=${PIPESTATUS[0]}
+
+          if [ $VET_EXIT_CODE -eq 0 ]; then
+            echo "::notice::All dependencies pass supply chain audit"
+          else
+            echo "::warning::Some dependencies need auditing"
+          fi
+
+      - name: Check for unaudited dependencies
+        run: |
+          echo "Checking for unaudited dependencies..."
+
+          # Get suggestions for unaudited crates
+          cargo vet suggest 2>&1 | tee reports/cargo-vet-suggestions.txt || true
+
+          # Count unaudited
+          UNAUDITED_COUNT=$(cargo vet --output-format=json 2>/dev/null | jq '.conclusion.failures | length' 2>/dev/null || echo 0)
+          echo "Unaudited dependencies: $UNAUDITED_COUNT"
+
+          if [ "$UNAUDITED_COUNT" -gt 0 ]; then
+            echo "::warning::Found $UNAUDITED_COUNT unaudited dependencies"
+          fi
+
+      - name: Generate audit diff
+        run: |
+          echo "Generating audit diff..."
+          cargo vet diff 2>&1 | head -100 > reports/cargo-vet-diff.txt || true
+
+      - name: Upload cargo-vet reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cargo-vet-report-${{ github.sha }}
+          path: |
+            reports/cargo-vet.txt
+            reports/cargo-vet-suggestions.txt
+            reports/cargo-vet-diff.txt
+          retention-days: 30
+
+  # Consensus-critical dependency budget enforcement
+  dependency-budget:
+    name: Dependency Budget Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run dependency budget check
+        run: |
+          mkdir -p reports
+          chmod +x scripts/check-dep-budget.sh
+          ./scripts/check-dep-budget.sh --verbose 2>&1 | tee reports/dependency-budget.txt
+        continue-on-error: false
+
+      - name: Upload dependency budget report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: dependency-budget-report-${{ github.sha }}
+          path: reports/dependency-budget.txt
+          retention-days: 30
+
+  # Typosquatting detection
+  typosquatting-check:
+    name: Typosquatting Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check npm package names
+        run: |
+          echo "Checking for potential typosquatting in npm packages..."
+          mkdir -p reports
+
+          # Extract package names from package-lock.json
+          jq -r '.packages | keys[] | select(. != "") | sub("^node_modules/"; "")' package-lock.json | sort -u > /tmp/npm-packages.txt
+
+          # Common typosquatting patterns to check (exact package names only)
+          SUSPICIOUS_PATTERNS=(
+            "lodahs"      # lodash
+            "axois"       # axios
+            "reqeust"     # request
+            "momnet"      # moment
+            "reactt"      # react
+            "typescipt"   # typescript
+            "webapack"    # webpack
+            "eslintt"     # eslint
+            "babeel"      # babel
+            "crossenv"    # cross-env (malicious)
+            "mongose"     # mongoose
+            "electorn"    # electron
+          )
+
+          FOUND_SUSPICIOUS=false
+          echo "# Typosquatting Analysis Report" > reports/typosquatting-report.md
+          echo "" >> reports/typosquatting-report.md
+          echo "Scan Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> reports/typosquatting-report.md
+          echo "" >> reports/typosquatting-report.md
+
+          for pattern in "${SUSPICIOUS_PATTERNS[@]}"; do
+            if grep -qix "$pattern" /tmp/npm-packages.txt; then
+              echo "::error::Potential typosquatting package found: $pattern"
+              echo "- **SUSPICIOUS**: Found package matching pattern: $pattern" >> reports/typosquatting-report.md
+              FOUND_SUSPICIOUS=true
+            fi
+          done
+
+          # Check for packages with unusual characters (use C locale for byte-range matching)
+          if LC_ALL=C grep -P '[\x{0400}-\x{04FF}]|[\x00-\x1F]' /tmp/npm-packages.txt; then
+            echo "::error::Package names with suspicious characters found"
+            FOUND_SUSPICIOUS=true
+          fi
+
+          if [ "$FOUND_SUSPICIOUS" = true ]; then
+            echo "" >> reports/typosquatting-report.md
+            echo "## Action Required" >> reports/typosquatting-report.md
+            echo "Review the suspicious packages above and verify they are legitimate." >> reports/typosquatting-report.md
+            exit 1
+          else
+            echo "No typosquatting patterns detected" >> reports/typosquatting-report.md
+            echo "No typosquatting patterns detected"
+          fi
+
+      - name: Upload typosquatting report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: typosquatting-report-${{ github.sha }}
+          path: reports/typosquatting-report.md
+          retention-days: 30
+
+  # Security gate - fails if thresholds exceeded
+  security-gate:
+    name: Supply Chain Security Gate
+    runs-on: ubuntu-latest
+    needs: [osv-scanner, cargo-audit, cargo-vet, dependency-budget, typosquatting-check]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # The decision lives in scripts/supply-chain-gate.sh, not in this YAML
+      # (#2316). The previous inline version read OSV_STATUS, AUDIT_STATUS and
+      # VET_STATUS, printed them, and then never used them: a probe with all
+      # three set to `failure` exited 0. A decision that cannot be executed
+      # outside Actions cannot be tested, so it was never noticed.
+      #
+      # scripts/supply_chain_gate_probe.sh runs the truth table against this
+      # exact script.
+      - name: Evaluate security gate
+        env:
+          OSV_STATUS: ${{ needs.osv-scanner.result }}
+          AUDIT_STATUS: ${{ needs.cargo-audit.result }}
+          VET_STATUS: ${{ needs.cargo-vet.result }}
+          DEP_BUDGET_STATUS: ${{ needs.dependency-budget.result }}
+          TYPO_STATUS: ${{ needs.typosquatting-check.result }}
+          HAS_CRITICAL: ${{ needs.osv-scanner.outputs.has_critical }}
+          HAS_HIGH: ${{ needs.osv-scanner.outputs.has_high }}
+          SEVERITY_THRESHOLD: ${{ env.SEVERITY_THRESHOLD }}
+        run: bash scripts/supply-chain-gate.sh
+
+  # Create issues for new vulnerabilities (scheduled runs only)
+  create-vulnerability-issues:
+    name: Create Vulnerability Issues
+    runs-on: ubuntu-latest
+    needs: [osv-scanner, cargo-audit]
+    if: github.event_name == 'schedule' && (needs.osv-scanner.outputs.has_critical == 'true' || needs.osv-scanner.outputs.has_high == 'true')
+    permissions:
+      issues: write
+
+    steps:
+      - name: Download reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: osv-scanner-reports-${{ github.sha }}
+          path: reports/
+
+      - name: Create issue for vulnerabilities
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Check for existing open security issues
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,vulnerability,automated'
+            });
+
+            // Only create if no recent issue exists
+            const recentIssue = existingIssues.find(issue => {
+              const created = new Date(issue.created_at);
+              const now = new Date();
+              const daysSince = (now - created) / (1000 * 60 * 60 * 24);
+              return daysSince < 7;
+            });
+
+            if (recentIssue) {
+              console.log('Recent vulnerability issue exists, skipping creation');
+              return;
+            }
+
+            const hasNpmReport = fs.existsSync('reports/npm-osv-report.txt');
+            const hasRustReport = fs.existsSync('reports/rust-osv-report.txt');
+
+            let body = `## Weekly Supply Chain Security Scan Results\n\n`;
+            body += `**Scan Date:** ${new Date().toISOString()}\n`;
+            body += `**Commit:** ${context.sha}\n\n`;
+
+            if (hasNpmReport) {
+              body += `### npm Vulnerabilities\n\`\`\`\n`;
+              body += fs.readFileSync('reports/npm-osv-report.txt', 'utf8').slice(0, 3000);
+              body += `\n\`\`\`\n\n`;
+            }
+
+            if (hasRustReport) {
+              body += `### Rust Vulnerabilities\n\`\`\`\n`;
+              body += fs.readFileSync('reports/rust-osv-report.txt', 'utf8').slice(0, 3000);
+              body += `\n\`\`\`\n\n`;
+            }
+
+            body += `## Required Actions\n`;
+            body += `1. Review the vulnerabilities above\n`;
+            body += `2. Update affected dependencies where possible\n`;
+            body += `3. Document any accepted risks for vulnerabilities that cannot be fixed\n`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Security] Supply Chain Vulnerabilities Detected - ${new Date().toISOString().split('T')[0]}`,
+              body: body,
+              labels: ['security', 'vulnerability', 'automated', 'high-priority']
+            });

@@ -1,0 +1,16 @@
+// Pinned pre-fix source of the #2259 StealthKeys exposure, verbatim from
+// pre-#2266 main. Kept as a fixture so detection of this exact production
+// defect stays regression-tested after the live tree is fixed — the earlier
+// self-test scanned the working tree, which goes green the moment #2266
+// merges. No real key material: the struct only declares field types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StealthKeys {
+    /// Public spend key (`B = b*G`).
+    pub public_spend_key: [u8; 32],
+    /// Public view key (`A = a*G`).
+    pub public_view_key: [u8; 32],
+    /// Private spend key (`b`).
+    pub private_spend_key: [u8; 32],
+    /// Private view key (`a`).
+    pub private_view_key: [u8; 32],
+}

@@ -1,0 +1,30 @@
+name: Testnet disclaimer surfaces
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'docs/TESTNET_DISCLAIMER.md'
+      - 'native-chain/src/bin/launch_api/**'
+      - 'scripts/check_disclaimer_surfaces.py'
+      - '.github/workflows/disclaimer-surfaces.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/TESTNET_DISCLAIMER.md'
+      - 'native-chain/src/bin/launch_api/**'
+      - 'scripts/check_disclaimer_surfaces.py'
+      - '.github/workflows/disclaimer-surfaces.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  disclaimer-surfaces:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check core4 disclaimer surfaces
+        run: python3 scripts/check_disclaimer_surfaces.py

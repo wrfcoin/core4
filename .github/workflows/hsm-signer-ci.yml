@@ -1,0 +1,224 @@
+name: HSM Signer CI
+
+# Runs the PKCS#11-backed BlockSigner integration test
+# (native-chain/tests/hsm_signer.rs) against a softhsm2 token provisioned
+# inline on the runner. Gated to paths that can affect the signer path so
+# we don't pay the softhsm2 install on unrelated PRs.
+#
+# Closes wrfcoin/infra#430.
+
+on:
+  pull_request:
+    paths:
+      - 'native-chain/**'
+      - 'shared-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/hsm-signer-ci.yml'
+      - 'scripts/cargo_test_nonvacuous.py'
+  push:
+    branches: [main]
+    paths:
+      - 'native-chain/**'
+      - 'shared-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/hsm-signer-ci.yml'
+      - 'scripts/cargo_test_nonvacuous.py'
+
+# Supersede in-flight runs for the same ref. Every other workflow in this repo
+# already does this; these two were the only ones without it, so a burst of
+# pushes to one branch queued a full run each and none was cancelled.
+# Nothing is lost: only the newest SHA on a ref gates the PR, so a superseded
+# run's verdict is already irrelevant when it is cancelled — and this one pays a softhsm2 install plus a cargo build each time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: github.ref is constant on main; unconditional cancellation cancels the previous main verdict on every merge.
+
+permissions:
+  contents: read
+
+jobs:
+  hsm-signer:
+    name: cargo test --features hsm (softhsm2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      - name: Cache Cargo registry and build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: hsm-signer-ci
+
+      - name: Install softhsm2 and opensc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc
+
+      - name: Provision throwaway softhsm2 token
+        env:
+          SOFTHSM2_CONF: ${{ runner.temp }}/softhsm2.conf
+          TOKEN_DIR: ${{ runner.temp }}/softhsm2-tokens
+        run: |
+          set -euo pipefail
+
+          # Random PINs for the throwaway token — never reused, torn down
+          # with the runner. Mask them so any accidental echo in a tool's
+          # error path is redacted.
+          PIN=$(od -An -N4 -tu4 /dev/urandom | tr -d ' \n')
+          SO_PIN=$(od -An -N4 -tu4 /dev/urandom | tr -d ' \n')
+          echo "::add-mask::$PIN"
+          echo "::add-mask::$SO_PIN"
+
+          # Point softhsm2 at a user-writable token directory so we don't
+          # need sudo for the init/keygen steps.
+          mkdir -p "$TOKEN_DIR"
+          cat > "$SOFTHSM2_CONF" <<EOF
+          directories.tokendir = $TOKEN_DIR
+          objectstore.backend = file
+          log.level = ERROR
+          EOF
+
+          softhsm2-util --init-token --free \
+            --label wrfcoin-validator \
+            --pin "$PIN" --so-pin "$SO_PIN"
+
+          pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so \
+            --login --pin "$PIN" --token-label wrfcoin-validator \
+            --keypairgen --key-type EC:edwards25519 \
+            --label wrfcoin-signing-key --id 01
+
+          pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so \
+            --login --pin "$PIN" --token-label wrfcoin-validator \
+            --keypairgen --key-type EC:edwards25519 \
+            --label wrfcoin-signing-key-always --id 02 \
+            --always-auth
+
+          # Export to the next step. SOFTHSM2_CONF is needed so the PKCS#11
+          # module picks up our user-writable token dir. PIN is consumed via
+          # WRFCOIN_HSM_PIN_ENV indirection — the test reads the env var
+          # named by that indirection.
+          {
+            echo "SOFTHSM2_CONF=$SOFTHSM2_CONF"
+            echo "WRFCOIN_HSM_PIN=$PIN"
+          } >> "$GITHUB_ENV"
+
+      # #2748: the hsm_signer tests are #[ignore]d rather than runtime-gated, so
+      # they must be requested with `-- --ignored`. The #2867 non-vacuity
+      # wrapper (--min-executed 2) makes a run that executed fewer than both
+      # tests RED — the token being absent or misprovisioned surfaces as a
+      # failure here, never as a green step, because a silently-green job in
+      # a workflow whose purpose is to prove signing works would be #2748 one
+      # layer up.
+      - name: cargo test -p wrfcoin-native-chain --features hsm --test hsm_signer (ONCE policy)
+        env:
+          WRFCOIN_HSM_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+          WRFCOIN_HSM_TOKEN_LABEL: wrfcoin-validator
+          WRFCOIN_HSM_KEY_LABEL: wrfcoin-signing-key
+          WRFCOIN_HSM_PIN_ENV: WRFCOIN_HSM_PIN
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 2 -- \
+            test --locked -p wrfcoin-native-chain --features hsm --test hsm_signer -- --ignored --nocapture
+
+      - name: cargo test -p wrfcoin-native-chain --features hsm --test hsm_signer (ALWAYS_AUTHENTICATE)
+        env:
+          WRFCOIN_HSM_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+          WRFCOIN_HSM_TOKEN_LABEL: wrfcoin-validator
+          WRFCOIN_HSM_KEY_LABEL: wrfcoin-signing-key-always
+          WRFCOIN_HSM_PIN_ENV: WRFCOIN_HSM_PIN
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 2 -- \
+            test --locked -p wrfcoin-native-chain --features hsm --test hsm_signer -- --ignored --nocapture
+
+      # #2405 producer keypair self-check. Until this step existed the target was
+      # written but never executed anywhere: the job above runs ONLY `hsm_signer`,
+      # so a green HSM job said nothing about the two-key path (Elsa's blocker 3).
+      #
+      # The two keypairs this needs are already provisioned above — `--id 01`
+      # (wrfcoin-signing-key) and `--id 02` (wrfcoin-signing-key-always) — so the
+      # mismatched pair is the existing fixture used a different way, not new setup.
+      #
+      #   private half  <- wrfcoin-signing-key         (CKA_ID 01)
+      #   public half   <- wrfcoin-signing-key-always  (CKA_ID 02)
+      #
+      # On SoftHSM both halves of one keypair share a label, so the MATCHED case
+      # reuses the private label. On a YubiKey they never do; that asymmetry is
+      # why the matched label is its own variable rather than an unset override.
+      - name: cargo test --features hsm --test hsm_producer_keypair_selfcheck_2405 (two-key)
+        env:
+          HSM_TEST_ENABLED: '1'
+          WRFCOIN_HSM_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+          WRFCOIN_HSM_TOKEN_LABEL: wrfcoin-validator
+          WRFCOIN_HSM_PIN_ENV: WRFCOIN_HSM_PIN
+          WRFCOIN_HSM_KEY_LABEL: wrfcoin-signing-key
+          WRFCOIN_HSM_PUBKEY_LABEL: wrfcoin-signing-key-always
+          WRFCOIN_HSM_MATCHED_PUBKEY_LABEL: wrfcoin-signing-key
+          WRFCOIN_HSM_MISMATCHED_PUBKEY_LABEL: wrfcoin-signing-key-always
+        run: |
+          cargo test --locked -p wrfcoin-native-chain --features hsm \
+            --test hsm_producer_keypair_selfcheck_2405 -- --nocapture
+
+      # The step above is only meaningful if its cases actually RAN. Each one
+      # returns early with a "skipping:" line when its provisioning variable is
+      # absent, and a skipped test reports as `ok` — the precise shape that let
+      # an unexercised guard read as green three times in this epic. Assert the
+      # executed count instead of trusting the exit code.
+      - name: Assert the #2405 two-key cases executed rather than skipped
+        env:
+          HSM_TEST_ENABLED: '1'
+          WRFCOIN_HSM_MODULE_PATH: /usr/lib/softhsm/libsofthsm2.so
+          WRFCOIN_HSM_TOKEN_LABEL: wrfcoin-validator
+          WRFCOIN_HSM_PIN_ENV: WRFCOIN_HSM_PIN
+          WRFCOIN_HSM_KEY_LABEL: wrfcoin-signing-key
+          WRFCOIN_HSM_PUBKEY_LABEL: wrfcoin-signing-key-always
+          WRFCOIN_HSM_MATCHED_PUBKEY_LABEL: wrfcoin-signing-key
+          WRFCOIN_HSM_MISMATCHED_PUBKEY_LABEL: wrfcoin-signing-key-always
+        run: |
+          set -euo pipefail
+          cargo test --locked -p wrfcoin-native-chain --features hsm \
+            --test hsm_producer_keypair_selfcheck_2405 -- --nocapture 2>&1 | tee /tmp/2405.log
+          if grep -q 'skipping:' /tmp/2405.log; then
+            echo "::error::a #2405 two-key case SKIPPED; the token or label env is wrong."
+            grep 'skipping:' /tmp/2405.log
+            exit 1
+          fi
+          echo "all #2405 two-key cases executed"
+
+      # #2464/#2746 — the attestation seam proof. Self-provisioning: the test
+      # creates its own throwaway token in a private SOFTHSM2_CONF tokendir,
+      # generates a never-extractable in-token ed25519 key, resolves the
+      # signer through load_oracle_signer's env contract, and verifies the
+      # attestation through the node's registry gate. It has NO enable-gate
+      # by design: if the softhsm2 module is absent it FAILS, naming every
+      # probed path — an absent module must never render as a green run.
+      - name: cargo test -p wrfcoin-shared-protocol --features hsm --test hsm_attestation_seam_2464 (attestation seam)
+        run: |
+          cargo test --locked -p wrfcoin-shared-protocol --features hsm \
+            --test hsm_attestation_seam_2464 -- --nocapture

@@ -1,0 +1,102 @@
+## Computable NFTs and the Proof of Useful Analysis (PoUA) Protocol
+
+### Overview
+
+Wrfcoin introduces a novel mechanism for validating and rewarding contributions to decentralized knowledge through **Computable NFTs**. These NFTs are self-contained, verifiable artifacts of analysis that function as the fundamental unit of Wrfcoin's "Proof of Useful Work" system — here reimagined as **Proof of Useful Analysis (PoUA)**.
+
+Each Computable NFT represents a submission of analytical work such as forecasts, data visualizations, or predictive models. These NFTs are minted upon task completion and undergo a verification phase before earning WRF token rewards.
+
+---
+
+### Structure of a Computable NFT
+
+Each Computable NFT includes the following components:
+
+* **Input Data Hashes**: Secure references to datasets used (e.g., IPFS/Filecoin links).
+* **Executable Code**: The logic used to generate the analysis (e.g., Python script, AI model weights).
+* **Outputs**: Forecasts, visualizations, or derived data results.
+* **Metadata**: Task type, tags (climate, RWA, etc.), author ID, timestamps.
+* **Provenance**: Record of agents and plug-ins used in analysis.
+* **Verification Status**: Signature hashes and validator feedback.
+* **Engagement Logs**: Viewership metrics, reuse in other tasks, endorsements.
+
+---
+
+### Lifecycle of a Computable NFT
+
+1. **Submission Phase**
+
+   * A user or AI agent initiates an analysis task and routes it through Wrfcoin's modular plug-in network.
+   * Upon completion, results are packaged into a Computable NFT.
+
+2. **Verification Phase**
+
+   * Other miners or validators re-run or cross-check the analysis.
+   * Validators provide endorsements, challenge errors, or confirm accuracy.
+
+3. **Reward Phase**
+
+   * Once verified, the NFT is marked eligible for WRF token emission.
+   * Rewards are split between fixed and variable components.
+
+---
+
+### Reward Model: Fixed + Dynamic Hybrid
+
+#### Fixed Rewards (Core Functionality)
+
+Wrfcoin sets aside emissions for high-utility tasks, such as:
+
+* 1–14 day global weather forecasts
+* Air quality reports
+* RWA yield tracking
+* Water quality analysis
+
+These tasks receive a **baseline reward** from the network’s minting schedule to ensure continuity and global service.
+
+#### Dynamic Rewards (Innovation & Engagement)
+
+Additional rewards are determined by:
+
+* **Viewership Score**: Authenticated views and interactions
+* **Impact Score**: Reuse by other agents or DAO adoption
+* **Accuracy Bonus**: Validated performance over time
+* **Community Endorsements**: Likes, shares, DAO votes
+
+This dynamic component encourages contributors to innovate and promote their work.
+
+---
+
+### Incentivizing Innovation
+
+The system allows anyone to submit new types of analysis — whether or not they’re part of the core utility layer. If their work gains traction through:
+
+* Validator support
+* Community attention
+* Measurable accuracy
+
+Then they earn proportionally, ensuring a meritocratic and extensible analytics ecosystem.
+
+---
+
+### Technical Implications
+
+Computable NFTs can:
+
+* Be queried, forked, and re-used
+* Serve as agent memory for future tasks
+* Be staked on (e.g., predictions markets)
+* Anchor provenance across interoperable plug-ins
+
+Future upgrades may include:
+
+* **NFT DNA**: Track lineages of derived analysis
+* **DAO Promotion System**: Let the community vote to upgrade NFTs to core utility status
+* **ZK Verification**: Privacy-preserving accuracy proof
+* **Cross-chain anchoring**: Trusted outputs validated across chains
+
+---
+
+### Conclusion
+
+Computable NFTs enable Wrfcoin to reward real-world intelligence, not just hash power. They embody a fair, transparent, and extensible approach to mining insight — forming the basis of Wrfcoin’s Proof of Useful Analysis protocol. As users and agents submit valuable forecasts and research, their work becomes living artifacts that sustain and grow the ecosystem.

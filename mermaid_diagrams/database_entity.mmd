@@ -1,0 +1,290 @@
+
+erDiagram
+    USERS {
+        uuid id PK
+        varchar email UK
+        varchar username UK
+        varchar password_hash
+        jsonb profile_data
+        boolean email_verified
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    WALLETS {
+        uuid id PK
+        uuid user_id FK
+        varchar address UK
+        varchar type
+        jsonb metadata
+        boolean is_primary
+        timestamp created_at
+    }
+    
+    WEATHER_STATIONS {
+        uuid id PK
+        uuid user_id FK
+        varchar station_id UK
+        varchar name
+        varchar location
+        jsonb coordinates
+        varchar station_type
+        jsonb metadata
+        boolean is_active
+        timestamp created_at
+        timestamp last_seen
+    }
+    
+    WEATHER_DATA {
+        uuid id PK
+        uuid station_id FK
+        timestamp recorded_at
+        decimal temperature
+        decimal humidity
+        decimal pressure
+        decimal wind_speed
+        decimal wind_direction
+        decimal rainfall
+        jsonb raw_data
+        varchar data_hash
+        boolean validated
+        timestamp created_at
+    }
+    
+    TRANSACTIONS {
+        uuid id PK
+        uuid user_id FK
+        varchar tx_hash UK
+        varchar from_address
+        varchar to_address
+        decimal amount
+        varchar token_type
+        varchar transaction_type
+        jsonb metadata
+        varchar status
+        timestamp block_timestamp
+        timestamp created_at
+    }
+    
+    CARBON_CREDITS {
+        uuid id PK
+        uuid issuer_id FK
+        varchar credit_id UK
+        decimal amount
+        varchar project_name
+        varchar verification_standard
+        jsonb metadata
+        varchar status
+        timestamp issuance_date
+        timestamp expiry_date
+        timestamp created_at
+    }
+    
+    GOVERNANCE_PROPOSALS {
+        uuid id PK
+        uuid proposer_id FK
+        varchar title
+        text description
+        varchar proposal_type
+        jsonb parameters
+        varchar status
+        decimal votes_for
+        decimal votes_against
+        timestamp voting_start
+        timestamp voting_end
+        timestamp execution_date
+        timestamp created_at
+    }
+    
+    YIELD_POSITIONS {
+        uuid id PK
+        uuid user_id FK
+        varchar pool_address
+        varchar token_pair
+        decimal staked_amount
+        decimal rewards_earned
+        decimal apr
+        jsonb metadata
+        timestamp staked_at
+        timestamp last_harvest
+    }
+    
+    IOT_DEVICES {
+        uuid id PK
+        uuid user_id FK
+        varchar device_id UK
+        varchar device_type
+        varchar manufacturer
+        varchar model
+        jsonb configuration
+        varchar status
+        timestamp last_heartbeat
+        timestamp created_at
+    }
+    
+    COMPUTE_TASKS {
+        uuid id PK
+        uuid requester_id FK
+        uuid executor_id FK
+        varchar task_type
+        jsonb task_data
+        jsonb result_data
+        varchar status
+        decimal compute_cost
+        timestamp submitted_at
+        timestamp completed_at
+        timestamp created_at
+    }
+    
+    STORAGE_OBJECTS {
+        uuid id PK
+        uuid user_id FK
+        varchar object_hash UK
+        varchar file_name
+        bigint file_size
+        varchar mime_type
+        varchar storage_provider
+        varchar storage_url
+        jsonb metadata
+        timestamp uploaded_at
+        timestamp expires_at
+    }
+    
+    CONSENSUS_BLOCKS {
+        uuid id PK
+        bigint block_number UK
+        varchar block_hash UK
+        varchar previous_hash
+        varchar merkle_root
+        jsonb transactions
+        decimal difficulty
+        timestamp block_timestamp
+        varchar miner_address
+        decimal block_reward
+        timestamp created_at
+    }
+    
+    CROSS_CHAIN_BRIDGES {
+        uuid id PK
+        uuid user_id FK
+        varchar source_chain
+        varchar destination_chain
+        varchar source_tx_hash
+        varchar destination_tx_hash
+        decimal amount
+        varchar token_address
+        varchar status
+        jsonb metadata
+        timestamp initiated_at
+        timestamp completed_at
+    }
+    
+    ORACLE_FEEDS {
+        uuid id PK
+        varchar feed_name UK
+        varchar data_type
+        jsonb feed_data
+        varchar source_url
+        decimal confidence_score
+        timestamp last_updated
+        varchar status
+        timestamp created_at
+    }
+    
+    REWARDS_DISTRIBUTIONS {
+        uuid id PK
+        uuid user_id FK
+        varchar reward_type
+        decimal amount
+        varchar source_activity
+        jsonb calculation_data
+        varchar status
+        timestamp earned_at
+        timestamp distributed_at
+        timestamp created_at
+    }
+    
+    SECURITY_AUDIT_LOGS {
+        uuid id PK
+        uuid user_id FK
+        varchar action_type
+        varchar resource_type
+        jsonb action_data
+        varchar ip_address
+        varchar user_agent
+        varchar risk_level
+        timestamp performed_at
+        timestamp created_at
+    }
+    
+    API_RATE_LIMITS {
+        uuid id PK
+        uuid user_id FK
+        varchar endpoint
+        integer request_count
+        integer limit_threshold
+        timestamp window_start
+        timestamp window_end
+        boolean limit_exceeded
+        timestamp created_at
+    }
+    
+    NOTIFICATIONS {
+        uuid id PK
+        uuid user_id FK
+        varchar notification_type
+        varchar title
+        text message
+        jsonb metadata
+        boolean is_read
+        varchar priority
+        timestamp sent_at
+        timestamp read_at
+        timestamp created_at
+    }
+    
+    SYSTEM_CONFIGS {
+        varchar key PK
+        jsonb value
+        varchar description
+        varchar config_type
+        boolean is_sensitive
+        timestamp updated_at
+        varchar updated_by
+    }
+    
+    ANALYTICS_EVENTS {
+        uuid id PK
+        uuid user_id FK
+        varchar event_type
+        varchar event_category
+        jsonb event_data
+        varchar session_id
+        varchar ip_address
+        varchar user_agent
+        timestamp occurred_at
+        timestamp created_at
+    }
+    
+    %% Primary relationships
+    USERS ||--o{ WALLETS : owns
+    USERS ||--o{ WEATHER_STATIONS : operates
+    USERS ||--o{ TRANSACTIONS : initiates
+    USERS ||--o{ CARBON_CREDITS : issues
+    USERS ||--o{ GOVERNANCE_PROPOSALS : proposes
+    USERS ||--o{ YIELD_POSITIONS : stakes
+    USERS ||--o{ IOT_DEVICES : manages
+    USERS ||--o{ COMPUTE_TASKS : requests
+    USERS ||--o{ STORAGE_OBJECTS : uploads
+    USERS ||--o{ CROSS_CHAIN_BRIDGES : initiates
+    USERS ||--o{ REWARDS_DISTRIBUTIONS : earns
+    USERS ||--o{ SECURITY_AUDIT_LOGS : generates
+    USERS ||--o{ API_RATE_LIMITS : subject_to
+    USERS ||--o{ NOTIFICATIONS : receives
+    USERS ||--o{ ANALYTICS_EVENTS : triggers
+    
+    %% Secondary relationships
+    WEATHER_STATIONS ||--o{ WEATHER_DATA : produces
+    COMPUTE_TASKS }o--|| USERS : executed_by
+    IOT_DEVICES ||--o{ WEATHER_DATA : generates
+    CONSENSUS_BLOCKS ||--o{ TRANSACTIONS : contains

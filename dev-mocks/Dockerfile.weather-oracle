@@ -1,0 +1,21 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+RUN npm init -y && \
+    npm install express cors body-parser ws uuid moment
+
+# Create data directories
+RUN mkdir -p /app/data /app/stations /app/history
+
+# Copy mock service files
+COPY weather-oracle-dev.js .
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3010/health || exit 1
+
+EXPOSE 3010 3011
+
+CMD ["node", "weather-oracle-dev.js"]

@@ -1,0 +1,20 @@
+{
+  "backendSource": "README.md records the refreshed origin/main revision",
+  "node": [
+    { "method": "GET", "path": "/chain/block/{height}" },
+    { "method": "GET", "path": "/addresses/{address}" },
+    { "method": "GET", "path": "/transactions/stake/metrics" },
+    { "method": "GET", "path": "/transactions/commit/{commit_id}/status" },
+    { "method": "GET", "path": "/transactions/oracle/status" },
+    { "method": "GET", "path": "/readyz" }
+  ],
+  "backend": [
+    { "service": "wallet", "method": "POST", "path": "/api/wallet/mnemonic/generate", "mount": "/api/wallet", "file": "server/routes/wallet-routes.js", "needle": "router.post('/mnemonic/generate'" },
+    { "service": "wallet", "method": "POST", "path": "/api/wallet/mnemonic/validate", "mount": "/api/wallet", "file": "server/routes/wallet-routes.js", "needle": "router.post('/mnemonic/validate'" },
+    { "service": "api", "method": "GET", "path": "/api/blockchain/status", "mount": "/api/blockchain", "file": "server/routes/blockchain-routes.js", "needle": "router.get('/status'" },
+    { "service": "api", "method": "GET", "path": "/api/blockchain/blocks", "mount": "/api/blockchain", "file": "server/routes/blockchain-routes.js", "needle": "router.get('/blocks'" },
+    { "service": "governance", "method": "GET", "path": "/api/governance/proposals", "mount": "/api/governance", "file": "server/routes/governance-routes.ts", "needle": "router.get('/proposals'" },
+    { "service": "api", "method": "GET", "path": "/api/health", "mount": null, "file": "server/enhanced_unified_api_optimized.ts", "needle": "path === '/api/health' && req.method === 'GET'" }
+  ],
+  "notWired": ["list_hardware_wallets", "submit_weather_data", "query_weather_data", "get_weather_security_status", "get_block", "get_transaction", "get_mining_rewards", "create_proposal", "vote_on_proposal", "weather-latest"]
+}

@@ -1,0 +1,109 @@
+version: '3.8'
+
+# WRFCoin MVP Docker Compose
+# Minimal set of services for the core value loop:
+# Contributors submit weather data -> PoP validates -> WRF tokens earned
+
+services:
+  wrfcoin-core:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.core
+    container_name: wrfcoin-core
+    restart: unless-stopped
+    ports:
+      - '4001:4001'
+    environment:
+      NODE_ENV: production
+      PORT: '4001'
+      MVP_MODE: 'true'
+      DATABASE_URL: "postgres://wrfcoin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/wrfcoin"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-wrfcoin_dev}@redis:6379
+      # WRFCOIN_OPERATOR_TOKEN: ${WRFCOIN_OPERATOR_TOKEN}  # Required unless ALLOW_NO_AUTH=1
+      # WRFCOIN_ALLOW_NO_AUTH: '1'  # Dev only — remove for production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - wrfcoin-mvp
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  weather-service:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.weather
+    container_name: wrfcoin-weather
+    restart: unless-stopped
+    ports:
+      - '8001:8001'
+    environment:
+      SERVICE_NAME: weather-service
+      PORT: '8001'
+      MVP_MODE: 'true'
+      DATABASE_URL: "postgres://wrfcoin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/wrfcoin"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-wrfcoin_dev}@redis:6379
+    depends_on:
+      wrfcoin-core:
+        condition: service_healthy
+    networks:
+      - wrfcoin-mvp
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: wrfcoin-postgres
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:5432:5432'
+    environment:
+      POSTGRES_USER: wrfcoin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: wrfcoin
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - wrfcoin-mvp
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wrfcoin']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: wrfcoin-redis
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6379:6379'
+    command: redis-server --requirepass ${REDIS_PASSWORD:-wrfcoin_dev} --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - wrfcoin-mvp
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--no-auth-warning', '-a', '${REDIS_PASSWORD:-wrfcoin_dev}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  wrfcoin-mvp:
+    driver: bridge
+
+volumes:
+  postgres-data: {}
+  redis-data: {}

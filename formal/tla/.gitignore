@@ -1,0 +1,5 @@
+# TLC scratch output: model-checking state queues and fingerprint sets.
+# Regenerated on every run, hundreds of MB on large configurations.
+states/
+*.st
+*.fp

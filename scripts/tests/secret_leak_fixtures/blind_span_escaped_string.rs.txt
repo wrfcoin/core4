@@ -1,0 +1,15 @@
+// #3284: the p2p_events.rs shape. A string literal that CONTAINS sink text
+// (`format!(\"...`) used to open a macro span from inside the string. The
+// span never closed, so every later `format!` in the file was skipped, and the
+// allowlist marker further down suppressed the whole EOF-length span.
+fn source_needles() -> [&'static str; 1] {
+    ["AuthoritativeSyncRejectionAttribution::PeerInvalid,\n    format!(\"failed to deserialize synced block"]
+}
+
+fn leak(private_key: &str) -> String {
+    format!("key={private_key}")
+}
+
+fn unrelated(height: u64) -> String {
+    format!("height={height}") // secret-leak-ok: unrelated, legitimately allowlisted line below the leak
+}

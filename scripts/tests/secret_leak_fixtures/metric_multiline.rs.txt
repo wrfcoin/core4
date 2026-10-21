@@ -1,0 +1,7 @@
+fn record(counter: &Counter, signing_key: &str) {
+    counter
+        .with_label_values(
+            &[signing_key],
+        )
+        .inc();
+}

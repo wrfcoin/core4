@@ -1,0 +1,1190 @@
+# NOT the testnet API: this spec does not describe the routes the testnet node (launch_api) serves.
+# The hand-derived node contract is docs/api/launch-api.openapi.yaml (core4#3245); see
+# docs/api/generated-code-inventory.md (core4#2995). Do not read operations below as available on the testnet.
+openapi: 3.0.3
+info:
+  title: Wrfcoin Blockchain Platform API
+  description: |
+    Comprehensive API for the Wrfcoin climate-focused blockchain platform.
+    Includes weather data collection, smart contracts, governance, and
+    environmental impact tracking.
+  version: 1.0.0
+  contact:
+    name: Wrfcoin API Support
+    email: api@wrfcoin.com
+    url: https://docs.wrfcoin.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: https://wrfcoin.com/terms
+
+servers:
+  - url: https://api.wrfcoin.com/v1
+    description: Production server
+  - url: https://staging-api.wrfcoin.com/v1
+    description: Staging server
+  - url: http://localhost:3001
+    description: Local development server
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+
+tags:
+  - name: Blockchain
+    description: Core blockchain operations
+  - name: Smart Contracts
+    description: Smart contract deployment and execution
+  - name: Governance
+    description: DAO governance and voting
+  - name: Weather Data
+    description: Environmental data collection and rewards
+  - name: Wallet
+    description: Wallet and key management
+  - name: NFT
+    description: Computational and environmental NFTs
+  - name: IoT
+    description: IoT sensor network management
+
+paths:
+  # Blockchain Operations
+  /api/blockchain/status:
+    get:
+      tags: [Blockchain]
+      summary: Get blockchain status
+      description: Returns current blockchain status including block height, network health, and consensus state
+      responses:
+        '200':
+          description: Blockchain status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainStatus'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/blockchain/blocks:
+    get:
+      tags: [Blockchain]
+      summary: Get blockchain blocks
+      description: Retrieve a list of blockchain blocks with pagination
+      parameters:
+        - name: limit
+          in: query
+          description: Number of blocks to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: offset
+          in: query
+          description: Number of blocks to skip
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: order
+          in: query
+          description: Sort order
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Blocks retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Block'
+                  total:
+                    type: integer
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /api/blockchain/blocks/{blockHash}:
+    get:
+      tags: [Blockchain]
+      summary: Get block by hash
+      parameters:
+        - name: blockHash
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{64}$'
+      responses:
+        '200':
+          description: Block retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Block'
+        '404':
+          description: Block not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/blockchain/transactions/{txHash}:
+    get:
+      tags: [Blockchain]
+      summary: Get transaction by hash
+      parameters:
+        - name: txHash
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{64}$'
+      responses:
+        '200':
+          description: Transaction retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+
+  /state/snapshot:
+    get:
+      tags: [Blockchain]
+      summary: Get current state snapshot summary
+      description: Retrieve the current height, state root, published snapshot root, and total number of canonical snapshot entries.
+      responses:
+        '200':
+          description: Snapshot summary retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSnapshotSummary'
+
+  /state/snapshot/entries:
+    get:
+      tags: [Blockchain]
+      summary: List paginated snapshot entries
+      description: Retrieve canonical state snapshot entries in deterministic key order.
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          description: Number of entries to skip before returning results
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of entries to return per page (max 512)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 512
+            default: 100
+      responses:
+        '200':
+          description: Snapshot entries retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSnapshotEntriesResponse'
+        '400':
+          description: Invalid pagination parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /state/snapshot/proof/{key_hex}:
+    get:
+      tags: [Blockchain]
+      summary: Get a snapshot inclusion proof for a key
+      description: Retrieve the Merkle inclusion proof required to verify a specific canonical snapshot key against the published snapshot root.
+      parameters:
+        - name: key_hex
+          in: path
+          required: true
+          description: Hex-encoded snapshot key bytes
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]+$'
+      responses:
+        '200':
+          description: Snapshot inclusion proof retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSnapshotProofResponse'
+        '400':
+          description: Invalid key encoding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Snapshot key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /state/snapshot/verify-inclusion:
+    post:
+      tags: [Blockchain]
+      summary: Verify snapshot inclusion proof
+      description: Verify a concrete key/value pair against a published snapshot root using a retrieved inclusion proof. The caller must provide the raw value bytes as `value_hex`; the proof itself only carries the value hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnapshotVerifyInclusionRequest'
+      responses:
+        '200':
+          description: Snapshot inclusion proof verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotVerifyInclusionResponse'
+        '400':
+          description: Invalid key or value encoding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # Smart Contract Operations
+  /api/contracts/deploy:
+    post:
+      tags: [Smart Contracts]
+      summary: Deploy smart contract
+      description: Deploy a new smart contract to the blockchain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractDeployRequest'
+      responses:
+        '200':
+          description: Contract deployed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDeployResponse'
+        '400':
+          description: Invalid contract code or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/contracts/call:
+    post:
+      tags: [Smart Contracts]
+      summary: Call contract function
+      description: Execute a smart contract function
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractCallRequest'
+      responses:
+        '200':
+          description: Contract function executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractCallResponse'
+
+  /api/contracts/query:
+    post:
+      tags: [Smart Contracts]
+      summary: Query contract state
+      description: Query smart contract state without modifying it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractQueryRequest'
+      responses:
+        '200':
+          description: Contract state queried successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractQueryResponse'
+
+  /api/contracts/estimate-gas:
+    post:
+      tags: [Smart Contracts]
+      summary: Estimate gas for contract call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractCallRequest'
+      responses:
+        '200':
+          description: Gas estimate calculated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gasEstimate:
+                    type: integer
+                    description: Estimated gas units required
+
+  # Governance
+  /api/governance/proposals:
+    get:
+      tags: [Governance]
+      summary: List governance proposals
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, pending, executed, defeated]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Proposals listed successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Proposal'
+    post:
+      tags: [Governance]
+      summary: Create new proposal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProposalRequest'
+      responses:
+        '201':
+          description: Proposal created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+
+  /api/governance/proposals/{proposalId}/vote:
+    post:
+      tags: [Governance]
+      summary: Vote on proposal
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoteRequest'
+      responses:
+        '200':
+          description: Vote cast successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoteResponse'
+
+  # Weather Data
+  /api/weather/submit:
+    post:
+      tags: [Weather Data]
+      summary: Submit weather data
+      description: Submit environmental data from weather stations
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WeatherDataSubmission'
+      responses:
+        '200':
+          description: Weather data submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherSubmissionResponse'
+        '400':
+          description: Invalid weather data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/weather/data:
+    get:
+      tags: [Weather Data]
+      summary: Get weather data
+      parameters:
+        - name: station_id
+          in: query
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: data_type
+          in: query
+          schema:
+            type: string
+            enum: [temperature, humidity, pressure, wind, precipitation]
+      responses:
+        '200':
+          description: Weather data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WeatherData'
+
+  # Wallet Operations
+  /api/wallet/generate-mnemonic:
+    post:
+      tags: [Wallet]
+      summary: Generate mnemonic phrase
+      responses:
+        '200':
+          description: Mnemonic generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mnemonic:
+                    type: string
+                    description: BIP39 mnemonic phrase
+                  entropy:
+                    type: string
+                    description: Entropy used for generation
+
+  /api/wallet/validate-mnemonic:
+    post:
+      tags: [Wallet]
+      summary: Validate mnemonic phrase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mnemonic:
+                  type: string
+                  description: BIP39 mnemonic phrase to validate
+              required: [mnemonic]
+      responses:
+        '200':
+          description: Mnemonic validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  strength:
+                    type: string
+                    enum: [weak, medium, strong]
+
+  # Hardware Wallet
+  /api/wallet/hardware/devices:
+    get:
+      tags: [Wallet]
+      summary: List connected hardware wallets
+      responses:
+        '200':
+          description: Hardware devices listed
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HardwareDevice'
+
+  /api/wallet/hardware/sign:
+    post:
+      tags: [Wallet]
+      summary: Sign transaction with hardware wallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HardwareSignRequest'
+      responses:
+        '200':
+          description: Transaction signed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HardwareSignResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+        code:
+          type: string
+          description: Error code
+        details:
+          type: object
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+      required: [error, code]
+
+    BlockchainStatus:
+      type: object
+      properties:
+        blockHeight:
+          type: integer
+          description: Current block height
+        lastBlockHash:
+          type: string
+          description: Hash of the most recent block
+        networkHashRate:
+          type: number
+          description: Network hash rate in H/s
+        difficulty:
+          type: number
+          description: Current mining difficulty
+        consensusState:
+          type: string
+          enum: [healthy, degraded, failed]
+        peerCount:
+          type: integer
+          description: Number of connected peers
+        syncStatus:
+          type: string
+          enum: [synced, syncing, out_of_sync]
+        uptimeSeconds:
+          type: integer
+          description: Node uptime in seconds
+
+    Block:
+      type: object
+      properties:
+        hash:
+          type: string
+          description: Block hash
+        index:
+          type: integer
+          description: Block number
+        previousHash:
+          type: string
+          description: Previous block hash
+        timestamp:
+          type: integer
+          description: Block timestamp
+        merkleRoot:
+          type: string
+          description: Merkle root of transactions
+        nonce:
+          type: integer
+          description: Mining nonce
+        difficulty:
+          type: number
+          description: Block difficulty
+        transactionCount:
+          type: integer
+          description: Number of transactions in block
+        size:
+          type: integer
+          description: Block size in bytes
+        gasUsed:
+          type: integer
+          description: Total gas used in block
+        gasLimit:
+          type: integer
+          description: Block gas limit
+
+    Transaction:
+      type: object
+      properties:
+        hash:
+          type: string
+          description: Transaction hash
+        from:
+          type: string
+          description: Sender address
+        to:
+          type: string
+          description: Recipient address
+        value:
+          type: string
+          description: Transaction value in wei
+        gas:
+          type: integer
+          description: Gas limit
+        gasPrice:
+          type: string
+          description: Gas price in wei
+        gasUsed:
+          type: integer
+          description: Gas used
+        nonce:
+          type: integer
+          description: Transaction nonce
+        blockHash:
+          type: string
+          description: Block hash containing transaction
+        blockNumber:
+          type: integer
+          description: Block number
+        transactionIndex:
+          type: integer
+          description: Transaction index in block
+        status:
+          type: string
+          enum: [pending, confirmed, failed]
+        timestamp:
+          type: integer
+          description: Transaction timestamp
+
+    StateSnapshotSummary:
+      type: object
+      properties:
+        height:
+          type: integer
+          format: uint64
+          description: Chain height the snapshot was built from
+        state_root_hex:
+          type: string
+          description: Hex-encoded state root committed by the node
+        snapshot_root_hex:
+          type: string
+          description: Hex-encoded Merkle root of the canonical snapshot entry set
+        entry_count:
+          type: integer
+          description: Total number of canonical snapshot entries
+      required: [height, state_root_hex, snapshot_root_hex, entry_count]
+
+    SnapshotEntry:
+      type: object
+      properties:
+        key_hex:
+          type: string
+          description: Hex-encoded canonical snapshot key bytes
+        value_hash:
+          type: string
+          description: Hash of the raw value bytes for the key
+        leaf_hash:
+          type: string
+          description: Domain-separated snapshot leaf hash for the key/value hash pair
+      required: [key_hex, value_hash, leaf_hash]
+
+    SnapshotProofNode:
+      type: object
+      properties:
+        hash:
+          type: string
+          description: Sibling node hash at this Merkle tree level
+        sibling_on_left:
+          type: boolean
+          description: Whether the sibling hash must be placed on the left when re-hashing this level
+      required: [hash, sibling_on_left]
+
+    SnapshotInclusionProof:
+      type: object
+      properties:
+        key_hex:
+          type: string
+          description: Hex-encoded canonical snapshot key bytes
+        value_hash:
+          type: string
+          description: Hash of the raw value bytes expected for verification
+        leaf_hash:
+          type: string
+          description: Domain-separated leaf hash for the key/value hash pair
+        index:
+          type: integer
+          description: Zero-based index of the leaf in the canonical snapshot ordering
+        siblings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotProofNode'
+        snapshot_root_hex:
+          type: string
+          description: Expected snapshot Merkle root after replaying the proof path
+      required: [key_hex, value_hash, leaf_hash, index, siblings, snapshot_root_hex]
+
+    StateSnapshotEntriesResponse:
+      type: object
+      properties:
+        height:
+          type: integer
+          format: uint64
+        state_root_hex:
+          type: string
+        snapshot_root_hex:
+          type: string
+        offset:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotEntry'
+      required: [height, state_root_hex, snapshot_root_hex, offset, limit, total, entries]
+
+    StateSnapshotProofResponse:
+      type: object
+      properties:
+        height:
+          type: integer
+          format: uint64
+        state_root_hex:
+          type: string
+        proof:
+          $ref: '#/components/schemas/SnapshotInclusionProof'
+      required: [height, state_root_hex, proof]
+
+    SnapshotVerifyInclusionRequest:
+      type: object
+      properties:
+        proof:
+          $ref: '#/components/schemas/SnapshotInclusionProof'
+        key_hex:
+          type: string
+          description: Hex-encoded raw key bytes being verified
+        value_hex:
+          type: string
+          description: Hex-encoded raw value bytes being verified
+      required: [proof, key_hex, value_hex]
+
+    SnapshotVerifyInclusionResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          description: Whether the provided key/value pair matches the proof and published snapshot root
+      required: [valid]
+
+    ContractDeployRequest:
+      type: object
+      properties:
+        contractCode:
+          type: string
+          description: Base64 encoded WASM contract code
+        constructorArgs:
+          type: array
+          items:
+            type: string
+          description: Constructor arguments
+        gasLimit:
+          type: integer
+          description: Gas limit for deployment
+        gasPrice:
+          type: string
+          description: Gas price in wei
+      required: [contractCode, gasLimit, gasPrice]
+
+    ContractDeployResponse:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+          description: Deployed contract address
+        transactionHash:
+          type: string
+          description: Deployment transaction hash
+        gasUsed:
+          type: integer
+          description: Gas used for deployment
+
+    ContractCallRequest:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+          description: Contract address
+        functionName:
+          type: string
+          description: Function to call
+        parameters:
+          type: array
+          items: {}
+          description: Function parameters
+        gasLimit:
+          type: integer
+          description: Gas limit
+        gasPrice:
+          type: string
+          description: Gas price in wei
+        value:
+          type: string
+          description: ETH value to send (optional)
+          default: '0'
+      required: [contractAddress, functionName, gasLimit, gasPrice]
+
+    ContractCallResponse:
+      type: object
+      properties:
+        transactionHash:
+          type: string
+          description: Transaction hash
+        gasUsed:
+          type: integer
+          description: Gas used
+        logs:
+          type: array
+          items:
+            type: object
+          description: Event logs emitted
+
+    ContractQueryRequest:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+          description: Contract address
+        functionName:
+          type: string
+          description: Function to query
+        parameters:
+          type: array
+          items: {}
+          description: Function parameters
+      required: [contractAddress, functionName]
+
+    ContractQueryResponse:
+      type: object
+      properties:
+        result:
+          description: Function return value
+        gasEstimate:
+          type: integer
+          description: Estimated gas for this call
+
+    Proposal:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Proposal ID
+        title:
+          type: string
+          description: Proposal title
+        description:
+          type: string
+          description: Proposal description
+        proposer:
+          type: string
+          description: Proposer address
+        status:
+          type: string
+          enum: [active, pending, executed, defeated, expired]
+        votesFor:
+          type: string
+          description: Total votes in favor
+        votesAgainst:
+          type: string
+          description: Total votes against
+        votesAbstain:
+          type: string
+          description: Total abstain votes
+        startTime:
+          type: integer
+          description: Voting start timestamp
+        endTime:
+          type: integer
+          description: Voting end timestamp
+        executionTime:
+          type: integer
+          description: Execution timestamp (if applicable)
+        quorum:
+          type: string
+          description: Required quorum
+        threshold:
+          type: string
+          description: Approval threshold
+
+    CreateProposalRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Proposal title
+        description:
+          type: string
+          description: Proposal description
+        actions:
+          type: array
+          items:
+            type: object
+          description: Actions to execute if passed
+        votingPeriod:
+          type: integer
+          description: Voting period in seconds
+      required: [title, description, actions, votingPeriod]
+
+    VoteRequest:
+      type: object
+      properties:
+        vote:
+          type: string
+          enum: [for, against, abstain]
+        votingPower:
+          type: string
+          description: Voting power to use
+        reason:
+          type: string
+          description: Optional voting reason
+      required: [vote]
+
+    VoteResponse:
+      type: object
+      properties:
+        transactionHash:
+          type: string
+          description: Vote transaction hash
+        votingPower:
+          type: string
+          description: Voting power used
+        timestamp:
+          type: integer
+          description: Vote timestamp
+
+    WeatherDataSubmission:
+      type: object
+      properties:
+        stationId:
+          type: string
+          description: Weather station identifier
+        timestamp:
+          type: integer
+          description: Data collection timestamp
+        location:
+          $ref: '#/components/schemas/Location'
+        measurements:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeatherMeasurement'
+        signature:
+          type: string
+          description: Data integrity signature
+      required: [stationId, timestamp, location, measurements]
+
+    WeatherSubmissionResponse:
+      type: object
+      properties:
+        submissionId:
+          type: string
+          description: Unique submission ID
+        status:
+          type: string
+          enum: [accepted, rejected, pending_validation]
+        rewardAmount:
+          type: string
+          description: WRF token reward amount
+        validationScore:
+          type: number
+          description: Data quality score (0-1)
+        transactionHash:
+          type: string
+          description: Reward transaction hash
+
+    WeatherData:
+      type: object
+      properties:
+        id:
+          type: string
+        stationId:
+          type: string
+        timestamp:
+          type: integer
+        location:
+          $ref: '#/components/schemas/Location'
+        measurement:
+          $ref: '#/components/schemas/WeatherMeasurement'
+        qualityScore:
+          type: number
+        rewardAmount:
+          type: string
+
+    Location:
+      type: object
+      properties:
+        latitude:
+          type: number
+          description: Latitude in decimal degrees
+        longitude:
+          type: number
+          description: Longitude in decimal degrees
+        altitude:
+          type: number
+          description: Altitude in meters
+        accuracy:
+          type: number
+          description: Location accuracy in meters
+      required: [latitude, longitude]
+
+    WeatherMeasurement:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            [
+              temperature,
+              humidity,
+              pressure,
+              wind_speed,
+              wind_direction,
+              precipitation,
+              visibility,
+              uv_index,
+            ]
+        value:
+          type: number
+          description: Measurement value
+        unit:
+          type: string
+          description: Unit of measurement
+        uncertainty:
+          type: number
+          description: Measurement uncertainty
+      required: [type, value, unit]
+
+    HardwareDevice:
+      type: object
+      properties:
+        deviceId:
+          type: string
+          description: Unique device identifier
+        deviceType:
+          type: string
+          enum: [ledger, trezor, yubihsm, secure_enclave, pkcs11]
+        deviceName:
+          type: string
+          description: Human-readable device name
+        firmwareVersion:
+          type: string
+          description: Device firmware version
+        isConnected:
+          type: boolean
+          description: Connection status
+        isAuthenticated:
+          type: boolean
+          description: Authentication status
+        supportedFeatures:
+          type: array
+          items:
+            type: string
+          description: List of supported features
+
+    HardwareSignRequest:
+      type: object
+      properties:
+        deviceId:
+          type: string
+          description: Hardware device ID
+        transactionHash:
+          type: string
+          description: Transaction hash to sign
+        derivationPath:
+          type: string
+          description: BIP32 derivation path
+        displayOnDevice:
+          type: boolean
+          description: Show transaction on device screen
+          default: true
+        requireConfirmation:
+          type: boolean
+          description: Require user confirmation
+          default: true
+      required: [deviceId, transactionHash, derivationPath]
+
+    HardwareSignResponse:
+      type: object
+      properties:
+        signature:
+          type: string
+          description: Transaction signature
+        publicKey:
+          type: string
+          description: Public key used for signing
+        deviceConfirmed:
+          type: boolean
+          description: Whether user confirmed on device
+        timestamp:
+          type: integer
+          description: Signing timestamp
+
+    Pagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Items per page
+        offset:
+          type: integer
+          description: Items to skip
+        total:
+          type: integer
+          description: Total number of items
+        hasNext:
+          type: boolean
+          description: Whether there are more items
+        hasPrevious:
+          type: boolean
+          description: Whether there are previous items

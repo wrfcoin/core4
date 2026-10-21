@@ -1,0 +1,13 @@
+[package]
+name = "wrfcoin-geo-grid"
+version = "0.1.0"
+edition = "2021"
+description = "Spatial grid/cell types for WRFCoin weather data indexing"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

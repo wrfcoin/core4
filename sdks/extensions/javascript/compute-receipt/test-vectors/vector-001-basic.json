@@ -1,0 +1,23 @@
+{
+  "description": "compute-receipt fixture: vector-001-basic",
+  "fixture_version": 1,
+  "receipt": {
+    "task_id": "task-001",
+    "worker_id": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "work_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "work_factor": 1000,
+    "completed_at": 1700000000,
+    "nonce": "nonce-001",
+    "signature": "e367c89078662bb2b6fd2bc010eeafe4cf257cd2f1bd9322d76ab4521c57a039fea46ef215171fb910316d82f381d2fe6de0d7c0ee90a73003792c26158e6f0c"
+  },
+  "signing_message": "wrfcoin-sign-v1|wrfcoin.compute_receipt.v1|wrfcoin-main|mainnet|8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c|1700000000|nonce-001|7670f1733718d01b440cff378c888c9383660a19ae5b265c9b78edcae8780115",
+  "inputs": {
+    "task_id": "task-001",
+    "worker_secret_key": "0101010101010101010101010101010101010101010101010101010101010101",
+    "worker_public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "work_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "work_factor": 1000,
+    "completed_at": 1700000000,
+    "nonce": "nonce-001"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "data": {
+    "chainId": 1024,
+    "networkName": "wrfcoin-testnet",
+    "consensusType": "PoU"
+  }
+}

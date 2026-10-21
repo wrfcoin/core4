@@ -1,0 +1,75 @@
+
+flowchart TD
+    subgraph "🌍 Carbon Credit Lifecycle"
+        A[Project Registration<br/>Environmental Impact Assessment]
+        B[Activity Monitoring<br/>IoT Sensors | Satellite Data]
+        C[Data Collection<br/>Weather Stations | Air Quality]
+        D[Verification<br/>Third-party Auditing]
+        E[Credit Issuance<br/>Blockchain Tokenization]
+        F[Credit Trading<br/>Marketplace Exchange]
+        G[Credit Retirement<br/>Offset Fulfillment]
+    end
+    
+    subgraph "📊 Verification Process"
+        V1[Data Validation<br/>Quality Checks | Anomaly Detection]
+        V2[Calculation<br/>Carbon Reduction Algorithms]
+        V3[Third-party Audit<br/>Independent Verification]
+        V4[Certification<br/>Standard Compliance]
+    end
+    
+    subgraph "💰 Trading Platform"
+        T1[Listing<br/>Credit Marketplace]
+        T2[Price Discovery<br/>AMM | Order Book]
+        T3[Trade Execution<br/>Smart Contract Settlement]
+        T4[Ownership Transfer<br/>Blockchain Recording]
+    end
+    
+    subgraph "🏦 DeFi Integration"
+        D1[Credit Staking<br/>Yield Generation]
+        D2[Liquidity Provision<br/>AMM Pools]
+        D3[Derivatives<br/>Futures | Options]
+        D4[Index Tokens<br/>Diversified Exposure]
+    end
+    
+    %% Main workflow
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    
+    %% Verification sub-process
+    C --> V1
+    V1 --> V2
+    V2 --> V3
+    V3 --> V4
+    V4 --> D
+    
+    %% Trading sub-process
+    E --> T1
+    T1 --> T2
+    T2 --> T3
+    T3 --> T4
+    
+    %% DeFi integration
+    T1 --> D1
+    T1 --> D2
+    T2 --> D3
+    T4 --> D4
+    
+    %% Feedback loops
+    G -.-> A
+    V3 -.-> B
+    T3 -.-> V1
+    D4 -.-> T2
+    
+    classDef lifecycle fill:#e8f8f5,stroke:#27ae60,stroke-width:2px
+    classDef verification fill:#ebf3fd,stroke:#3498db,stroke-width:2px
+    classDef trading fill:#fdf2e9,stroke:#f39c12,stroke-width:2px
+    classDef defi fill:#fadbd8,stroke:#e74c3c,stroke-width:2px
+    
+    class A,B,C,D,E,F,G lifecycle
+    class V1,V2,V3,V4 verification
+    class T1,T2,T3,T4 trading
+    class D1,D2,D3,D4 defi

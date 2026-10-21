@@ -1,0 +1,3 @@
+fn load(passphrase: &str) -> anyhow::Result<()> {
+    do_thing().context(format!("unlock with {passphrase}"))
+}

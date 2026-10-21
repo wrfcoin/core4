@@ -1,0 +1,19 @@
+digraph governance_schema {
+    label="Governance & Voting System";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    governance_proposals [label="{governance_proposals|{id (PK)|created_at|updated_at}}"];
+    governance_votes [label="{governance_votes|{id (PK)|proposal_id (FK)|created_at|updated_at}}"];
+    governance_foundation_members [label="{governance_foundation_members|{id (PK)|created_at|updated_at}}"];
+    governance_foundation_actions [label="{governance_foundation_actions|{id (PK)|member_id (FK)|created_at|updated_at}}"];
+    governance_parameters [label="{governance_parameters|{id (PK)|created_at|updated_at}}"];
+    governance_parameter_history [label="{governance_parameter_history|{id (PK)|parameter_id (FK)|created_at|updated_at}}"];
+
+    governance_proposals -> governance_votes [label="1:N"];
+    governance_votes -> governance_proposals [label="N:1"];
+    governance_foundation_members -> governance_foundation_actions [label="1:N"];
+    governance_foundation_actions -> governance_foundation_members [label="N:1"];
+    governance_parameters -> governance_parameter_history [label="1:N"];
+    governance_parameter_history -> governance_parameters [label="N:1"];
+}

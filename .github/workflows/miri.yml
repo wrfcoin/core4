@@ -1,0 +1,141 @@
+name: Miri (parked)
+# NO-AUTOMATIC-TRIGGER: parked — schedule commented out and the workflow
+# gh-disabled (2026-07-31, Actions budget), so no undefined-behaviour check runs on
+# any event today. Register and restore: docs/ci/parked-workflows.txt +
+# docs/ci/reenable-parked-workflows.sh.
+
+# Miri detects undefined behaviour that safe-Rust review does not catch once unsafe, FFI or
+# hand-rolled serialization are involved (#2106). It is an interpreter: expect hours, not
+# minutes.
+#
+# THERE IS DELIBERATELY NO `pull_request` TRIGGER, and adding one would be a mistake.
+#
+# Two reasons, both measured rather than assumed:
+#
+# 1. COST. On GitHub-hosted runners, `cargo miri test -p wrfcoin-shared-protocol` over the
+#    whole crate ran 2h23m before failing (dispatch 29896851781, 06:28:17 -> 08:51:48). A
+#    Kani job in this repo was already cancelled at a 45-minute timeout, and the org Actions
+#    budget has been raised twice. Miri on every PR is not affordable here.
+#
+# 2. HONESTY. Miri used to live in the same workflow as the `// SAFETY:` gate, behind
+#    `if: github.event_name != 'pull_request'`. On a PR the matrix was `skipped` with ZERO
+#    steps — the job name never even expanded past `Miri (${{ matrix.crate }})` — while the
+#    run's overall conclusion was `success`, because the cheap gate had passed. Run
+#    `29892523607` was then cited as proof this gate worked; it had executed nothing.
+#    Now that this workflow has no PR trigger it produces no PR runs, so no PR run can be
+#    mistaken for Miri evidence. The `// SAFETY:` gate lives in unsafe-policy.yml and runs on
+#    PRs under its own name, claiming only what it does.
+#
+# Cite ONLY `schedule` or `workflow_dispatch` runs of this workflow as Miri evidence.
+# See docs/security/UNSAFE_POLICY.md.
+
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: '0 5 * * 1'   # weekly, Monday 05:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  miri:
+    name: Miri (${{ matrix.leg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Cargo PACKAGE names, not directory names. `consensus-engines/` publishes
+          # `wrfcoin-consensus-engines`; the directory name made `cargo pkgid` exit 101 and
+          # that leg could never start (review of #2247).
+          - leg: wrf-primitives
+            package: wrf-primitives
+            filter: ''
+          # The `consensus-engines-ffi` leg was REMOVED with the FFI bridge (#2454). It
+          # filtered on `ffi::`, and with that module gone the filter matches nothing — which
+          # the zero-steps guard below would correctly fail. A leg that can only ever
+          # interpret zero tests is not a gate, so it is deleted rather than left to go red.
+          # Scoped to the modules #2106 names — "primitives, crypto wrappers and
+          # serialization paths" — rather than the whole crate. This is NOT scope-trimming to
+          # manufacture green: a whole-crate run reaches
+          # `shared-protocol/src/consensus/proof_of_publishing.rs:4166`
+          # (`block.transactions.par_iter()`), and rayon's crossbeam-epoch collector trips a
+          # Stacked Borrows violation *inside crossbeam-epoch-0.9.18*, not in WRFCoin code.
+          # That finding is real, but it is a dependency issue outside this story, and a
+          # permanently-red leg would destroy this gate's ability to signal anything at all
+          # (antipattern 16, "red noise that hides real red"). Recorded in UNSAFE_POLICY.md
+          # with the evidence, rather than silently dropped.
+          - leg: shared-protocol-crypto
+            package: wrfcoin-shared-protocol
+            filter: 'crypto::'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install nightly + miri
+        run: |
+          rustup toolchain install nightly --component miri
+          rustup override set nightly
+      # Fail fast and legibly if a matrix entry is not a real package. Without this, a
+      # renamed or mistyped crate surfaces as an opaque cargo error partway through a long
+      # job — which is how the `consensus-engines` typo survived.
+      - name: Verify the matrix package exists
+        run: cargo pkgid -p ${{ matrix.package }}
+      - name: cargo miri test (must execute a non-zero number of tests)
+        # `-Zmiri-disable-isolation` is required, not cosmetic: `Block::new` calls
+        # `Utc::now()`, so every test that constructs a block reaches `clock_gettime`, which
+        # Miri refuses under isolation. Those are hash-determinism tests, not I/O tests —
+        # annotating them all with `#[cfg_attr(miri, ignore)]` would delete most of the
+        # crate's coverage to work around a clock call.
+        #
+        # What this does and does not weaken, stated plainly: isolation governs whether Miri
+        # lets the program reach the host (clock, filesystem, env). Disabling it does NOT
+        # disable the undefined-behaviour checks — Stacked Borrows/aliasing, out-of-bounds,
+        # invalid-value and uninitialised-memory detection all still run, and those are what
+        # #2106 is for. It does mean a test that performs real I/O will now perform it, so
+        # network/HSM-dependent tests must stay behind their existing env gates.
+        #
+        # The ZERO-STEPS GUARD (review of #2247, round 92). `${{ matrix.filter }}` is a test
+        # NAME filter passed to the harness. If it matches nothing, `cargo miri test` prints
+        # `running 0 tests`, exits 0, and the leg is green having interpreted no code at all —
+        # the exact "dispatch executed zero steps" that got a Miri run miscited as evidence.
+        # So we parse the harness's own `running N tests` lines and FAIL the leg when the total
+        # is zero. A leg cannot be green without Miri having actually interpreted a test.
+        env:
+          # Two flags, and they weaken different things. Neither disables UB detection:
+          # Stacked Borrows/aliasing, out-of-bounds, invalid-value and uninitialised-memory
+          # checks all still run, and those are what #2106 exists to catch.
+          #
+          #   -Zmiri-disable-isolation  lets the program reach the host (clock, fs, env).
+          #                             Required: `Block::new` calls `Utc::now()`.
+          #   -Zmiri-ignore-leaks       turns OFF the leak checker at process exit. Required
+          #                             because transitive `scc`/`sdd` lock-free structures
+          #                             defer reclamation, so allocations can legitimately
+          #                             outlive the remaining matrix tests. The retired ffi::
+          #                             leg first demonstrated this limitation; it is no
+          #                             longer a current coverage claim (#2454).
+          #
+          # Stated cost, so nobody reads more into a green run than it carries: LEAK
+          # DETECTION IS OFF. A genuine leak in our own code would not fail this gate.
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+        run: |
+          set -uo pipefail
+          cargo +nightly miri test -p ${{ matrix.package }} --lib ${{ matrix.filter }} \
+            2>&1 | tee miri-out.txt
+          rc=${PIPESTATUS[0]}
+          # Sum every `running N tests` the harness printed (one per test binary).
+          ran=$(grep -oiE 'running [0-9]+ tests?' miri-out.txt | awk '{s+=$2} END{print s+0}')
+          echo "----"
+          echo "leg=${{ matrix.leg }}  miri_exit=$rc  tests_executed=$ran"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Miri reported a failure for ${{ matrix.leg }} (UB, or a genuine test failure)."
+            exit "$rc"
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::Miri executed ZERO tests for ${{ matrix.leg }}: filter '${{ matrix.filter }}' matched no tests. A leg that interprets nothing is vacuous green — the #2106 zero-steps failure. Failing so this run cannot be cited as Miri evidence."
+            exit 1
+          fi
+          echo "Miri interpreted $ran test(s) for ${{ matrix.leg }} — non-vacuous."

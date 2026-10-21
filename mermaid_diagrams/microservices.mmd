@@ -1,0 +1,122 @@
+
+graph LR
+    subgraph "🌐 API Gateway Layer"
+        NGINX[NGINX Reverse Proxy<br/>Load Balancer]
+        RATE[Rate Limiter<br/>API Protection]
+        AUTH[Authentication<br/>JWT Validation]
+    end
+    
+    subgraph "🎯 Core Services"
+        MAIN[Main API Server<br/>:4001<br/>Express | GraphQL]
+        USER[User Management<br/>:4002<br/>Authentication | Profiles]
+        WALLET[Wallet Service<br/>:4000<br/>BIP-39/44 | Multi-sig]
+    end
+    
+    subgraph "🌉 Cross-Chain Services"
+        BRIDGE[Cross-Chain Bridge<br/>:3000<br/>13+ Networks]
+        ORACLE[Oracle Service<br/>:3001<br/>Price Feeds | Weather Data]
+        VALIDATOR[Validator Service<br/>:3003<br/>Transaction Validation]
+    end
+    
+    subgraph "🌡️ IoT & Data Services"
+        IOT[IoT Sensor Networks<br/>:3002<br/>Device Management]
+        WEATHER[Weather Data Service<br/>:3004<br/>Collection | Processing]
+        REWARDS[Weather Earnings<br/>:8080<br/>Reward Distribution]
+    end
+    
+    subgraph "🧠 Compute Services"
+        COMPUTE[Compute Networks<br/>:6000<br/>Distributed Computing]
+        AIML[AI/ML Networks<br/>:6001<br/>Model Training | Inference]
+        JOBS[Job Scheduler<br/>:6002<br/>Task Queue Management]
+    end
+    
+    subgraph "💾 Storage Services"
+        STORAGE[Storage Networks<br/>:7000<br/>IPFS | Arweave | Filecoin]
+        FILES[File Service<br/>:7001<br/>Upload | Download | CDN]
+        BACKUP[Backup Service<br/>:7002<br/>Automated Backups]
+    end
+    
+    subgraph "🏛️ Governance & DeFi"
+        GOV[Governance Server<br/>:8000<br/>DAO | Proposals | Voting]
+        DEFI[DeFi Service<br/>:8001<br/>AMM | Yield Farming]
+        CARBON[Carbon Credits<br/>:8002<br/>Trading | Verification]
+    end
+    
+    subgraph "📊 Monitoring & Analytics"
+        METRICS[Metrics Service<br/>:9000<br/>Prometheus | Grafana]
+        LOGS[Log Aggregation<br/>:9001<br/>Centralized Logging]
+        HEALTH[Health Checks<br/>:9002<br/>Service Monitoring]
+    end
+    
+    subgraph "💾 Data Layer"
+        PG[(PostgreSQL<br/>:5432<br/>Primary Database)]
+        REDIS[(Redis<br/>:6379<br/>Cache | Sessions)]
+        MONGO[(MongoDB<br/>:27017<br/>Document Store)]
+    end
+    
+    %% External traffic flow
+    NGINX --> RATE
+    RATE --> AUTH
+    
+    %% Core service routing
+    AUTH --> MAIN
+    AUTH --> USER
+    AUTH --> WALLET
+    
+    %% Inter-service communication
+    MAIN --> BRIDGE
+    MAIN --> IOT
+    MAIN --> COMPUTE
+    MAIN --> STORAGE
+    MAIN --> GOV
+    
+    BRIDGE --> ORACLE
+    BRIDGE --> VALIDATOR
+    
+    IOT --> WEATHER
+    WEATHER --> REWARDS
+    
+    COMPUTE --> AIML
+    COMPUTE --> JOBS
+    
+    STORAGE --> FILES
+    STORAGE --> BACKUP
+    
+    GOV --> DEFI
+    GOV --> CARBON
+    
+    %% Data connections
+    MAIN --> PG
+    USER --> PG
+    REWARDS --> PG
+    
+    MAIN --> REDIS
+    AUTH --> REDIS
+    
+    WEATHER --> MONGO
+    AIML --> MONGO
+    
+    %% Monitoring connections
+    MAIN --> METRICS
+    BRIDGE --> LOGS
+    IOT --> HEALTH
+    
+    classDef gateway fill:#e8f8f5,stroke:#27ae60,stroke-width:2px
+    classDef core fill:#ebf3fd,stroke:#3498db,stroke-width:2px
+    classDef crosschain fill:#fdf2e9,stroke:#f39c12,stroke-width:2px
+    classDef iot fill:#fadbd8,stroke:#e74c3c,stroke-width:2px
+    classDef compute fill:#f4f6f6,stroke:#95a5a6,stroke-width:2px
+    classDef storage fill:#f8f9f9,stroke:#34495e,stroke-width:2px
+    classDef governance fill:#ebedef,stroke:#85929e,stroke-width:2px
+    classDef monitoring fill:#fef9e7,stroke:#f4d03f,stroke-width:2px
+    classDef database fill:#ecf0f1,stroke:#bdc3c7,stroke-width:2px
+    
+    class NGINX,RATE,AUTH gateway
+    class MAIN,USER,WALLET core
+    class BRIDGE,ORACLE,VALIDATOR crosschain
+    class IOT,WEATHER,REWARDS iot
+    class COMPUTE,AIML,JOBS compute
+    class STORAGE,FILES,BACKUP storage
+    class GOV,DEFI,CARBON governance
+    class METRICS,LOGS,HEALTH monitoring
+    class PG,REDIS,MONGO database

@@ -1,0 +1,6 @@
+fn build(private_key: &str) -> String {
+    format!(
+        "key={}",
+        private_key
+    )
+}

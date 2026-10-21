@@ -1,0 +1,60 @@
+{
+  "name": "wrfcoin-sdk-integration-tests",
+  "version": "1.0.0",
+  "description": "WRFCoin SDK Integration Testing Framework",
+  "main": "api-compatibility-test.js",
+  "scripts": {
+    "test": "node api-compatibility-test.js",
+    "test:java": "SDK_FILTER=java node api-compatibility-test.js",
+    "test:android": "SDK_FILTER=android node api-compatibility-test.js",
+    "test:ios": "SDK_FILTER=ios node api-compatibility-test.js",
+    "test:performance": "PERFORMANCE_ONLY=true node performance-test.js",
+    "test:security": "node security-test.js",
+    "test:e2e": "node end-to-end-test.js",
+    "wiremock:start": "wiremock --port 8080 --root-dir ./mock-data",
+    "wiremock:stop": "pkill -f wiremock",
+    "reports:generate": "node generate-reports.js",
+    "reports:serve": "http-server ./reports -p 3001"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "js-yaml": "^4.1.0",
+    "uuid": "^9.0.0",
+    "lodash": "^4.17.21",
+    "chalk": "^4.1.2",
+    "commander": "^11.0.0",
+    "joi": "^17.11.0",
+    "ajv": "^8.12.0",
+    "jsonschema": "^1.4.1",
+    "xml2js": "^0.6.2",
+    "cheerio": "^1.0.0-rc.12",
+    "ws": "^8.14.0",
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.0",
+    "nock": "^13.3.0",
+    "wiremock": "^2.35.0",
+    "newman": "^5.3.0",
+    "http-server": "^14.1.0",
+    "eslint": "^8.50.0",
+    "prettier": "^3.0.0",
+    "@types/node": "^20.8.0"
+  },
+  "keywords": [
+    "wrfcoin",
+    "sdk",
+    "testing",
+    "integration",
+    "api",
+    "compatibility",
+    "blockchain",
+    "weather"
+  ],
+  "author": "WRFCoin Development Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

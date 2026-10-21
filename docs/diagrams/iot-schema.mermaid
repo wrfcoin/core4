@@ -1,0 +1,41 @@
+erDiagram
+    %% Environmental & Sensor Data
+
+    ENVIRONMENTAL_DATA_SUBMISSIONS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    LUFTDATEN_SENSORS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    LUFTDATEN_MEASUREMENTS {
+        id PK
+        sensor_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    TTN_DEVICES {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    STREAMR_STREAMS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    ENVIRONMENTAL_DATA_SUBMISSIONS ||--o{ ENVIRONMENTAL_ATTESTATIONS : "has many"
+    LUFTDATEN_SENSORS ||--o{ LUFTDATEN_MEASUREMENTS : "has many"
+    LUFTDATEN_MEASUREMENTS }o--|| LUFTDATEN_SENSORS : "belongs to"
+    TTN_DEVICES ||--o{ TTN_MEASUREMENTS : "has many"
+    TTN_DEVICES ||--o{ TTN_SENSORS : "has many"
+    STREAMR_STREAMS ||--o{ STREAMR_DATA_POINTS : "has many"
+    STREAMR_STREAMS ||--o{ STREAMR_SUBSCRIPTIONS : "has many"

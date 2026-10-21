@@ -1,0 +1,142 @@
+name: Workflow path coverage
+
+# Owner 2026-10-07: input-relevant PRs plus nightly on main and dispatch.
+# Inputs and evidence tradeoffs: WORKFLOW_JUSTIFICATION.md, relevance/nightly section.
+# WORKFLOW-GATE: protects workflow declarations and trigger coverage on main
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - '.github/workflows/workflow-path-coverage.yml'
+      - '.github/**'
+      - 'scripts/**'
+  push:
+    branches:
+      - 'main'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  path-coverage:
+    name: workflow path filters still cover what they gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Put rustup's cargo on PATH
+        # Not needed by this check, but the runner service's non-interactive
+        # environment does not source ~/.cargo/env and other jobs on this runner
+        # fail confusingly without it. Cheap and harmless.
+        run: echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      # STEP 1 — CONTROL. Proves the glob matcher can reach NO before anything
+      # relies on its YES. A matcher that always matched would make every
+      # assertion in step 2 pass while guarding nothing (docs/ci/VACUOUS_GATES.md).
+      - name: Control — the matcher can reach NO
+        run: python3 scripts/check_workflow_path_coverage.py --self-test
+
+      # STEP 2 — the fail-closed unit tests, which pin that an unparseable or
+      # undeclared workflow is an ERROR rather than a skip.
+      - name: Fail-closed behaviour
+        run: python3 scripts/test_check_workflow_path_coverage.py
+      - name: Relevance and nightly policy controls
+        run: python3 scripts/test_relevance_nightly.py
+
+      # The ratchet's path filters must select every repository input the admission manifest treats
+      # as relevant, or a change to one never starts the ratchet (Refs #3446).
+      - name: Ratchet filters cover every admission input
+        run: python3 scripts/test_ratchet_covers_admission_inputs.py
+
+      # STEP 3 — the gate itself.
+      #
+      # ANCHORED on a pull_request: `max_unreviewed` is ratcheted against the PR's
+      # BASE commit, which the PR cannot edit. Comparing the manifest against
+      # itself would let a change raise its own ceiling in the same commit and
+      # stay green — prose, not a gate. Same anchoring the determinism baseline
+      # needs, for the same reason.
+      #
+      # On push-to-main there is no PR base, the committed value is authoritative,
+      # and the run prints UNANCHORED as a loud caveat rather than pretending the
+      # weaker check is the stronger one.
+      - name: Every declared filter still triggers on what it gates
+        env:
+          ANCHOR_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${ANCHOR_REF}" ]; then
+            args+=(--anchor-ref "${ANCHOR_REF}")
+          fi
+          python3 scripts/check_workflow_path_coverage.py "${args[@]+"${args[@]}"}"
+
+  # ---------------------------------------------------------------------------
+  # #2890 - a workflow must say whether it gates anything.
+  #
+  # Two `state=active` workflows in this repo had never run once. `Deployment Gate`
+  # declares a `security-audit` job and has executed nothing, ever; to anyone scanning
+  # the directory it reads as though deployment is gated on a security audit. Nothing is
+  # gated on it. The remedy is not to automate every manual tool - some genuinely are
+  # on-demand - but to make the difference legible WITHOUT opening the Actions API, and
+  # then to enforce that legibility so it cannot rot back.
+  #
+  # No `needs:` edge to the job above, deliberately: the two guards are independent, and
+  # a dependency would let one going red hide the other behind a skip that reads GREEN.
+  # ---------------------------------------------------------------------------
+  workflow-inventory:
+    name: every workflow declares whether it gates anything
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # STEP 1 - CONTROL. Drives the shipped classifier over a synthetic corpus and
+      # asserts a RED is reachable for EVERY finding code, not merely that some finding
+      # is reachable: every case could otherwise exit through one code and leave the
+      # rest as prose. No network, no cargo, so nothing about the environment can make
+      # it vacuously green.
+      - name: Control - the classifier can reach RED for every finding it defines
+        run: |
+          python3 scripts/check_workflow_inventory.py --self-test
+          python3 scripts/test_check_workflow_inventory.py
+
+      # STEP 2 - CONTROL, end-to-end. The classifier being right is not the same as
+      # `main()` returning nonzero, and that gap is exactly how a gate ships unable to
+      # fail. This runs the SHIPPED CLI over a fixture directory holding the #2890
+      # defect in miniature and requires exit 1. If this step ever passes silently, the
+      # observation below is disarmed and its green means nothing.
+      - name: Control - the shipped CLI exits 1 on a known-bad fixture
+        run: |
+          set +e
+          python3 scripts/check_workflow_inventory.py \
+            --workflows-dir scripts/fixtures/workflow_inventory_red
+          rc=$?
+          set -e
+          echo "fixture exit=${rc} (expected 1)"
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::CONTROL FAILED - the checker did not report the known-bad" \
+                 "fixture (exit ${rc}, expected 1). The observation below is VOID:" \
+                 "a gate that cannot demonstrate its own RED is not evidence."
+            exit 1
+          fi
+
+      # STEP 3 - OBSERVATION. exit 1 = a workflow's declaration disagrees with its
+      # triggers; exit 2 = the inventory could not be read (unparseable file, empty
+      # directory) and says nothing either way.
+      - name: Observe - declarations match triggers across the whole directory
+        run: python3 scripts/check_workflow_inventory.py

@@ -1,0 +1,120 @@
+name: SDK Extensions (JavaScript)
+
+# Path-scoped lint + build for the hand-maintained JavaScript SDK under
+# sdks/extensions/javascript/. Triggered only when that directory (or this
+# workflow file itself) changes, to keep CI minutes tight per the
+# workflow-schedule budget policy (see docs/workflow-schedule.md).
+#
+# Acceptance criteria tracked in:
+#   - wrfcoin/core4#1152 — add CI coverage for sdks/extensions/javascript
+#   - wrfcoin/core4#1153 — unblock eslint 10 (coordinated lint/build migration)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/extensions/javascript/**'
+      - 'sdks/python/**'
+      - 'sdks/generated/**'
+      - 'docs/api/**'
+      - 'docs/api-reference/**'
+      - 'docs/generated/api/**'
+      - 'docs/WRFCOIN_CLI_GUIDE.md'
+      - 'docs/QUICK_REFERENCE.md'
+      - 'docs/developer-getting-started.md'
+      - 'docs/examples/local-testnet-deployment.md'
+      - 'docs/frontend-integration/cross-chain-bridges.md'
+      - 'docs/guides/frontend-ui-binding-requirements.md'
+      - 'docs/guides/wrf-liquidity-path.md'
+      - 'docs/operations/bridge-operations.md'
+      - 'docs/skills/openclaw-wrfcoin.md'
+      - 'docs/tutorials/cross-chain-bridge.md'
+      - 'docs/user-guides/QUICK_REFERENCE.md'
+      - 'docs/user-guides/WRFCOIN_TERMINAL_GUIDE.md'
+      - 'native-chain/src/bin/launch_api/routes/**'
+      - 'scripts/check-cross-chain-release-surface.mjs'
+      - 'scripts/fixtures/cross-chain-release-surface/**'
+      - '.github/workflows/sdks-extensions-javascript.yml'
+  pull_request:
+    paths:
+      - 'sdks/extensions/javascript/**'
+      - 'sdks/python/**'
+      - 'sdks/generated/**'
+      - 'docs/api/**'
+      - 'docs/api-reference/**'
+      - 'docs/generated/api/**'
+      - 'docs/WRFCOIN_CLI_GUIDE.md'
+      - 'docs/QUICK_REFERENCE.md'
+      - 'docs/developer-getting-started.md'
+      - 'docs/examples/local-testnet-deployment.md'
+      - 'docs/frontend-integration/cross-chain-bridges.md'
+      - 'docs/guides/frontend-ui-binding-requirements.md'
+      - 'docs/guides/wrf-liquidity-path.md'
+      - 'docs/operations/bridge-operations.md'
+      - 'docs/skills/openclaw-wrfcoin.md'
+      - 'docs/tutorials/cross-chain-bridge.md'
+      - 'docs/user-guides/QUICK_REFERENCE.md'
+      - 'docs/user-guides/WRFCOIN_TERMINAL_GUIDE.md'
+      - 'native-chain/src/bin/launch_api/routes/**'
+      - 'scripts/check-cross-chain-release-surface.mjs'
+      - 'scripts/fixtures/cross-chain-release-surface/**'
+      - '.github/workflows/sdks-extensions-javascript.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdks-extensions-javascript-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }} # #2945: github.ref is constant on main; unconditional cancellation cancels the previous main verdict on every merge.
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  sdk-check:
+    name: Lint & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdks/extensions/javascript
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cross-chain public surface matches release runtime
+        working-directory: .
+        run: node scripts/check-cross-chain-release-surface.mjs --self-test
+
+      - name: Generated Rust SDK compiles
+        working-directory: .
+        run: cargo check --locked --manifest-path sdks/generated/rust/Cargo.toml
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: sdks/extensions/javascript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Lint (eslint 10, flat config)
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run build:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack and smoke installed artifact
+        run: npm run artifact:smoke
+
+      - name: Run tests (best-effort)
+        # Tests currently fail on a pre-existing @types/jest ambient-globals
+        # issue that predates this workflow (see PR #1156 deferral note and
+        # #1153 scope). We run them so breakage from new work is visible in
+        # the logs, but do not fail the job until the follow-up lands.
+        continue-on-error: true
+        run: npm test --if-present

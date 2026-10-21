@@ -1,0 +1,415 @@
+name: Deployment Gate (manual tool, gates no deployment)
+# NO-AUTOMATIC-TRIGGER: manual — nothing starts this and nothing waits on it. Real
+# deploys are local builds pushed by SSH to the N5 host
+# (docs/security/EMERGENCY_RUNBOOK.md), a path involving no GitHub-hosted workflow
+# at all. Zero runs in its entire lifetime (core4#2890); the exposure review that
+# established it never approved anything is
+# docs/plans/2026-07-22-deploy-gate-exposure.md. The workflow name and the
+# `security-audit` job below read like deployment is gated on a security audit. It
+# is not — and that job could not block one even if dispatched: every failure path
+# in it ends in a warning, and `deploy-decision` accepts `skipped` for it. Do not
+# cite this file as deployment coverage.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+
+env:
+  NODE_VERSION: '20'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `result=pass` used to be echoed from BOTH branches, and every fallback
+      # command ended in `|| true` — so a smoke suite that ran and failed was
+      # relabelled "script not found" and approved (#2301). The exit status now
+      # carries the result and `result=` is derived from it.
+      - name: Run smoke tests
+        id: smoke
+        run: bash scripts/deploy_gate_smoke.sh
+
+      - name: Upload smoke test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: smoke-test-results
+          path: |
+            test-results/
+            coverage/
+          retention-days: 7
+
+  performance-check:
+    name: Performance Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: wrfcoin_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start application server
+        id: start-server
+        run: |
+          # Start the server in the background
+          NODE_ENV=test \
+          DATABASE_URL="postgresql://postgres:testpass@localhost:5432/wrfcoin_test" \
+          REDIS_URL="redis://localhost:6379" \
+          npm start &
+          SERVER_PID=$!
+          echo "server_pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
+
+          # Wait for server to be ready (up to 60 seconds)
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:4001/health >/dev/null 2>&1; then
+              echo "Server is ready after $((i * 5)) seconds"
+              echo "server_ready=true" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 5
+          done
+
+          if ! curl -sf http://localhost:4001/health >/dev/null 2>&1; then
+            echo "server_ready=false" >> "$GITHUB_OUTPUT"
+            # FAIL, do not "skip" (#2301 demonstration 2). Both performance
+            # assertions below are conditioned on server_ready == 'true', so a
+            # server that never started used to skip every measurement and let
+            # performance-check report success having measured nothing. An
+            # unmeasured performance check is not a passing performance check.
+            echo "::error::application server failed to start; performance was never measured" >&2
+            exit 1
+          fi
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/wrfcoin_test
+          REDIS_URL: redis://localhost:6379
+
+      - name: Health endpoint response time check
+        if: steps.start-server.outputs.server_ready == 'true'
+        run: |
+          echo "Checking health endpoint response times..."
+
+          TOTAL_TIME=0
+          REQUESTS=5
+          MAX_RESPONSE_MS=2000
+
+          for i in $(seq 1 $REQUESTS); do
+            RESPONSE_TIME=$(curl -sf -o /dev/null -w "%{time_total}" http://localhost:4001/health 2>/dev/null || echo "99")
+            RESPONSE_MS=$(echo "$RESPONSE_TIME * 1000" | bc 2>/dev/null || echo "99000")
+            echo "Request $i: ${RESPONSE_MS}ms"
+            TOTAL_TIME=$(echo "$TOTAL_TIME + $RESPONSE_MS" | bc 2>/dev/null || echo "$TOTAL_TIME")
+          done
+
+          AVG_TIME=$(echo "scale=0; $TOTAL_TIME / $REQUESTS" | bc 2>/dev/null || echo "0")
+          echo "Average response time: ${AVG_TIME}ms (threshold: ${MAX_RESPONSE_MS}ms)"
+
+          if [ "$(echo "$AVG_TIME > $MAX_RESPONSE_MS" | bc 2>/dev/null || echo 0)" -eq 1 ]; then
+            echo "::error::Health endpoint average response time (${AVG_TIME}ms) exceeds threshold (${MAX_RESPONSE_MS}ms)"
+            exit 1
+          fi
+
+          echo "Performance check passed"
+
+      - name: Ready endpoint check
+        if: steps.start-server.outputs.server_ready == 'true'
+        run: |
+          # Check /ready endpoint if it exists
+          HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:4001/ready 2>/dev/null || echo "404")
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
+            echo "Ready endpoint returned $HTTP_CODE"
+          else
+            echo "Ready endpoint returned $HTTP_CODE (may not be implemented, continuing)"
+          fi
+
+      - name: Stop server
+        if: always()
+        run: |
+          kill ${{ steps.start-server.outputs.server_pid }} 2>/dev/null || true
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        id: audit
+        run: |
+          echo "Running npm audit (high and critical severity)..."
+          # npm audit returns non-zero on findings; capture output
+          AUDIT_OUTPUT=$(npm audit --audit-level=high 2>&1) || true
+          echo "$AUDIT_OUTPUT"
+
+          # Check for critical vulnerabilities specifically
+          CRITICAL_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "critical" || true)
+          HIGH_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c " high" || true)
+
+          echo "critical_count=$CRITICAL_COUNT" >> "$GITHUB_OUTPUT"
+          echo "high_count=$HIGH_COUNT" >> "$GITHUB_OUTPUT"
+
+          # Fail only on critical
+          if echo "$AUDIT_OUTPUT" | grep -q "found 0 vulnerabilities"; then
+            echo "No vulnerabilities found"
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "Vulnerabilities detected (critical: $CRITICAL_COUNT, high: $HIGH_COUNT)"
+            echo "result=warn" >> "$GITHUB_OUTPUT"
+            # Log but don't fail - existing projects often have upstream dependency issues
+          fi
+
+      - name: Check for secrets in code
+        run: |
+          echo "Scanning for potential secrets in staged code..."
+          # Simple pattern check for common secret patterns
+          FINDINGS=0
+
+          # Check for hardcoded API keys (simple heuristic)
+          if grep -rn "AKIA[0-9A-Z]\{16\}" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v ".git"; then
+            echo "::warning::Potential AWS access key found in source"
+            FINDINGS=$((FINDINGS + 1))
+          fi
+
+          if grep -rn "sk-[a-zA-Z0-9]\{20,\}" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v ".git"; then
+            echo "::warning::Potential API secret key found in source"
+            FINDINGS=$((FINDINGS + 1))
+          fi
+
+          if [ $FINDINGS -gt 0 ]; then
+            echo "::warning::Found $FINDINGS potential secret(s) in source code"
+          else
+            echo "No obvious secrets detected in source code"
+          fi
+
+  # #2139: build the binary exactly as shipped (default features, --release) and prove the
+  # dev endpoints are not in it. Unlike the jobs above, `deploy-decision` does NOT accept
+  # `skipped` for this one.
+  release-endpoints:
+    name: Dev endpoints absent from release build (#2139)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-endpoints-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Detector self-test
+        run: python3 scripts/check_release_endpoints.py --self-test
+
+      - name: No build profile enables dev-endpoints
+        run: python3 scripts/check_release_endpoints.py --build-profiles
+
+      - name: Build release binary (default features, as shipped)
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: cargo build --release --locked -p wrfcoin-native-chain --bin launch_api
+
+      - name: Enumerate the release binary — dev endpoints must be absent
+        run: python3 scripts/check_release_endpoints.py --binary target/release/launch_api
+
+  deploy-decision:
+    # Publish the existing commit status and deployment decision only in this job.
+    permissions:
+      contents: read
+      statuses: write
+      deployments: write
+    name: Deployment Decision
+    runs-on: ubuntu-latest
+    needs: [smoke-tests, performance-check, security-audit, release-endpoints]
+    if: always()
+
+    steps:
+      - name: Evaluate gate results
+        id: evaluate
+        run: |
+          SMOKE="${{ needs.smoke-tests.result }}"
+          PERF="${{ needs.performance-check.result }}"
+          SECURITY="${{ needs.security-audit.result }}"
+          ENDPOINTS="${{ needs.release-endpoints.result }}"
+
+          echo "Gate results:"
+          echo "  Smoke tests:      $SMOKE"
+          echo "  Performance:      $PERF"
+          echo "  Security audit:   $SECURITY"
+          echo "  Release endpoints: $ENDPOINTS"
+
+          # All gates must pass (success or skipped). The #2139 release-endpoints gate
+          # must be `success` — a skipped absence proof is no proof.
+          if [[ "$SMOKE" == "success" && ("$PERF" == "success" || "$PERF" == "skipped") && ("$SECURITY" == "success" || "$SECURITY" == "skipped") && "$ENDPOINTS" == "success" ]]; then
+            echo "decision=approve" >> "$GITHUB_OUTPUT"
+            echo "All deployment gates passed. Ready to deploy to ${{ inputs.environment }}."
+          else
+            echo "decision=reject" >> "$GITHUB_OUTPUT"
+            echo "::error::Deployment gates failed. Smoke=$SMOKE, Performance=$PERF, Security=$SECURITY, ReleaseEndpoints=$ENDPOINTS"
+          fi
+
+      - name: Create deployment status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const decision = '${{ steps.evaluate.outputs.decision }}';
+            const environment = '${{ inputs.environment }}';
+            const state = decision === 'approve' ? 'success' : 'failure';
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.sha,
+              state: state,
+              context: `deploy-gate/${environment}`,
+              description: decision === 'approve'
+                ? `All gates passed. Approved for ${environment} deployment.`
+                : `Deployment gates failed. Not approved for ${environment}.`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+            // Also create a deployment event on success
+            if (decision === 'approve') {
+              await github.rest.repos.createDeployment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: context.sha,
+                environment: environment,
+                auto_merge: false,
+                required_contexts: [],
+                description: `Deploy gate approved for ${environment}`
+              });
+            }
+
+      - name: Checkout for the testnet launch gate report (#2160)
+        if: always()
+        uses: actions/checkout@v7
+
+      - name: Testnet launch gate report (#2160, reference only — see comment)
+        # #2160 asked for this workflow to "reference" the launch gate script.
+        # Read literally, not figuratively: this prints the gate JSON for
+        # whoever is looking at THIS run, but it does not feed `evaluate`'s
+        # approve/reject decision above, for three reasons stated plainly. (1)
+        # This workflow's own header banner already records that it gates NO
+        # actual deployment — zero runs in its lifetime, and the step below
+        # this one fails the workflow on gate results that were never wired to
+        # anything real either. (2) Its `environment` input is `staging` or
+        # `production`; there is no `testnet` option, so a "testnet ready"
+        # verdict has no environment here to attach to. (3) The real testnet
+        # deploy path is a local build over SSH to the N5 host
+        # (docs/security/EMERGENCY_RUNBOOK.md), which this workflow does not
+        # touch at all. Run `scripts/testnet_gate_check.py` directly against
+        # the deployment target before an actual launch decision — see
+        # docs/security/TESTNET_GO_NO_GO.md. Do not treat a green run of THIS
+        # workflow as testnet-launch coverage.
+        if: always()
+        run: python3 scripts/testnet_gate_check.py --pretty || true
+
+      - name: Fail workflow if gates did not pass
+        if: steps.evaluate.outputs.decision != 'approve'
+        run: |
+          echo "Deployment to ${{ inputs.environment }} was NOT approved."
+          exit 1

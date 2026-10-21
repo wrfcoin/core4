@@ -1,0 +1,46 @@
+
+CRITICAL SECURITY NOTICE
+========================
+
+This directory previously contained vulnerable private key files stored as plain text.
+These files posed a severe security risk as private keys were exposed in the filesystem.
+
+SECURITY IMPROVEMENTS IMPLEMENTED:
+- Private keys removed from filesystem
+- HSM-based key management implemented
+- All cryptographic operations now happen in secure hardware
+- Comprehensive audit logging enabled
+- Session-based authentication required
+
+HOW TO USE HSM KEYS:
+
+1. Initialize HSM:
+   const hsm = new SecureHSM();
+   await hsm.initialize();
+
+2. Authenticate session:
+   const sessionId = await hsm.authenticateSession({
+     userId: 'your-user-id',
+     pin: 'your-secure-pin'
+   });
+
+3. Generate keys:
+   const keyPair = await hsm.generateKeyPair('key-type');
+
+4. Sign data:
+   const signature = await hsm.signWithHSM(data, keyHandle, sessionId);
+
+NEVER:
+- Store private keys in files
+- Export private keys from HSM
+- Use unencrypted key storage
+- Share private keys between systems
+
+FOR PRODUCTION:
+- Use real HSM hardware (YubiKey, Luna, etc.)
+- Implement multi-factor authentication
+- Set up key rotation procedures
+- Configure monitoring and alerts
+
+Security Team Contact: security@wrfcoin.com
+Date: 2025-06-05T16:10:50.279Z

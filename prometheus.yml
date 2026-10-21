@@ -1,0 +1,73 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - 'wrfcoin_alerts.yml'
+
+scrape_configs:
+  # Wrfcoin Core API Server (Port 5002)
+  - job_name: 'wrfcoin-core-api'
+    static_configs:
+      - targets: ['localhost:5002']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Main API Server (Port 4001)
+  - job_name: 'wrfcoin-main-api'
+    static_configs:
+      - targets: ['localhost:4001']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Cross-chain Protocol Server (Port 3000)
+  - job_name: 'wrfcoin-cross-chain'
+    static_configs:
+      - targets: ['localhost:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Wallet Server (Port 4000)
+  - job_name: 'wrfcoin-wallet'
+    static_configs:
+      - targets: ['localhost:4000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Compute Networks Server (Port 6000)
+  - job_name: 'wrfcoin-compute'
+    static_configs:
+      - targets: ['localhost:6000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # AI/ML Networks Server (Port 6001)
+  - job_name: 'wrfcoin-ai-ml'
+    static_configs:
+      - targets: ['localhost:6001']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Storage Networks Server (Port 7000)
+  - job_name: 'wrfcoin-storage'
+    static_configs:
+      - targets: ['localhost:7000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Node.js Application Metrics
+  - job_name: 'nodejs-app-metrics'
+    static_configs:
+      - targets: ['localhost:9464'] # Default Node.js metrics port
+    scrape_interval: 30s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093

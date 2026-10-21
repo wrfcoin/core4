@@ -1,0 +1,66 @@
+[package]
+name = "wrfcoin-p2p"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+
+[features]
+# Exposes `behaviour::test_swarm()`, which builds a real `Swarm<WrfcoinBehaviour>` without
+# binding a socket. Off by default: it is test scaffolding, not production surface. Declared
+# as a feature rather than `cfg(test)`-only so downstream crates (native-chain drives the
+# same behaviour events) can build harnesses against the real behaviour instead of mocks.
+test-harness = []
+
+[dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["test-support"] }
+
+# libp2p -- viral-scale P2P networking
+libp2p = { version = "0.56", default-features = false, features = [
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "gossipsub",
+    "kad",
+    "identify",
+    "request-response",
+    "tokio",
+    "macros",
+    "autonat",
+    "relay",
+    "dcutr",
+    "upnp",
+] }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+log = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+wrfcoin-consensus-engines = { path = "../consensus-engines" }
+
+# Wire serialization for gossipsub message payloads
+bincode = "1.3"
+rustc-hash = "2.0"
+
+# Identity
+ed25519-dalek = { workspace = true }
+blake3 = "1.5"
+tracing = "0.1"
+
+[dev-dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard"] }
+tokio-test = "0.4"
+fastrand = "2.0"
+criterion = { workspace = true }
+
+[[bench]]
+name = "message_bench"
+harness = false

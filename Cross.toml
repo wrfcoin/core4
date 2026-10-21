@@ -1,0 +1,28 @@
+# cross (https://github.com/cross-rs/cross) configuration. Used only by the
+# aarch64 leg of .github/workflows/determinism-matrix.yml.
+#
+# The node-share ON corpus builds launch_api with `--features p2p`, which links
+# openssl-sys (via reqwest/native-tls). Two gaps in cross 0.2.5's default image:
+#   - it has no aarch64 OpenSSL at all ("Could not find directory of OpenSSL
+#     installation", run 39331108953);
+#   - it is Ubuntu 16.04, whose OpenSSL 1.0.2 openssl-sys 0.9.117 rejects
+#     (build/main.rs:467 panic, run 39334594982).
+# So use cross's current aarch64 image, pinned by digest (Ubuntu 24.04 base,
+# built 2026-10-13; the `main` tag at pin time), and install the arm64 OpenSSL
+# development package. The image already sets PKG_CONFIG_PATH for aarch64 and
+# PKG_CONFIG_ALLOW_CROSS=1, so openssl-sys finds it through pkg-config.
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:2163cd504ae587b53b98433a896b48c11ee59cfb034f9460142a1de21a5e0101"
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get --assume-yes install pkg-config libssl-dev:$CROSS_DEB_ARCH",
+]
+
+# The node-share ON fixture's parent checks its child's exact libtest line
+# "test <name> ... ok" (test_env.rs). With one test thread libtest prints
+# "test <name> ... " before the test runs, so the fixture's own root line lands
+# in between and a passing child is misread (run 39341032346). The workflow
+# sets RUST_TEST_THREADS=2 for this leg, the same output mode as the x86_64
+# legs; targets that pass --test-threads=1 explicitly are unaffected.
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = ["RUST_TEST_THREADS"]

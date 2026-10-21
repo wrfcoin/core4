@@ -1,0 +1,3635 @@
+openapi: 3.0.3
+info:
+  contact:
+    email: api@wrfcoin.com
+    name: Wrfcoin API Support
+    url: https://docs.wrfcoin.com
+  description: |
+    Comprehensive API for the Wrfcoin climate-focused blockchain platform.
+    Includes weather data collection, smart contracts, governance, and
+    environmental impact tracking.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: https://wrfcoin.com/terms
+  title: Wrfcoin Blockchain Platform API
+  version: 1.0.0
+servers:
+  - description: Production server
+    url: https://api.wrfcoin.com/v1
+  - description: Staging server
+    url: https://staging-api.wrfcoin.com/v1
+  - description: Local development server
+    url: http://localhost:3001
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+tags:
+  - description: Core blockchain operations
+    name: Blockchain
+  - description: Smart contract deployment and execution
+    name: Smart Contracts
+  - description: DAO governance and voting
+    name: Governance
+  - description: Environmental data collection and rewards
+    name: Weather Data
+  - description: Wallet and key management
+    name: Wallet
+  - description: Computational and environmental NFTs
+    name: NFT
+  - description: IoT sensor network management
+    name: IoT
+  - description: Mining operations and rewards
+    name: Mining
+  - description: Network analytics and metrics
+    name: Analytics
+  - description: System health and status
+    name: System
+  - description: Security operations and statistics
+    name: Security
+  - description: Compliance status and certifications
+    name: Compliance
+  - description: Third-party integrations and AI services
+    name: Integrations
+  - description: Compute network operations
+    name: Compute
+  - description: AI and machine learning services
+    name: AI/ML
+  - description: Performance monitoring and optimization
+    name: Performance
+paths:
+  /api/blockchain/status:
+    get:
+      description:
+        "Returns current blockchain status including block height, network\
+        \ health, and consensus state"
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainStatus'
+          description: Blockchain status retrieved successfully
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Internal server error
+      summary: Get blockchain status
+      tags:
+        - Blockchain
+      x-accepts:
+        - application/json
+  /api/blockchain/blocks:
+    get:
+      description: Retrieve a list of blockchain blocks with pagination
+      parameters:
+        - description: Number of blocks to return
+          explode: true
+          in: query
+          name: limit
+          required: false
+          schema:
+            default: 10
+            maximum: 100
+            minimum: 1
+            type: integer
+          style: form
+        - description: Number of blocks to skip
+          explode: true
+          in: query
+          name: offset
+          required: false
+          schema:
+            default: 0
+            minimum: 0
+            type: integer
+          style: form
+        - description: Sort order
+          explode: true
+          in: query
+          name: order
+          required: false
+          schema:
+            default: desc
+            enum:
+              - asc
+              - desc
+            type: string
+          style: form
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_blockchain_blocks_get_200_response'
+          description: Blocks retrieved successfully
+      summary: Get blockchain blocks
+      tags:
+        - Blockchain
+      x-accepts:
+        - application/json
+  /api/blockchain/blocks/{blockHash}:
+    get:
+      parameters:
+        - explode: false
+          in: path
+          name: blockHash
+          required: true
+          schema:
+            pattern: '^0x[a-fA-F0-9]{64}$'
+            type: string
+          style: simple
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Block'
+          description: Block retrieved successfully
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Block not found
+      summary: Get block by hash
+      tags:
+        - Blockchain
+      x-accepts:
+        - application/json
+  /api/blockchain/transactions/{txHash}:
+    get:
+      parameters:
+        - explode: false
+          in: path
+          name: txHash
+          required: true
+          schema:
+            pattern: '^0x[a-fA-F0-9]{64}$'
+            type: string
+          style: simple
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+          description: Transaction retrieved successfully
+      summary: Get transaction by hash
+      tags:
+        - Blockchain
+      x-accepts:
+        - application/json
+  /api/contracts/deploy:
+    post:
+      description: Deploy a new smart contract to the blockchain
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractDeployRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDeployResponse'
+          description: Contract deployed successfully
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid contract code or parameters
+      summary: Deploy smart contract
+      tags:
+        - Smart Contracts
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/contracts/call:
+    post:
+      description: Execute a smart contract function
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractCallRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractCallResponse'
+          description: Contract function executed successfully
+      summary: Call contract function
+      tags:
+        - Smart Contracts
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/contracts/query:
+    post:
+      description: Query smart contract state without modifying it
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractQueryRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractQueryResponse'
+          description: Contract state queried successfully
+      summary: Query contract state
+      tags:
+        - Smart Contracts
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/contracts/estimate-gas:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractCallRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_contracts_estimate_gas_post_200_response'
+          description: Gas estimate calculated
+      summary: Estimate gas for contract call
+      tags:
+        - Smart Contracts
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/governance/proposals:
+    get:
+      parameters:
+        - explode: true
+          in: query
+          name: status
+          required: false
+          schema:
+            enum:
+              - active
+              - pending
+              - executed
+              - defeated
+            type: string
+          style: form
+        - explode: true
+          in: query
+          name: limit
+          required: false
+          schema:
+            default: 20
+            type: integer
+          style: form
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Proposal'
+                type: array
+          description: Proposals listed successfully
+      summary: List governance proposals
+      tags:
+        - Governance
+      x-accepts:
+        - application/json
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProposalRequest'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+          description: Proposal created successfully
+      summary: Create new proposal
+      tags:
+        - Governance
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/governance/proposals/{proposalId}/vote:
+    post:
+      parameters:
+        - explode: false
+          in: path
+          name: proposalId
+          required: true
+          schema:
+            type: string
+          style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoteRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoteResponse'
+          description: Vote cast successfully
+      summary: Vote on proposal
+      tags:
+        - Governance
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/weather/submit:
+    post:
+      description: Submit environmental data from weather stations
+      requestBody:
+        content:
+          application/json:
+            examples:
+              basic_submission:
+                summary: Basic weather data submission
+                value:
+                  stationId: station_001
+                  sensorData:
+                    - type: temperature
+                      value: 23.5
+                      unit: celsius
+                      status: active
+                    - type: humidity
+                      value: 65.2
+                      unit: percent
+                      status: active
+                  location:
+                    latitude: 40.7128
+                    longitude: -74.006
+                    altitude: 10
+                  quality:
+                    score: 95
+                    issues: []
+            schema:
+              $ref: '#/components/schemas/WeatherDataSubmission'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              examples:
+                successful_submission:
+                  summary: Successful weather data submission
+                  value:
+                    success: true
+                    data:
+                      stationId: station_001
+                      timestamp: 2024-01-15T10:30:00Z
+                      rewards:
+                        totalAmount: 0.17
+                        baseAmount: 0.1
+                        qualityBonus: 0.05
+                        proximityBonus: 0.02
+                      blockchain:
+                        blockNumber: 123456
+                        transactionHash: 0x1234567890abcdef...
+                        gasUsed: 21000
+                    message: Weather data submitted successfully
+                    timestamp: 2024-01-15T10:30:00Z
+              schema:
+                $ref: '#/components/schemas/WeatherSubmissionResponse'
+          description: Weather data submitted successfully
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid weather data
+      security:
+        - ApiKeyAuth: []
+      summary: Submit weather data
+      tags:
+        - Weather Data
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/weather/data:
+    get:
+      parameters:
+        - explode: true
+          in: query
+          name: station_id
+          required: false
+          schema:
+            type: string
+          style: form
+        - explode: true
+          in: query
+          name: start_date
+          required: false
+          schema:
+            format: date-time
+            type: string
+          style: form
+        - explode: true
+          in: query
+          name: end_date
+          required: false
+          schema:
+            format: date-time
+            type: string
+          style: form
+        - explode: true
+          in: query
+          name: data_type
+          required: false
+          schema:
+            enum:
+              - temperature
+              - humidity
+              - pressure
+              - wind
+              - precipitation
+            type: string
+          style: form
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/WeatherData'
+                type: array
+          description: Weather data retrieved successfully
+      summary: Get weather data
+      tags:
+        - Weather Data
+      x-accepts:
+        - application/json
+  /api/weather/security-status:
+    get:
+      description: Retrieve security status of weather stations and data integrity
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherSecurityStatus'
+          description: Weather security status retrieved successfully
+      summary: Get weather security status
+      tags:
+        - Weather Data
+      x-accepts:
+        - application/json
+  /api/mining/rewards:
+    get:
+      description: Retrieve mining rewards for a specific address
+      parameters:
+        - description: Wallet address to get rewards for
+          explode: true
+          in: query
+          name: address
+          required: false
+          schema:
+            pattern: '^0x[a-fA-F0-9]{40}$'
+            type: string
+          style: form
+        - description: Type of mining reward
+          explode: true
+          in: query
+          name: type
+          required: false
+          schema:
+            enum:
+              - weather_data
+              - compute
+              - validation
+              - staking
+            type: string
+          style: form
+        - description: Number of rewards to return
+          explode: true
+          in: query
+          name: limit
+          required: false
+          schema:
+            default: 10
+            maximum: 100
+            minimum: 1
+            type: integer
+          style: form
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_mining_rewards_get_200_response'
+          description: Mining rewards retrieved successfully
+      summary: Get mining rewards
+      tags:
+        - Mining
+      x-accepts:
+        - application/json
+  /api/analytics:
+    get:
+      description: Retrieve comprehensive network analytics and metrics
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_analytics_get_200_response'
+          description: Network analytics retrieved successfully
+      summary: Get network analytics
+      tags:
+        - Analytics
+      x-accepts:
+        - application/json
+  /health:
+    get:
+      description: Get comprehensive system health status
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_health_get_200_response'
+          description: System health status retrieved successfully
+      summary: System health check
+      tags:
+        - System
+      x-accepts:
+        - application/json
+  /api/health:
+    get:
+      description: Get comprehensive API health status
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_health_get_200_response'
+          description: API health status retrieved successfully
+      summary: API health check
+      tags:
+        - System
+      x-accepts:
+        - application/json
+  /api/security/stats:
+    get:
+      description: Retrieve security statistics and events
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_security_stats_get_200_response'
+          description: Security statistics retrieved successfully
+      summary: Get security statistics
+      tags:
+        - Security
+      x-accepts:
+        - application/json
+  /api/compliance/status:
+    get:
+      description: Retrieve compliance status and certifications
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_compliance_status_get_200_response'
+          description: Compliance status retrieved successfully
+      summary: Get compliance status
+      tags:
+        - Compliance
+      x-accepts:
+        - application/json
+  /api/integrations/langchain/status:
+    get:
+      description: Retrieve status of LangChain analytics integration
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_integrations_langchain_status_get_200_response'
+          description: LangChain integration status retrieved successfully
+      summary: Get LangChain integration status
+      tags:
+        - Integrations
+      x-accepts:
+        - application/json
+  /api/integrations/langchain/enable:
+    post:
+      description: Enable LangChain analytics integration
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_integrations_langchain_enable_post_200_response'
+          description: LangChain integration enabled successfully
+      summary: Enable LangChain integration
+      tags:
+        - Integrations
+      x-accepts:
+        - application/json
+  /api/integrations/langchain/insights:
+    get:
+      description: Retrieve AI-powered insights from LangChain analytics
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_integrations_langchain_insights_get_200_response'
+          description: LangChain insights retrieved successfully
+      summary: Get LangChain insights
+      tags:
+        - Integrations
+      x-accepts:
+        - application/json
+  /api/compute/tasks:
+    post:
+      description: Submit a distributed computing task to the network
+      requestBody:
+        content:
+          application/json:
+            examples:
+              ml_task:
+                summary: Machine learning task
+                value:
+                  taskType: machine-learning
+                  priority: high
+                  resourceRequirements:
+                    cpu: 8
+                    memory: 32
+                    storage: 100
+                    gpu: true
+            schema:
+              $ref: '#/components/schemas/_api_compute_tasks_post_request'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_compute_tasks_post_200_response'
+          description: Task submitted successfully
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid task request
+      summary: Submit compute task
+      tags:
+        - Compute
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/compute/tasks/{taskId}/status:
+    get:
+      description: Retrieve the status of a specific compute task
+      parameters:
+        - description: Task identifier
+          explode: false
+          in: path
+          name: taskId
+          required: true
+          schema:
+            type: string
+          style: simple
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_compute_tasks__taskId__status_get_200_response'
+          description: Task status retrieved successfully
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Task not found
+      summary: Get compute task status
+      tags:
+        - Compute
+      x-accepts:
+        - application/json
+  /api/compute/providers:
+    get:
+      description: Retrieve list of available compute providers
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_compute_providers_get_200_response'
+          description: Compute providers retrieved successfully
+      summary: List compute providers
+      tags:
+        - Compute
+      x-accepts:
+        - application/json
+  /api/aiml/models:
+    get:
+      description: Retrieve list of available AI/ML models for computation
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_aiml_models_get_200_response'
+          description: AI/ML models retrieved successfully
+      summary: List available AI/ML models
+      tags:
+        - AI/ML
+      x-accepts:
+        - application/json
+  /api/aiml/inference:
+    post:
+      description: Execute AI/ML inference on the compute network
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_api_aiml_inference_post_request'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_aiml_inference_post_200_response'
+          description: Inference completed successfully
+      summary: Run AI/ML inference
+      tags:
+        - AI/ML
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/performance/metrics:
+    get:
+      description: Retrieve comprehensive performance metrics
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_performance_metrics_get_200_response'
+          description: Performance metrics retrieved successfully
+      summary: Get performance metrics
+      tags:
+        - Performance
+      x-accepts:
+        - application/json
+  /api/performance/optimization:
+    post:
+      description: Initiate performance optimization procedures
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_api_performance_optimization_post_request'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_performance_optimization_post_200_response'
+          description: Optimization initiated successfully
+      summary: Trigger performance optimization
+      tags:
+        - Performance
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/wallet/generate-mnemonic:
+    post:
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_wallet_generate_mnemonic_post_200_response'
+          description: Mnemonic generated successfully
+      summary: Generate mnemonic phrase
+      tags:
+        - Wallet
+      x-accepts:
+        - application/json
+  /api/wallet/validate-mnemonic:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_api_wallet_validate_mnemonic_post_request'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/_api_wallet_validate_mnemonic_post_200_response'
+          description: Mnemonic validation result
+      summary: Validate mnemonic phrase
+      tags:
+        - Wallet
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+  /api/wallet/hardware/devices:
+    get:
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/HardwareDevice'
+                type: array
+          description: Hardware devices listed
+      summary: List connected hardware wallets
+      tags:
+        - Wallet
+      x-accepts:
+        - application/json
+  /api/wallet/hardware/sign:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HardwareSignRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HardwareSignResponse'
+          description: Transaction signed successfully
+      summary: Sign transaction with hardware wallet
+      tags:
+        - Wallet
+      x-content-type: application/json
+      x-accepts:
+        - application/json
+components:
+  schemas:
+    Error:
+      example:
+        code: code
+        details: '{}'
+        error: error
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        error:
+          description: Error message
+          type: string
+        code:
+          description: Error code
+          type: string
+        details:
+          description: Additional error details
+          type: object
+        timestamp:
+          format: date-time
+          type: string
+      required:
+        - code
+        - error
+      type: object
+    BlockchainStatus:
+      example:
+        difficulty: 1.4658129805029452
+        lastBlockHash: lastBlockHash
+        blockHeight: 0
+        peerCount: 5
+        consensusState: healthy
+        networkHashRate: 6.027456183070403
+        uptimeSeconds: 5
+        syncStatus: synced
+      properties:
+        blockHeight:
+          description: Current block height
+          type: integer
+        lastBlockHash:
+          description: Hash of the most recent block
+          type: string
+        networkHashRate:
+          description: Network hash rate in H/s
+          type: number
+        difficulty:
+          description: Current mining difficulty
+          type: number
+        consensusState:
+          enum:
+            - healthy
+            - degraded
+            - failed
+          type: string
+        peerCount:
+          description: Number of connected peers
+          type: integer
+        syncStatus:
+          enum:
+            - synced
+            - syncing
+            - out_of_sync
+          type: string
+        uptimeSeconds:
+          description: Node uptime in seconds
+          type: integer
+      type: object
+    Block:
+      example:
+        difficulty: 5.962133916683182
+        gasLimit: 9
+        gasUsed: 7
+        previousHash: previousHash
+        size: 2
+        index: 0
+        merkleRoot: merkleRoot
+        transactionCount: 5
+        nonce: 1
+        hash: hash
+        timestamp: 6
+      properties:
+        hash:
+          description: Block hash
+          type: string
+        index:
+          description: Block number
+          type: integer
+        previousHash:
+          description: Previous block hash
+          type: string
+        timestamp:
+          description: Block timestamp
+          type: integer
+        merkleRoot:
+          description: Merkle root of transactions
+          type: string
+        nonce:
+          description: Mining nonce
+          type: integer
+        difficulty:
+          description: Block difficulty
+          type: number
+        transactionCount:
+          description: Number of transactions in block
+          type: integer
+        size:
+          description: Block size in bytes
+          type: integer
+        gasUsed:
+          description: Total gas used in block
+          type: integer
+        gasLimit:
+          description: Block gas limit
+          type: integer
+      type: object
+    Transaction:
+      example:
+        blockHash: blockHash
+        transactionIndex: 5
+        nonce: 1
+        gasUsed: 6
+        blockNumber: 5
+        gas: 0
+        from: from
+        to: to
+        value: value
+        hash: hash
+        gasPrice: gasPrice
+        status: pending
+        timestamp: 2
+      properties:
+        hash:
+          description: Transaction hash
+          type: string
+        from:
+          description: Sender address
+          type: string
+        to:
+          description: Recipient address
+          type: string
+        value:
+          description: Transaction value in wei
+          type: string
+        gas:
+          description: Gas limit
+          type: integer
+        gasPrice:
+          description: Gas price in wei
+          type: string
+        gasUsed:
+          description: Gas used
+          type: integer
+        nonce:
+          description: Transaction nonce
+          type: integer
+        blockHash:
+          description: Block hash containing transaction
+          type: string
+        blockNumber:
+          description: Block number
+          type: integer
+        transactionIndex:
+          description: Transaction index in block
+          type: integer
+        status:
+          enum:
+            - pending
+            - confirmed
+            - failed
+          type: string
+        timestamp:
+          description: Transaction timestamp
+          type: integer
+      type: object
+    ContractDeployRequest:
+      example:
+        gasLimit: 0
+        constructorArgs:
+          - constructorArgs
+          - constructorArgs
+        contractCode: contractCode
+        gasPrice: gasPrice
+      properties:
+        contractCode:
+          description: Base64 encoded WASM contract code
+          type: string
+        constructorArgs:
+          description: Constructor arguments
+          items:
+            type: string
+          type: array
+        gasLimit:
+          description: Gas limit for deployment
+          type: integer
+        gasPrice:
+          description: Gas price in wei
+          type: string
+      required:
+        - contractCode
+        - gasLimit
+        - gasPrice
+      type: object
+    ContractDeployResponse:
+      example:
+        gasUsed: 0
+        contractAddress: contractAddress
+        transactionHash: transactionHash
+      properties:
+        contractAddress:
+          description: Deployed contract address
+          type: string
+        transactionHash:
+          description: Deployment transaction hash
+          type: string
+        gasUsed:
+          description: Gas used for deployment
+          type: integer
+      type: object
+    ContractCallRequest:
+      example:
+        gasLimit: 0
+        functionName: functionName
+        contractAddress: contractAddress
+        parameters:
+          - ''
+          - ''
+        value: '0'
+        gasPrice: gasPrice
+      properties:
+        contractAddress:
+          description: Contract address
+          type: string
+        functionName:
+          description: Function to call
+          type: string
+        parameters:
+          description: Function parameters
+          items: {}
+          type: array
+        gasLimit:
+          description: Gas limit
+          type: integer
+        gasPrice:
+          description: Gas price in wei
+          type: string
+        value:
+          default: '0'
+          description: ETH value to send (optional)
+          type: string
+      required:
+        - contractAddress
+        - functionName
+        - gasLimit
+        - gasPrice
+      type: object
+    ContractCallResponse:
+      example:
+        gasUsed: 0
+        logs:
+          - '{}'
+          - '{}'
+        transactionHash: transactionHash
+      properties:
+        transactionHash:
+          description: Transaction hash
+          type: string
+        gasUsed:
+          description: Gas used
+          type: integer
+        logs:
+          description: Event logs emitted
+          items:
+            type: object
+          type: array
+      type: object
+    ContractQueryRequest:
+      example:
+        functionName: functionName
+        contractAddress: contractAddress
+        parameters:
+          - ''
+          - ''
+      properties:
+        contractAddress:
+          description: Contract address
+          type: string
+        functionName:
+          description: Function to query
+          type: string
+        parameters:
+          description: Function parameters
+          items: {}
+          type: array
+      required:
+        - contractAddress
+        - functionName
+      type: object
+    ContractQueryResponse:
+      example:
+        result: ''
+        gasEstimate: 0
+      properties:
+        result:
+          description: Function return value
+        gasEstimate:
+          description: Estimated gas for this call
+          type: integer
+      type: object
+    Proposal:
+      example:
+        votesAgainst: votesAgainst
+        proposer: proposer
+        quorum: quorum
+        description: description
+        threshold: threshold
+        title: title
+        votesAbstain: votesAbstain
+        executionTime: 1
+        votesFor: votesFor
+        startTime: 0
+        id: id
+        endTime: 6
+        status: active
+      properties:
+        id:
+          description: Proposal ID
+          type: string
+        title:
+          description: Proposal title
+          type: string
+        description:
+          description: Proposal description
+          type: string
+        proposer:
+          description: Proposer address
+          type: string
+        status:
+          enum:
+            - active
+            - pending
+            - executed
+            - defeated
+            - expired
+          type: string
+        votesFor:
+          description: Total votes in favor
+          type: string
+        votesAgainst:
+          description: Total votes against
+          type: string
+        votesAbstain:
+          description: Total abstain votes
+          type: string
+        startTime:
+          description: Voting start timestamp
+          type: integer
+        endTime:
+          description: Voting end timestamp
+          type: integer
+        executionTime:
+          description: Execution timestamp (if applicable)
+          type: integer
+        quorum:
+          description: Required quorum
+          type: string
+        threshold:
+          description: Approval threshold
+          type: string
+      type: object
+    CreateProposalRequest:
+      example:
+        votingPeriod: 0
+        description: description
+        title: title
+        actions:
+          - '{}'
+          - '{}'
+      properties:
+        title:
+          description: Proposal title
+          type: string
+        description:
+          description: Proposal description
+          type: string
+        actions:
+          description: Actions to execute if passed
+          items:
+            type: object
+          type: array
+        votingPeriod:
+          description: Voting period in seconds
+          type: integer
+      required:
+        - actions
+        - description
+        - title
+        - votingPeriod
+      type: object
+    VoteRequest:
+      example:
+        reason: reason
+        votingPower: votingPower
+        vote: for
+      properties:
+        vote:
+          enum:
+            - for
+            - against
+            - abstain
+          type: string
+        votingPower:
+          description: Voting power to use
+          type: string
+        reason:
+          description: Optional voting reason
+          type: string
+      required:
+        - vote
+      type: object
+    VoteResponse:
+      example:
+        votingPower: votingPower
+        transactionHash: transactionHash
+        timestamp: 0
+      properties:
+        transactionHash:
+          description: Vote transaction hash
+          type: string
+        votingPower:
+          description: Voting power used
+          type: string
+        timestamp:
+          description: Vote timestamp
+          type: integer
+      type: object
+    WeatherDataSubmission:
+      example:
+        signature: 0x1234567890abcdef...
+        sensorData:
+          - unit: celsius
+            type: temperature
+            value: 23.5
+            status: active
+          - unit: celsius
+            type: temperature
+            value: 23.5
+            status: active
+        location:
+          altitude: 10
+          latitude: 40.7128
+          accuracy: 5
+          longitude: -74.006
+        stationId: station_001
+        timestamp: 1706188800
+        measurements:
+          - unit: unit
+            type: temperature
+            uncertainty: 6.027456183070403
+            value: 0.8008281904610115
+          - unit: unit
+            type: temperature
+            uncertainty: 6.027456183070403
+            value: 0.8008281904610115
+        quality:
+          score: 95
+          issues: []
+      properties:
+        stationId:
+          description: Weather station identifier
+          example: station_001
+          type: string
+        timestamp:
+          description: Data collection timestamp
+          example: 1706188800
+          type: integer
+        location:
+          $ref: '#/components/schemas/Location'
+        measurements:
+          items:
+            $ref: '#/components/schemas/WeatherMeasurement'
+          type: array
+        signature:
+          description: Data integrity signature
+          example: 0x1234567890abcdef...
+          type: string
+        sensorData:
+          description: Array of sensor readings
+          items:
+            $ref: '#/components/schemas/WeatherDataSubmission_sensorData_inner'
+          type: array
+        quality:
+          $ref: '#/components/schemas/WeatherDataSubmission_quality'
+      required:
+        - sensorData
+        - stationId
+      type: object
+    WeatherSubmissionResponse:
+      example:
+        data:
+          sensors:
+            - unit: celsius
+              type: temperature
+              value: 23.5
+              status: active
+            - unit: celsius
+              type: temperature
+              value: 23.5
+              status: active
+          blockchain:
+            gasUsed: 21000
+            blockNumber: 123456
+            transactionHash: 0x1234567890abcdef...
+          location:
+            altitude: 10
+            latitude: 40.7128
+            accuracy: 5
+            longitude: -74.006
+          rewards:
+            qualityBonus: 0.05
+            totalAmount: 0.17
+            proximityBonus: 0.02
+            baseAmount: 0.1
+          stationId: station_001
+          timestamp: 2024-01-15T10:30:00Z
+          quality:
+            score: 85
+            validated: true
+            issues: []
+        success: true
+        message: Weather data submitted successfully
+        timestamp: 2024-01-15T10:30:00Z
+      properties:
+        success:
+          description: Whether the submission was successful
+          example: true
+          type: boolean
+        data:
+          $ref: '#/components/schemas/WeatherSubmissionResponse_data'
+        message:
+          description: Response message
+          example: Weather data submitted successfully
+          type: string
+        timestamp:
+          description: Response timestamp
+          example: 2024-01-15T10:30:00Z
+          format: date-time
+          type: string
+      type: object
+    WeatherData:
+      example:
+        qualityScore: 6.027456183070403
+        location:
+          altitude: 10
+          latitude: 40.7128
+          accuracy: 5
+          longitude: -74.006
+        id: id
+        rewardAmount: rewardAmount
+        measurement:
+          unit: unit
+          type: temperature
+          uncertainty: 6.027456183070403
+          value: 0.8008281904610115
+        stationId: stationId
+        timestamp: 0
+      properties:
+        id:
+          type: string
+        stationId:
+          type: string
+        timestamp:
+          type: integer
+        location:
+          $ref: '#/components/schemas/Location'
+        measurement:
+          $ref: '#/components/schemas/WeatherMeasurement'
+        qualityScore:
+          type: number
+        rewardAmount:
+          type: string
+      type: object
+    Location:
+      example:
+        altitude: 10
+        latitude: 40.7128
+        accuracy: 5
+        longitude: -74.006
+      properties:
+        latitude:
+          description: Latitude in decimal degrees
+          example: 40.7128
+          maximum: 90
+          minimum: -90
+          type: number
+        longitude:
+          description: Longitude in decimal degrees
+          example: -74.006
+          maximum: 180
+          minimum: -180
+          type: number
+        altitude:
+          description: Altitude in meters
+          example: 10
+          type: number
+        accuracy:
+          description: Location accuracy in meters
+          example: 5
+          minimum: 0
+          type: number
+      required:
+        - latitude
+        - longitude
+      type: object
+    WeatherMeasurement:
+      example:
+        unit: unit
+        type: temperature
+        uncertainty: 6.027456183070403
+        value: 0.8008281904610115
+      properties:
+        type:
+          enum:
+            - temperature
+            - humidity
+            - pressure
+            - wind_speed
+            - wind_direction
+            - precipitation
+            - visibility
+            - uv_index
+          type: string
+        value:
+          description: Measurement value
+          type: number
+        unit:
+          description: Unit of measurement
+          type: string
+        uncertainty:
+          description: Measurement uncertainty
+          type: number
+      required:
+        - type
+        - unit
+        - value
+      type: object
+    HardwareDevice:
+      example:
+        deviceType: ledger
+        supportedFeatures:
+          - supportedFeatures
+          - supportedFeatures
+        isConnected: true
+        isAuthenticated: true
+        firmwareVersion: firmwareVersion
+        deviceId: deviceId
+        deviceName: deviceName
+      properties:
+        deviceId:
+          description: Unique device identifier
+          type: string
+        deviceType:
+          enum:
+            - ledger
+            - trezor
+            - yubihsm
+            - secure_enclave
+            - pkcs11
+          type: string
+        deviceName:
+          description: Human-readable device name
+          type: string
+        firmwareVersion:
+          description: Device firmware version
+          type: string
+        isConnected:
+          description: Connection status
+          type: boolean
+        isAuthenticated:
+          description: Authentication status
+          type: boolean
+        supportedFeatures:
+          description: List of supported features
+          items:
+            type: string
+          type: array
+      type: object
+    HardwareSignRequest:
+      example:
+        displayOnDevice: true
+        derivationPath: derivationPath
+        requireConfirmation: true
+        deviceId: deviceId
+        transactionHash: transactionHash
+      properties:
+        deviceId:
+          description: Hardware device ID
+          type: string
+        transactionHash:
+          description: Transaction hash to sign
+          type: string
+        derivationPath:
+          description: BIP32 derivation path
+          type: string
+        displayOnDevice:
+          default: true
+          description: Show transaction on device screen
+          type: boolean
+        requireConfirmation:
+          default: true
+          description: Require user confirmation
+          type: boolean
+      required:
+        - derivationPath
+        - deviceId
+        - transactionHash
+      type: object
+    HardwareSignResponse:
+      example:
+        signature: signature
+        publicKey: publicKey
+        deviceConfirmed: true
+        timestamp: 0
+      properties:
+        signature:
+          description: Transaction signature
+          type: string
+        publicKey:
+          description: Public key used for signing
+          type: string
+        deviceConfirmed:
+          description: Whether user confirmed on device
+          type: boolean
+        timestamp:
+          description: Signing timestamp
+          type: integer
+      type: object
+    MiningReward:
+      example:
+        amount: 0.8008281904610115
+        performance:
+          accuracy: 9.301444243932576
+          speed: 3.616076749251911
+          uptime: 7.061401241503109
+        blockchain:
+          gasUsed: 4
+          blockNumber: 2
+          confirmations: 7
+          transactionHash: transactionHash
+        recipient: recipient
+        currency: currency
+        multipliers:
+          total: 2.3021358869347655
+          proximity: 5.962133916683182
+          base: 6.027456183070403
+          quality: 1.4658129805029452
+          frequency: 5.637376656633329
+        id: id
+        source:
+          details: '{}'
+          id: id
+          type: type
+        type: weather_data
+        timestamp: 2000-01-23T04:56:07.000+00:00
+        status: pending
+      properties:
+        id:
+          description: Unique reward identifier
+          type: string
+        recipient:
+          description: Recipient wallet address
+          type: string
+        type:
+          description: Type of mining reward
+          enum:
+            - weather_data
+            - compute
+            - validation
+            - staking
+          type: string
+        amount:
+          description: Reward amount
+          type: number
+        currency:
+          description: Currency symbol
+          type: string
+        source:
+          $ref: '#/components/schemas/MiningReward_source'
+        multipliers:
+          $ref: '#/components/schemas/MiningReward_multipliers'
+        performance:
+          $ref: '#/components/schemas/MiningReward_performance'
+        blockchain:
+          $ref: '#/components/schemas/MiningReward_blockchain'
+        timestamp:
+          format: date-time
+          type: string
+        status:
+          enum:
+            - pending
+            - confirmed
+            - failed
+          type: string
+      type: object
+    NetworkAnalytics:
+      example:
+        overview:
+          totalTransactions: 1
+          totalUsers: 0
+          activeUsers24h: 6
+          totalValueLocked: 5.962133916683182
+          networkUtilization: 5.637376656633329
+        security:
+          activeThreats: 2
+          securityScore: 7.386281948385884
+          blockedAttacks: 4
+          threatLevel: low
+        performance:
+          averageResponseTime: 2.3021358869347655
+          throughput: 7.061401241503109
+          errorRate: 9.301444243932576
+          uptime: 3.616076749251911
+        weather:
+          dataSubmissions24h: 1
+          averageQuality: 4.965218492984954
+          activeStations: 7
+          rewardsDistributed24h: 5.025004791520295
+        crossChain:
+          bridgeSuccessRate: 6.84685269835264
+          activeBridges: 1
+          supportedChains: 1
+          bridgeVolume24h: 1.4894159098541704
+      properties:
+        overview:
+          $ref: '#/components/schemas/NetworkAnalytics_overview'
+        performance:
+          $ref: '#/components/schemas/NetworkAnalytics_performance'
+        security:
+          $ref: '#/components/schemas/NetworkAnalytics_security'
+        crossChain:
+          $ref: '#/components/schemas/NetworkAnalytics_crossChain'
+        weather:
+          $ref: '#/components/schemas/NetworkAnalytics_weather'
+      type: object
+    HealthStatus:
+      example:
+        environment: environment
+        database:
+          connectionPool:
+            total: 5
+            idle: 2
+            active: 5
+          storage:
+            available: 2
+            utilization: 4.145608029883936
+            used: 3
+          status: status
+          queryPerformance:
+            slowQueries: 9
+            averageTime: 7.061401241503109
+        security:
+          certificates:
+            valid: true
+            grade: grade
+            expiresAt: 2000-01-23T04:56:07.000+00:00
+          firewall:
+            blockedConnections24h: 9
+            active: true
+            rules: 8
+          lastSecurityScan: 2000-01-23T04:56:07.000+00:00
+          vulnerabilities:
+            high: 9
+            critical: 5
+            low: 6
+            medium: 9
+          status: status
+        performance:
+          disk:
+            available: 2
+            utilization: 4.145608029883936
+            used: 3
+          memory:
+            available: 2
+            utilization: 4.145608029883936
+            used: 3
+          cpu:
+            usage: 1.0246457001441578
+            loadAverage:
+              - 1.4894159098541704
+              - 1.4894159098541704
+          network:
+            packetsOut: 4
+            packetsIn: 1
+            bytesIn: 6
+            bytesOut: 7
+        blockchain:
+          nodeConnection: true
+          blocksBehind: 7
+          lastBlockTime: 2000-01-23T04:56:07.000+00:00
+          networkLatency: 1.2315135367772556
+          syncStatus: syncStatus
+          status: status
+        services:
+          - lastCheck: 2000-01-23T04:56:07.000+00:00
+            responseTime: 6.027456183070403
+            name: name
+            errorRate: 1.4658129805029452
+            status: status
+            dependencies:
+              - dependencies
+              - dependencies
+          - lastCheck: 2000-01-23T04:56:07.000+00:00
+            responseTime: 6.027456183070403
+            name: name
+            errorRate: 1.4658129805029452
+            status: status
+            dependencies:
+              - dependencies
+              - dependencies
+        version: version
+        status: healthy
+        timestamp: 2000-01-23T04:56:07.000+00:00
+        uptime: 0.8008281904610115
+      properties:
+        status:
+          enum:
+            - healthy
+            - degraded
+            - unhealthy
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+        uptime:
+          type: number
+        version:
+          type: string
+        environment:
+          type: string
+        services:
+          items:
+            $ref: '#/components/schemas/HealthStatus_services_inner'
+          type: array
+        database:
+          $ref: '#/components/schemas/HealthStatus_database'
+        blockchain:
+          $ref: '#/components/schemas/HealthStatus_blockchain'
+        performance:
+          $ref: '#/components/schemas/HealthStatus_performance'
+        security:
+          $ref: '#/components/schemas/HealthStatus_security'
+      type: object
+    SecurityStats:
+      example:
+        lastUpdated: 2000-01-23T04:56:07.000+00:00
+        securityScore: 5.962133916683182
+        totalEvents: 0
+        activeThreatCount: 6
+        blockedAttacks24h: 1
+        threatLevel: low
+      properties:
+        totalEvents:
+          type: integer
+        threatLevel:
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          type: string
+        activeThreatCount:
+          type: integer
+        blockedAttacks24h:
+          type: integer
+        securityScore:
+          type: number
+        lastUpdated:
+          format: date-time
+          type: string
+      type: object
+    ComplianceStatus:
+      example:
+        data_protection:
+          access_logging: true
+          right_to_deletion: true
+          data_retention_policy: true
+          consent_management: true
+          encryption_in_transit: true
+          backup_encryption: true
+          encryption_at_rest: true
+        remediation_tasks: 5
+        next_audit: 2000-01-23
+        violations: 1
+        iso27001_status: iso27001_status
+        certifications:
+          - expires: 2000-01-23
+            last_review: 2000-01-23
+            name: name
+            status: status
+          - expires: 2000-01-23
+            last_review: 2000-01-23
+            name: name
+            status: status
+        overall_score: 0.8008281904610115
+        gdpr_compliance: true
+        last_audit: 2000-01-23
+        policy_compliance: 6.027456183070403
+      properties:
+        overall_score:
+          description: Overall compliance score
+          type: number
+        gdpr_compliance:
+          description: GDPR compliance status
+          type: boolean
+        iso27001_status:
+          description: ISO 27001 certification status
+          type: string
+        last_audit:
+          description: Last audit date
+          format: date
+          type: string
+        next_audit:
+          description: Next audit date
+          format: date
+          type: string
+        certifications:
+          items:
+            $ref: '#/components/schemas/ComplianceStatus_certifications_inner'
+          type: array
+        data_protection:
+          $ref: '#/components/schemas/ComplianceStatus_data_protection'
+        policy_compliance:
+          type: number
+        violations:
+          type: integer
+        remediation_tasks:
+          type: integer
+      type: object
+    WeatherSecurityStatus:
+      example:
+        secure_stations: 1
+        api_security:
+          ddos_protection: true
+          certificate_valid: true
+          rate_limiting: true
+          ssl_grade: ssl_grade
+        transmission_encrypted: true
+        last_security_check: 2000-01-23T04:56:07.000+00:00
+        data_integrity: 0.8008281904610115
+        active_stations: 6
+        flagged_stations: 5
+        authentication_status: authentication_status
+        station_security: secure
+        data_validation:
+          data_sanitization: true
+          backup_verification: true
+          anomaly_detection: true
+          sensor_checks: true
+      properties:
+        station_security:
+          enum:
+            - secure
+            - warning
+            - compromised
+          type: string
+        data_integrity:
+          type: number
+        transmission_encrypted:
+          type: boolean
+        last_security_check:
+          format: date-time
+          type: string
+        active_stations:
+          type: integer
+        secure_stations:
+          type: integer
+        flagged_stations:
+          type: integer
+        authentication_status:
+          type: string
+        api_security:
+          $ref: '#/components/schemas/WeatherSecurityStatus_api_security'
+        data_validation:
+          $ref: '#/components/schemas/WeatherSecurityStatus_data_validation'
+      type: object
+    LangChainStatus:
+      example:
+        analytics:
+          networkHealth: networkHealth
+          recommendations: 0
+        available: true
+        description: description
+        independence: independence
+        enabled: true
+      properties:
+        enabled:
+          type: boolean
+        available:
+          type: boolean
+        analytics:
+          $ref: '#/components/schemas/LangChainStatus_analytics'
+        description:
+          type: string
+        independence:
+          type: string
+      type: object
+    LangChainInsight:
+      example:
+        trend: low
+        recommendation: recommendation
+        type: type
+        value: value
+      properties:
+        type:
+          type: string
+        value:
+          type: string
+        trend:
+          enum:
+            - low
+            - medium
+            - high
+          type: string
+        recommendation:
+          type: string
+      type: object
+    Pagination:
+      example:
+        total: 7
+        offset: 4
+        limit: 2
+        hasPrevious: true
+        hasNext: true
+      properties:
+        limit:
+          description: Items per page
+          type: integer
+        offset:
+          description: Items to skip
+          type: integer
+        total:
+          description: Total number of items
+          type: integer
+        hasNext:
+          description: Whether there are more items
+          type: boolean
+        hasPrevious:
+          description: Whether there are previous items
+          type: boolean
+      type: object
+    _api_blockchain_blocks_get_200_response:
+      example:
+        total: 3
+        pagination:
+          total: 7
+          offset: 4
+          limit: 2
+          hasPrevious: true
+          hasNext: true
+        blocks:
+          - difficulty: 5.962133916683182
+            gasLimit: 9
+            gasUsed: 7
+            previousHash: previousHash
+            size: 2
+            index: 0
+            merkleRoot: merkleRoot
+            transactionCount: 5
+            nonce: 1
+            hash: hash
+            timestamp: 6
+          - difficulty: 5.962133916683182
+            gasLimit: 9
+            gasUsed: 7
+            previousHash: previousHash
+            size: 2
+            index: 0
+            merkleRoot: merkleRoot
+            transactionCount: 5
+            nonce: 1
+            hash: hash
+            timestamp: 6
+      properties:
+        blocks:
+          items:
+            $ref: '#/components/schemas/Block'
+          type: array
+        total:
+          type: integer
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+      type: object
+    _api_contracts_estimate_gas_post_200_response:
+      example:
+        gasEstimate: 0
+      properties:
+        gasEstimate:
+          description: Estimated gas units required
+          type: integer
+      type: object
+    _api_mining_rewards_get_200_response:
+      example:
+        data:
+          - amount: 0.8008281904610115
+            performance:
+              accuracy: 9.301444243932576
+              speed: 3.616076749251911
+              uptime: 7.061401241503109
+            blockchain:
+              gasUsed: 4
+              blockNumber: 2
+              confirmations: 7
+              transactionHash: transactionHash
+            recipient: recipient
+            currency: currency
+            multipliers:
+              total: 2.3021358869347655
+              proximity: 5.962133916683182
+              base: 6.027456183070403
+              quality: 1.4658129805029452
+              frequency: 5.637376656633329
+            id: id
+            source:
+              details: '{}'
+              id: id
+              type: type
+            type: weather_data
+            timestamp: 2000-01-23T04:56:07.000+00:00
+            status: pending
+          - amount: 0.8008281904610115
+            performance:
+              accuracy: 9.301444243932576
+              speed: 3.616076749251911
+              uptime: 7.061401241503109
+            blockchain:
+              gasUsed: 4
+              blockNumber: 2
+              confirmations: 7
+              transactionHash: transactionHash
+            recipient: recipient
+            currency: currency
+            multipliers:
+              total: 2.3021358869347655
+              proximity: 5.962133916683182
+              base: 6.027456183070403
+              quality: 1.4658129805029452
+              frequency: 5.637376656633329
+            id: id
+            source:
+              details: '{}'
+              id: id
+              type: type
+            type: weather_data
+            timestamp: 2000-01-23T04:56:07.000+00:00
+            status: pending
+        success: true
+        message: message
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          items:
+            $ref: '#/components/schemas/MiningReward'
+          type: array
+        message:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_analytics_get_200_response:
+      example:
+        data:
+          overview:
+            totalTransactions: 1
+            totalUsers: 0
+            activeUsers24h: 6
+            totalValueLocked: 5.962133916683182
+            networkUtilization: 5.637376656633329
+          security:
+            activeThreats: 2
+            securityScore: 7.386281948385884
+            blockedAttacks: 4
+            threatLevel: low
+          performance:
+            averageResponseTime: 2.3021358869347655
+            throughput: 7.061401241503109
+            errorRate: 9.301444243932576
+            uptime: 3.616076749251911
+          weather:
+            dataSubmissions24h: 1
+            averageQuality: 4.965218492984954
+            activeStations: 7
+            rewardsDistributed24h: 5.025004791520295
+          crossChain:
+            bridgeSuccessRate: 6.84685269835264
+            activeBridges: 1
+            supportedChains: 1
+            bridgeVolume24h: 1.4894159098541704
+        success: true
+        message: message
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/NetworkAnalytics'
+        message:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _health_get_200_response:
+      example:
+        data:
+          environment: environment
+          database:
+            connectionPool:
+              total: 5
+              idle: 2
+              active: 5
+            storage:
+              available: 2
+              utilization: 4.145608029883936
+              used: 3
+            status: status
+            queryPerformance:
+              slowQueries: 9
+              averageTime: 7.061401241503109
+          security:
+            certificates:
+              valid: true
+              grade: grade
+              expiresAt: 2000-01-23T04:56:07.000+00:00
+            firewall:
+              blockedConnections24h: 9
+              active: true
+              rules: 8
+            lastSecurityScan: 2000-01-23T04:56:07.000+00:00
+            vulnerabilities:
+              high: 9
+              critical: 5
+              low: 6
+              medium: 9
+            status: status
+          performance:
+            disk:
+              available: 2
+              utilization: 4.145608029883936
+              used: 3
+            memory:
+              available: 2
+              utilization: 4.145608029883936
+              used: 3
+            cpu:
+              usage: 1.0246457001441578
+              loadAverage:
+                - 1.4894159098541704
+                - 1.4894159098541704
+            network:
+              packetsOut: 4
+              packetsIn: 1
+              bytesIn: 6
+              bytesOut: 7
+          blockchain:
+            nodeConnection: true
+            blocksBehind: 7
+            lastBlockTime: 2000-01-23T04:56:07.000+00:00
+            networkLatency: 1.2315135367772556
+            syncStatus: syncStatus
+            status: status
+          services:
+            - lastCheck: 2000-01-23T04:56:07.000+00:00
+              responseTime: 6.027456183070403
+              name: name
+              errorRate: 1.4658129805029452
+              status: status
+              dependencies:
+                - dependencies
+                - dependencies
+            - lastCheck: 2000-01-23T04:56:07.000+00:00
+              responseTime: 6.027456183070403
+              name: name
+              errorRate: 1.4658129805029452
+              status: status
+              dependencies:
+                - dependencies
+                - dependencies
+          version: version
+          status: healthy
+          timestamp: 2000-01-23T04:56:07.000+00:00
+          uptime: 0.8008281904610115
+        success: true
+        message: message
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/HealthStatus'
+        message:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_security_stats_get_200_response:
+      example:
+        data:
+          lastUpdated: 2000-01-23T04:56:07.000+00:00
+          securityScore: 5.962133916683182
+          totalEvents: 0
+          activeThreatCount: 6
+          blockedAttacks24h: 1
+          threatLevel: low
+        success: true
+        message: message
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/SecurityStats'
+        message:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_compliance_status_get_200_response:
+      example:
+        data:
+          data_protection:
+            access_logging: true
+            right_to_deletion: true
+            data_retention_policy: true
+            consent_management: true
+            encryption_in_transit: true
+            backup_encryption: true
+            encryption_at_rest: true
+          remediation_tasks: 5
+          next_audit: 2000-01-23
+          violations: 1
+          iso27001_status: iso27001_status
+          certifications:
+            - expires: 2000-01-23
+              last_review: 2000-01-23
+              name: name
+              status: status
+            - expires: 2000-01-23
+              last_review: 2000-01-23
+              name: name
+              status: status
+          overall_score: 0.8008281904610115
+          gdpr_compliance: true
+          last_audit: 2000-01-23
+          policy_compliance: 6.027456183070403
+        success: true
+        message: message
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/ComplianceStatus'
+        message:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_integrations_langchain_status_get_200_response:
+      example:
+        data:
+          analytics:
+            networkHealth: networkHealth
+            recommendations: 0
+          available: true
+          description: description
+          independence: independence
+          enabled: true
+        success: true
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/LangChainStatus'
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_integrations_langchain_enable_post_200_response_data:
+      example:
+        message: message
+        status: status
+      properties:
+        message:
+          type: string
+        status:
+          type: string
+      type: object
+    _api_integrations_langchain_enable_post_200_response:
+      example:
+        data:
+          message: message
+          status: status
+        success: true
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/_api_integrations_langchain_enable_post_200_response_data'
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_integrations_langchain_insights_get_200_response_data:
+      example:
+        insights:
+          - trend: low
+            recommendation: recommendation
+            type: type
+            value: value
+          - trend: low
+            recommendation: recommendation
+            type: type
+            value: value
+        dataSource: dataSource
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        insights:
+          items:
+            $ref: '#/components/schemas/LangChainInsight'
+          type: array
+        timestamp:
+          format: date-time
+          type: string
+        dataSource:
+          type: string
+      type: object
+    _api_integrations_langchain_insights_get_200_response:
+      example:
+        data:
+          insights:
+            - trend: low
+              recommendation: recommendation
+              type: type
+              value: value
+            - trend: low
+              recommendation: recommendation
+              type: type
+              value: value
+          dataSource: dataSource
+          timestamp: 2000-01-23T04:56:07.000+00:00
+        success: true
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/_api_integrations_langchain_insights_get_200_response_data'
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_compute_tasks_post_request_resourceRequirements:
+      properties:
+        cpu:
+          description: CPU cores required
+          type: integer
+        memory:
+          description: Memory in GB
+          type: integer
+        storage:
+          description: Storage in GB
+          type: integer
+        gpu:
+          description: GPU requirement
+          type: boolean
+      type: object
+    _api_compute_tasks_post_request:
+      properties:
+        taskType:
+          description: Type of compute task
+          enum:
+            - machine-learning
+            - data-processing
+            - scientific-computation
+            - rendering
+          type: string
+        priority:
+          description: Task priority level
+          enum:
+            - low
+            - medium
+            - high
+            - urgent
+          type: string
+        resourceRequirements:
+          $ref: '#/components/schemas/_api_compute_tasks_post_request_resourceRequirements'
+      required:
+        - taskType
+      type: object
+    _api_compute_tasks_post_200_response:
+      example:
+        cost: cost
+        queuePosition: 0
+        success: true
+        estimatedCompletion: estimatedCompletion
+        assignedProvider: assignedProvider
+        taskId: taskId
+        status: queued
+      properties:
+        success:
+          type: boolean
+        taskId:
+          type: string
+        status:
+          enum:
+            - queued
+            - running
+            - completed
+            - failed
+          type: string
+        assignedProvider:
+          type: string
+        estimatedCompletion:
+          type: string
+        cost:
+          type: string
+        queuePosition:
+          type: integer
+      type: object
+    _api_compute_tasks__taskId__status_get_200_response_resourceUsage:
+      example:
+        memory: 1.4658129805029452
+        cpu: 6.027456183070403
+        storage: 5.962133916683182
+      properties:
+        cpu:
+          type: number
+        memory:
+          type: number
+        storage:
+          type: number
+      type: object
+    _api_compute_tasks__taskId__status_get_200_response:
+      example:
+        cost: cost
+        provider: provider
+        resourceUsage:
+          memory: 1.4658129805029452
+          cpu: 6.027456183070403
+          storage: 5.962133916683182
+        estimatedCompletion: estimatedCompletion
+        progress: 8
+        taskId: taskId
+        status: queued
+      properties:
+        taskId:
+          type: string
+        status:
+          enum:
+            - queued
+            - running
+            - completed
+            - failed
+          type: string
+        progress:
+          maximum: 100
+          minimum: 0
+          type: integer
+        provider:
+          type: string
+        estimatedCompletion:
+          type: string
+        resourceUsage:
+          $ref: '#/components/schemas/_api_compute_tasks__taskId__status_get_200_response_resourceUsage'
+        cost:
+          type: string
+      type: object
+    _api_compute_providers_get_200_response_providers_inner_resources:
+      example:
+        gpuSupport: true
+        totalCPU: 6
+        totalMemory: 5
+        availableMemory: 5
+        availableCPU: 1
+      properties:
+        totalCPU:
+          type: integer
+        availableCPU:
+          type: integer
+        totalMemory:
+          type: integer
+        availableMemory:
+          type: integer
+        gpuSupport:
+          type: boolean
+      type: object
+    _api_compute_providers_get_200_response_providers_inner:
+      example:
+        capabilities:
+          - capabilities
+          - capabilities
+        name: name
+        pricePerHour: pricePerHour
+        resources:
+          gpuSupport: true
+          totalCPU: 6
+          totalMemory: 5
+          availableMemory: 5
+          availableCPU: 1
+        availability: 0.8008281904610115
+        status: active
+      properties:
+        name:
+          type: string
+        status:
+          enum:
+            - active
+            - inactive
+            - maintenance
+          type: string
+        availability:
+          type: number
+        pricePerHour:
+          type: string
+        capabilities:
+          items:
+            type: string
+          type: array
+        resources:
+          $ref: '#/components/schemas/_api_compute_providers_get_200_response_providers_inner_resources'
+      type: object
+    _api_compute_providers_get_200_response:
+      example:
+        success: true
+        providers:
+          - capabilities:
+              - capabilities
+              - capabilities
+            name: name
+            pricePerHour: pricePerHour
+            resources:
+              gpuSupport: true
+              totalCPU: 6
+              totalMemory: 5
+              availableMemory: 5
+              availableCPU: 1
+            availability: 0.8008281904610115
+            status: active
+          - capabilities:
+              - capabilities
+              - capabilities
+            name: name
+            pricePerHour: pricePerHour
+            resources:
+              gpuSupport: true
+              totalCPU: 6
+              totalMemory: 5
+              availableMemory: 5
+              availableCPU: 1
+            availability: 0.8008281904610115
+            status: active
+      properties:
+        success:
+          type: boolean
+        providers:
+          items:
+            $ref: '#/components/schemas/_api_compute_providers_get_200_response_providers_inner'
+          type: array
+      type: object
+    _api_aiml_models_get_200_response_models_inner_requirements:
+      example:
+        memory: 6
+        cpu: 0
+        gpu: true
+      properties:
+        cpu:
+          type: integer
+        memory:
+          type: integer
+        gpu:
+          type: boolean
+      type: object
+    _api_aiml_models_get_200_response_models_inner_pricing:
+      example:
+        perRequest: perRequest
+        perHour: perHour
+      properties:
+        perHour:
+          type: string
+        perRequest:
+          type: string
+      type: object
+    _api_aiml_models_get_200_response_models_inner:
+      example:
+        requirements:
+          memory: 6
+          cpu: 0
+          gpu: true
+        name: name
+        description: description
+        id: id
+        category: category
+        version: version
+        pricing:
+          perRequest: perRequest
+          perHour: perHour
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        version:
+          type: string
+        requirements:
+          $ref: '#/components/schemas/_api_aiml_models_get_200_response_models_inner_requirements'
+        pricing:
+          $ref: '#/components/schemas/_api_aiml_models_get_200_response_models_inner_pricing'
+      type: object
+    _api_aiml_models_get_200_response:
+      example:
+        models:
+          - requirements:
+              memory: 6
+              cpu: 0
+              gpu: true
+            name: name
+            description: description
+            id: id
+            category: category
+            version: version
+            pricing:
+              perRequest: perRequest
+              perHour: perHour
+          - requirements:
+              memory: 6
+              cpu: 0
+              gpu: true
+            name: name
+            description: description
+            id: id
+            category: category
+            version: version
+            pricing:
+              perRequest: perRequest
+              perHour: perHour
+        success: true
+      properties:
+        success:
+          type: boolean
+        models:
+          items:
+            $ref: '#/components/schemas/_api_aiml_models_get_200_response_models_inner'
+          type: array
+      type: object
+    _api_aiml_inference_post_request:
+      properties:
+        modelId:
+          description: Model identifier
+          type: string
+        input:
+          description: Input data for inference
+          type: object
+        parameters:
+          description: Model parameters
+          type: object
+      required:
+        - input
+        - modelId
+      type: object
+    _api_aiml_inference_post_200_response:
+      example:
+        result: '{}'
+        jobId: jobId
+        cost: cost
+        success: true
+        processingTime: 0.8008281904610115
+      properties:
+        success:
+          type: boolean
+        jobId:
+          type: string
+        result:
+          description: Inference result
+          type: object
+        processingTime:
+          type: number
+        cost:
+          type: string
+      type: object
+    _api_performance_metrics_get_200_response_metrics_latency:
+      example:
+        p99: 5.962133916683182
+        avg: 6.027456183070403
+        p95: 1.4658129805029452
+      properties:
+        avg:
+          type: number
+        p95:
+          type: number
+        p99:
+          type: number
+      type: object
+    _api_performance_metrics_get_200_response_metrics_throughput:
+      example:
+        current: 5.637376656633329
+        peak: 2.3021358869347655
+      properties:
+        current:
+          type: number
+        peak:
+          type: number
+      type: object
+    _api_performance_metrics_get_200_response_metrics:
+      example:
+        tps: 0.8008281904610115
+        latency:
+          p99: 5.962133916683182
+          avg: 6.027456183070403
+          p95: 1.4658129805029452
+        throughput:
+          current: 5.637376656633329
+          peak: 2.3021358869347655
+        errorRate: 7.061401241503109
+        uptime: 9.301444243932576
+      properties:
+        tps:
+          description: Transactions per second
+          type: number
+        latency:
+          $ref: '#/components/schemas/_api_performance_metrics_get_200_response_metrics_latency'
+        throughput:
+          $ref: '#/components/schemas/_api_performance_metrics_get_200_response_metrics_throughput'
+        errorRate:
+          type: number
+        uptime:
+          type: number
+      type: object
+    _api_performance_metrics_get_200_response:
+      example:
+        success: true
+        metrics:
+          tps: 0.8008281904610115
+          latency:
+            p99: 5.962133916683182
+            avg: 6.027456183070403
+            p95: 1.4658129805029452
+          throughput:
+            current: 5.637376656633329
+            peak: 2.3021358869347655
+          errorRate: 7.061401241503109
+          uptime: 9.301444243932576
+        timestamp: 2000-01-23T04:56:07.000+00:00
+      properties:
+        success:
+          type: boolean
+        metrics:
+          $ref: '#/components/schemas/_api_performance_metrics_get_200_response_metrics'
+        timestamp:
+          format: date-time
+          type: string
+      type: object
+    _api_performance_optimization_post_request:
+      properties:
+        target:
+          enum:
+            - database
+            - network
+            - compute
+            - storage
+          type: string
+        level:
+          enum:
+            - low
+            - medium
+            - high
+            - aggressive
+          type: string
+        duration:
+          description: Optimization duration in minutes
+          type: integer
+      type: object
+    _api_performance_optimization_post_200_response_expectedImprovements:
+      example:
+        tps: tps
+        latency: latency
+        throughput: throughput
+      properties:
+        tps:
+          type: string
+        latency:
+          type: string
+        throughput:
+          type: string
+      type: object
+    _api_performance_optimization_post_200_response:
+      example:
+        optimizationId: optimizationId
+        expectedImprovements:
+          tps: tps
+          latency: latency
+          throughput: throughput
+        success: true
+        estimatedDuration: estimatedDuration
+        status: status
+      properties:
+        success:
+          type: boolean
+        optimizationId:
+          type: string
+        status:
+          type: string
+        estimatedDuration:
+          type: string
+        expectedImprovements:
+          $ref: '#/components/schemas/_api_performance_optimization_post_200_response_expectedImprovements'
+      type: object
+    _api_wallet_generate_mnemonic_post_200_response:
+      example:
+        entropy: entropy
+        mnemonic: mnemonic
+      properties:
+        mnemonic:
+          description: BIP39 mnemonic phrase
+          type: string
+        entropy:
+          description: Entropy used for generation
+          type: string
+      type: object
+    _api_wallet_validate_mnemonic_post_request:
+      properties:
+        mnemonic:
+          description: BIP39 mnemonic phrase to validate
+          type: string
+      required:
+        - mnemonic
+      type: object
+    _api_wallet_validate_mnemonic_post_200_response:
+      example:
+        valid: true
+        strength: weak
+      properties:
+        valid:
+          type: boolean
+        strength:
+          enum:
+            - weak
+            - medium
+            - strong
+          type: string
+      type: object
+    WeatherDataSubmission_sensorData_inner:
+      example:
+        unit: celsius
+        type: temperature
+        value: 23.5
+        status: active
+      properties:
+        type:
+          enum:
+            - temperature
+            - humidity
+            - pressure
+            - wind_speed
+            - wind_direction
+            - precipitation
+            - visibility
+            - uv_index
+          example: temperature
+          type: string
+        value:
+          description: Sensor reading value
+          example: 23.5
+          type: number
+        unit:
+          description: Unit of measurement
+          example: celsius
+          type: string
+        status:
+          enum:
+            - active
+            - inactive
+            - error
+          example: active
+          type: string
+      type: object
+    WeatherDataSubmission_quality:
+      example:
+        score: 95
+        issues: []
+      properties:
+        score:
+          description: Data quality score
+          example: 95
+          maximum: 100
+          minimum: 0
+          type: number
+        issues:
+          description: Quality issues detected
+          example: []
+          items:
+            type: string
+          type: array
+      type: object
+    WeatherSubmissionResponse_data_sensors_inner:
+      example:
+        unit: celsius
+        type: temperature
+        value: 23.5
+        status: active
+      properties:
+        type:
+          example: temperature
+          type: string
+        value:
+          example: 23.5
+          type: number
+        unit:
+          example: celsius
+          type: string
+        status:
+          example: active
+          type: string
+      type: object
+    WeatherSubmissionResponse_data_quality:
+      example:
+        score: 85
+        validated: true
+        issues: []
+      properties:
+        score:
+          example: 85
+          type: number
+        issues:
+          example: []
+          items:
+            type: string
+          type: array
+        validated:
+          example: true
+          type: boolean
+      type: object
+    WeatherSubmissionResponse_data_rewards:
+      example:
+        qualityBonus: 0.05
+        totalAmount: 0.17
+        proximityBonus: 0.02
+        baseAmount: 0.1
+      properties:
+        baseAmount:
+          description: Base reward amount
+          example: 0.1
+          type: number
+        qualityBonus:
+          description: Quality bonus amount
+          example: 0.05
+          type: number
+        proximityBonus:
+          description: Proximity bonus amount
+          example: 0.02
+          type: number
+        totalAmount:
+          description: Total reward amount
+          example: 0.17
+          type: number
+      type: object
+    WeatherSubmissionResponse_data_blockchain:
+      example:
+        gasUsed: 21000
+        blockNumber: 123456
+        transactionHash: 0x1234567890abcdef...
+      properties:
+        blockNumber:
+          description: Block number where transaction was included
+          example: 123456
+          type: integer
+        transactionHash:
+          description: Transaction hash
+          example: 0x1234567890abcdef...
+          type: string
+        gasUsed:
+          description: Gas used for transaction
+          example: 21000
+          type: integer
+      type: object
+    WeatherSubmissionResponse_data:
+      example:
+        sensors:
+          - unit: celsius
+            type: temperature
+            value: 23.5
+            status: active
+          - unit: celsius
+            type: temperature
+            value: 23.5
+            status: active
+        blockchain:
+          gasUsed: 21000
+          blockNumber: 123456
+          transactionHash: 0x1234567890abcdef...
+        location:
+          altitude: 10
+          latitude: 40.7128
+          accuracy: 5
+          longitude: -74.006
+        rewards:
+          qualityBonus: 0.05
+          totalAmount: 0.17
+          proximityBonus: 0.02
+          baseAmount: 0.1
+        stationId: station_001
+        timestamp: 2024-01-15T10:30:00Z
+        quality:
+          score: 85
+          validated: true
+          issues: []
+      properties:
+        stationId:
+          description: Weather station identifier
+          example: station_001
+          type: string
+        timestamp:
+          description: Submission timestamp
+          example: 2024-01-15T10:30:00Z
+          format: date-time
+          type: string
+        location:
+          $ref: '#/components/schemas/Location'
+        sensors:
+          items:
+            $ref: '#/components/schemas/WeatherSubmissionResponse_data_sensors_inner'
+          type: array
+        quality:
+          $ref: '#/components/schemas/WeatherSubmissionResponse_data_quality'
+        rewards:
+          $ref: '#/components/schemas/WeatherSubmissionResponse_data_rewards'
+        blockchain:
+          $ref: '#/components/schemas/WeatherSubmissionResponse_data_blockchain'
+      type: object
+    MiningReward_source:
+      example:
+        details: '{}'
+        id: id
+        type: type
+      properties:
+        type:
+          type: string
+        id:
+          type: string
+        details:
+          type: object
+      type: object
+    MiningReward_multipliers:
+      example:
+        total: 2.3021358869347655
+        proximity: 5.962133916683182
+        base: 6.027456183070403
+        quality: 1.4658129805029452
+        frequency: 5.637376656633329
+      properties:
+        base:
+          type: number
+        quality:
+          type: number
+        proximity:
+          type: number
+        frequency:
+          type: number
+        total:
+          type: number
+      type: object
+    MiningReward_performance:
+      example:
+        accuracy: 9.301444243932576
+        speed: 3.616076749251911
+        uptime: 7.061401241503109
+      properties:
+        uptime:
+          type: number
+        accuracy:
+          type: number
+        speed:
+          type: number
+      type: object
+    MiningReward_blockchain:
+      example:
+        gasUsed: 4
+        blockNumber: 2
+        confirmations: 7
+        transactionHash: transactionHash
+      properties:
+        blockNumber:
+          type: integer
+        transactionHash:
+          type: string
+        gasUsed:
+          type: integer
+        confirmations:
+          type: integer
+      type: object
+    NetworkAnalytics_overview:
+      example:
+        totalTransactions: 1
+        totalUsers: 0
+        activeUsers24h: 6
+        totalValueLocked: 5.962133916683182
+        networkUtilization: 5.637376656633329
+      properties:
+        totalUsers:
+          type: integer
+        activeUsers24h:
+          type: integer
+        totalTransactions:
+          type: integer
+        totalValueLocked:
+          type: number
+        networkUtilization:
+          type: number
+      type: object
+    NetworkAnalytics_performance:
+      example:
+        averageResponseTime: 2.3021358869347655
+        throughput: 7.061401241503109
+        errorRate: 9.301444243932576
+        uptime: 3.616076749251911
+      properties:
+        averageResponseTime:
+          type: number
+        throughput:
+          type: number
+        errorRate:
+          type: number
+        uptime:
+          type: number
+      type: object
+    NetworkAnalytics_security:
+      example:
+        activeThreats: 2
+        securityScore: 7.386281948385884
+        blockedAttacks: 4
+        threatLevel: low
+      properties:
+        threatLevel:
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          type: string
+        activeThreats:
+          type: integer
+        blockedAttacks:
+          type: integer
+        securityScore:
+          type: number
+      type: object
+    NetworkAnalytics_crossChain:
+      example:
+        bridgeSuccessRate: 6.84685269835264
+        activeBridges: 1
+        supportedChains: 1
+        bridgeVolume24h: 1.4894159098541704
+      properties:
+        supportedChains:
+          type: integer
+        activeBridges:
+          type: integer
+        bridgeVolume24h:
+          type: number
+        bridgeSuccessRate:
+          type: number
+      type: object
+    NetworkAnalytics_weather:
+      example:
+        dataSubmissions24h: 1
+        averageQuality: 4.965218492984954
+        activeStations: 7
+        rewardsDistributed24h: 5.025004791520295
+      properties:
+        activeStations:
+          type: integer
+        dataSubmissions24h:
+          type: integer
+        averageQuality:
+          type: number
+        rewardsDistributed24h:
+          type: number
+      type: object
+    HealthStatus_services_inner:
+      example:
+        lastCheck: 2000-01-23T04:56:07.000+00:00
+        responseTime: 6.027456183070403
+        name: name
+        errorRate: 1.4658129805029452
+        status: status
+        dependencies:
+          - dependencies
+          - dependencies
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        responseTime:
+          type: number
+        errorRate:
+          type: number
+        lastCheck:
+          format: date-time
+          type: string
+        dependencies:
+          items:
+            type: string
+          type: array
+      type: object
+    HealthStatus_database_connectionPool:
+      example:
+        total: 5
+        idle: 2
+        active: 5
+      properties:
+        total:
+          type: integer
+        active:
+          type: integer
+        idle:
+          type: integer
+      type: object
+    HealthStatus_database_queryPerformance:
+      example:
+        slowQueries: 9
+        averageTime: 7.061401241503109
+      properties:
+        averageTime:
+          type: number
+        slowQueries:
+          type: integer
+      type: object
+    HealthStatus_database_storage:
+      example:
+        available: 2
+        utilization: 4.145608029883936
+        used: 3
+      properties:
+        used:
+          type: integer
+        available:
+          type: integer
+        utilization:
+          type: number
+      type: object
+    HealthStatus_database:
+      example:
+        connectionPool:
+          total: 5
+          idle: 2
+          active: 5
+        storage:
+          available: 2
+          utilization: 4.145608029883936
+          used: 3
+        status: status
+        queryPerformance:
+          slowQueries: 9
+          averageTime: 7.061401241503109
+      properties:
+        status:
+          type: string
+        connectionPool:
+          $ref: '#/components/schemas/HealthStatus_database_connectionPool'
+        queryPerformance:
+          $ref: '#/components/schemas/HealthStatus_database_queryPerformance'
+        storage:
+          $ref: '#/components/schemas/HealthStatus_database_storage'
+      type: object
+    HealthStatus_blockchain:
+      example:
+        nodeConnection: true
+        blocksBehind: 7
+        lastBlockTime: 2000-01-23T04:56:07.000+00:00
+        networkLatency: 1.2315135367772556
+        syncStatus: syncStatus
+        status: status
+      properties:
+        status:
+          type: string
+        nodeConnection:
+          type: boolean
+        syncStatus:
+          type: string
+        blocksBehind:
+          type: integer
+        lastBlockTime:
+          format: date-time
+          type: string
+        networkLatency:
+          type: number
+      type: object
+    HealthStatus_performance_cpu:
+      example:
+        usage: 1.0246457001441578
+        loadAverage:
+          - 1.4894159098541704
+          - 1.4894159098541704
+      properties:
+        usage:
+          type: number
+        loadAverage:
+          items:
+            type: number
+          type: array
+      type: object
+    HealthStatus_performance_network:
+      example:
+        packetsOut: 4
+        packetsIn: 1
+        bytesIn: 6
+        bytesOut: 7
+      properties:
+        bytesIn:
+          type: integer
+        bytesOut:
+          type: integer
+        packetsIn:
+          type: integer
+        packetsOut:
+          type: integer
+      type: object
+    HealthStatus_performance:
+      example:
+        disk:
+          available: 2
+          utilization: 4.145608029883936
+          used: 3
+        memory:
+          available: 2
+          utilization: 4.145608029883936
+          used: 3
+        cpu:
+          usage: 1.0246457001441578
+          loadAverage:
+            - 1.4894159098541704
+            - 1.4894159098541704
+        network:
+          packetsOut: 4
+          packetsIn: 1
+          bytesIn: 6
+          bytesOut: 7
+      properties:
+        cpu:
+          $ref: '#/components/schemas/HealthStatus_performance_cpu'
+        memory:
+          $ref: '#/components/schemas/HealthStatus_database_storage'
+        disk:
+          $ref: '#/components/schemas/HealthStatus_database_storage'
+        network:
+          $ref: '#/components/schemas/HealthStatus_performance_network'
+      type: object
+    HealthStatus_security_vulnerabilities:
+      example:
+        high: 9
+        critical: 5
+        low: 6
+        medium: 9
+      properties:
+        critical:
+          type: integer
+        high:
+          type: integer
+        medium:
+          type: integer
+        low:
+          type: integer
+      type: object
+    HealthStatus_security_certificates:
+      example:
+        valid: true
+        grade: grade
+        expiresAt: 2000-01-23T04:56:07.000+00:00
+      properties:
+        valid:
+          type: boolean
+        expiresAt:
+          format: date-time
+          type: string
+        grade:
+          type: string
+      type: object
+    HealthStatus_security_firewall:
+      example:
+        blockedConnections24h: 9
+        active: true
+        rules: 8
+      properties:
+        active:
+          type: boolean
+        rules:
+          type: integer
+        blockedConnections24h:
+          type: integer
+      type: object
+    HealthStatus_security:
+      example:
+        certificates:
+          valid: true
+          grade: grade
+          expiresAt: 2000-01-23T04:56:07.000+00:00
+        firewall:
+          blockedConnections24h: 9
+          active: true
+          rules: 8
+        lastSecurityScan: 2000-01-23T04:56:07.000+00:00
+        vulnerabilities:
+          high: 9
+          critical: 5
+          low: 6
+          medium: 9
+        status: status
+      properties:
+        status:
+          type: string
+        lastSecurityScan:
+          format: date-time
+          type: string
+        vulnerabilities:
+          $ref: '#/components/schemas/HealthStatus_security_vulnerabilities'
+        certificates:
+          $ref: '#/components/schemas/HealthStatus_security_certificates'
+        firewall:
+          $ref: '#/components/schemas/HealthStatus_security_firewall'
+      type: object
+    ComplianceStatus_certifications_inner:
+      example:
+        expires: 2000-01-23
+        last_review: 2000-01-23
+        name: name
+        status: status
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        expires:
+          format: date
+          type: string
+        last_review:
+          format: date
+          type: string
+      type: object
+    ComplianceStatus_data_protection:
+      example:
+        access_logging: true
+        right_to_deletion: true
+        data_retention_policy: true
+        consent_management: true
+        encryption_in_transit: true
+        backup_encryption: true
+        encryption_at_rest: true
+      properties:
+        encryption_at_rest:
+          type: boolean
+        encryption_in_transit:
+          type: boolean
+        backup_encryption:
+          type: boolean
+        access_logging:
+          type: boolean
+        data_retention_policy:
+          type: boolean
+        right_to_deletion:
+          type: boolean
+        consent_management:
+          type: boolean
+      type: object
+    WeatherSecurityStatus_api_security:
+      example:
+        ddos_protection: true
+        certificate_valid: true
+        rate_limiting: true
+        ssl_grade: ssl_grade
+      properties:
+        rate_limiting:
+          type: boolean
+        ddos_protection:
+          type: boolean
+        ssl_grade:
+          type: string
+        certificate_valid:
+          type: boolean
+      type: object
+    WeatherSecurityStatus_data_validation:
+      example:
+        data_sanitization: true
+        backup_verification: true
+        anomaly_detection: true
+        sensor_checks: true
+      properties:
+        sensor_checks:
+          type: boolean
+        anomaly_detection:
+          type: boolean
+        data_sanitization:
+          type: boolean
+        backup_verification:
+          type: boolean
+      type: object
+    LangChainStatus_analytics:
+      example:
+        networkHealth: networkHealth
+        recommendations: 0
+      properties:
+        networkHealth:
+          type: string
+        recommendations:
+          type: integer
+      type: object
+  securitySchemes:
+    ApiKeyAuth:
+      in: header
+      name: X-API-Key
+      type: apiKey
+    BearerAuth:
+      bearerFormat: JWT
+      scheme: bearer
+      type: http

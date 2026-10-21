@@ -1,0 +1,190 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge-dependabot:
+    # Static name states the skip condition (#2981 story 5): every non-Dependabot
+    # PR renders this job as `skipped`, and the name says that is by design.
+    name: Auto-merge Dependabot PRs (skipped unless actor is dependabot[bot], by design)
+    # CT102 self-hosted (2026-08-30): API-only job (gh CLI is installed on the
+    # runner); keeps Dependabot admission working when hosted minutes are
+    # exhausted.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    if: github.actor == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine auto-merge eligibility
+        id: eligibility
+        run: |
+          echo "Analyzing Dependabot PR for auto-merge eligibility..."
+          echo ""
+          echo "Package Ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}"
+          echo "Dependency Type: ${{ steps.metadata.outputs.dependency-type }}"
+          echo "Update Type: ${{ steps.metadata.outputs.update-type }}"
+          echo "Compatibility Score: ${{ steps.metadata.outputs.compatibility-score }}"
+          echo ""
+
+          # Default to not auto-mergeable
+          AUTO_MERGE="false"
+          MERGE_METHOD="squash"
+
+          # Development dependencies: auto-merge patch and minor updates
+          if [ "${{ steps.metadata.outputs.dependency-type }}" = "direct:development" ]; then
+            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ] || \
+               [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-minor" ]; then
+              AUTO_MERGE="true"
+              echo "Dev dependency patch/minor update - eligible for auto-merge"
+            fi
+          fi
+
+          # Production dependencies: only auto-merge patches with high compatibility
+          if [ "${{ steps.metadata.outputs.dependency-type }}" = "direct:production" ]; then
+            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ]; then
+              COMPAT_SCORE="${{ steps.metadata.outputs.compatibility-score }}"
+              if [ -n "$COMPAT_SCORE" ] && [ "$COMPAT_SCORE" -ge 90 ]; then
+                AUTO_MERGE="true"
+                echo "Production patch with high compatibility - eligible for auto-merge"
+              else
+                echo "Production patch with low/unknown compatibility - requires review"
+              fi
+            fi
+          fi
+
+          # GitHub Actions: auto-merge patch and minor
+          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "github_actions" ]; then
+            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ] || \
+               [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-minor" ]; then
+              AUTO_MERGE="true"
+              echo "GitHub Actions patch/minor update - eligible for auto-merge"
+            fi
+          fi
+
+          # Docker: auto-merge patch updates only
+          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "docker" ]; then
+            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ]; then
+              AUTO_MERGE="true"
+              echo "Docker patch update - eligible for auto-merge"
+            fi
+          fi
+
+          # Security updates: always auto-merge (after CI passes)
+          if [ "${{ steps.metadata.outputs.alert-state }}" = "DISMISSED" ] || \
+             [ "${{ steps.metadata.outputs.ghsa-id }}" != "" ]; then
+            AUTO_MERGE="true"
+            echo "Security update - eligible for auto-merge"
+          fi
+
+          # NEVER auto-merge certain critical packages
+          CRITICAL_PACKAGES=(
+            "@openzeppelin"
+            "hardhat"
+            "ethers"
+            "web3"
+            "ring"
+            "rustls"
+            "secp256k1"
+            "ed25519"
+            "aes"
+            "sha2"
+            "sha3"
+          )
+
+          DEPENDENCY_NAME="${{ steps.metadata.outputs.dependency-names }}"
+          for pkg in "${CRITICAL_PACKAGES[@]}"; do
+            if [[ "$DEPENDENCY_NAME" == *"$pkg"* ]]; then
+              AUTO_MERGE="false"
+              echo "::warning::Critical package update for $pkg - requires manual review"
+              break
+            fi
+          done
+
+          # NEVER auto-merge major updates
+          if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-major" ]; then
+            AUTO_MERGE="false"
+            echo "Major update - requires manual review"
+          fi
+
+          echo "auto_merge=$AUTO_MERGE" >> $GITHUB_OUTPUT
+          echo "merge_method=$MERGE_METHOD" >> $GITHUB_OUTPUT
+
+          if [ "$AUTO_MERGE" = "true" ]; then
+            echo "::notice::PR is eligible for auto-merge"
+          else
+            echo "::notice::PR requires manual review"
+          fi
+
+      - name: Wait for CI to pass
+        if: steps.eligibility.outputs.auto_merge == 'true'
+        uses: lewagon/wait-on-check-action@369769072fe522a3a8a85c03c96af1e5242a1994 # v1.9.1
+        with:
+          bundler-cache: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          running-workflow-name: 'Auto-merge Dependabot PRs'
+          allowed-conclusions: success
+
+      - name: Approve Dependabot PR
+        if: steps.eligibility.outputs.auto_merge == 'true'
+        run: |
+          gh pr review "${{ github.event.pull_request.number }}" --approve --body "Auto-approved by Dependabot auto-merge workflow.
+
+          **Update Details:**
+          - Package: ${{ steps.metadata.outputs.dependency-names }}
+          - Update Type: ${{ steps.metadata.outputs.update-type }}
+          - Ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}
+          - Compatibility: ${{ steps.metadata.outputs.compatibility-score }}%
+
+          CI checks have passed. Proceeding with auto-merge."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: steps.eligibility.outputs.auto_merge == 'true'
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --auto \
+            --${{ steps.eligibility.outputs.merge_method }} \
+            --delete-branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add labels for manual review
+        if: steps.eligibility.outputs.auto_merge == 'false'
+        run: |
+          # Add appropriate labels for manual review
+          if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-major" ]; then
+            gh api --method POST \
+              "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+              -f "labels[]=major-update" \
+              -f "labels[]=needs-review"
+          fi
+
+          # Add security label if it's a security update
+          if [ "${{ steps.metadata.outputs.ghsa-id }}" != "" ]; then
+            gh api --method POST \
+              "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+              -f "labels[]=security" \
+              -f "labels[]=high-priority"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

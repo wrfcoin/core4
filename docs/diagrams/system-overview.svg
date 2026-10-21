@@ -1,0 +1,142 @@
+<svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#1f2937">
+    Wrfcoin Core System Architecture
+  </text>
+  
+  <!-- Frontend Layer -->
+  <rect x="50" y="80" width="180" height="120" rx="10" fill="#3b82f6" opacity="0.1" stroke="#3b82f6" stroke-width="2"/>
+  <text x="140" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Frontend Layer
+  </text>
+  <text x="140" y="120" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    React + Vite
+  </text>
+  <text x="140" y="135" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    Port 5000
+  </text>
+  <text x="140" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Dashboard UI
+  </text>
+  <text x="140" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Wallet Interface
+  </text>
+  <text x="140" y="185" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • NFT Explorer
+  </text>
+  
+  <!-- API Services Layer -->
+  <rect x="300" y="80" width="200" height="120" rx="10" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="2"/>
+  <text x="400" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    API Services Layer
+  </text>
+  <text x="400" y="120" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    Node.js Microservices
+  </text>
+  <text x="400" y="135" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    13+ Services
+  </text>
+  <text x="400" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Cross-Chain (3000)
+  </text>
+  <text x="400" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • IoT Networks (3002)
+  </text>
+  <text x="400" y="185" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Storage (7000)
+  </text>
+  
+  <!-- Blockchain Core -->
+  <rect x="570" y="80" width="180" height="120" rx="10" fill="#f59e0b" opacity="0.1" stroke="#f59e0b" stroke-width="2"/>
+  <text x="660" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Blockchain Core
+  </text>
+  <text x="660" y="120" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    Rust Implementation
+  </text>
+  <text x="660" y="135" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    25,847 TPS
+  </text>
+  <text x="660" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • PoW/PoS/PoI/PoP
+  </text>
+  <text x="660" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Mining Engine
+  </text>
+  <text x="660" y="185" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    • Consensus Logic
+  </text>
+  
+  <!-- Database Layer -->
+  <rect x="300" y="250" width="200" height="80" rx="10" fill="#8b5cf6" opacity="0.1" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="400" y="270" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Database Layer
+  </text>
+  <text x="400" y="290" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    PostgreSQL + Drizzle ORM
+  </text>
+  <text x="400" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    Weather Data • Transactions • Accounts
+  </text>
+  
+  <!-- Weather Station Network -->
+  <rect x="50" y="380" width="300" height="80" rx="10" fill="#ef4444" opacity="0.1" stroke="#ef4444" stroke-width="2"/>
+  <text x="200" y="400" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Live Weather Station Network
+  </text>
+  <text x="200" y="420" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    17.6+ WRF Earned • 740,000+ Devices
+  </text>
+  <text x="200" y="440" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    AcuRite • Davis • IoT Networks • Physics Validation
+  </text>
+  
+  <!-- Cross-Chain Networks -->
+  <rect x="450" y="380" width="300" height="80" rx="10" fill="#06b6d4" opacity="0.1" stroke="#06b6d4" stroke-width="2"/>
+  <text x="600" y="400" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Cross-Chain Networks
+  </text>
+  <text x="600" y="420" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    13+ Bridge Protocols
+  </text>
+  <text x="600" y="440" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    Ethereum • Polkadot • Cosmos • Avalanche
+  </text>
+  
+  <!-- Storage Networks -->
+  <rect x="225" y="500" width="350" height="80" rx="10" fill="#84cc16" opacity="0.1" stroke="#84cc16" stroke-width="2"/>
+  <text x="400" y="520" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1f2937">
+    Distributed Storage Networks
+  </text>
+  <text x="400" y="540" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">
+    94.5 PB Capacity
+  </text>
+  <text x="400" y="560" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">
+    IPFS • Filecoin • Arweave • NAS Networks
+  </text>
+  
+  <!-- Connection arrows -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/>
+    </marker>
+  </defs>
+  
+  <!-- Frontend to API -->
+  <line x1="230" y1="140" x2="300" y2="140" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- API to Blockchain -->
+  <line x1="500" y1="140" x2="570" y2="140" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- API to Database -->
+  <line x1="400" y1="200" x2="400" y2="250" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Weather to API -->
+  <line x1="200" y1="380" x2="350" y2="200" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Cross-chain to API -->
+  <line x1="600" y1="380" x2="450" y2="200" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Storage to Database -->
+  <line x1="400" y1="500" x2="400" y2="330" stroke="#6b7280" stroke-width="2" marker-end="url(#arrowhead)"/>
+</svg>

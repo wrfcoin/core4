@@ -1,0 +1,6 @@
+# Trivy Ignore File for WRFCoin
+# Add CVEs here that have been reviewed and accepted as false positives or acceptable risk
+# Format: CVE-XXXX-XXXXX or GHSA-xxxx-xxxx-xxxx
+
+# Example (commented out):
+# CVE-2023-12345  # Accepted risk: not exploitable in our configuration

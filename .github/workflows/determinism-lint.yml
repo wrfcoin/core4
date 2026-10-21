@@ -1,0 +1,169 @@
+name: Determinism Lint
+
+# Blocks NEWLY-introduced nondeterministic constructs (floats, wall-clock reads,
+# unseeded RNG, unordered-map iteration, unsorted read_dir, consensus-path env
+# reads) from the consensus-critical crates. See scripts/check_determinism.py.
+#
+# Honest scope (#2105 + #2233): the current tree already contains a large
+# pre-existing baseline of such constructs (see scripts/determinism_baseline.json
+# and issue tracked in the PR). A hard fail-on-any gate would be permanently red,
+# so the gate runs in BASELINE mode: it fails only on findings not already frozen
+# in the baseline, plus any malformed `// determinism-ok:` allow. The self-test
+# proves each detector works independently of the repo.
+#
+# Full scope, limits and the acceptance probe: docs/security/DETERMINISM_LINT.md
+# Probe: scripts/determinism_lint_probe.sh (self-restoring, ~10s).
+
+on:
+  pull_request:
+    paths:
+      - 'consensus-engines/src/**'
+      - 'primitives/src/**'
+      - 'shared-protocol/src/**'
+      - 'native-chain/src/**'
+      - 'scripts/check_determinism.py'
+      - 'scripts/determinism_baseline.json'
+      - 'scripts/determinism_repair_probe.sh'
+      - '.github/workflows/determinism-lint.yml'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/check_serde_json_float_features.py'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'keeper-proof/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'oracle-packet/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'sdks/generated/rust/**'
+      - 'security-demo/**'
+      - 'sensor-attestation/**'
+      - 'shared-protocol/**'
+      - 'tests/integration/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'tools/forecast-proto/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'consensus-engines/src/**'
+      - 'primitives/src/**'
+      - 'shared-protocol/src/**'
+      - 'native-chain/src/**'
+      - 'scripts/check_determinism.py'
+      - 'scripts/determinism_baseline.json'
+      - 'scripts/determinism_repair_probe.sh'
+      - '.github/workflows/determinism-lint.yml'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/check_serde_json_float_features.py'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '55 2 * * *'
+  workflow_dispatch: {}
+
+# PRs supersede only their own runs; main/nightly/manual verdicts are retained.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  determinism-lint:
+    # CT 102, not ubuntu-latest (#2908). Hosted runners in this org are never
+    # assigned: those jobs "fail" in 2-3s with an empty `runner_name` and ZERO
+    # completed steps. That is VOID — not red, not green — and it reads as a
+    # tracked failing check while nothing has executed. This gate's last run
+    # that actually ran was 31647703288 on 2026-08-12; `main` then went 19 days
+    # with no determinism evidence at all, which is how #2904 reached main.
+    #
+    # Label set is the one 11 other core4 workflows already use for CT 102 —
+    # copied from a working example rather than invented, because a label that
+    # matches no runner queues forever, which is just a slower VOID.
+    #
+    # `actions/setup-python` below STAYS. CT 102's system python3 is 3.11.2, so
+    # dropping it would silently change interpreter version; 3.12.13 is already
+    # in that runner's tool cache (with its `x64.complete` marker), so the step
+    # resolves from cache and installs nothing. Proven on this runner by Secret
+    # Scanning job 99476073393 — n5pro-ct102, 10 steps, "Set up Python" green.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # fetch-depth: 0 is REQUIRED. On a pull_request the gate anchors the suppression
+          # set to the baseline as committed on the PR's base commit — content the PR
+          # cannot edit — so `git show <base>:...` must be able to reach that commit. A
+          # shallow clone would make the anchor unresolvable and the gate fails closed
+          # rather than silently running unanchored (#2245).
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Detector self-test
+        run: python3 scripts/check_determinism.py --self-test
+      - name: Workflow path filter covers the scan roots
+        run: python3 scripts/check_determinism.py --check-workflow-paths
+      - name: Determinism repair mutation controls
+        run: bash scripts/determinism_repair_probe.sh
+      # On a PR, anchor to the base commit so the PR cannot grow the baseline to cover its
+      # own violation. On push-to-main / schedule / dispatch there is no PR base and the
+      # committed baseline is authoritative, so no anchor is passed.
+      - name: Gate — no NEW nondeterminism beyond the base-anchored baseline
+        env:
+          ANCHOR_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          args=(--baseline scripts/determinism_baseline.json)
+          if [ -n "${ANCHOR_REF}" ]; then
+            args+=(--anchor-ref "${ANCHOR_REF}")
+          fi
+          python3 scripts/check_determinism.py "${args[@]}"
+
+  # #3333: signed payloads encode f64 fields as raw bits and every verifier
+  # recovers them with serde_json. `float_roundtrip` or `arbitrary_precision`
+  # anywhere in a node's feature graph changes that parse, so nodes built with
+  # and without it would disagree on signature validity and on state. This
+  # gate fails if either feature appears, and fails closed if the scan
+  # sees no serde_json feature line at all or if cargo errors.
+  serde-json-float-features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Detector self-test
+        run: python3 scripts/check_serde_json_float_features.py --self-test
+      - name: Gate — no float-parse-changing serde_json feature in the build graph
+        run: python3 scripts/check_serde_json_float_features.py

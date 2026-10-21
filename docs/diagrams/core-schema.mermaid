@@ -1,0 +1,63 @@
+erDiagram
+    %% Core Blockchain Operations
+
+    BLOCKS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    TRANSACTIONS {
+        id PK
+        block_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    COMPUTATIONAL_WORK_PROOFS {
+        id PK
+        block_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    TRUST_ANCHORS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    TRUST_ENDORSEMENTS {
+        id PK
+        anchor_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    SHARDS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    SHARD_REBALANCE_OPERATIONS {
+        id PK
+        shard_id FK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    SLASH_EVENTS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    BLOCKS ||--o{ TRANSACTIONS : "has many"
+    BLOCKS ||--o{ COMPUTATIONAL_WORK_PROOFS : "has many"
+    TRANSACTIONS }o--|| BLOCKS : "belongs to"
+    COMPUTATIONAL_WORK_PROOFS }o--|| BLOCKS : "belongs to"
+    TRUST_ANCHORS ||--o{ TRUST_ENDORSEMENTS : "has many"
+    TRUST_ENDORSEMENTS }o--|| TRUST_ANCHORS : "belongs to"
+    SHARDS ||--o{ SHARD_REBALANCE_OPERATIONS : "has many"
+    SHARD_REBALANCE_OPERATIONS }o--|| SHARDS : "belongs to"

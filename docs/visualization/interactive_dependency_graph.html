@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WRFCoin Codebase Dependency Graph</title>
+    <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+    <style>
+      body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        margin: 0;
+        padding: 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: #333;
+      }
+
+      .header {
+        background: rgba(255, 255, 255, 0.95);
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        text-align: center;
+      }
+
+      .header h1 {
+        margin: 0;
+        color: #2c3e50;
+        font-size: 2.5em;
+        font-weight: 300;
+      }
+
+      .header p {
+        margin: 10px 0 0 0;
+        color: #7f8c8d;
+        font-size: 1.1em;
+      }
+
+      .controls {
+        background: rgba(255, 255, 255, 0.9);
+        padding: 15px;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        gap: 15px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .control-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .control-group label {
+        font-weight: 500;
+        color: #2c3e50;
+      }
+
+      select,
+      button {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+        background: white;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      button {
+        background: #3498db;
+        color: white;
+        border: none;
+      }
+
+      button:hover {
+        background: #2980b9;
+        transform: translateY(-1px);
+      }
+
+      .stats {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        margin-left: auto;
+      }
+
+      .stat {
+        text-align: center;
+      }
+
+      .stat-value {
+        font-size: 1.5em;
+        font-weight: bold;
+        color: #e74c3c;
+      }
+
+      .stat-label {
+        font-size: 0.8em;
+        color: #7f8c8d;
+        text-transform: uppercase;
+      }
+
+      #cy {
+        width: 100%;
+        height: calc(100vh - 200px);
+        background: linear-gradient(45deg, #f0f2f5 0%, #fafbfc 100%);
+        border-top: 3px solid #3498db;
+      }
+
+      .legend {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        background: rgba(255, 255, 255, 0.95);
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        max-width: 300px;
+      }
+
+      .legend h3 {
+        margin: 0 0 10px 0;
+        color: #2c3e50;
+        font-size: 1.1em;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        margin: 8px 0;
+        gap: 10px;
+      }
+
+      .legend-color {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid #fff;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+      }
+
+      .legend-label {
+        font-size: 0.9em;
+        color: #2c3e50;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>🔗 WRFCoin Dependency Graph</h1>
+      <p>Interactive visualization of codebase dependencies and architecture</p>
+    </div>
+
+    <div class="controls">
+      <div class="control-group">
+        <label for="layoutSelect">Layout:</label>
+        <select id="layoutSelect">
+          <option value="cose">Force-Directed (Default)</option>
+          <option value="circle">Circle</option>
+          <option value="grid">Grid</option>
+          <option value="breadthfirst">Hierarchical</option>
+          <option value="concentric">Concentric</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="filterSelect">Filter:</label>
+        <select id="filterSelect">
+          <option value="all">All Nodes</option>
+          <option value="domain">Domains Only</option>
+          <option value="service">Services Only</option>
+          <option value="rust">Rust Dependencies</option>
+          <option value="nodejs">Node.js Dependencies</option>
+        </select>
+      </div>
+
+      <button id="resetBtn">Reset View</button>
+      <button id="fitBtn">Fit to Screen</button>
+      <button id="exportBtn">Export PNG</button>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-value" id="nodeCount">0</div>
+          <div class="stat-label">Nodes</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="edgeCount">0</div>
+          <div class="stat-label">Edges</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="cy"></div>
+
+    <div class="legend">
+      <h3>Node Types</h3>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #e74c3c"></div>
+        <div class="legend-label">Domain</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #3498db"></div>
+        <div class="legend-label">Service</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #f39c12"></div>
+        <div class="legend-label">Rust Crate</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #27ae60"></div>
+        <div class="legend-label">Node.js Package</div>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #9b59b6"></div>
+        <div class="legend-label">Python Module</div>
+      </div>
+    </div>
+
+    <script>
+      console.log('Starting WRFCoin dependency graph...');
+
+      let cy;
+      let originalElements = [];
+
+      // Color scheme for different node types
+      const colors = {
+        domain: '#e74c3c',
+        service: '#3498db',
+        rust_crate: '#f39c12',
+        npm_package: '#27ae60',
+        python_module: '#9b59b6',
+      };
+
+      // Enhanced sample data
+      function getSampleData() {
+        return {
+          dependency_graph: {
+            nodes: [
+              // Domains
+              {
+                id: 0,
+                label: 'blockchain-core',
+                type: 'domain',
+                group: 'domain',
+                size: 35,
+              },
+              {
+                id: 1,
+                label: 'backend-services',
+                type: 'domain',
+                group: 'domain',
+                size: 35,
+              },
+              {
+                id: 2,
+                label: 'frontend-interface',
+                type: 'domain',
+                group: 'domain',
+                size: 35,
+              },
+              {
+                id: 3,
+                label: 'smart-contracts',
+                type: 'domain',
+                group: 'domain',
+                size: 35,
+              },
+              {
+                id: 4,
+                label: 'infrastructure',
+                type: 'domain',
+                group: 'domain',
+                size: 30,
+              },
+
+              // Services
+              {
+                id: 10,
+                label: 'api-server',
+                type: 'service',
+                group: 'service',
+                size: 25,
+              },
+              {
+                id: 11,
+                label: 'wallet-service',
+                type: 'service',
+                group: 'service',
+                size: 25,
+              },
+              {
+                id: 12,
+                label: 'iot-service',
+                type: 'service',
+                group: 'service',
+                size: 20,
+              },
+              {
+                id: 13,
+                label: 'governance-service',
+                type: 'service',
+                group: 'service',
+                size: 20,
+              },
+
+              // Rust crates
+              {
+                id: 20,
+                label: 'serde',
+                type: 'rust_crate',
+                group: 'rust',
+                size: 15,
+              },
+              {
+                id: 21,
+                label: 'tokio',
+                type: 'rust_crate',
+                group: 'rust',
+                size: 15,
+              },
+              {
+                id: 22,
+                label: 'wasm-bindgen',
+                type: 'rust_crate',
+                group: 'rust',
+                size: 12,
+              },
+              {
+                id: 23,
+                label: 'clap',
+                type: 'rust_crate',
+                group: 'rust',
+                size: 10,
+              },
+
+              // Node.js packages
+              {
+                id: 30,
+                label: 'express',
+                type: 'npm_package',
+                group: 'nodejs',
+                size: 15,
+              },
+              {
+                id: 31,
+                label: 'react',
+                type: 'npm_package',
+                group: 'nodejs',
+                size: 15,
+              },
+              {
+                id: 32,
+                label: 'typescript',
+                type: 'npm_package',
+                group: 'nodejs',
+                size: 12,
+              },
+              {
+                id: 33,
+                label: 'graphql',
+                type: 'npm_package',
+                group: 'nodejs',
+                size: 12,
+              },
+              {
+                id: 34,
+                label: 'web3',
+                type: 'npm_package',
+                group: 'nodejs',
+                size: 10,
+              },
+
+              // Python modules
+              {
+                id: 40,
+                label: 'fastapi',
+                type: 'python_module',
+                group: 'python',
+                size: 12,
+              },
+              {
+                id: 41,
+                label: 'pandas',
+                type: 'python_module',
+                group: 'python',
+                size: 10,
+              },
+            ],
+            edges: [
+              // Domain to service connections
+              { from: 0, to: 10, type: 'dependency', weight: 2 },
+              { from: 1, to: 10, type: 'dependency', weight: 2 },
+              { from: 1, to: 11, type: 'dependency', weight: 2 },
+              { from: 1, to: 12, type: 'dependency', weight: 1 },
+              { from: 1, to: 13, type: 'dependency', weight: 1 },
+
+              // Blockchain core dependencies
+              { from: 0, to: 20, type: 'dependency', weight: 3 },
+              { from: 0, to: 21, type: 'dependency', weight: 3 },
+              { from: 0, to: 22, type: 'dependency', weight: 2 },
+              { from: 0, to: 23, type: 'dependency', weight: 1 },
+
+              // Backend services dependencies
+              { from: 1, to: 30, type: 'dependency', weight: 2 },
+              { from: 1, to: 32, type: 'dependency', weight: 2 },
+              { from: 1, to: 33, type: 'dependency', weight: 2 },
+
+              // Frontend dependencies
+              { from: 2, to: 31, type: 'dependency', weight: 3 },
+              { from: 2, to: 32, type: 'dependency', weight: 2 },
+              { from: 2, to: 34, type: 'dependency', weight: 2 },
+
+              // Smart contracts dependencies
+              { from: 3, to: 34, type: 'dependency', weight: 2 },
+              { from: 3, to: 22, type: 'dependency', weight: 1 },
+
+              // Infrastructure dependencies
+              { from: 4, to: 40, type: 'dependency', weight: 1 },
+              { from: 4, to: 41, type: 'dependency', weight: 1 },
+
+              // Service interconnections
+              { from: 10, to: 11, type: 'dependency', weight: 1 },
+              { from: 10, to: 12, type: 'dependency', weight: 1 },
+              { from: 11, to: 13, type: 'dependency', weight: 1 },
+            ],
+          },
+        };
+      }
+
+      // Initialize Cytoscape
+      function initializeCytoscape(data) {
+        console.log('Initializing Cytoscape with data...');
+
+        const elements = [];
+
+        // Convert data to Cytoscape format
+        data.dependency_graph.nodes.forEach(node => {
+          elements.push({
+            data: {
+              id: node.id.toString(),
+              label: node.label,
+              type: node.type,
+              group: node.group,
+              size: node.size || 10,
+            },
+          });
+        });
+
+        data.dependency_graph.edges.forEach(edge => {
+          elements.push({
+            data: {
+              id: edge.from + '-' + edge.to,
+              source: edge.from.toString(),
+              target: edge.to.toString(),
+              type: edge.type,
+              weight: edge.weight || 1,
+            },
+          });
+        });
+
+        originalElements = elements;
+
+        cy = cytoscape({
+          container: document.getElementById('cy'),
+          elements: elements,
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'background-color': function (ele) {
+                  return colors[ele.data('type')] || '#95a5a6';
+                },
+                label: 'data(label)',
+                width: function (ele) {
+                  return Math.max(ele.data('size'), 20);
+                },
+                height: function (ele) {
+                  return Math.max(ele.data('size'), 20);
+                },
+                color: '#2c3e50',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'font-size': '12px',
+                'font-weight': 'bold',
+                'border-width': 2,
+                'border-color': '#34495e',
+                'text-outline-width': 2,
+                'text-outline-color': 'white',
+              },
+            },
+            {
+              selector: 'edge',
+              style: {
+                width: function (ele) {
+                  return ele.data('weight') * 2;
+                },
+                'line-color': '#7f8c8d',
+                'target-arrow-color': '#7f8c8d',
+                'target-arrow-shape': 'triangle',
+                'curve-style': 'bezier',
+                opacity: 0.7,
+              },
+            },
+          ],
+          layout: {
+            name: 'cose',
+            nodeRepulsion: function (node) {
+              return 4500;
+            },
+            idealEdgeLength: function (edge) {
+              return 80;
+            },
+            edgeElasticity: function (edge) {
+              return 100;
+            },
+            gravity: 80,
+            numIter: 1000,
+            randomize: false,
+            animate: true,
+            animationDuration: 1000,
+          },
+        });
+
+        console.log('Cytoscape initialized successfully!');
+        updateStats();
+      }
+
+      function updateStats() {
+        if (cy) {
+          document.getElementById('nodeCount').textContent = cy.nodes().length;
+          document.getElementById('edgeCount').textContent = cy.edges().length;
+        }
+      }
+
+      // Control event listeners
+      document
+        .getElementById('layoutSelect')
+        .addEventListener('change', function (e) {
+          const layout = e.target.value;
+          cy.layout({
+            name: layout,
+            animate: true,
+            animationDuration: 1000,
+          }).run();
+        });
+
+      document
+        .getElementById('resetBtn')
+        .addEventListener('click', function () {
+          cy.elements().remove();
+          cy.add(originalElements);
+          cy.layout({ name: 'cose', animate: true }).run();
+          document.getElementById('filterSelect').value = 'all';
+          updateStats();
+        });
+
+      document.getElementById('fitBtn').addEventListener('click', function () {
+        cy.fit();
+      });
+
+      document
+        .getElementById('exportBtn')
+        .addEventListener('click', function () {
+          const png64 = cy.png({ scale: 2, full: true });
+          const link = document.createElement('a');
+          link.href = png64;
+          link.download = 'wrfcoin-dependency-graph.png';
+          link.click();
+        });
+
+      // Initialize the application
+      function init() {
+        console.log('Starting application initialization...');
+
+        if (typeof cytoscape === 'undefined') {
+          console.error('Cytoscape library not loaded');
+          return;
+        }
+
+        console.log('Loading sample data...');
+        const data = getSampleData();
+        initializeCytoscape(data);
+      }
+
+      // Start the application when DOM is ready
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+      } else {
+        init();
+      }
+    </script>
+  </body>
+</html>

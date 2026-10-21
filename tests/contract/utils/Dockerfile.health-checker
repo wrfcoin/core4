@@ -1,0 +1,51 @@
+# Health Checker Service Dockerfile
+FROM node:18-alpine
+
+# Install system dependencies
+RUN apk add --no-cache \
+    curl \
+    ca-certificates \
+    && rm -rf /var/cache/apk/*
+
+# Create app directory
+WORKDIR /app
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Copy package configuration
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production && \
+    npm cache clean --force
+
+# Copy source code
+COPY utils/health-checker.js ./health-checker.js
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S healthchecker -u 1001 -G nodejs
+
+# Change ownership of app directory
+RUN chown -R healthchecker:nodejs /app
+
+# Switch to non-root user
+USER healthchecker
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3100/health || exit 1
+
+# Expose port
+EXPOSE 3100
+
+# Labels for metadata
+LABEL maintainer="WRFCoin Development Team" \
+      description="Health Checker Service for Mock Testing Environment" \
+      version="1.0.0" \
+      service.name="health-checker" \
+      service.type="utility"
+
+# Start the service
+CMD ["node", "health-checker.js"]

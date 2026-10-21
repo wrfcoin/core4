@@ -1,0 +1,14 @@
+digraph users_schema {
+    label="User, Wallets, and Identity";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    users [label="{users|{id (PK)|created_at|updated_at}}"];
+    decentralized_identities [label="{decentralized_identities|{id (PK)|created_at|updated_at}}"];
+
+    users -> user_operations [label="1:N"];
+    users -> smart_wallets [label="1:N"];
+    users -> reputation_events [label="1:N"];
+    users -> reputation_scores [label="1:1"];
+    decentralized_identities -> verifiable_credentials [label="1:N"];
+}

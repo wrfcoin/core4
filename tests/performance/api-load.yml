@@ -1,0 +1,21 @@
+# Performance Test Configuration
+# Migrated from tests/performance/api-load.yml
+
+config:
+  target: 'http://localhost:3001'
+  phases:
+    - duration: 60
+      arrivalRate: 10
+  environments:
+    production:
+      target: 'https://api.wrfcoin.com'
+
+scenarios:
+  - name: 'API Load Test'
+    flow:
+      - get:
+          url: '/api/stats'
+      - get:
+          url: '/api/blockchain/status'
+      - get:
+          url: '/api/mining/stats'

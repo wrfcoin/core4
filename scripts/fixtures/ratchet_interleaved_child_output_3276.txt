@@ -1,0 +1,43 @@
+
+running 7 tests
+test gated::corrupt_persisted_keys_are_restored_from_embedded_bundle ... 
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+FAILED
+test gated::zk_keys_persist_across_process_restart ... 
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+ok
+test gated::zk_keys_persistence_child_process_loads_from_disk ... ok
+test gated::zk_keys_persistence_child_process_rejects_corrupt_file ... ok
+test gated::zk_proofs_verify_across_distinct_node_data_dirs ... 
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+ok
+test gated::zk_proofs_verify_across_distinct_node_data_dirs_producer ... ok
+test gated::zk_proofs_verify_across_distinct_node_data_dirs_verifier ... ok
+
+failures:
+
+---- gated::corrupt_persisted_keys_are_restored_from_embedded_bundle stdout ----
+
+thread 'gated::corrupt_persisted_keys_are_restored_from_embedded_bundle' (1776682) panicked at native-chain/tests/zk_key_persistence.rs:183:42:
+restored key file should remain readable: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    gated::corrupt_persisted_keys_are_restored_from_embedded_bundle
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s

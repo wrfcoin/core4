@@ -1,0 +1,560 @@
+version: '3.8'
+
+# Comprehensive Service Mock Harness for WRFCoin Integration Testing
+# This Docker Compose configuration provides advanced mock services with failure simulation,
+# multiple test scenarios, and integration with the Pact contract testing framework.
+
+services:
+  # ================================
+  # Core Mock Services - Enhanced
+  # ================================
+
+  # Enhanced PostgreSQL Mock with Multiple Schemas
+  postgres-mock:
+    image: postgres:15-alpine
+    container_name: wrfcoin-postgres-mock
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: wrfcoin_test
+      POSTGRES_MULTIPLE_EXTENSIONS: pg_stat_statements,pg_trgm
+    ports:
+      - '5434:5432'
+    volumes:
+      - test-postgres-data:/var/lib/postgresql/data
+      - ./test-data/postgres-init:/docker-entrypoint-initdb.d
+      - ./test-data/postgres-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./test-data/postgres-seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d wrfcoin_test']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    profiles:
+      - mock-services
+      - integration-test
+      - full-test
+
+  # Enhanced Weather API Mock with Scenario Support
+  weather-api-mock:
+    build:
+      context: ./mocks
+      dockerfile: Dockerfile.weather-mock
+    container_name: wrfcoin-weather-mock
+    ports:
+      - '3010:3010'
+    environment:
+      NODE_ENV: test
+      PORT: 3010
+      SERVICE_NAME: weather-api-mock
+      MOCK_SCENARIO: ${WEATHER_MOCK_SCENARIO:-default}
+      FAILURE_RATE: ${WEATHER_FAILURE_RATE:-0}
+      LATENCY_MS: ${WEATHER_LATENCY_MS:-0}
+      CHAOS_ENABLED: ${CHAOS_WEATHER:-false}
+    volumes:
+      - ./mocks:/app
+      - ./test-data/weather:/app/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3010/health']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - mock-services
+      - integration-test
+      - full-test
+
+  # Enhanced Blockchain RPC Mock with State Management
+  blockchain-rpc-mock:
+    build:
+      context: ./mocks
+      dockerfile: Dockerfile.blockchain-mock
+    container_name: wrfcoin-blockchain-mock
+    ports:
+      - '8545:8545'
+    environment:
+      NODE_ENV: test
+      PORT: 8545
+      SERVICE_NAME: blockchain-rpc-mock
+      MOCK_SCENARIO: ${BLOCKCHAIN_MOCK_SCENARIO:-default}
+      FAILURE_RATE: ${BLOCKCHAIN_FAILURE_RATE:-0}
+      LATENCY_MS: ${BLOCKCHAIN_LATENCY_MS:-0}
+      CHAOS_ENABLED: ${CHAOS_BLOCKCHAIN:-false}
+      BLOCKCHAIN_NETWORK_ID: 31337
+      INITIAL_BALANCE: '1000000000000000000000'
+    volumes:
+      - ./mocks:/app
+      - ./test-data/blockchain:/app/data
+    networks:
+      - test-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '-f',
+          '-X',
+          'POST',
+          '-H',
+          'Content-Type: application/json',
+          '-d',
+          '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}',
+          'http://localhost:8545',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - mock-services
+      - integration-test
+      - full-test
+
+  # Enhanced Carbon Oracle Mock with Real-Time Data Simulation
+  carbon-oracle-mock:
+    build:
+      context: ./mocks
+      dockerfile: Dockerfile.carbon-mock
+    container_name: wrfcoin-carbon-mock
+    ports:
+      - '3020:3020'
+    environment:
+      NODE_ENV: test
+      PORT: 3020
+      SERVICE_NAME: carbon-oracle-mock
+      MOCK_SCENARIO: ${CARBON_MOCK_SCENARIO:-default}
+      FAILURE_RATE: ${CARBON_FAILURE_RATE:-0}
+      LATENCY_MS: ${CARBON_LATENCY_MS:-0}
+      CHAOS_ENABLED: ${CHAOS_CARBON:-false}
+      UPDATE_INTERVAL: 30000 # 30 seconds
+    volumes:
+      - ./mocks:/app
+      - ./test-data/carbon:/app/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3020/health']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - mock-services
+      - integration-test
+      - full-test
+
+  # ================================
+  # Advanced Mock Services
+  # ================================
+
+  # MockServer for Advanced Mocking Patterns
+  mockserver:
+    image: mockserver/mockserver:5.15.0
+    container_name: wrfcoin-mockserver
+    ports:
+      - '1080:1080'
+    environment:
+      MOCKSERVER_PROPERTY_FILE: /config/mockserver.properties
+      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/expectations.json
+      MOCKSERVER_LOG_LEVEL: INFO
+      MOCKSERVER_SERVER_PORT: 1080
+    volumes:
+      - ./test-data/mockserver/expectations.json:/config/expectations.json
+      - ./test-data/mockserver/mockserver.properties:/config/mockserver.properties
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:1080/mockserver/status']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    profiles:
+      - advanced-mocks
+      - integration-test
+      - full-test
+
+  # Redis Mock for Caching Tests
+  redis-mock:
+    image: redis:7-alpine
+    container_name: wrfcoin-redis-mock
+    ports:
+      - '6380:6379' # Different port to avoid conflicts
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'volatile-lru',
+      ]
+    volumes:
+      - redis-test-data:/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--raw', 'incr', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - mock-services
+      - integration-test
+      - full-test
+
+  # ================================
+  # Service Discovery & Monitoring
+  # ================================
+
+  # Service Discovery Mock (Consul)
+  consul-mock:
+    image: consul:1.16-alpine
+    container_name: wrfcoin-consul-mock
+    ports:
+      - '8500:8500'
+      - '8600:8600/udp'
+    command: ['consul', 'agent', '-dev', '-client=0.0.0.0', '-ui']
+    environment:
+      CONSUL_BIND_INTERFACE: eth0
+    volumes:
+      - consul-data:/consul/data
+      - ./test-data/consul:/consul/config
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'consul', 'members']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - advanced-mocks
+      - full-test
+
+  # Message Queue Mock (RabbitMQ)
+  rabbitmq-mock:
+    image: rabbitmq:3.12-management-alpine
+    container_name: wrfcoin-rabbitmq-mock
+    ports:
+      - '5673:5672' # AMQP port
+      - '15673:15672' # Management UI port
+    environment:
+      RABBITMQ_DEFAULT_USER: test
+      RABBITMQ_DEFAULT_PASS: testpass
+      RABBITMQ_DEFAULT_VHOST: /test
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./test-data/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', 'ping']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    profiles:
+      - message-queue
+      - integration-test
+      - full-test
+
+  # ================================
+  # Test Orchestration Services
+  # ================================
+
+  # Test Runner with Multiple Test Suites
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: tests/contract/Dockerfile.test-runner
+    container_name: wrfcoin-test-runner
+    working_dir: /app
+    environment:
+      NODE_ENV: test
+      TEST_SUITE: ${TEST_SUITE:-integration}
+      TEST_TIMEOUT: ${TEST_TIMEOUT:-300000}
+      PARALLEL_TESTS: ${PARALLEL_TESTS:-4}
+
+      # Service URLs
+      DATABASE_URL: postgresql://postgres:testpass@postgres-mock:5432/wrfcoin_test
+      REDIS_URL: redis://redis-mock:6379/0
+      WEATHER_API_URL: http://weather-api-mock:3010
+      BLOCKCHAIN_RPC_URL: http://blockchain-rpc-mock:8545
+      CARBON_ORACLE_URL: http://carbon-oracle-mock:3020
+      MOCKSERVER_URL: http://mockserver:1080
+
+      # Pact Configuration
+      PACT_BROKER_BASE_URL: ${PACT_BROKER_BASE_URL:-http://pact-broker:9292}
+      PACT_BROKER_USERNAME: ${PACT_BROKER_USERNAME:-admin}
+      PACT_BROKER_PASSWORD: ${PACT_BROKER_PASSWORD:?Set PACT_BROKER_PASSWORD in .env}
+      PACT_CONSUMER_VERSION: ${PACT_CONSUMER_VERSION:-1.0.0}
+
+      # Chaos Engineering
+      CHAOS_ENABLED: ${CHAOS_ENABLED:-false}
+      CHAOS_DURATION: ${CHAOS_DURATION:-60}
+
+      # Performance Testing
+      LOAD_TEST_USERS: ${LOAD_TEST_USERS:-10}
+      LOAD_TEST_DURATION: ${LOAD_TEST_DURATION:-60}
+    volumes:
+      - ../..:/app
+      - /app/node_modules
+      - ./reports:/app/test-reports
+    depends_on:
+      postgres-mock:
+        condition: service_healthy
+      redis-mock:
+        condition: service_healthy
+      weather-api-mock:
+        condition: service_healthy
+      blockchain-rpc-mock:
+        condition: service_healthy
+      carbon-oracle-mock:
+        condition: service_healthy
+    networks:
+      - test-network
+    profiles:
+      - test-execution
+      - integration-test
+      - full-test
+
+  # Chaos Engineering Service (Pumba)
+  chaos-pumba:
+    image: gaiaadm/pumba:0.9.0
+    container_name: wrfcoin-chaos-pumba
+    command:
+      [
+        '--log-level=info',
+        '--interval=30s',
+        '--random',
+        'kill',
+        '--signal=SIGTERM',
+        're2:wrfcoin-.*-mock',
+      ]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - weather-api-mock
+      - blockchain-rpc-mock
+      - carbon-oracle-mock
+    networks:
+      - test-network
+    restart: unless-stopped
+    profiles:
+      - chaos-testing
+      - full-test
+
+  # ================================
+  # Monitoring & Observability
+  # ================================
+
+  # Prometheus for Metrics Collection
+  prometheus-test:
+    image: prom/prometheus:latest
+    container_name: wrfcoin-prometheus-test
+    ports:
+      - '9091:9090'
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=24h'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./test-data/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - test-network
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:9090/-/healthy',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - monitoring
+      - full-test
+
+  # Grafana for Visualization
+  grafana-test:
+    image: grafana/grafana:latest
+    container_name: wrfcoin-grafana-test
+    ports:
+      - '3001:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: testpass
+      GF_USERS_ALLOW_SIGN_UP: false
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./test-data/grafana/provisioning:/etc/grafana/provisioning
+      - ./test-data/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus-test
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/api/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    profiles:
+      - monitoring
+      - full-test
+
+  # ================================
+  # Utility Services
+  # ================================
+
+  # Health Check Service
+  health-checker:
+    build:
+      context: ./test-utils
+      dockerfile: Dockerfile.health-checker
+    container_name: wrfcoin-health-checker
+    environment:
+      CHECK_INTERVAL: 30
+      SERVICES_TO_CHECK: |
+        postgres-mock:5432
+        redis-mock:6379
+        weather-api-mock:3010
+        blockchain-rpc-mock:8545
+        carbon-oracle-mock:3020
+      WEBHOOK_URL: ${HEALTH_CHECK_WEBHOOK:-}
+    volumes:
+      - ./test-utils:/app
+      - ./reports:/app/reports
+    depends_on:
+      - postgres-mock
+      - redis-mock
+      - weather-api-mock
+      - blockchain-rpc-mock
+      - carbon-oracle-mock
+    networks:
+      - test-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+      - integration-test
+      - full-test
+
+  # Log Aggregator (ELK Stack - Elasticsearch)
+  elasticsearch-test:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: wrfcoin-elasticsearch-test
+    ports:
+      - '9201:9200'
+      - '9301:9300'
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9200/_cluster/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    profiles:
+      - logging
+      - full-test
+
+  # Kibana for Log Visualization
+  kibana-test:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: wrfcoin-kibana-test
+    ports:
+      - '5602:5601'
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch-test:9200
+      XPACK_SECURITY_ENABLED: false
+    depends_on:
+      elasticsearch-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:5601/api/status']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    profiles:
+      - logging
+      - full-test
+
+# ================================
+# Volumes
+# ================================
+
+volumes:
+  test-postgres-data:
+    driver: local
+  redis-test-data:
+    driver: local
+  consul-data:
+    driver: local
+  rabbitmq-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  elasticsearch-data:
+    driver: local
+
+# ================================
+# Networks
+# ================================
+
+networks:
+  test-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-wrfcoin-test
+      com.docker.network.bridge.enable_icc: 'true'
+      com.docker.network.bridge.enable_ip_masquerade: 'true'
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+# ================================
+# Service Profiles
+# ================================
+# Usage examples:
+# docker-compose -f docker-compose.test.yml --profile mock-services up -d
+# docker-compose -f docker-compose.test.yml --profile integration-test up -d
+# docker-compose -f docker-compose.test.yml --profile full-test up -d
+# docker-compose -f docker-compose.test.yml --profile chaos-testing up -d

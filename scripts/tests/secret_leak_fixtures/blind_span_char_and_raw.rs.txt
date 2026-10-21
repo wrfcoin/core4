@@ -1,0 +1,18 @@
+// #3284: a char literal holding a paren, and a raw string ending in a
+// backslash, are ordinary Rust. A quote/paren tracker that does not know char
+// literals or raw strings (raw strings have NO escapes) never closes the span.
+fn open_paren(label: &str) -> String {
+    format!("{label}{}", '(')
+}
+
+fn windows_dir(dir: &str) -> String {
+    format!(r"{dir}\")
+}
+
+fn leak(seed_phrase: &str) -> String {
+    format!("phrase={seed_phrase}")
+}
+
+fn unrelated(height: u64) -> String {
+    format!("height={height}") // secret-leak-ok: unrelated, legitimately allowlisted line below the leak
+}

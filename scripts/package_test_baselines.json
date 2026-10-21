@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "why": "core4#2911. `cargo test -p wrfcoin-native-chain` has been REAL-RED on main since 2026-08-04 (19af70d33, '#2713 regression artifact, REAL-RED by design'). A permanently-red package command cannot report a FRESH failure: exit 101 is exit 101, so for 27 days any new native-chain break produced the same observable as the four accepted ones. Worse, without --no-fail-fast cargo STOPS at the first failing binary, and chain_identity_split_2713 sorts third of 45 native-chain integration targets — so most of the suite was not merely masked, it never ran. This manifest names the standing failures by IDENTITY so the package gate can emit an attributed statement instead of a bare verdict. It is a BASELINE, not an exemption: a declared failure that starts PASSING, or that DISAPPEARS, is a FINDING (exit 1), never silence. Do not add an entry here to make a red go away — an entry is a promise that its issue is open and that the RED is the proof.",
+  "packages": [
+    {
+      "package": "wrfcoin-native-chain",
+      "cargo_args": [
+        "--locked",
+        "--no-fail-fast",
+        "-p",
+        "wrfcoin-native-chain"
+      ],
+      "why": "The crate that lost its package gate for 27 days (#2911). The command is the one the issue reproduces, plus --no-fail-fast — which is what turns 'the other 44 targets passed' from a claim nobody could make into one this gate does make. Default features, matching the reproduction; feature-gated surfaces are covered by named-test-targets.yml's #2861 steps and are not double-run here.",
+      "min_executed": 1700,
+      "min_summaries": 49,
+      "floors_measured": "2026-09-09 at main d780c58ae: 49 summaries (44 integration targets + 4 unittests sections + 1 Doc-tests), enumerated against cargo metadata. The original 2026-08-31 aa00107e8 measurement was 50 with 45 integration targets. Commit 182171faa1de6caf13ba302e315bcfca579777cd (#2888, merged in #3026 by 4d020eac5e5bb77a7ac2e1d2cbc429c0abb28f48) legitimately deleted native-chain/tests/rate_limit_envelope_1276.rs: its three tests only asserted locally constructed JSON/struct values or assert!(true), with no project imports or middleware execution. That is the single missing summary; no parser or feature-selection change. The exact floor decreases by that one proven deletion, not by a tolerance margin. The executed floor remains 1700 and all four declared #2713 failures remain unchanged. Any further missing binary must still produce FLOOR_UNMET.",
+      "expected_failures": [
+        {
+          "target": "chain_identity_split_2713",
+          "test": "unset_chain_id_reports_and_signs_the_same_identity",
+          "issue": 2713,
+          "path": "native-chain/tests/chain_identity_split_2713.rs",
+          "why": "#2713 is OPEN: with WRFCOIN_CHAIN_ID unset the node REPORTS chain 777 and SIGNS under 'wrfcoin-main'. The test asserts the property the node should have, so its RED is the proof, not a defect in the test. It leaves this list when #2713 is fixed — at which point the gate reports HEALED and the package asserts green on it."
+        },
+        {
+          "target": "chain_identity_split_2713",
+          "test": "unset_network_id_reports_and_signs_the_same_identity",
+          "issue": 2713,
+          "path": "native-chain/tests/chain_identity_split_2713.rs",
+          "why": "#2713, network-id half: unset WRFCOIN_NETWORK_ID reports 'unknown' and signs under 'mainnet'. Same polarity, same exit condition as the chain-id observation."
+        },
+        {
+          "target": "chain_identity_split_2713",
+          "test": "declared_signing_defaults_disagree_with_the_reporting_fallbacks",
+          "issue": 2713,
+          "path": "native-chain/tests/chain_identity_split_2713.rs",
+          "why": "#2713 stated at the declaration site rather than through a running node: the two default literals disagree by construction."
+        },
+        {
+          "target": "chain_identity_split_2713",
+          "test": "empty_string_export_diverges_by_a_different_mechanism",
+          "issue": 2713,
+          "path": "native-chain/tests/chain_identity_split_2713.rs",
+          "why": "#2713's second mechanism: an exported empty string is not 'unset', so it diverges through a different code path and would survive a fix that only handled the unset case."
+        }
+      ],
+      "not_declared": "The two control_* tests in chain_identity_split_2713 are deliberately ABSENT from expected_failures and must PASS. Repairing #2713 deletes the literals control_a asserts are present, so a count-based or target-level baseline would let that broken control stand in for the four observations and keep the aggregate looking like the accepted red — making a temporary exception permanent at the exact moment the defect is fixed (#2854). Here a failing control is simply not in the declared set, so it surfaces as NEW_FAILURE."
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "malformedJson": {
+    "truncated": "{\"temp\": 25",
+    "invalidSyntax": "{temp: 25}",
+    "trailingCommas": "[{\"temp\": 25,}]",
+    "unclosedBracket": "[{\"temp\": 25}",
+    "mixedQuotes": "{'temp': 25}",
+    "invalidUnicode": "{\"temp\": \"\\uZZZZ\"}",
+    "nullBytes": "{\"temp\": 25\u0000}"
+  },
+  "outOfRangeWeather": {
+    "temperatureTooLow": { "temperature": -100.0, "humidity": 50, "pressure": 1013 },
+    "temperatureTooHigh": { "temperature": 80.0, "humidity": 50, "pressure": 1013 },
+    "humidityNegative": { "temperature": 20, "humidity": -10, "pressure": 1013 },
+    "humidityTooHigh": { "temperature": 20, "humidity": 150, "pressure": 1013 },
+    "pressureTooLow": { "temperature": 20, "humidity": 50, "pressure": 800 },
+    "pressureTooHigh": { "temperature": 20, "humidity": 50, "pressure": 1100 },
+    "extremeCombination": { "temperature": -89.3, "humidity": 101, "pressure": 869 },
+    "infiniteTemperature": { "temperature": "Infinity", "humidity": 50, "pressure": 1013 },
+    "nanHumidity": { "temperature": 20, "humidity": "NaN", "pressure": 1013 }
+  },
+  "sqlInjection": [
+    "'; DROP TABLE users;--",
+    "1' OR '1'='1",
+    "UNION SELECT password FROM users",
+    "1; DELETE FROM weather_data WHERE 1=1;--",
+    "' OR 1=1--",
+    "admin'--",
+    "1' AND SLEEP(5)--",
+    "'; EXEC xp_cmdshell('dir');--",
+    "1' UNION SELECT * FROM information_schema.tables--",
+    "' OR ''='",
+    "1/**/OR/**/1=1",
+    "1' AND (SELECT COUNT(*) FROM users) > 0--"
+  ],
+  "xssAttacks": [
+    "<script>alert('xss')</script>",
+    "<script src='evil.js'></script>",
+    "javascript:alert(1)",
+    "<img onerror=alert(1) src=x>",
+    "<svg onload=alert(1)>",
+    "<body onload=alert('XSS')>",
+    "<iframe src='javascript:alert(1)'>",
+    "<input onfocus=alert(1) autofocus>",
+    "{{constructor.constructor('alert(1)')()}}",
+    "${alert('xss')}",
+    "<a href=\"javascript:alert('XSS')\">click</a>",
+    "<div style=\"background:url(javascript:alert('XSS'))\">",
+    "<META HTTP-EQUIV=\"refresh\" CONTENT=\"0;url=javascript:alert('XSS');\">",
+    "data:text/html,<script>alert('XSS')</script>",
+    "<object data=\"javascript:alert('XSS')\">",
+    "<embed src=\"javascript:alert('XSS')\">",
+    "vbscript:msgbox(\"XSS\")",
+    "<form action=\"javascript:alert('XSS')\"><input type=submit>",
+    "expression(alert('XSS'))",
+    "-moz-binding:url('http://evil.com/xss.xml#xss')"
+  ],
+  "validSensorData": {
+    "normal": { "temperature": 20.5, "humidity": 55, "pressure": 1013.25 },
+    "cold": { "temperature": -10.0, "humidity": 30, "pressure": 1025 },
+    "hot": { "temperature": 40.0, "humidity": 80, "pressure": 1005 },
+    "edgeCaseLow": { "temperature": -89.2, "humidity": 0, "pressure": 870 },
+    "edgeCaseHigh": { "temperature": 70.7, "humidity": 100, "pressure": 1084 }
+  },
+  "prototypePolluton": [
+    "{\"__proto__\": {\"isAdmin\": true}}",
+    "{\"constructor\": {\"prototype\": {\"isAdmin\": true}}}",
+    "{\"__proto__\": {\"polluted\": \"yes\"}, \"temperature\": 20}"
+  ],
+  "pathTraversal": [
+    "../../../etc/passwd",
+    "....//....//....//etc/passwd",
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    "..\\..\\..\\windows\\system32\\config\\sam"
+  ],
+  "commandInjection": [
+    "; ls -la",
+    "| cat /etc/passwd",
+    "` whoami `",
+    "$(whoami)",
+    "&& rm -rf /",
+    "|| echo vulnerable"
+  ]
+}

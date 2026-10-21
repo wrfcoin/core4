@@ -1,0 +1,10 @@
+{
+  "$why": "The systemic exemption set, so this gate reports REGRESSIONS rather than the status quo. An exemption here explains a class of VOID job that is already known and filed; without one the detector can be red from birth, and a permanently red gate is one people route around.",
+  "$keyed_on_runner_class": "Deliberately NOT workflow names. Review of the first version showed a new job added to a baselined workflow inherited the old exemption, and two of ten names did not match GitHub's actual names — so their known-VOID jobs would have been reported as regressions, the baseline manufacturing the cry-wolf it existed to prevent. `labels` survives on a job that never started, a new HOSTED job is explained by the same systemic fact, and a VOID job on a SELF-HOSTED runner is never exempt.",
+  "$every_exemption_expires": "EVERY entry in `exemptions` MUST carry `review_by` (ISO date) and `clears_when` (the observable condition that ends it). The loader REFUSES a baseline whose exemption omits either — an exemption with no stated end is the defect this schema exists to make impossible. Past `review_by` the exemption STOPS APPLYING and the check FAILS: forgetting an exemption makes it lapse, never persist.",
+  "$self_cleaning": "Independently of the date, an exemption whose `clears_when` condition is observed to hold is STALE and the check FAILS until it is retired. A stale exemption silently un-gates everything it covers.",
+  "$retired": {
+    "hosted_void_expected": "RETIRED 2026-09-01 (#2921). Created while hosted runners were unfunded, when every GitHub-hosted job concluded in 2-5s with no runner and zero steps (evidenced across six PR-triggered workflows in #2921 and on main in #2908). September's hosted allowance reset and hosted jobs run for real again; measured at retirement, the exemption covered 0 jobs and `check_void_gates.py --limit 100` reported STALE EXEMPTION. Kept as a record so its return is a deliberate re-addition rather than a silent one."
+  },
+  "exemptions": {}
+}

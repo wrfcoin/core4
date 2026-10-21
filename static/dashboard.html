@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wrfcoin Dashboard</title>
+    <link rel="stylesheet" href="/static/css/mobile.css">
+    <link rel="icon" href="/static/images/wrfcoin-logo.svg" type="image/svg+xml">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <img src="/static/images/wrfcoin-logo.svg" alt="Wrfcoin Logo" width="40" height="40">
+            <h1>Wrfcoin</h1>
+        </div>
+        <div id="darkModeContainer"></div>
+    </header>
+
+    <div class="main-content">
+        <div class="dashboard-summary">
+            <div class="card summary-card">
+                <h2>Blockchain Summary</h2>
+                <div class="summary-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Height</span>
+                        <span class="stat-value" id="blockchain-height">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Pending Tx</span>
+                        <span class="stat-value" id="pending-tx">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Balance</span>
+                        <span class="stat-value" id="wallet-balance">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mev-card">
+                <h2>MEV Protection</h2>
+                <div class="mev-status">
+                    <span class="status-indicator" id="mev-status-indicator"></span>
+                    <span class="status-text" id="mev-status">Checking...</span>
+                </div>
+                <div class="mev-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Batch Size</span>
+                        <span class="stat-value" id="mev-batch-size">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Pending</span>
+                        <span class="stat-value" id="mev-pending">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Avg Fee</span>
+                        <span class="stat-value" id="mev-avg-fee">-</span>
+                    </div>
+                </div>
+                <div class="mev-settings">
+                    <h3>Protection Settings</h3>
+                    <div class="toggle-setting">
+                        <label for="fair-ordering">Fair Ordering</label>
+                        <label class="switch">
+                            <input type="checkbox" id="fair-ordering" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-setting">
+                        <label for="tx-batching">Transaction Batching</label>
+                        <label class="switch">
+                            <input type="checkbox" id="tx-batching" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-setting">
+                        <label for="fee-caps">Fee Caps</label>
+                        <label class="switch">
+                            <input type="checkbox" id="fee-caps">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabs-container">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="transactions">Transactions</button>
+                <button class="tab-btn" data-tab="nfts">NFTs</button>
+                <button class="tab-btn" data-tab="mev-detection">MEV Detection</button>
+                <button class="tab-btn" data-tab="documents">Documents</button>
+            </div>
+
+            <div class="tab-content" id="transactions-tab">
+                <h2>Recent Transactions</h2>
+                <div class="transactions-list" id="transactions-list">
+                    <div class="skeleton-loader transaction-skeleton"></div>
+                    <div class="skeleton-loader transaction-skeleton"></div>
+                    <div class="skeleton-loader transaction-skeleton"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="nfts-tab" style="display: none;">
+                <h2>Your NFTs</h2>
+                <div class="nfts-grid" id="nfts-grid">
+                    <div class="skeleton-loader nft-skeleton"></div>
+                    <div class="skeleton-loader nft-skeleton"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="mev-detection-tab" style="display: none;">
+                <h2>MEV Protection Alerts</h2>
+                <div class="mev-alerts" id="mev-alerts">
+                    <div class="skeleton-loader alert-skeleton"></div>
+                    <div class="skeleton-loader alert-skeleton"></div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="documents-tab" style="display: none;">
+                <h2>Documentation</h2>
+                <div class="document-cards">
+                    <!-- Blockchain Core Features -->
+                    <div class="document-card">
+                        <h3>High-Throughput Architecture</h3>
+                        <p>Wrfcoin utilizes a micro-block structure within our high-throughput architecture to enable parallel transaction processing and verification, resulting in greater scalability and faster confirmation times.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Advanced Transaction Processing</h3>
+                        <p>Our parallel validation system processes multiple transaction batches simultaneously, with automatic dependency detection and resolution to prevent double-spending while maximizing throughput.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Consensus Mechanisms -->
+                    <div class="document-card">
+                        <h3>Proof of Useful Analysis</h3>
+                        <p>Wrfcoin uses a unique consensus mechanism called PoUA (Proof of Useful Analysis) where computational power verifies data analysis models rather than solving arbitrary cryptographic puzzles, delivering both security and utility.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Multi-Stage Consensus</h3>
+                        <p>Our consensus system features configurable validation thresholds and a hybrid approach that can toggle between PoW and PoUA based on network conditions, ensuring consistent block production and maximum security.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Cryptography & Security -->
+                    <div class="document-card">
+                        <h3>Enhanced Cryptography</h3>
+                        <p>Wrfcoin employs industry-leading cryptographic standards including SHA3-256 hashing, ED25519/X25519 for signatures and key exchange, and AES-GCM for encrypted data, providing robust security guarantees.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Multi-Signature Support</h3>
+                        <p>The platform includes native multi-signature transaction capabilities that require multiple parties to authorize high-value transfers, providing institutional-grade security for significant transactions.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Network Architecture -->
+                    <div class="document-card">
+                        <h3>Node Architecture</h3>
+                        <p>Wrfcoin network consists of specialized nodes (validators, miners, relays, full, light, archive) that perform distinct functions within our ecosystem, with dynamic role assignment based on network needs.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Geographic Optimization</h3>
+                        <p>Our node network is strategically distributed across geographic regions to enhance resilience, reduce latency, and ensure optimal data localization for computational NFTs focused on regional analytics.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- MEV Protection -->
+                    <div class="document-card">
+                        <h3>MEV Protection</h3>
+                        <p>Our MEV (Miner Extractable Value) protection system ensures fair transaction ordering and prevents front-running, sandwich attacks, and other value extraction tactics to promote a more equitable blockchain ecosystem.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Transaction Batching Fairness</h3>
+                        <p>The transaction batching system processes transactions in the order received and randomizes placement within blocks to neutralize timing advantages that would otherwise benefit sophisticated traders at others' expense.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Computational NFTs -->
+                    <div class="document-card">
+                        <h3>Computational NFTs</h3>
+                        <p>Computational NFTs are unique tokens containing verifiable data analysis models that can be executed and validated by the network. They serve as both a store of value and a utility for data intelligence.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Multi-Pool Verification</h3>
+                        <p>Our three-part NFT verification system includes multi-pool validation, execution framework testing, and accuracy assessment against real-world outcomes, ensuring computational NFTs deliver reliable, valuable results.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Cross-Chain Features -->
+                    <div class="document-card">
+                        <h3>Cross-Chain Interoperability</h3>
+                        <p>The cross-chain bridge allows Wrfcoin to be used on multiple blockchains, with a secure token locking mechanism on the home chain and minting of wrapped tokens on target chains, all protected by multi-signature validation.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Cross-Chain Messaging</h3>
+                        <p>Our cross-chain messaging protocol enables secure communication between Wrfcoin and other blockchains, facilitating complex multi-chain smart contract interactions and expanding the utility of Wrfcoin assets.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Layer 2 Scaling -->
+                    <div class="document-card">
+                        <h3>Layer 2 Scaling</h3>
+                        <p>Wrfcoin implements zkRollups as our primary Layer 2 scaling solution, batching hundreds of transactions into a single proof, dramatically increasing throughput while maintaining the security guarantees of the main chain.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <div class="document-card">
+                        <h3>Optimistic Rollups</h3>
+                        <p>As an alternative scaling approach, our optimistic rollup implementation assumes transactions are valid by default and only requires proofs in case of disputes, offering flexibility for different throughput requirements.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+
+                    <!-- Governance -->
+                    <div class="document-card">
+                        <h3>Enhanced Governance</h3>
+                        <p>Wrfcoin's governance system enables stakeholders to participate in protocol decisions through proposal creation, voting, and implementation, with quadratic voting to mitigate centralization risks and ensure fair representation.</p>
+                        <a href="#" class="learn-more">Learn More</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-nav-container"></div>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/js/mobile.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize all components
+            initDarkMode();
+            initMobileNav();
+            initPullToRefresh();
+            initResponsiveTables();
+            initToasts();
+            initMevProtection();
+
+            // Simulate initial content loading
+            loadContent();
+            
+            // Tab switching
+            const tabButtons = document.querySelectorAll('.tab-btn');
+            const tabContents = document.querySelectorAll('.tab-content');
+            
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    // Remove active class from all buttons
+                    tabButtons.forEach(btn => btn.classList.remove('active'));
+                    
+                    // Add active class to clicked button
+                    button.classList.add('active');
+                    
+                    // Hide all tab contents
+                    tabContents.forEach(content => content.style.display = 'none');
+                    
+                    // Show the selected tab content
+                    const tabId = button.dataset.tab + '-tab';
+                    document.getElementById(tabId).style.display = 'block';
+                    
+                    // Load content for the newly visible tab
+                    if (button.dataset.tab === 'transactions') {
+                        fetchTransactions();
+                    } else if (button.dataset.tab === 'nfts') {
+                        fetchNFTs();
+                    } else if (button.dataset.tab === 'mev-detection') {
+                        fetchMevDetections();
+                    }
+                });
+            });
+            
+            // Initial data load
+            fetchDashboardMetrics();
+            fetchTransactions();
+            
+            // Set up periodic refresh
+            setInterval(fetchDashboardMetrics, 10000); // Refresh every 10 seconds
+        });
+        
+        // Fetch dashboard metrics
+        function fetchDashboardMetrics() {
+            fetch('/api/mobile/dashboard/metrics')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('blockchain-height').textContent = data.blockchain_height.toLocaleString();
+                    document.getElementById('pending-tx').textContent = data.pending_transactions;
+                    document.getElementById('wallet-balance').textContent = data.wallet_balance.toFixed(2);
+                    
+                    // Update MEV protection stats
+                    const mevStatus = document.getElementById('mev-status');
+                    const mevIndicator = document.getElementById('mev-status-indicator');
+                    
+                    if (data.mev_protection.status === 'active') {
+                        mevStatus.textContent = 'Active';
+                        mevIndicator.classList.add('status-active');
+                        mevIndicator.classList.remove('status-inactive');
+                    } else if (data.mev_protection.status === 'inactive') {
+                        mevStatus.textContent = 'Inactive';
+                        mevIndicator.classList.add('status-inactive');
+                        mevIndicator.classList.remove('status-active');
+                    } else {
+                        mevStatus.textContent = 'Disabled';
+                        mevIndicator.classList.add('status-inactive');
+                        mevIndicator.classList.remove('status-active');
+                    }
+                    
+                    document.getElementById('mev-batch-size').textContent = data.mev_protection.current_batch_size;
+                    document.getElementById('mev-pending').textContent = data.mev_protection.pending_transactions;
+                    document.getElementById('mev-avg-fee').textContent = data.mev_protection.average_fee;
+                })
+                .catch(error => {
+                    console.error('Error fetching dashboard metrics:', error);
+                    showToast('Failed to load dashboard metrics', 'error');
+                });
+        }
+        
+        // Fetch recent transactions
+        function fetchTransactions() {
+            fetch('/api/mobile/dashboard/transactions')
+                .then(response => response.json())
+                .then(data => {
+                    const list = document.getElementById('transactions-list');
+                    list.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        list.innerHTML = '<div class="empty-state">No transactions found</div>';
+                        return;
+                    }
+                    
+                    data.forEach(tx => {
+                        const txElement = document.createElement('div');
+                        txElement.className = 'transaction-item';
+                        
+                        let statusClass = '';
+                        if (tx.status === 'Confirmed') {
+                            statusClass = 'status-confirmed';
+                        } else if (tx.status === 'Pending') {
+                            statusClass = 'status-pending';
+                        } else if (tx.status === 'Failed') {
+                            statusClass = 'status-failed';
+                        }
+                        
+                        txElement.innerHTML = `
+                            <div class="tx-info">
+                                <div class="tx-id">${tx.id}</div>
+                                <div class="tx-type">${tx.type}</div>
+                            </div>
+                            <div class="tx-details">
+                                <div class="tx-amount">${tx.amount} WRF</div>
+                                <div class="tx-time">${tx.time}</div>
+                            </div>
+                            <div class="tx-status ${statusClass}">${tx.status}</div>
+                        `;
+                        
+                        list.appendChild(txElement);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching transactions:', error);
+                    showToast('Failed to load transactions', 'error');
+                    
+                    const list = document.getElementById('transactions-list');
+                    list.innerHTML = '<div class="error-state">Error loading transactions</div>';
+                });
+        }
+        
+        // Fetch NFTs
+        function fetchNFTs() {
+            fetch('/api/mobile/dashboard/nfts')
+                .then(response => response.json())
+                .then(data => {
+                    const grid = document.getElementById('nfts-grid');
+                    grid.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        grid.innerHTML = '<div class="empty-state">No NFTs found</div>';
+                        return;
+                    }
+                    
+                    data.forEach(nft => {
+                        const nftElement = document.createElement('div');
+                        nftElement.className = 'nft-card';
+                        
+                        nftElement.innerHTML = `
+                            <div class="nft-image">
+                                <img src="${nft.image_url}" alt="${nft.title}">
+                            </div>
+                            <div class="nft-info">
+                                <h3>${nft.title}</h3>
+                                <div class="nft-creator">${nft.creator}</div>
+                                <div class="nft-price">${nft.price} WRF</div>
+                                <div class="nft-metrics">
+                                    <span class="nft-views">${nft.views} views</span>
+                                    <span class="nft-verifications">${nft.verifications} verifications</span>
+                                </div>
+                            </div>
+                        `;
+                        
+                        grid.appendChild(nftElement);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching NFTs:', error);
+                    showToast('Failed to load NFTs', 'error');
+                    
+                    const grid = document.getElementById('nfts-grid');
+                    grid.innerHTML = '<div class="error-state">Error loading NFTs</div>';
+                });
+        }
+        
+        // Fetch MEV detections
+        function fetchMevDetections() {
+            fetch('/api/mobile/dashboard/mev-detections')
+                .then(response => response.json())
+                .then(data => {
+                    const alerts = document.getElementById('mev-alerts');
+                    alerts.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        alerts.innerHTML = '<div class="empty-state">No MEV events detected</div>';
+                        return;
+                    }
+                    
+                    data.forEach(detection => {
+                        const alertElement = document.createElement('div');
+                        alertElement.className = 'mev-alert';
+                        
+                        alertElement.innerHTML = `
+                            <div class="alert-header">
+                                <div class="alert-type">${detection.type}</div>
+                                <div class="alert-time">${detection.time}</div>
+                            </div>
+                            <div class="alert-tx-id">${detection.transaction_id}</div>
+                            <div class="alert-description">${detection.description}</div>
+                        `;
+                        
+                        alerts.appendChild(alertElement);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching MEV detections:', error);
+                    showToast('Failed to load MEV detections', 'error');
+                    
+                    const alerts = document.getElementById('mev-alerts');
+                    alerts.innerHTML = '<div class="error-state">Error loading MEV detections</div>';
+                });
+        }
+        
+        // Handle MEV settings changes
+        document.getElementById('fair-ordering').addEventListener('change', function() {
+            updateMevSetting('enable_fair_ordering', this.checked);
+        });
+        
+        document.getElementById('tx-batching').addEventListener('change', function() {
+            updateMevSetting('enable_batching', this.checked);
+        });
+        
+        document.getElementById('fee-caps').addEventListener('change', function() {
+            updateMevSetting('enable_fee_caps', this.checked);
+        });
+        
+        function updateMevSetting(setting, value) {
+            const data = { [setting]: value };
+            
+            fetch('/api/mobile/dashboard/mev-settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    showToast(`MEV protection setting '${setting}' updated`, 'success');
+                } else {
+                    showToast(`Failed to update MEV setting: ${result.message}`, 'error');
+                    // Revert the toggle state
+                    document.getElementById(setting.replace('enable_', '')).checked = !value;
+                }
+            })
+            .catch(error => {
+                console.error('Error updating MEV setting:', error);
+                showToast('Failed to update MEV protection setting', 'error');
+                // Revert the toggle state
+                document.getElementById(setting.replace('enable_', '')).checked = !value;
+            });
+        }
+    </script>
+</body>
+</html>

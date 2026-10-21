@@ -1,0 +1,49 @@
+{
+  "testWallets": [
+    {
+      "id": "test-wallet-1",
+      "address": "wrf717d72395303fcb2aed4df368f32f1078d18e9cc",
+      "balance": "8.60 WRF",
+      "network": "testnet",
+      "created": "2025-06-24T06:22:02.751Z"
+    }
+  ],
+  "testTransactions": [
+    {
+      "id": "tx-1",
+      "type": "receive",
+      "amount": "2.50",
+      "currency": "WRF",
+      "timestamp": "2025-06-24T06:22:02.751Z",
+      "status": "confirmed"
+    },
+    {
+      "id": "tx-2",
+      "type": "send",
+      "amount": "1.00",
+      "currency": "WRF",
+      "timestamp": "2025-06-24T05:22:02.751Z",
+      "status": "confirmed"
+    }
+  ],
+  "testAssets": [
+    {
+      "symbol": "WRF",
+      "balance": "8.60",
+      "usdValue": "$12.45",
+      "change24h": "+2.3%"
+    },
+    {
+      "symbol": "ETH",
+      "balance": "0.0025",
+      "usdValue": "$5.20",
+      "change24h": "-1.1%"
+    },
+    {
+      "symbol": "BTC",
+      "balance": "0.00015",
+      "usdValue": "$8.80",
+      "change24h": "+0.5%"
+    }
+  ]
+}

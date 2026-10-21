@@ -1,0 +1,96 @@
+# WRFCoin Development Container
+FROM mcr.microsoft.com/devcontainers/typescript-node:1-20-bullseye
+
+# Install additional system dependencies
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get -y install --no-install-recommends \
+        # Development tools
+        build-essential \
+        curl \
+        git \
+        jq \
+        vim \
+        htop \
+        tree \
+        unzip \
+        # Rust development
+        pkg-config \
+        libssl-dev \
+        # Python development
+        python3-pip \
+        python3-venv \
+        # Database tools
+        postgresql-client \
+        redis-tools \
+        # Network tools
+        netcat \
+        telnet \
+        # Documentation tools
+        pandoc \
+    && apt-get autoremove -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+
+# Install the repository's pinned Rust toolchain.
+USER vscode
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && ~/.cargo/bin/rustup toolchain install 1.98.0 --profile minimal \
+        --component rustfmt --component clippy --component rust-src \
+        --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu \
+    && ~/.cargo/bin/rustup default 1.98.0 \
+    && echo 'source ~/.cargo/env' >> ~/.bashrc
+
+# Install Python packages for documentation
+RUN python3 -m pip install --user \
+    mkdocs \
+    mkdocs-material \
+    mkdocs-mermaid2-plugin \
+    mkdocs-git-revision-date-localized-plugin \
+    mkdocs-minify-plugin \
+    pymdown-extensions
+
+# Install global npm packages
+USER root
+RUN npm install -g \
+    typescript \
+    ts-node \
+    tsx \
+    @types/node \
+    hardhat \
+    @hardhat/hardhat-toolbox \
+    nodemon \
+    concurrently \
+    turbo \
+    jest \
+    playwright \
+    @playwright/test \
+    artillery \
+    lighthouse \
+    eslint \
+    prettier \
+    typedoc \
+    @redocly/cli
+
+# Install Playwright browsers
+RUN npx playwright install --with-deps
+
+# Install Solidity compiler
+RUN curl -L https://github.com/ethereum/solidity/releases/download/v0.8.19/solc-static-linux -o /usr/local/bin/solc \
+    && chmod +x /usr/local/bin/solc
+
+# Setup Hardhat completion
+USER vscode
+RUN npx hardhat --completion bash >> ~/.bashrc
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Install project dependencies on container start
+COPY package*.json ./
+RUN npm install
+
+# Set environment variables
+ENV NODE_ENV=development
+ENV RUST_LOG=debug
+ENV PATH="/home/vscode/.cargo/bin:/home/vscode/.local/bin:$PATH"
+
+# Switch back to vscode user
+USER vscode

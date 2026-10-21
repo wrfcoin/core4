@@ -1,0 +1,14 @@
+# LEGACY PUBLIC KEY - DO NOT USE
+# This key pair has been migrated to HSM
+# Use SecureHSM class for all operations
+# Original file: sim_wrfcoin-master-signing_750b4e00c418d256.pub
+
+# LEGACY PUBLIC KEY - DO NOT USE
+# This key pair has been migrated to HSM
+# Use SecureHSM class for all operations
+# Original file: sim_wrfcoin-master-signing_750b4e00c418d256.pub
+
+-----BEGIN PUBLIC KEY-----
+MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEBDHeDX9kMysZcDY+TgDRhJ+uKVb0nWwV
+tp/2p4f8LXx5qFyI46exRBlUK8H9VSghyun82wo0+Nfg6AmV8DoXNA==
+-----END PUBLIC KEY-----

@@ -1,0 +1,65 @@
+name: Infra Signing Fixture Freshness
+
+# The vendored infra fixture is a live cross-language signing input. A hash in
+# infra proves only that copy's integrity; this workflow compares it to the
+# current core4 source so a core4 rotation cannot merge while infra is stale.
+on:
+  pull_request:
+    paths:
+      - 'shared-protocol/tests/fixtures/golden/signing_preimage_v2.json'
+      - '.github/workflows/infra-signing-fixture-freshness.yml'
+      - 'scripts/test_public_fixture_checkout.py'
+  push:
+    branches: [main]
+    paths:
+      - 'shared-protocol/tests/fixtures/golden/signing_preimage_v2.json'
+      - '.github/workflows/infra-signing-fixture-freshness.yml'
+      - 'scripts/test_public_fixture_checkout.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Data cap (infra#1113, owner ruling 2026-09-27): a new push to a PR cancels
+# that PR's superseded run. Every other event (push to main, schedule,
+# workflow_dispatch) gets a group unique to its run id, so it is never
+# cancelled and never evicted while pending (#2945, #3036).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  assert-infra-vendored-fixture-is-current:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: core4
+      - name: Verify public fixture checkout controls
+        working-directory: core4
+        run: python3 scripts/test_public_fixture_checkout.py
+      - uses: actions/checkout@v7
+        with:
+          repository: wrfcoin/infra
+          ref: main
+          path: infra
+          token: ${{ secrets.WRFCOIN_INFRA_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - name: Reject stale infra fixture or provenance
+        working-directory: core4
+        run: |
+          set -euo pipefail
+          source='shared-protocol/tests/fixtures/golden/signing_preimage_v2.json'
+          vendored='../infra/testnet/fixtures/core4/signing_preimage_v2.json'
+          provenance='../infra/testnet/fixtures/core4/signing_preimage_v2.source.json'
+          cmp -- "$source" "$vendored" || {
+            echo '::error::infra vendored signing fixture is stale relative to core4 source'
+            exit 1
+          }
+          source_sha=$(sha256sum "$source" | awk '{print $1}')
+          vendored_sha=$(sha256sum "$vendored" | awk '{print $1}')
+          test "$source_sha" = "$vendored_sha"
+          test "$source_sha" = "$(jq -er '.sha256' "$provenance")"
+          test "$(jq -er '.schema' "$source")" = "$(jq -er '.schema' "$provenance")"
+          echo "infra fixture is current: sha256=$source_sha"

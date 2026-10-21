@@ -1,0 +1,160 @@
+[package]
+name = "wrfcoin-native-chain"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "producer_key_pop"
+path = "src/bin/producer_key_pop.rs"
+required-features = ["hsm"]
+
+[[bin]]
+name = "oracle_key_pop"
+path = "src/bin/oracle_key_pop.rs"
+required-features = ["hsm"]
+
+[[bin]]
+name = "oracle_attester"
+path = "src/bin/oracle_attester.rs"
+required-features = ["attester"]
+
+[[bin]]
+name = "light_node"
+path = "src/bin/light_node.rs"
+required-features = ["light-node"]
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+hex.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+async-trait = "0.1"
+blake3 = "1.5"
+num-traits = "0.2"
+ed25519-dalek = { workspace = true }
+rand.workspace = true
+dialoguer = "0.11"
+libc = "0.2"
+zeroize = "1.7"
+actix = "0.13"
+actix-cors = "0.7"
+actix-web = { version = "4.9", default-features = false, features = ["macros", "ws"] }
+actix-web-actors = "4.3"
+async-stream = "0.3"
+prometheus = "0.14"
+env_logger.workspace = true
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+# #3091: the frozen format-3 layout names `GeoCell` for two BTreeMap keys.
+wrfcoin-geo-grid = { path = "../geo-grid" }
+wrfcoin-consensus-engines = { path = "../consensus-engines" }
+wrfcoin-da = { path = "../da" }
+redb = "2.4"
+bincode = "1.3"
+rustc-hash = "2.0"
+crc32fast = "1.4"
+sysinfo = "0.30"
+chacha20poly1305 = "0.10"
+wrfcoin-evm = { path = "../evm", optional = true }
+wrfcoin-p2p = { path = "../p2p", optional = true }
+wrfcoin-privacy = { path = "../privacy", optional = true }
+wrfcoin-zk-circuits = { path = "../zk-circuits", optional = true }
+ark-bn254 = { version = "=0.6.0", optional = true }
+ark-groth16 = { version = "=0.6.0", optional = true }
+ark-ff = { version = "=0.6.0", optional = true }
+ark-serialize = { version = "=0.6.0", features = ["derive"], optional = true }
+wrfcoin-execution-engine = { path = "../execution-engine", optional = true }
+libp2p = { version = "0.56", default-features = false, optional = true }
+# HTTP client for the oracle_attester service bin only (feature `attester`),
+# so the default node build carries no client-side HTTP tree — the same
+# reasoning that keeps reqwest optional in shared-protocol.
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+[features]
+full-mining = []   # enables wallet + NFT-dependent mining code (pending those crate migrations)
+p2p = ["dep:wrfcoin-p2p", "dep:libp2p"]
+privacy = ["dep:wrfcoin-privacy"]
+zk = ["dep:wrfcoin-zk-circuits", "dep:ark-bn254", "dep:ark-groth16", "dep:ark-ff", "dep:ark-serialize"]
+execution = ["dep:wrfcoin-execution-engine"]
+evm_compatibility = ["dep:wrfcoin-evm"]
+dhat-heap = ["dep:dhat"]
+tokio-console = ["dep:console-subscriber"]
+# PKCS#11-backed BlockSigner for the launch_api snapshot-sync path (#1394).
+# OFF by default so testnet keeps the env-key path; operators opt in once a
+# PKCS#11 token is provisioned. See docs/operator/hsm-migration.md.
+hsm = ["wrfcoin-shared-protocol/hsm"]
+# Dev endpoints (#2139): debug/trace/profiling routes are compiled OUT of every
+# binary that does not opt in here. OFF by default, never enabled by a release
+# profile, the Docker images, or release-signing.yml — enforced by
+# `scripts/check_release_endpoints.py` (build profiles + a scan of the built
+# release binary) and `native-chain/tests/dev_endpoints_2139.rs`.
+dev-endpoints = []
+# Pass-through for shared-protocol's external-feed connectors (core4#2316).
+# `src/data_hub` here is a bare `pub use` of that module, so it can only exist
+# when the underlying feature does.
+data-hub = ["wrfcoin-shared-protocol/data-hub"]
+# Manual genesis-cut composition harness. Kept off by default because the
+# integration target deliberately references the still-open cut-gate APIs that
+# the harness composes before enabling it.
+cut-composition-harness = ["wrfcoin-shared-protocol/test-support"]
+# The oracle attester service bin (#2464): poll the pending read surface,
+# validate mechanically, sign with the oracle role, submit. Combine with
+# `hsm` when the oracle key lives in SoftHSM/PKCS#11.
+attester = ["dep:reqwest"]
+# #3095: the node's optional peer fetch for governance-signed upgrade notices
+# (`WRFCOIN_UPGRADE_NOTICE_PEER_FETCH=1` + `WRFCOIN_UPGRADE_NOTICE_PEER_URLS`).
+# OFF by default so the default node binary carries no notice client and is
+# byte-identical to one built without this story; notices then arrive only
+# through `WRFCOIN_UPGRADE_NOTICE_FILE`, which needs no HTTP at all. Compiled
+# in CI by the deploy-feature gate so the surface cannot rot.
+upgrade-notice-fetch = ["dep:reqwest"]
+# #3224 panic drill (TEST-ONLY): lets a release launch_api panic its inbound P2P
+# consumer on demand (`WRFCOIN_PANIC_DRILL_P2P_CONSUMER_TRIGGER=<file>`) so the
+# whole-process fail-stop and the external restart can be proved on the built
+# artifact. Never enabled by a shipped build — `scripts/check_release_endpoints.py`
+# fails any build profile or release binary that carries it.
+panic-drill = ["p2p"]
+# The light node bin (#2188): follow headers over HTTP, verify producer
+# signatures against a trusted producer set, sample data availability.
+light-node = ["dep:reqwest"]
+
+[dev-dependencies]
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard", "test-support"] }
+wrfcoin_cli = { path = "../tools/cli/WrfcoinCLI" }
+tempfile = "3"
+fastrand = "2.0"
+reqwest = { version = "0.12", features = ["json"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.21"
+# Serializes tests that read/write the process-global CORE_METRICS Prometheus
+# registry so they never run concurrently (the /metrics, /prometheus and
+# /heatmap/json handlers mutate the shared registry as a side effect).
+serial_test = "3"
+# Test-only: build valid MLSAG ring signatures for the #1758 RewardClaim
+# producer/applier parity test without requiring the optional `privacy`
+# feature on the launch_api binary build.
+wrfcoin-privacy = { path = "../privacy" }
+# Cross-crate launch tests exercise the real P2P response/event transport.
+# Keep its public harness out of normal production dependency builds.
+wrfcoin-p2p = { path = "../p2p", features = ["test-harness"] }
+
+[dependencies.dhat]
+workspace = true
+optional = true
+
+[dependencies.tracing]
+workspace = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+
+[dependencies.console-subscriber]
+workspace = true
+optional = true

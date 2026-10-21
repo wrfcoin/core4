@@ -1,0 +1,7 @@
+// Control for error_attribute: secret words in the message PROSE, and a
+// positional capture, interpolate no secret value.
+#[derive(Debug, thiserror::Error)]
+pub enum SignerError {
+    #[error("invalid signing key length: {0}")]
+    BadLength(usize),
+}

@@ -1,0 +1,28 @@
+# Enhanced Weather API Mock with Scenario Support
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install required packages including health check tools
+RUN apk add --no-cache curl
+
+# Copy mock service files
+COPY package.json* ./
+RUN npm install express cors dotenv winston
+
+# Copy enhanced mock implementation
+COPY enhanced-weather-mock.js ./mock-weather-api.js
+COPY weather-scenarios.json ./scenarios/weather-scenarios.json
+
+# Create data and logs directories
+RUN mkdir -p data logs scenarios
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:${PORT:-3010}/health || exit 1
+
+# Expose port
+EXPOSE ${PORT:-3010}
+
+# Start the enhanced mock service
+CMD ["node", "mock-weather-api.js"]

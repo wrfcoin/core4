@@ -1,0 +1,18 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+RUN npm init -y && \
+    npm install axios pg redis uuid moment faker @faker-js/faker
+
+# Copy seeder files
+COPY seeder.js .
+COPY seed-data ./seed-data
+
+# Health check (not needed for one-time run container)
+# But useful for debugging
+HEALTHCHECK --interval=60s --timeout=10s --start-period=5s --retries=2 \
+  CMD ps aux | grep -q '[n]ode seeder.js' || exit 1
+
+CMD ["node", "seeder.js"]

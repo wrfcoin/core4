@@ -1,0 +1,299 @@
+openapi: 3.0.3
+info:
+  title: WRFCoin launch_api
+  version: 0.1.0
+  description: |
+    Checked first-tranche contract for the node API actually registered by
+    `native-chain/src/bin/launch_api/routes/mod.rs`. This document currently
+    checks paths and methods; response-schema conformance is not automated.
+servers:
+  - url: http://localhost:8556
+    description: Local launch_api node
+tags:
+  - name: Public
+  - name: Reader
+  - name: Contributor
+paths:
+  /health:
+    get:
+      tags: [Public]
+      operationId: health
+      responses:
+        '200': {description: Process health}
+  /readyz:
+    get:
+      tags: [Public]
+      operationId: readiness
+      responses:
+        '200': {description: Node is ready}
+        '503': {description: Node is not ready}
+  /version:
+    get:
+      tags: [Public]
+      operationId: version
+      responses:
+        '200': {description: Build version}
+  /network/info:
+    get:
+      tags: [Public]
+      operationId: networkInfo
+      responses:
+        '200': {description: Chain identity and sync information}
+  /chain/blocks:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: listBlocks
+      responses:
+        '200': {description: Bounded block list}
+  /chain/block/{height}:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: getBlock
+      parameters:
+        - {$ref: '#/components/parameters/Height'}
+      responses:
+        '200': {description: Canonical block}
+        '404': {description: Block not found}
+  /addresses/{address}:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: getAddress
+      parameters:
+        - {$ref: '#/components/parameters/Address'}
+      responses:
+        '200':
+          description: Canonical account snapshot, including its replay nonce
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountEnvelope'}
+  /transactions/submit:
+    post:
+      tags: [Contributor]
+      security: [{bearerAuth: []}]
+      operationId: submitTransaction
+      description: Transparent transfers fail closed unless the client supplies the signed authorization fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LegacyTransactionSubmitRequest'}
+      responses:
+        '202': {description: Transaction admitted}
+        '400': {description: Invalid or unsigned request}
+  /transactions/station/registrations:
+    post:
+      tags: [Contributor]
+      security: [{bearerAuth: []}]
+      operationId: submitStationRegistrations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StationRegistrationSubmitRequest'}
+      responses:
+        '201': {description: Registrations admitted to the mempool}
+  /transactions/station/registrations/{station_id}:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: getStationRegistration
+      parameters:
+        - {$ref: '#/components/parameters/StationId'}
+      responses:
+        '200':
+          description: Canonical station payout binding
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StationRegistration'}
+        '404': {description: Station not registered}
+  /transactions/contribution/commit:
+    post:
+      tags: [Contributor]
+      security: [{bearerAuth: []}]
+      operationId: submitContributionCommit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ContributionCommitRequest'}
+      responses:
+        '201': {description: Commit admitted}
+  /transactions/contribution/reveal:
+    post:
+      tags: [Contributor]
+      security: [{bearerAuth: []}]
+      operationId: submitContributionReveal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ContributionRevealRequest'}
+      responses:
+        '201': {description: Reveal admitted}
+  /transactions/commit/{commit_id}/status:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: getCommitStatus
+      parameters:
+        - {$ref: '#/components/parameters/CommitId'}
+      responses:
+        '200': {description: Commit and reward status}
+        '404': {description: Commit not found}
+  /transactions/contributions/status:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: listContributionStatuses
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0}}
+        - {name: status, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Bounded contribution status list}
+  /transactions/oracle/status:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: oracleStatus
+      responses:
+        '200':
+          description: Current oracle quorum status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OracleStatus'}
+  /transactions/stake/{address}:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: stakeStatus
+      parameters:
+        - {$ref: '#/components/parameters/Address'}
+      responses:
+        '200':
+          description: State-backed stake snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StakeStatus'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Tokens carry the Reader, Contributor, or Operator role required by each handler.
+  parameters:
+    Height:
+      name: height
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 0}
+    Address:
+      name: address
+      in: path
+      required: true
+      schema: {type: string, pattern: '^0x[0-9a-fA-F]{40}$'}
+    StationId:
+      name: station_id
+      in: path
+      required: true
+      schema: {type: string}
+    CommitId:
+      name: commit_id
+      in: path
+      required: true
+      schema: {type: string}
+  schemas:
+    LegacyTransactionSubmitRequest:
+      type: object
+      properties:
+        from: {type: string}
+        to: {type: string}
+        amount: {type: integer, format: int64, minimum: 1}
+        transparent_opt_out: {type: boolean, default: false}
+        transparent_opt_out_reason: {type: string}
+        auth_pubkey: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+        auth_signature: {type: string, pattern: '^[0-9a-fA-F]{128}$'}
+        nonce: {type: string, pattern: '^[0-9]+$'}
+    StationRegistrationSubmitRequest:
+      type: object
+      required: [chain_id, network_id, transactions]
+      properties:
+        chain_id: {type: string}
+        network_id: {type: string}
+        transactions: {type: array, items: {type: object}}
+    ContributionCommitRequest:
+      type: object
+      required: [contributor, station_id, commit_hash]
+      properties:
+        contributor: {type: string}
+        station_id: {type: string}
+        commit_hash: {type: string}
+        auth_pubkey: {type: string}
+        auth_signature: {type: string}
+    ContributionRevealRequest:
+      type: object
+      required: [contributor, station_id, payload, nonce, commit_hash]
+      properties:
+        contributor: {type: string}
+        station_id: {type: string}
+        payload: {type: object, additionalProperties: true}
+        nonce: {type: string}
+        commit_hash: {type: string}
+        timestamp: {type: integer, format: int64, nullable: true}
+        data_cid: {type: string, nullable: true}
+        data_hash: {type: string, nullable: true}
+        storage_provider: {type: string, nullable: true}
+        compute_receipt: {type: object, nullable: true}
+        provenance: {type: object, nullable: true}
+    AccountEnvelope:
+      type: object
+      properties:
+        success: {type: boolean}
+        data:
+          type: object
+          required: [address, balance, nonce, stake_required, stake_locked, spendable_balance, earned_balance_total]
+          properties:
+            address: {type: string}
+            balance: {type: string}
+            nonce: {type: string}
+            stake_required: {type: string}
+            stake_locked: {type: string}
+            spendable_balance: {type: string}
+            earned_balance_total: {type: string}
+            contribution_rewards: {type: object}
+    StationRegistration:
+      type: object
+      required: [station_id, owner_address, provenance_class, is_active, observed_at_height, settled_height, state_root_hex]
+      properties:
+        station_id: {type: string}
+        owner_address: {type: string}
+        provenance_class: {type: string}
+        is_active: {type: boolean}
+        observed_at_height: {type: integer, format: int64}
+        settled_height: {type: integer, format: int64}
+        state_root_hex: {type: string}
+    OracleStatus:
+      type: object
+      required: [oracle_set, oracle_quorum, tracked_commit_count, commits_with_quorum, commits_pending_quorum]
+      properties:
+        oracle_set: {type: array, items: {type: string}}
+        oracle_quorum: {type: integer}
+        tracked_commit_count: {type: integer}
+        commits_with_quorum: {type: integer}
+        commits_pending_quorum: {type: integer}
+    StakeStatus:
+      type: object
+      required: [address, stake_required, stake_locked, spendable_balance, earned_balance_total, contribution_rewards, maturity_percent, note]
+      properties:
+        address: {type: string}
+        stake_required: {type: string}
+        stake_locked: {type: string}
+        spendable_balance: {type: string}
+        earned_balance_total: {type: string}
+        contribution_rewards: {type: object}
+        maturity_percent: {type: number, format: double}
+        note: {type: string}

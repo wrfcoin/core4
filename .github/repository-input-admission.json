@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "_comment": "Anchored input manifest for the 'repository-input integration admission' context (Refs #2433, docs/ci/REQUIRED-CHECKS-R21.md). relevant_globs may only GROW relative to the PR base (the checker compares against HEAD^1 of the merge ref, which a PR cannot edit). The scope mirrors what the shared-protocol tree scan reads (.env/prefix.env, .json/.jsonl/.toml/.yml/.yaml/.sh/.conf) plus the Rust/manifest/ratchet inputs. Globs use GitHub path-filter semantics (scripts/check_workflow_path_coverage.py glob_to_regex).",
+  "evidence_workflow": "integration-ratchet.yml",
+  "required_jobs": [
+    "integration ratchet — nothing else executes",
+    "integration ratchet — docker-gated targets (fail-closed if Docker unavailable)"
+  ],
+  "required_step_prefix": "Observe",
+  "relevant_globs": [
+    "**/*.rs",
+    "**/Cargo.toml",
+    "Cargo.lock",
+    "scripts/integration_test_ratchet.py",
+    "scripts/integration_test_ratchet.json",
+    "scripts/count_test_executables.py",
+    ".github/workflows/integration-ratchet.yml",
+    "**/*.env",
+    "**/.env",
+    "**/.env.*",
+    "**/*.json",
+    "**/*.jsonl",
+    "**/*.toml",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.sh",
+    "**/*.conf"
+  ],
+  "corpus": {
+    "must_be_relevant": [
+      "native-chain/src/lib.rs",
+      "shared-protocol/tests/faucet_sink_binding_activation_3361.rs",
+      "native-chain/Cargo.toml",
+      "Cargo.lock",
+      "scripts/integration_test_ratchet.py",
+      "scripts/integration_test_ratchet.json",
+      "scripts/count_test_executables.py",
+      ".github/workflows/integration-ratchet.yml",
+      "docs/deployment/live-feature-schedule/777-testnet.json",
+      "testnet/cut-pins.env",
+      "testnet/.env",
+      "testnet/.env.example",
+      "config/events.jsonl",
+      "config/node.toml",
+      "config/genesis.yaml",
+      "config/genesis.yml",
+      "scripts/launch.sh",
+      "config/node.conf",
+      "settings.json"
+    ],
+    "must_not_be_relevant": [
+      "README.md",
+      "docs/ci/REQUIRED-CHECKS-R21.md",
+      "docs/diagram.png",
+      "CHANGELOG.txt"
+    ]
+  }
+}

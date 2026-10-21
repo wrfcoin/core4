@@ -1,0 +1,276 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Wrfcoin Service Metadata Schema",
+  "description": "Standardized metadata format for all Wrfcoin platform services",
+  "version": "1.0.0",
+  "type": "object",
+  "required": ["name", "port", "category", "status", "priority", "command"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Human-readable service name",
+      "examples": ["Frontend Application", "Cross-Chain WebSocket Port 5001"]
+    },
+    "port": {
+      "type": ["integer", "null"],
+      "description": "TCP port number the service listens on, null for background services",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "core",
+        "network",
+        "weather",
+        "ai",
+        "compute",
+        "storage",
+        "iot",
+        "blockchain",
+        "api",
+        "performance"
+      ],
+      "description": "Service category for organizational grouping"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "stopped", "failed", "starting", "stopping"],
+      "description": "Current operational status"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["critical", "revenue-critical", "high", "medium", "low"],
+      "description": "Service importance level for restart ordering"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^@[a-z-]+$"
+      },
+      "description": "Searchable tags for filtering and management (must start with @)",
+      "examples": [
+        ["@frontend", "@critical"],
+        ["@weather", "@earnings", "@protected"]
+      ]
+    },
+    "file": {
+      "type": "string",
+      "description": "Primary source file path relative to project root"
+    },
+    "command": {
+      "type": "string",
+      "description": "Shell command to start the service"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of service names this service depends on",
+      "default": []
+    },
+    "autoStart": {
+      "type": "boolean",
+      "description": "Whether service should start automatically",
+      "default": false
+    },
+    "protected": {
+      "type": "boolean",
+      "description": "Whether service is protected from shutdown (earnings-critical)",
+      "default": false
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of service functionality"
+    },
+    "healthCheck": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "HTTP endpoint for health checks"
+        },
+        "interval": {
+          "type": "integer",
+          "description": "Health check interval in seconds",
+          "default": 30
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Health check timeout in seconds",
+          "default": 5
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "description": "Expected CPU usage (low, medium, high)"
+        },
+        "memory": {
+          "type": "string",
+          "description": "Expected memory usage (low, medium, high)"
+        },
+        "storage": {
+          "type": "string",
+          "description": "Storage requirements"
+        }
+      }
+    },
+    "scaling": {
+      "type": "object",
+      "properties": {
+        "horizontal": {
+          "type": "boolean",
+          "description": "Can scale horizontally",
+          "default": false
+        },
+        "maxInstances": {
+          "type": "integer",
+          "description": "Maximum number of instances",
+          "default": 1
+        },
+        "loadBalancer": {
+          "type": "boolean",
+          "description": "Requires load balancer",
+          "default": false
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "Required environment variables",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Metrics to collect"
+        },
+        "logs": {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "string",
+              "enum": ["debug", "info", "warn", "error"]
+            },
+            "retention": {
+              "type": "string",
+              "description": "Log retention period"
+            }
+          }
+        }
+      }
+    },
+    "earnings": {
+      "type": "object",
+      "description": "Earnings tracking for revenue-generating services",
+      "properties": {
+        "currentEarnings": {
+          "type": "string",
+          "description": "Current earnings amount with currency"
+        },
+        "earningsRate": {
+          "type": "string",
+          "description": "Earnings rate per time period"
+        },
+        "totalCollections": {
+          "type": "integer",
+          "description": "Total successful data collections"
+        },
+        "successRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Success rate percentage"
+        }
+      }
+    },
+    "restartPolicy": {
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["always", "on-failure", "unless-stopped", "never"],
+          "default": "on-failure"
+        },
+        "maxRetries": {
+          "type": "integer",
+          "default": 3
+        },
+        "backoff": {
+          "type": "string",
+          "enum": ["linear", "exponential"],
+          "default": "exponential"
+        }
+      }
+    },
+    "powerModes": {
+      "type": "object",
+      "description": "Service behavior in different power modes",
+      "properties": {
+        "lowPower": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Should run in low power mode"
+            },
+            "config": {
+              "type": "object",
+              "description": "Configuration overrides for low power mode"
+            }
+          }
+        },
+        "normal": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        "highPerformance": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Should run in high performance mode"
+            },
+            "config": {
+              "type": "object",
+              "description": "Configuration overrides for high performance mode"
+            }
+          }
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Service creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    },
+    "version": {
+      "type": "string",
+      "description": "Service version",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    }
+  }
+}

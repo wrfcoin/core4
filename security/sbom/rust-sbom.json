@@ -1,0 +1,4975 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "metadata": {
+    "component": {
+      "name": "wrfcoin-blockchain-core",
+      "version": "0.5.2",
+      "type": "application"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "actix-codec",
+      "version": "0.5.2",
+      "description": "Codec utilities for working with framed protocols"
+    },
+    {
+      "type": "library",
+      "name": "actix-files",
+      "version": "0.6.9",
+      "description": "Static file serving for Actix Web"
+    },
+    {
+      "type": "library",
+      "name": "actix-http",
+      "version": "3.11.2",
+      "description": "HTTP types and services for the Actix ecosystem"
+    },
+    {
+      "type": "library",
+      "name": "actix-macros",
+      "version": "0.2.4",
+      "description": "Macros for Actix system and runtime"
+    },
+    {
+      "type": "library",
+      "name": "actix-router",
+      "version": "0.5.3",
+      "description": "Resource path matching and router"
+    },
+    {
+      "type": "library",
+      "name": "actix-rt",
+      "version": "2.11.0",
+      "description": "Tokio-based single-threaded async runtime for the Actix ecosystem"
+    },
+    {
+      "type": "library",
+      "name": "actix-server",
+      "version": "2.6.0",
+      "description": "General purpose TCP server built for the Actix ecosystem"
+    },
+    {
+      "type": "library",
+      "name": "actix-service",
+      "version": "2.0.3",
+      "description": "Service trait and combinators for representing asynchronous request/response operations."
+    },
+    {
+      "type": "library",
+      "name": "actix-utils",
+      "version": "3.0.1",
+      "description": "Various utilities used in the Actix ecosystem"
+    },
+    {
+      "type": "library",
+      "name": "actix-web",
+      "version": "4.12.1",
+      "description": "Actix Web is a powerful, pragmatic, and extremely fast web framework for Rust"
+    },
+    {
+      "type": "library",
+      "name": "actix-web-codegen",
+      "version": "4.3.0",
+      "description": "Routing and runtime macros for Actix Web"
+    },
+    {
+      "type": "library",
+      "name": "addr2line",
+      "version": "0.24.2",
+      "description": "A cross-platform symbolication library written in Rust, using `gimli`"
+    },
+    {
+      "type": "library",
+      "name": "adler2",
+      "version": "2.0.1",
+      "description": "A simple clean-room implementation of the Adler-32 checksum"
+    },
+    {
+      "type": "library",
+      "name": "aead",
+      "version": "0.5.2",
+      "description": "Traits for Authenticated Encryption with Associated Data (AEAD) algorithms,\nsuch as AES-GCM as ChaCha20Poly1305, which provide a high-level API\n"
+    },
+    {
+      "type": "library",
+      "name": "aes",
+      "version": "0.8.4",
+      "description": "Pure Rust implementation of the Advanced Encryption Standard (a.k.a. Rijndael)"
+    },
+    {
+      "type": "library",
+      "name": "aes-gcm",
+      "version": "0.10.3",
+      "description": "Pure Rust implementation of the AES-GCM (Galois/Counter Mode)\nAuthenticated Encryption with Associated Data (AEAD) Cipher\nwith optional architecture-specific hardware acceleration\n"
+    },
+    {
+      "type": "library",
+      "name": "ahash",
+      "version": "0.8.12",
+      "description": "A non-cryptographic hash function using AES-NI for high performance"
+    },
+    {
+      "type": "library",
+      "name": "aho-corasick",
+      "version": "1.1.4",
+      "description": "Fast multiple substring searching."
+    },
+    {
+      "type": "library",
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "description": "Mirror of Rust's allocator API"
+    },
+    {
+      "type": "library",
+      "name": "ambient-authority",
+      "version": "0.0.2",
+      "description": "Ambient Authority"
+    },
+    {
+      "type": "library",
+      "name": "android_system_properties",
+      "version": "0.1.5",
+      "description": "Minimal Android system properties wrapper"
+    },
+    {
+      "type": "library",
+      "name": "anes",
+      "version": "0.1.6",
+      "description": "ANSI Escape Sequences provider & parser"
+    },
+    {
+      "type": "library",
+      "name": "anstream",
+      "version": "0.6.21",
+      "description": "IO stream adapters for writing colored text that will gracefully degrade according to your terminal's capabilities."
+    },
+    {
+      "type": "library",
+      "name": "anstyle",
+      "version": "1.0.13",
+      "description": "ANSI text styling"
+    },
+    {
+      "type": "library",
+      "name": "anstyle-parse",
+      "version": "0.2.7",
+      "description": "Parse ANSI Style Escapes"
+    },
+    {
+      "type": "library",
+      "name": "anstyle-query",
+      "version": "1.1.5",
+      "description": "Look up colored console capabilities"
+    },
+    {
+      "type": "library",
+      "name": "anstyle-wincon",
+      "version": "3.0.11",
+      "description": "Styling legacy Windows terminals"
+    },
+    {
+      "type": "library",
+      "name": "anyhow",
+      "version": "1.0.100",
+      "description": "Flexible concrete Error type built on std::error::Error"
+    },
+    {
+      "type": "library",
+      "name": "approx",
+      "version": "0.5.1",
+      "description": "Approximate floating point equality comparisons and assertions."
+    },
+    {
+      "type": "library",
+      "name": "arbitrary",
+      "version": "1.4.2",
+      "description": "The trait for generating structured data from unstructured data"
+    },
+    {
+      "type": "library",
+      "name": "arc-swap",
+      "version": "1.8.0",
+      "description": "Atomically swappable Arc"
+    },
+    {
+      "type": "library",
+      "name": "arrayref",
+      "version": "0.3.9",
+      "description": "Macros to take array references of slices"
+    },
+    {
+      "type": "library",
+      "name": "arrayvec",
+      "version": "0.7.6",
+      "description": "A vector with fixed capacity, backed by an array (it can be stored on the stack too). Implements fixed capacity ArrayVec and ArrayString."
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs",
+      "version": "0.5.2",
+      "description": "Parser/encoder for ASN.1 BER/DER data"
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs",
+      "version": "0.6.2",
+      "description": "Parser/encoder for ASN.1 BER/DER data"
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs-derive",
+      "version": "0.4.0",
+      "description": "Derive macros for the `asn1-rs` crate"
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs-derive",
+      "version": "0.5.1",
+      "description": "Derive macros for the `asn1-rs` crate"
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs-impl",
+      "version": "0.1.0",
+      "description": "Implementation details for the `asn1-rs` crate"
+    },
+    {
+      "type": "library",
+      "name": "asn1-rs-impl",
+      "version": "0.2.0",
+      "description": "Implementation details for the `asn1-rs` crate"
+    },
+    {
+      "type": "library",
+      "name": "assert-json-diff",
+      "version": "2.0.2",
+      "description": "Easily compare two JSON values and get great output"
+    },
+    {
+      "type": "library",
+      "name": "assert_matches",
+      "version": "1.5.0",
+      "description": "Asserts that a value matches a pattern"
+    },
+    {
+      "type": "library",
+      "name": "async-channel",
+      "version": "1.9.0",
+      "description": "Async multi-producer multi-consumer channel"
+    },
+    {
+      "type": "library",
+      "name": "async-io",
+      "version": "2.6.0",
+      "description": "Async I/O and timers"
+    },
+    {
+      "type": "library",
+      "name": "async-trait",
+      "version": "0.1.89",
+      "description": "Type erasure for async trait methods"
+    },
+    {
+      "type": "library",
+      "name": "asynchronous-codec",
+      "version": "0.6.2",
+      "description": "Utilities for encoding and decoding frames using `async/await`"
+    },
+    {
+      "type": "library",
+      "name": "atomic-waker",
+      "version": "1.1.2",
+      "description": "A synchronization primitive for task wakeup"
+    },
+    {
+      "type": "library",
+      "name": "attohttpc",
+      "version": "0.24.1",
+      "description": "Small and lightweight HTTP client"
+    },
+    {
+      "type": "library",
+      "name": "autocfg",
+      "version": "1.5.0",
+      "description": "Automatic cfg for Rust compiler features"
+    },
+    {
+      "type": "library",
+      "name": "aws-lc-rs",
+      "version": "1.15.3",
+      "description": "aws-lc-rs is a cryptographic library using AWS-LC for its cryptographic operations. This library strives to be API-compatible with the popular Rust library named ring."
+    },
+    {
+      "type": "library",
+      "name": "aws-lc-sys",
+      "version": "0.36.0",
+      "description": "AWS-LC is a general-purpose cryptographic library maintained by the AWS Cryptography team for AWS and their customers. It іs based on code from the Google BoringSSL project and the OpenSSL project."
+    },
+    {
+      "type": "library",
+      "name": "backon",
+      "version": "1.6.0",
+      "description": "Make retry like a built-in feature provided by Rust."
+    },
+    {
+      "type": "library",
+      "name": "base-x",
+      "version": "0.2.11",
+      "description": "Encode/decode any base"
+    },
+    {
+      "type": "library",
+      "name": "base16ct",
+      "version": "0.2.0",
+      "description": "Pure Rust implementation of Base16 a.k.a hexadecimal (RFC 4648) which avoids\nany usages of data-dependent branches/LUTs and thereby provides portable\n\"best effort\" constant-time operation and embedded-friendly no_std support\n"
+    },
+    {
+      "type": "library",
+      "name": "base256emoji",
+      "version": "1.0.2",
+      "description": "A multibase base256emoji implementation."
+    },
+    {
+      "type": "library",
+      "name": "base64",
+      "version": "0.13.1",
+      "description": "encodes and decodes base64 as bytes or utf8"
+    },
+    {
+      "type": "library",
+      "name": "base64",
+      "version": "0.21.7",
+      "description": "encodes and decodes base64 as bytes or utf8"
+    },
+    {
+      "type": "library",
+      "name": "base64",
+      "version": "0.22.1",
+      "description": "encodes and decodes base64 as bytes or utf8"
+    },
+    {
+      "type": "library",
+      "name": "base64ct",
+      "version": "1.8.3",
+      "description": "Pure Rust implementation of Base64 (RFC 4648) which avoids any usages of\ndata-dependent branches/LUTs and thereby provides portable \"best effort\"\nconstant-time operation and embedded-friendly no_std support\n"
+    },
+    {
+      "type": "library",
+      "name": "bcrypt",
+      "version": "0.15.1",
+      "description": "Easily hash and verify passwords using bcrypt"
+    },
+    {
+      "type": "library",
+      "name": "bincode",
+      "version": "1.3.3",
+      "description": "A binary serialization / deserialization strategy that uses Serde for transforming structs into bytes and vice versa!"
+    },
+    {
+      "type": "library",
+      "name": "bip32",
+      "version": "0.5.3",
+      "description": "BIP32 hierarchical key derivation implemented in a generic, no_std-friendly\nmanner. Supports deriving keys using the pure Rust k256 crate or the\nC library-backed secp256k1 crate\n"
+    },
+    {
+      "type": "library",
+      "name": "bip39",
+      "version": "2.2.2",
+      "description": "Library for BIP-39 Bitcoin mnemonic codes"
+    },
+    {
+      "type": "library",
+      "name": "bit-set",
+      "version": "0.8.0",
+      "description": "A set of bits"
+    },
+    {
+      "type": "library",
+      "name": "bit-vec",
+      "version": "0.6.3",
+      "description": "A vector of bits"
+    },
+    {
+      "type": "library",
+      "name": "bit-vec",
+      "version": "0.8.0",
+      "description": "A vector of bits"
+    },
+    {
+      "type": "library",
+      "name": "bitcoin_hashes",
+      "version": "0.14.1",
+      "description": "Hash functions used by the rust-bitcoin eccosystem"
+    },
+    {
+      "type": "library",
+      "name": "bitflags",
+      "version": "1.3.2",
+      "description": "A macro to generate structures which behave like bitflags.\n"
+    },
+    {
+      "type": "library",
+      "name": "bitflags",
+      "version": "2.10.0",
+      "description": "A macro to generate structures which behave like bitflags.\n"
+    },
+    {
+      "type": "library",
+      "name": "bitvec",
+      "version": "1.0.1",
+      "description": "Addresses memory by bits, for packed collections and bitfields"
+    },
+    {
+      "type": "library",
+      "name": "blake2",
+      "version": "0.10.6",
+      "description": "BLAKE2 hash functions"
+    },
+    {
+      "type": "library",
+      "name": "blake3",
+      "version": "1.8.3",
+      "description": "the BLAKE3 hash function"
+    },
+    {
+      "type": "library",
+      "name": "block-buffer",
+      "version": "0.9.0",
+      "description": "Fixed size buffer for block processing of data"
+    },
+    {
+      "type": "library",
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "description": "Buffer type for block processing of data"
+    },
+    {
+      "type": "library",
+      "name": "block-padding",
+      "version": "0.2.1",
+      "description": "Padding and unpadding of messages divided into blocks."
+    },
+    {
+      "type": "library",
+      "name": "blowfish",
+      "version": "0.9.1",
+      "description": "Blowfish block cipher"
+    },
+    {
+      "type": "library",
+      "name": "bs58",
+      "version": "0.5.1",
+      "description": "Another Base58 codec implementation."
+    },
+    {
+      "type": "library",
+      "name": "bulletproofs",
+      "version": "4.0.0",
+      "description": "A pure-Rust implementation of Bulletproofs using Ristretto"
+    },
+    {
+      "type": "library",
+      "name": "bumpalo",
+      "version": "3.19.1",
+      "description": "A fast bump allocation arena for Rust."
+    },
+    {
+      "type": "library",
+      "name": "byte-slice-cast",
+      "version": "1.2.3",
+      "description": "Safely cast bytes slices from/to slices of built-in fundamental numeric types"
+    },
+    {
+      "type": "library",
+      "name": "byteorder",
+      "version": "1.5.0",
+      "description": "Library for reading/writing numbers in big-endian and little-endian."
+    },
+    {
+      "type": "library",
+      "name": "bytes",
+      "version": "1.11.0",
+      "description": "Types and traits for working with bytes"
+    },
+    {
+      "type": "library",
+      "name": "bytestring",
+      "version": "1.5.0",
+      "description": "A UTF-8 encoded read-only string using `Bytes` as storage"
+    },
+    {
+      "type": "library",
+      "name": "cap-fs-ext",
+      "version": "3.4.5",
+      "description": "Extension traits for `Dir`, `File`, etc."
+    },
+    {
+      "type": "library",
+      "name": "cap-net-ext",
+      "version": "3.4.5",
+      "description": "Extension traits for `TcpListener`, `Pool`, etc."
+    },
+    {
+      "type": "library",
+      "name": "cap-primitives",
+      "version": "3.4.5",
+      "description": "Capability-based primitives"
+    },
+    {
+      "type": "library",
+      "name": "cap-rand",
+      "version": "3.4.5",
+      "description": "Capability-based random number generators"
+    },
+    {
+      "type": "library",
+      "name": "cap-std",
+      "version": "3.4.5",
+      "description": "Capability-based version of the Rust standard library"
+    },
+    {
+      "type": "library",
+      "name": "cap-time-ext",
+      "version": "3.4.5",
+      "description": "Extension traits for `SystemClock` and `MonotonicClock`"
+    },
+    {
+      "type": "library",
+      "name": "cast",
+      "version": "0.3.0",
+      "description": "Ergonomic, checked cast functions for primitive types"
+    },
+    {
+      "type": "library",
+      "name": "cc",
+      "version": "1.2.53",
+      "description": "A build-time dependency for Cargo build scripts to assist in invoking the native\nC compiler to compile native C code into a static archive to be linked into Rust\ncode.\n"
+    },
+    {
+      "type": "library",
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "description": "A macro to ergonomically define an item depending on a large number of #[cfg]\nparameters. Structured like an if-else chain, the first matching branch is the\nitem that gets emitted.\n"
+    },
+    {
+      "type": "library",
+      "name": "chacha20",
+      "version": "0.9.1",
+      "description": "The ChaCha20 stream cipher (RFC 8439) implemented in pure Rust using traits\nfrom the RustCrypto `cipher` crate, with optional architecture-specific\nhardware acceleration (AVX2, SSE2). Additionally provides the ChaCha8, ChaCha12,\nXChaCha20, XChaCha12 and XChaCha8 stream ciphers, and also optional\nrand_core-compatible RNGs based on those ciphers.\n"
+    },
+    {
+      "type": "library",
+      "name": "chacha20poly1305",
+      "version": "0.10.1",
+      "description": "Pure Rust implementation of the ChaCha20Poly1305 Authenticated Encryption\nwith Additional Data Cipher (RFC 8439) with optional architecture-specific\nhardware acceleration. Also contains implementations of the XChaCha20Poly1305\nextended nonce variant of ChaCha20Poly1305, and the reduced-round\nChaCha8Poly1305 and ChaCha12Poly1305 lightweight variants.\n"
+    },
+    {
+      "type": "library",
+      "name": "chrono",
+      "version": "0.4.43",
+      "description": "Date and time library for Rust"
+    },
+    {
+      "type": "library",
+      "name": "ciborium",
+      "version": "0.2.2",
+      "description": "serde implementation of CBOR using ciborium-basic"
+    },
+    {
+      "type": "library",
+      "name": "ciborium-io",
+      "version": "0.2.2",
+      "description": "Simplified Read/Write traits for no_std usage"
+    },
+    {
+      "type": "library",
+      "name": "ciborium-ll",
+      "version": "0.2.2",
+      "description": "Low-level CBOR codec primitives"
+    },
+    {
+      "type": "library",
+      "name": "cipher",
+      "version": "0.4.4",
+      "description": "Traits for describing block ciphers and stream ciphers"
+    },
+    {
+      "type": "library",
+      "name": "clap",
+      "version": "4.5.54",
+      "description": "A simple to use, efficient, and full-featured Command Line Argument Parser"
+    },
+    {
+      "type": "library",
+      "name": "clap_builder",
+      "version": "4.5.54",
+      "description": "A simple to use, efficient, and full-featured Command Line Argument Parser"
+    },
+    {
+      "type": "library",
+      "name": "clap_derive",
+      "version": "4.5.49",
+      "description": "Parse command line argument by defining a struct, derive crate."
+    },
+    {
+      "type": "library",
+      "name": "clap_lex",
+      "version": "0.7.7",
+      "description": "Minimal, flexible command line parser"
+    },
+    {
+      "type": "library",
+      "name": "clear_on_drop",
+      "version": "0.2.5",
+      "description": "Helpers for clearing sensitive data on the stack and heap"
+    },
+    {
+      "type": "library",
+      "name": "cmake",
+      "version": "0.1.57",
+      "description": "A build dependency for running `cmake` to build a native library\n"
+    },
+    {
+      "type": "library",
+      "name": "cobs",
+      "version": "0.3.0",
+      "description": "    This is an implementation of the Consistent Overhead Byte Stuffing (COBS) algorithm.\n    COBS is an algorithm for transforming a message into an encoding where a specific value\n    (the \"sentinel\" value) is not used. This value can then be used to mark frame boundaries\n    in a serial communication channel. "
+    },
+    {
+      "type": "library",
+      "name": "colorchoice",
+      "version": "1.0.4",
+      "description": "Global override of color control"
+    },
+    {
+      "type": "library",
+      "name": "colored",
+      "version": "2.2.0",
+      "description": "The most simple way to add colors in your terminal"
+    },
+    {
+      "type": "library",
+      "name": "combine",
+      "version": "4.6.7",
+      "description": "Fast parser combinators on arbitrary streams with zero-copy support."
+    },
+    {
+      "type": "library",
+      "name": "comfy-table",
+      "version": "7.2.2",
+      "description": "An easy to use library for building beautiful tables with automatic content wrapping"
+    },
+    {
+      "type": "library",
+      "name": "concurrent-queue",
+      "version": "2.5.0",
+      "description": "Concurrent multi-producer multi-consumer queue"
+    },
+    {
+      "type": "library",
+      "name": "console",
+      "version": "0.15.11",
+      "description": "A terminal and console abstraction for Rust"
+    },
+    {
+      "type": "library",
+      "name": "const-oid",
+      "version": "0.9.6",
+      "description": "Const-friendly implementation of the ISO/IEC Object Identifier (OID) standard\nas defined in ITU X.660, with support for BER/DER encoding/decoding as well as\nheapless no_std (i.e. embedded) support\n"
+    },
+    {
+      "type": "library",
+      "name": "const-str",
+      "version": "0.4.3",
+      "description": "compile-time string operations"
+    },
+    {
+      "type": "library",
+      "name": "const_format",
+      "version": "0.2.35",
+      "description": "Compile-time string formatting"
+    },
+    {
+      "type": "library",
+      "name": "const_format_proc_macros",
+      "version": "0.2.34",
+      "description": "Implementation detail of the `const_format` crate"
+    },
+    {
+      "type": "library",
+      "name": "constant_time_eq",
+      "version": "0.4.2",
+      "description": "Compares two equal-sized byte strings in constant time."
+    },
+    {
+      "type": "library",
+      "name": "convert_case",
+      "version": "0.10.0",
+      "description": "Convert strings into any case"
+    },
+    {
+      "type": "library",
+      "name": "core-foundation",
+      "version": "0.9.4",
+      "description": "Bindings to Core Foundation for macOS"
+    },
+    {
+      "type": "library",
+      "name": "core-foundation",
+      "version": "0.10.1",
+      "description": "Bindings to Core Foundation for macOS"
+    },
+    {
+      "type": "library",
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "description": "Bindings to Core Foundation for macOS"
+    },
+    {
+      "type": "library",
+      "name": "core2",
+      "version": "0.4.0",
+      "description": "The bare essentials of std::io for use in no_std. Alloc support is optional."
+    },
+    {
+      "type": "library",
+      "name": "cpp_demangle",
+      "version": "0.4.5",
+      "description": "A crate for demangling C++ symbols"
+    },
+    {
+      "type": "library",
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "description": "Lightweight runtime CPU feature detection for aarch64, loongarch64, and x86/x86_64 targets, \nwith no_std support and support for mobile targets including Android and iOS\n"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-assembler-x64",
+      "version": "0.122.0",
+      "description": "A Cranelift-specific x64 assembler"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-assembler-x64-meta",
+      "version": "0.122.0",
+      "description": "Generate a Cranelift-specific assembler for x64 instructions"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-bforest",
+      "version": "0.122.0",
+      "description": "A forest of B+-trees"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-bitset",
+      "version": "0.122.0",
+      "description": "Various bitset stuff for use inside Cranelift"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-codegen",
+      "version": "0.122.0",
+      "description": "Low-level code generator library"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-codegen-meta",
+      "version": "0.122.0",
+      "description": "Metaprogram for cranelift-codegen code generator library"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-codegen-shared",
+      "version": "0.122.0",
+      "description": "For code shared between cranelift-codegen-meta and cranelift-codegen"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-control",
+      "version": "0.122.0",
+      "description": "White-box fuzz testing framework"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-entity",
+      "version": "0.122.0",
+      "description": "Data structures using entity references as mapping keys"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-frontend",
+      "version": "0.122.0",
+      "description": "Cranelift IR builder helper"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-isle",
+      "version": "0.122.0",
+      "description": "ISLE: Instruction Selection and Lowering Expressions. A domain-specific language for instruction selection in Cranelift."
+    },
+    {
+      "type": "library",
+      "name": "cranelift-native",
+      "version": "0.122.0",
+      "description": "Support for targeting the host with Cranelift"
+    },
+    {
+      "type": "library",
+      "name": "cranelift-srcgen",
+      "version": "0.122.0",
+      "description": "Helper functions for generating Rust and ISLE files"
+    },
+    {
+      "type": "library",
+      "name": "crc32fast",
+      "version": "1.5.0",
+      "description": "Fast, SIMD-accelerated CRC32 (IEEE) checksum computation"
+    },
+    {
+      "type": "library",
+      "name": "criterion",
+      "version": "0.5.1",
+      "description": "Statistics-driven micro-benchmarking library"
+    },
+    {
+      "type": "library",
+      "name": "criterion-plot",
+      "version": "0.5.0",
+      "description": "Criterion's plotting library"
+    },
+    {
+      "type": "library",
+      "name": "crossbeam-channel",
+      "version": "0.5.15",
+      "description": "Multi-producer multi-consumer channels for message passing"
+    },
+    {
+      "type": "library",
+      "name": "crossbeam-deque",
+      "version": "0.8.6",
+      "description": "Concurrent work-stealing deque"
+    },
+    {
+      "type": "library",
+      "name": "crossbeam-epoch",
+      "version": "0.9.18",
+      "description": "Epoch-based garbage collection"
+    },
+    {
+      "type": "library",
+      "name": "crossbeam-utils",
+      "version": "0.8.21",
+      "description": "Utilities for concurrent programming"
+    },
+    {
+      "type": "library",
+      "name": "crossterm",
+      "version": "0.29.0",
+      "description": "A crossplatform terminal library for manipulating terminals."
+    },
+    {
+      "type": "library",
+      "name": "crossterm_winapi",
+      "version": "0.9.1",
+      "description": "WinAPI wrapper that provides some basic simple abstractions around common WinAPI calls"
+    },
+    {
+      "type": "library",
+      "name": "crunchy",
+      "version": "0.2.4",
+      "description": "Crunchy unroller: deterministically unroll constant loops"
+    },
+    {
+      "type": "library",
+      "name": "crypto-bigint",
+      "version": "0.5.5",
+      "description": "Pure Rust implementation of a big integer library which has been designed from\nthe ground-up for use in cryptographic applications. Provides constant-time,\nno_std-friendly implementations of modern formulas using const generics.\n"
+    },
+    {
+      "type": "library",
+      "name": "crypto-common",
+      "version": "0.1.7",
+      "description": "Common cryptographic traits"
+    },
+    {
+      "type": "library",
+      "name": "ctr",
+      "version": "0.9.2",
+      "description": "CTR block modes of operation"
+    },
+    {
+      "type": "library",
+      "name": "cuckoofilter",
+      "version": "0.5.0",
+      "description": "Cuckoo Filter: Practically Better Than Bloom"
+    },
+    {
+      "type": "library",
+      "name": "curve25519-dalek",
+      "version": "4.1.3",
+      "description": "A pure-Rust implementation of group operations on ristretto255 and Curve25519"
+    },
+    {
+      "type": "library",
+      "name": "curve25519-dalek-derive",
+      "version": "0.1.1",
+      "description": "curve25519-dalek Derives"
+    },
+    {
+      "type": "library",
+      "name": "curve25519-dalek-ng",
+      "version": "4.1.1",
+      "description": "A pure-Rust implementation of group operations on ristretto255 and Curve25519"
+    },
+    {
+      "type": "library",
+      "name": "darling",
+      "version": "0.21.3",
+      "description": "A proc-macro library for reading attributes into structs when\nimplementing custom derives.\n"
+    },
+    {
+      "type": "library",
+      "name": "darling_core",
+      "version": "0.21.3",
+      "description": "Helper crate for proc-macro library for reading attributes into structs when\nimplementing custom derives. Use https://crates.io/crates/darling in your code.\n"
+    },
+    {
+      "type": "library",
+      "name": "darling_macro",
+      "version": "0.21.3",
+      "description": "Internal support for a proc-macro library for reading attributes into structs when\nimplementing custom derives. Use https://crates.io/crates/darling in your code.\n"
+    },
+    {
+      "type": "library",
+      "name": "data-encoding",
+      "version": "2.10.0",
+      "description": "Efficient and customizable data-encoding functions like base64, base32, and hex"
+    },
+    {
+      "type": "library",
+      "name": "data-encoding-macro",
+      "version": "0.1.19",
+      "description": "Macros for data-encoding"
+    },
+    {
+      "type": "library",
+      "name": "data-encoding-macro-internal",
+      "version": "0.1.17",
+      "description": "Internal library for data-encoding-macro"
+    },
+    {
+      "type": "library",
+      "name": "deadpool",
+      "version": "0.9.5",
+      "description": "Dead simple async pool"
+    },
+    {
+      "type": "library",
+      "name": "deadpool-runtime",
+      "version": "0.1.4",
+      "description": "Dead simple async pool utitities for sync managers"
+    },
+    {
+      "type": "library",
+      "name": "debugid",
+      "version": "0.8.0",
+      "description": "Common reusable types for implementing the sentry.io protocol."
+    },
+    {
+      "type": "library",
+      "name": "der",
+      "version": "0.7.10",
+      "description": "Pure Rust embedded-friendly implementation of the Distinguished Encoding Rules\n(DER) for Abstract Syntax Notation One (ASN.1) as described in ITU X.690 with\nfull support for heapless no_std targets\n"
+    },
+    {
+      "type": "library",
+      "name": "der-parser",
+      "version": "8.2.0",
+      "description": "Parser/encoder for ASN.1 BER/DER data"
+    },
+    {
+      "type": "library",
+      "name": "der-parser",
+      "version": "9.0.0",
+      "description": "Parser/encoder for ASN.1 BER/DER data"
+    },
+    {
+      "type": "library",
+      "name": "deranged",
+      "version": "0.5.5",
+      "description": "Ranged integers"
+    },
+    {
+      "type": "library",
+      "name": "derive_more",
+      "version": "1.0.0",
+      "description": "Adds #[derive(x)] macros for more traits"
+    },
+    {
+      "type": "library",
+      "name": "derive_more",
+      "version": "2.1.1",
+      "description": "Adds #[derive(x)] macros for more traits"
+    },
+    {
+      "type": "library",
+      "name": "derive_more-impl",
+      "version": "1.0.0",
+      "description": "Internal implementation of `derive_more` crate"
+    },
+    {
+      "type": "library",
+      "name": "derive_more-impl",
+      "version": "2.1.1",
+      "description": "Internal implementation of `derive_more` crate"
+    },
+    {
+      "type": "library",
+      "name": "deunicode",
+      "version": "1.6.2",
+      "description": "Convert Unicode strings to pure ASCII by intelligently transliterating them. Suppors Emoji and Chinese."
+    },
+    {
+      "type": "library",
+      "name": "dialoguer",
+      "version": "0.11.0",
+      "description": "A command line prompting library."
+    },
+    {
+      "type": "library",
+      "name": "diff",
+      "version": "0.1.13",
+      "description": "An LCS based slice and string diffing implementation."
+    },
+    {
+      "type": "library",
+      "name": "digest",
+      "version": "0.9.0",
+      "description": "Traits for cryptographic hash functions"
+    },
+    {
+      "type": "library",
+      "name": "digest",
+      "version": "0.10.7",
+      "description": "Traits for cryptographic hash functions and message authentication codes"
+    },
+    {
+      "type": "library",
+      "name": "directories-next",
+      "version": "2.0.0",
+      "description": "A tiny mid-level library that provides platform-specific standard locations of\ndirectories for config, cache and other data on Linux, Windows and macOS by\nleveraging the mechanisms defined by the XDG base/user directory specifications\non Linux, the Known Folder API on Windows, and the Standard Directory guidelines\non macOS.\n"
+    },
+    {
+      "type": "library",
+      "name": "dirs",
+      "version": "5.0.1",
+      "description": "A tiny low-level library that provides platform-specific standard locations of directories for config, cache and other data on Linux, Windows, macOS and Redox by leveraging the mechanisms defined by the XDG base/user directory specifications on Linux, the Known Folder API on Windows, and the Standard Directory guidelines on macOS."
+    },
+    {
+      "type": "library",
+      "name": "dirs",
+      "version": "6.0.0",
+      "description": "A tiny low-level library that provides platform-specific standard locations of directories for config, cache and other data on Linux, Windows, macOS and Redox by leveraging the mechanisms defined by the XDG base/user directory specifications on Linux, the Known Folder API on Windows, and the Standard Directory guidelines on macOS."
+    },
+    {
+      "type": "library",
+      "name": "dirs-sys",
+      "version": "0.4.1",
+      "description": "System-level helper functions for the dirs and directories crates."
+    },
+    {
+      "type": "library",
+      "name": "dirs-sys",
+      "version": "0.5.0",
+      "description": "System-level helper functions for the dirs and directories crates."
+    },
+    {
+      "type": "library",
+      "name": "dirs-sys-next",
+      "version": "0.1.2",
+      "description": "system-level helper functions for the dirs and directories crates"
+    },
+    {
+      "type": "library",
+      "name": "displaydoc",
+      "version": "0.2.5",
+      "description": "A derive macro for implementing the display Trait via a doc comment and string interpolation\n"
+    },
+    {
+      "type": "library",
+      "name": "document-features",
+      "version": "0.2.12",
+      "description": "Extract documentation for the feature flags from comments in Cargo.toml"
+    },
+    {
+      "type": "library",
+      "name": "downcast-rs",
+      "version": "1.2.1",
+      "description": "Trait object downcasting support using only safe Rust. It supports type\nparameters, associated types, and type constraints.\n"
+    },
+    {
+      "type": "library",
+      "name": "dunce",
+      "version": "1.0.5",
+      "description": "Normalize Windows paths to the most compatible format, avoiding UNC where possible"
+    },
+    {
+      "type": "library",
+      "name": "dyn-clone",
+      "version": "1.0.20",
+      "description": "Clone trait that is dyn-compatible"
+    },
+    {
+      "type": "library",
+      "name": "ecdsa",
+      "version": "0.16.9",
+      "description": "Pure Rust implementation of the Elliptic Curve Digital Signature Algorithm\n(ECDSA) as specified in FIPS 186-4 (Digital Signature Standard), providing\nRFC6979 deterministic signatures as well as support for added entropy\n"
+    },
+    {
+      "type": "library",
+      "name": "ed25519",
+      "version": "2.2.3",
+      "description": "Edwards Digital Signature Algorithm (EdDSA) over Curve25519 (as specified in RFC 8032)\nsupport library providing signature type definitions and PKCS#8 private key\ndecoding/encoding support\n"
+    },
+    {
+      "type": "library",
+      "name": "ed25519-dalek",
+      "version": "2.2.0",
+      "description": "Fast and efficient ed25519 EdDSA key generations, signing, and verification in pure Rust."
+    },
+    {
+      "type": "library",
+      "name": "either",
+      "version": "1.15.0",
+      "description": "The enum `Either` with variants `Left` and `Right` is a general purpose sum type with two cases.\n"
+    },
+    {
+      "type": "library",
+      "name": "elliptic-curve",
+      "version": "0.13.8",
+      "description": "General purpose Elliptic Curve Cryptography (ECC) support, including types\nand traits for representing various elliptic curve forms, scalars, points,\nand public/secret keys composed thereof.\n"
+    },
+    {
+      "type": "library",
+      "name": "embedded-io",
+      "version": "0.4.0",
+      "description": "Embedded IO traits"
+    },
+    {
+      "type": "library",
+      "name": "embedded-io",
+      "version": "0.6.1",
+      "description": "Embedded IO traits"
+    },
+    {
+      "type": "library",
+      "name": "encode_unicode",
+      "version": "1.0.0",
+      "description": "UTF-8 and UTF-16 character types, iterators and related methods for char, u8 and u16.\n"
+    },
+    {
+      "type": "library",
+      "name": "encoding_rs",
+      "version": "0.8.35",
+      "description": "A Gecko-oriented implementation of the Encoding Standard"
+    },
+    {
+      "type": "library",
+      "name": "endian-type",
+      "version": "0.1.2",
+      "description": "Type safe wrappers for types with a defined byte order"
+    },
+    {
+      "type": "library",
+      "name": "enum-as-inner",
+      "version": "0.5.1",
+      "description": "A proc-macro for deriving inner field accessor functions on enums.\n"
+    },
+    {
+      "type": "library",
+      "name": "enum-as-inner",
+      "version": "0.6.1",
+      "description": "A proc-macro for deriving inner field accessor functions on enums.\n"
+    },
+    {
+      "type": "library",
+      "name": "env_filter",
+      "version": "0.1.4",
+      "description": "Filter log events using environment variables\n"
+    },
+    {
+      "type": "library",
+      "name": "env_logger",
+      "version": "0.8.4",
+      "description": "A logging implementation for `log` which is configured via an environment\nvariable.\n"
+    },
+    {
+      "type": "library",
+      "name": "env_logger",
+      "version": "0.10.2",
+      "description": "A logging implementation for `log` which is configured via an environment\nvariable.\n"
+    },
+    {
+      "type": "library",
+      "name": "env_logger",
+      "version": "0.11.8",
+      "description": "A logging implementation for `log` which is configured via an environment\nvariable.\n"
+    },
+    {
+      "type": "library",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "description": "Traits for key comparison in maps."
+    },
+    {
+      "type": "library",
+      "name": "errno",
+      "version": "0.3.14",
+      "description": "Cross-platform interface to the `errno` variable."
+    },
+    {
+      "type": "library",
+      "name": "event-listener",
+      "version": "2.5.3",
+      "description": "Notify async tasks or threads"
+    },
+    {
+      "type": "library",
+      "name": "fake",
+      "version": "2.10.0",
+      "description": "An easy to use library for generating fake data like name, number, address, lorem, dates, etc."
+    },
+    {
+      "type": "library",
+      "name": "falcon-rust",
+      "version": "0.1.2",
+      "description": "A rust implementation of the Falcon post-quantum digital signature scheme."
+    },
+    {
+      "type": "library",
+      "name": "fallible-iterator",
+      "version": "0.2.0",
+      "description": "Fallible iterator traits"
+    },
+    {
+      "type": "library",
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "description": "Fallible iterator traits"
+    },
+    {
+      "type": "library",
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "description": "Fallible streaming iteration"
+    },
+    {
+      "type": "library",
+      "name": "fastrand",
+      "version": "1.9.0",
+      "description": "A simple and fast random number generator"
+    },
+    {
+      "type": "library",
+      "name": "fastrand",
+      "version": "2.3.0",
+      "description": "A simple and fast random number generator"
+    },
+    {
+      "type": "library",
+      "name": "fd-lock",
+      "version": "4.0.4",
+      "description": "Advisory cross-platform lock on a file using a file descriptor to it."
+    },
+    {
+      "type": "library",
+      "name": "ff",
+      "version": "0.13.1",
+      "description": "Library for building and interfacing with finite fields"
+    },
+    {
+      "type": "library",
+      "name": "fiat-crypto",
+      "version": "0.2.9",
+      "description": "Fiat-crypto generated Rust"
+    },
+    {
+      "type": "library",
+      "name": "find-msvc-tools",
+      "version": "0.1.8",
+      "description": "Find windows-specific tools, read MSVC versions from the registry and from COM interfaces"
+    },
+    {
+      "type": "library",
+      "name": "fixed-hash",
+      "version": "0.8.0",
+      "description": "Macros to define custom fixed-size hash types"
+    },
+    {
+      "type": "library",
+      "name": "flate2",
+      "version": "1.1.8",
+      "description": "DEFLATE compression and decompression exposed as Read/BufRead/Write streams.\nSupports miniz_oxide and multiple zlib implementations. Supports zlib, gzip,\nand raw deflate streams.\n"
+    },
+    {
+      "type": "library",
+      "name": "fnv",
+      "version": "1.0.7",
+      "description": "Fowler–Noll–Vo hash function"
+    },
+    {
+      "type": "library",
+      "name": "foldhash",
+      "version": "0.1.5",
+      "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm."
+    },
+    {
+      "type": "library",
+      "name": "foldhash",
+      "version": "0.2.0",
+      "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm."
+    },
+    {
+      "type": "library",
+      "name": "foreign-types",
+      "version": "0.3.2",
+      "description": "A framework for Rust wrappers over C APIs"
+    },
+    {
+      "type": "library",
+      "name": "foreign-types-shared",
+      "version": "0.1.1",
+      "description": "An internal crate used by foreign-types"
+    },
+    {
+      "type": "library",
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "description": "Parser and serializer for the application/x-www-form-urlencoded syntax, as used by HTML forms."
+    },
+    {
+      "type": "library",
+      "name": "fs-set-times",
+      "version": "0.20.3",
+      "description": "Set filesystem timestamps"
+    },
+    {
+      "type": "library",
+      "name": "fs_extra",
+      "version": "1.3.0",
+      "description": "Expanding std::fs and std::io. Recursively copy folders with information about process and much more."
+    },
+    {
+      "type": "library",
+      "name": "funty",
+      "version": "2.0.0",
+      "description": "Trait generalization over the primitive types"
+    },
+    {
+      "type": "library",
+      "name": "futures",
+      "version": "0.3.31",
+      "description": "An implementation of futures and streams featuring zero allocations,\ncomposability, and iterator-like interfaces.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-channel",
+      "version": "0.3.31",
+      "description": "Channels for asynchronous communication using futures-rs.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-core",
+      "version": "0.3.31",
+      "description": "The core traits and types in for the `futures` library.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-executor",
+      "version": "0.3.31",
+      "description": "Executors for asynchronous tasks based on the futures-rs library.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-io",
+      "version": "0.3.31",
+      "description": "The `AsyncRead`, `AsyncWrite`, `AsyncSeek`, and `AsyncBufRead` traits for the futures-rs library.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-lite",
+      "version": "1.13.0",
+      "description": "Futures, streams, and async I/O combinators"
+    },
+    {
+      "type": "library",
+      "name": "futures-lite",
+      "version": "2.6.1",
+      "description": "Futures, streams, and async I/O combinators"
+    },
+    {
+      "type": "library",
+      "name": "futures-macro",
+      "version": "0.3.31",
+      "description": "The futures-rs procedural macro implementations.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-rustls",
+      "version": "0.24.0",
+      "description": "Asynchronous TLS/SSL streams for futures using Rustls."
+    },
+    {
+      "type": "library",
+      "name": "futures-sink",
+      "version": "0.3.31",
+      "description": "The asynchronous `Sink` trait for the futures-rs library.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-task",
+      "version": "0.3.31",
+      "description": "Tools for working with tasks.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-timer",
+      "version": "3.0.3",
+      "description": "Timeouts for futures.\n"
+    },
+    {
+      "type": "library",
+      "name": "futures-util",
+      "version": "0.3.31",
+      "description": "Common utilities and extension traits for the futures-rs library.\n"
+    },
+    {
+      "type": "library",
+      "name": "fxhash",
+      "version": "0.2.1",
+      "description": "A fast, non-secure, hashing algorithm derived from an internal hasher used in FireFox and Rustc."
+    },
+    {
+      "type": "library",
+      "name": "fxprof-processed-profile",
+      "version": "0.6.0",
+      "description": "Create profiles in the Firefox Profiler's processed profile JSON format."
+    },
+    {
+      "type": "library",
+      "name": "generic-array",
+      "version": "0.14.7",
+      "description": "Generic types implementing functionality of arrays"
+    },
+    {
+      "type": "library",
+      "name": "getrandom",
+      "version": "0.1.16",
+      "description": "A small cross-platform library for retrieving random data from system source"
+    },
+    {
+      "type": "library",
+      "name": "getrandom",
+      "version": "0.2.17",
+      "description": "A small cross-platform library for retrieving random data from system source"
+    },
+    {
+      "type": "library",
+      "name": "getrandom",
+      "version": "0.3.4",
+      "description": "A small cross-platform library for retrieving random data from system source"
+    },
+    {
+      "type": "library",
+      "name": "ghash",
+      "version": "0.5.1",
+      "description": "Universal hash over GF(2^128) useful for constructing a Message Authentication Code (MAC),\nas in the AES-GCM authenticated encryption cipher.\n"
+    },
+    {
+      "type": "library",
+      "name": "gimli",
+      "version": "0.31.1",
+      "description": "A library for reading and writing the DWARF debugging format."
+    },
+    {
+      "type": "library",
+      "name": "glob",
+      "version": "0.3.3",
+      "description": "Support for matching file paths against Unix shell style patterns.\n"
+    },
+    {
+      "type": "library",
+      "name": "group",
+      "version": "0.13.0",
+      "description": "Elliptic curve group traits and utilities"
+    },
+    {
+      "type": "library",
+      "name": "h2",
+      "version": "0.3.27",
+      "description": "An HTTP/2 client and server"
+    },
+    {
+      "type": "library",
+      "name": "h2",
+      "version": "0.4.13",
+      "description": "An HTTP/2 client and server"
+    },
+    {
+      "type": "library",
+      "name": "half",
+      "version": "2.7.1",
+      "description": "Half-precision floating point f16 and bf16 types for Rust implementing the IEEE 754-2008 standard binary16 and bfloat16 types."
+    },
+    {
+      "type": "library",
+      "name": "hashbrown",
+      "version": "0.12.3",
+      "description": "A Rust port of Google's SwissTable hash map"
+    },
+    {
+      "type": "library",
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "description": "A Rust port of Google's SwissTable hash map"
+    },
+    {
+      "type": "library",
+      "name": "hashbrown",
+      "version": "0.15.5",
+      "description": "A Rust port of Google's SwissTable hash map"
+    },
+    {
+      "type": "library",
+      "name": "hashbrown",
+      "version": "0.16.1",
+      "description": "A Rust port of Google's SwissTable hash map"
+    },
+    {
+      "type": "library",
+      "name": "hashlink",
+      "version": "0.8.4",
+      "description": "HashMap-like containers that hold their key-value pairs in a user controllable order"
+    },
+    {
+      "type": "library",
+      "name": "headers",
+      "version": "0.3.9",
+      "description": "typed HTTP headers"
+    },
+    {
+      "type": "library",
+      "name": "headers-core",
+      "version": "0.2.0",
+      "description": "typed HTTP headers core trait"
+    },
+    {
+      "type": "library",
+      "name": "heck",
+      "version": "0.4.1",
+      "description": "heck is a case conversion library."
+    },
+    {
+      "type": "library",
+      "name": "heck",
+      "version": "0.5.0",
+      "description": "heck is a case conversion library."
+    },
+    {
+      "type": "library",
+      "name": "hermit-abi",
+      "version": "0.5.2",
+      "description": "Hermit system calls definitions."
+    },
+    {
+      "type": "library",
+      "name": "hex",
+      "version": "0.4.3",
+      "description": "Encoding and decoding data into/from hexadecimal representation."
+    },
+    {
+      "type": "library",
+      "name": "hex-conservative",
+      "version": "0.2.2",
+      "description": "A hex encoding and decoding crate with a conservative MSRV and dependency policy."
+    },
+    {
+      "type": "library",
+      "name": "hkdf",
+      "version": "0.12.4",
+      "description": "HMAC-based Extract-and-Expand Key Derivation Function (HKDF)"
+    },
+    {
+      "type": "library",
+      "name": "hmac",
+      "version": "0.12.1",
+      "description": "Generic implementation of Hash-based Message Authentication Code (HMAC)"
+    },
+    {
+      "type": "library",
+      "name": "http",
+      "version": "0.2.12",
+      "description": "A set of types for representing HTTP requests and responses.\n"
+    },
+    {
+      "type": "library",
+      "name": "http",
+      "version": "1.4.0",
+      "description": "A set of types for representing HTTP requests and responses.\n"
+    },
+    {
+      "type": "library",
+      "name": "http-body",
+      "version": "0.4.6",
+      "description": "Trait representing an asynchronous, streaming, HTTP request or response body.\n"
+    },
+    {
+      "type": "library",
+      "name": "http-body",
+      "version": "1.0.1",
+      "description": "Trait representing an asynchronous, streaming, HTTP request or response body.\n"
+    },
+    {
+      "type": "library",
+      "name": "http-body-util",
+      "version": "0.1.3",
+      "description": "Combinators and adapters for HTTP request or response bodies.\n"
+    },
+    {
+      "type": "library",
+      "name": "http-range",
+      "version": "0.1.5",
+      "description": "HTTP Range header parser"
+    },
+    {
+      "type": "library",
+      "name": "http-types",
+      "version": "2.12.0",
+      "description": "Common types for HTTP operations."
+    },
+    {
+      "type": "library",
+      "name": "httparse",
+      "version": "1.10.1",
+      "description": "A tiny, safe, speedy, zero-copy HTTP/1.x parser."
+    },
+    {
+      "type": "library",
+      "name": "httpdate",
+      "version": "1.0.3",
+      "description": "HTTP date parsing and formatting"
+    },
+    {
+      "type": "library",
+      "name": "humantime",
+      "version": "2.3.0",
+      "description": "A parser and formatter for std::time::{Duration, SystemTime}"
+    },
+    {
+      "type": "library",
+      "name": "hyper",
+      "version": "0.14.32",
+      "description": "A fast and correct HTTP library."
+    },
+    {
+      "type": "library",
+      "name": "hyper",
+      "version": "1.8.1",
+      "description": "A protective and efficient HTTP library for all."
+    },
+    {
+      "type": "library",
+      "name": "hyper-rustls",
+      "version": "0.24.2",
+      "description": "Rustls+hyper integration for pure rust HTTPS"
+    },
+    {
+      "type": "library",
+      "name": "hyper-rustls",
+      "version": "0.27.7",
+      "description": "Rustls+hyper integration for pure rust HTTPS"
+    },
+    {
+      "type": "library",
+      "name": "hyper-tls",
+      "version": "0.5.0",
+      "description": "Default TLS implementation for use with hyper"
+    },
+    {
+      "type": "library",
+      "name": "hyper-util",
+      "version": "0.1.19",
+      "description": "hyper utilities"
+    },
+    {
+      "type": "library",
+      "name": "iana-time-zone",
+      "version": "0.1.64",
+      "description": "get the IANA time zone for the current system"
+    },
+    {
+      "type": "library",
+      "name": "iana-time-zone-haiku",
+      "version": "0.1.2",
+      "description": "iana-time-zone support crate for Haiku OS"
+    },
+    {
+      "type": "library",
+      "name": "icu_collections",
+      "version": "2.1.1",
+      "description": "Collection of API for use in ICU libraries."
+    },
+    {
+      "type": "library",
+      "name": "icu_locale_core",
+      "version": "2.1.1",
+      "description": "API for managing Unicode Language and Locale Identifiers"
+    },
+    {
+      "type": "library",
+      "name": "icu_normalizer",
+      "version": "2.1.1",
+      "description": "API for normalizing text into Unicode Normalization Forms"
+    },
+    {
+      "type": "library",
+      "name": "icu_normalizer_data",
+      "version": "2.1.1",
+      "description": "Data for the icu_normalizer crate"
+    },
+    {
+      "type": "library",
+      "name": "icu_properties",
+      "version": "2.1.2",
+      "description": "Definitions for Unicode properties"
+    },
+    {
+      "type": "library",
+      "name": "icu_properties_data",
+      "version": "2.1.2",
+      "description": "Data for the icu_properties crate"
+    },
+    {
+      "type": "library",
+      "name": "icu_provider",
+      "version": "2.1.1",
+      "description": "Trait and struct definitions for the ICU data provider"
+    },
+    {
+      "type": "library",
+      "name": "id-arena",
+      "version": "2.3.0",
+      "description": "A simple, id-based arena."
+    },
+    {
+      "type": "library",
+      "name": "ident_case",
+      "version": "1.0.1",
+      "description": "Utility for applying case rules to Rust identifiers."
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "0.2.3",
+      "description": "IDNA (Internationalizing Domain Names in Applications) and Punycode."
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "0.4.0",
+      "description": "IDNA (Internationalizing Domain Names in Applications) and Punycode."
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "1.1.0",
+      "description": "IDNA (Internationalizing Domain Names in Applications) and Punycode."
+    },
+    {
+      "type": "library",
+      "name": "idna_adapter",
+      "version": "1.2.1",
+      "description": "Back end adapter for idna"
+    },
+    {
+      "type": "library",
+      "name": "if-addrs",
+      "version": "0.10.2",
+      "description": "Return interface IP addresses on Posix and windows systems"
+    },
+    {
+      "type": "library",
+      "name": "if-watch",
+      "version": "3.2.1",
+      "description": "crossplatform asynchronous network watcher"
+    },
+    {
+      "type": "library",
+      "name": "igd-next",
+      "version": "0.14.3",
+      "description": "Internet Gateway Protocol client"
+    },
+    {
+      "type": "library",
+      "name": "impl-codec",
+      "version": "0.6.0",
+      "description": "Parity Codec serialization support for uint and fixed hash."
+    },
+    {
+      "type": "library",
+      "name": "impl-more",
+      "version": "0.1.9",
+      "description": "Concise, declarative trait implementation macros"
+    },
+    {
+      "type": "library",
+      "name": "impl-trait-for-tuples",
+      "version": "0.2.3",
+      "description": "Attribute macro to implement a trait for tuples\n"
+    },
+    {
+      "type": "library",
+      "name": "indexmap",
+      "version": "1.9.3",
+      "description": "A hash table with consistent order and fast iteration."
+    },
+    {
+      "type": "library",
+      "name": "indexmap",
+      "version": "2.13.0",
+      "description": "A hash table with consistent order and fast iteration."
+    },
+    {
+      "type": "library",
+      "name": "indexmap-nostd",
+      "version": "0.4.0",
+      "description": "A no_std compatible implementation of the indexmap crate"
+    },
+    {
+      "type": "library",
+      "name": "indicatif",
+      "version": "0.17.11",
+      "description": "A progress bar and cli reporting library for Rust"
+    },
+    {
+      "type": "library",
+      "name": "infer",
+      "version": "0.2.3",
+      "description": "Small crate to infer file types based on its magic number signature"
+    },
+    {
+      "type": "library",
+      "name": "inout",
+      "version": "0.1.4",
+      "description": "Custom reference types for code generic over in-place and buffer-to-buffer modes of operation."
+    },
+    {
+      "type": "library",
+      "name": "instant",
+      "version": "0.1.13",
+      "description": "Unmaintained, consider using web-time instead - A partial replacement for std::time::Instant that works on WASM to."
+    },
+    {
+      "type": "library",
+      "name": "io-extras",
+      "version": "0.18.4",
+      "description": "File/socket handle/descriptor utilities"
+    },
+    {
+      "type": "library",
+      "name": "io-lifetimes",
+      "version": "2.0.4",
+      "description": "A low-level I/O ownership and borrowing library"
+    },
+    {
+      "type": "library",
+      "name": "ipconfig",
+      "version": "0.3.2",
+      "description": "Get network adapters information and network configuration for windows."
+    },
+    {
+      "type": "library",
+      "name": "ipnet",
+      "version": "2.11.0",
+      "description": "Provides types and useful methods for working with IPv4 and IPv6 network addresses, commonly called IP prefixes. The new `IpNet`, `Ipv4Net`, and `Ipv6Net` types build on the existing `IpAddr`, `Ipv4Addr`, and `Ipv6Addr` types already provided in Rust's standard library and align to their design to stay consistent. The module also provides useful traits that extend `Ipv4Addr` and `Ipv6Addr` with methods for `Add`, `Sub`, `BitAnd`, and `BitOr` operations. The module only uses stable feature so it is guaranteed to compile using the stable toolchain."
+    },
+    {
+      "type": "library",
+      "name": "iri-string",
+      "version": "0.7.10",
+      "description": "IRI as string types"
+    },
+    {
+      "type": "library",
+      "name": "is-terminal",
+      "version": "0.4.17",
+      "description": "Test whether a given stream is a terminal"
+    },
+    {
+      "type": "library",
+      "name": "is_terminal_polyfill",
+      "version": "1.70.2",
+      "description": "Polyfill for `is_terminal` stdlib feature for use with older MSRVs"
+    },
+    {
+      "type": "library",
+      "name": "itertools",
+      "version": "0.10.5",
+      "description": "Extra iterator adaptors, iterator methods, free functions, and macros."
+    },
+    {
+      "type": "library",
+      "name": "itertools",
+      "version": "0.12.1",
+      "description": "Extra iterator adaptors, iterator methods, free functions, and macros."
+    },
+    {
+      "type": "library",
+      "name": "itertools",
+      "version": "0.14.0",
+      "description": "Extra iterator adaptors, iterator methods, free functions, and macros."
+    },
+    {
+      "type": "library",
+      "name": "itoa",
+      "version": "1.0.17",
+      "description": "Fast integer primitive to string conversion"
+    },
+    {
+      "type": "library",
+      "name": "ittapi",
+      "version": "0.4.0",
+      "description": "High-level Rust bindings for ittapi"
+    },
+    {
+      "type": "library",
+      "name": "ittapi-sys",
+      "version": "0.4.0",
+      "description": "Rust bindings for ittapi"
+    },
+    {
+      "type": "library",
+      "name": "jiff",
+      "version": "0.2.18",
+      "description": "A date-time library that encourages you to jump into the pit of success.\n\nThis library is heavily inspired by the Temporal project.\n"
+    },
+    {
+      "type": "library",
+      "name": "jiff-static",
+      "version": "0.2.18",
+      "description": "Create static TimeZone values for Jiff (useful in core-only environments)."
+    },
+    {
+      "type": "library",
+      "name": "jobserver",
+      "version": "0.1.34",
+      "description": "An implementation of the GNU Make jobserver for Rust.\n"
+    },
+    {
+      "type": "library",
+      "name": "js-sys",
+      "version": "0.3.85",
+      "description": "Bindings for all JS global objects and functions in all JS environments like\nNode.js and browsers, built on `#[wasm_bindgen]` using the `wasm-bindgen` crate.\n"
+    },
+    {
+      "type": "library",
+      "name": "k256",
+      "version": "0.13.4",
+      "description": "secp256k1 elliptic curve library written in pure Rust with support for ECDSA\nsigning/verification/public-key recovery, Taproot Schnorr signatures (BIP340),\nElliptic Curve Diffie-Hellman (ECDH), and general-purpose secp256k1 elliptic\ncurve group operations which can be used to implement arbitrary protocols\n"
+    },
+    {
+      "type": "library",
+      "name": "keccak",
+      "version": "0.1.5",
+      "description": "Pure Rust implementation of the Keccak sponge function including the keccak-f\nand keccak-p variants\n"
+    },
+    {
+      "type": "library",
+      "name": "language-tags",
+      "version": "0.3.2",
+      "description": "Language tags for Rust"
+    },
+    {
+      "type": "library",
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "description": "A macro for declaring lazily evaluated statics in Rust."
+    },
+    {
+      "type": "library",
+      "name": "leb128",
+      "version": "0.2.5",
+      "description": "Read and write DWARF's \"Little Endian Base 128\" (LEB128) variable length integer encoding."
+    },
+    {
+      "type": "library",
+      "name": "leb128fmt",
+      "version": "0.1.0",
+      "description": "A library to encode and decode LEB128 compressed integers."
+    },
+    {
+      "type": "library",
+      "name": "libc",
+      "version": "0.2.180",
+      "description": "Raw FFI bindings to platform libraries like libc."
+    },
+    {
+      "type": "library",
+      "name": "libm",
+      "version": "0.2.15",
+      "description": "libm in pure Rust"
+    },
+    {
+      "type": "library",
+      "name": "libp2p",
+      "version": "0.52.4",
+      "description": "Peer-to-peer networking library"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-allow-block-list",
+      "version": "0.2.0",
+      "description": "Allow/block list connection management for libp2p."
+    },
+    {
+      "type": "library",
+      "name": "libp2p-connection-limits",
+      "version": "0.2.1",
+      "description": "Connection limits for libp2p."
+    },
+    {
+      "type": "library",
+      "name": "libp2p-core",
+      "version": "0.40.1",
+      "description": "Core traits and structs of libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-dns",
+      "version": "0.40.1",
+      "description": "DNS transport implementation for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-floodsub",
+      "version": "0.43.0",
+      "description": "Floodsub protocol for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-identity",
+      "version": "0.2.13",
+      "description": "Data structures and algorithms for identifying peers in libp2p."
+    },
+    {
+      "type": "library",
+      "name": "libp2p-mdns",
+      "version": "0.44.0",
+      "description": "Implementation of the libp2p mDNS discovery method"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-noise",
+      "version": "0.43.2",
+      "description": "Cryptographic handshake protocol using the noise framework."
+    },
+    {
+      "type": "library",
+      "name": "libp2p-quic",
+      "version": "0.9.3",
+      "description": "TLS based QUIC transport implementation for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-swarm",
+      "version": "0.43.7",
+      "description": "The libp2p swarm"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-tcp",
+      "version": "0.40.1",
+      "description": "TCP/IP transport protocol for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-tls",
+      "version": "0.2.1",
+      "description": "TLS configuration based on libp2p TLS specs."
+    },
+    {
+      "type": "library",
+      "name": "libp2p-upnp",
+      "version": "0.1.1",
+      "description": "UPnP support for libp2p transports"
+    },
+    {
+      "type": "library",
+      "name": "libp2p-yamux",
+      "version": "0.44.1",
+      "description": "Yamux multiplexing protocol for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "libredox",
+      "version": "0.1.12",
+      "description": "Redox stable ABI"
+    },
+    {
+      "type": "library",
+      "name": "libsqlite3-sys",
+      "version": "0.26.0",
+      "description": "Native bindings to the libsqlite3 library"
+    },
+    {
+      "type": "library",
+      "name": "linked-hash-map",
+      "version": "0.5.6",
+      "description": "A HashMap wrapper that holds key-value pairs in insertion order"
+    },
+    {
+      "type": "library",
+      "name": "linux-raw-sys",
+      "version": "0.4.15",
+      "description": "Generated bindings for Linux's userspace API"
+    },
+    {
+      "type": "library",
+      "name": "linux-raw-sys",
+      "version": "0.11.0",
+      "description": "Generated bindings for Linux's userspace API"
+    },
+    {
+      "type": "library",
+      "name": "litemap",
+      "version": "0.8.1",
+      "description": "A key-value Map implementation based on a flat, sorted Vec."
+    },
+    {
+      "type": "library",
+      "name": "litrs",
+      "version": "1.0.0",
+      "description": "Parse and inspect Rust literals (i.e. tokens in the Rust programming language\nrepresenting fixed values). Particularly useful for proc macros, but can also\nbe used outside of a proc-macro context.\n"
+    },
+    {
+      "type": "library",
+      "name": "local-waker",
+      "version": "0.1.4",
+      "description": "A synchronization primitive for thread-local task wakeup"
+    },
+    {
+      "type": "library",
+      "name": "lock_api",
+      "version": "0.4.14",
+      "description": "Wrappers to create fully-featured Mutex and RwLock types. Compatible with no_std."
+    },
+    {
+      "type": "library",
+      "name": "log",
+      "version": "0.4.29",
+      "description": "A lightweight logging facade for Rust\n"
+    },
+    {
+      "type": "library",
+      "name": "lru-cache",
+      "version": "0.1.2",
+      "description": "A cache that holds a limited number of key-value pairs"
+    },
+    {
+      "type": "library",
+      "name": "lz4",
+      "version": "1.28.1",
+      "description": "Rust LZ4 bindings library."
+    },
+    {
+      "type": "library",
+      "name": "lz4-sys",
+      "version": "1.11.1+lz4-1.10.0",
+      "description": "Rust LZ4 sys package."
+    },
+    {
+      "type": "library",
+      "name": "lz4_flex",
+      "version": "0.11.5",
+      "description": "Fastest LZ4 implementation in Rust, no unsafe by default."
+    },
+    {
+      "type": "library",
+      "name": "mach2",
+      "version": "0.4.3",
+      "description": "A Rust interface to the user-space API of the Mach 3.0 kernel that underlies OSX."
+    },
+    {
+      "type": "library",
+      "name": "match-lookup",
+      "version": "0.1.2",
+      "description": "proc macro for generating match block for alphabets, please dont use this. its slow and extremly likely to not be what you are looking for."
+    },
+    {
+      "type": "library",
+      "name": "matches",
+      "version": "0.1.10",
+      "description": "A macro to evaluate, as a boolean, whether an expression matches a pattern."
+    },
+    {
+      "type": "library",
+      "name": "maybe-owned",
+      "version": "0.3.4",
+      "description": "provides a `MaybeOwned` (and `MaybeOwnedMut`) type similar to std's `Cow` but it implements `From<T>` and `From<&'a T>` and does not require `ToOwned`"
+    },
+    {
+      "type": "library",
+      "name": "md-5",
+      "version": "0.10.6",
+      "description": "MD5 hash function"
+    },
+    {
+      "type": "library",
+      "name": "md5",
+      "version": "0.7.0",
+      "description": "The package provides the MD5 hash function."
+    },
+    {
+      "type": "library",
+      "name": "memchr",
+      "version": "2.7.6",
+      "description": "Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for\n1, 2 or 3 byte search and single substring search.\n"
+    },
+    {
+      "type": "library",
+      "name": "memfd",
+      "version": "0.6.5",
+      "description": "A pure-Rust library to work with Linux memfd and sealing"
+    },
+    {
+      "type": "library",
+      "name": "merlin",
+      "version": "2.0.1",
+      "description": "Composable proof transcripts for public-coin arguments of knowledge"
+    },
+    {
+      "type": "library",
+      "name": "merlin",
+      "version": "3.0.0",
+      "description": "Composable proof transcripts for public-coin arguments of knowledge"
+    },
+    {
+      "type": "library",
+      "name": "metrics",
+      "version": "0.23.1",
+      "description": "A lightweight metrics facade."
+    },
+    {
+      "type": "library",
+      "name": "metrics",
+      "version": "0.24.3",
+      "description": "A lightweight metrics facade."
+    },
+    {
+      "type": "library",
+      "name": "metrics-exporter-prometheus",
+      "version": "0.18.1",
+      "description": "A metrics-compatible exporter for sending metrics to Prometheus."
+    },
+    {
+      "type": "library",
+      "name": "metrics-util",
+      "version": "0.17.0",
+      "description": "Helper types/functions used by the metrics ecosystem."
+    },
+    {
+      "type": "library",
+      "name": "metrics-util",
+      "version": "0.20.1",
+      "description": "Helper types/functions used by the metrics ecosystem."
+    },
+    {
+      "type": "library",
+      "name": "mime",
+      "version": "0.3.17",
+      "description": "Strongly Typed Mimes"
+    },
+    {
+      "type": "library",
+      "name": "mime_guess",
+      "version": "2.0.5",
+      "description": "A simple crate for detection of a file's MIME type by its extension."
+    },
+    {
+      "type": "library",
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "description": "Fast float parsing conversion routines."
+    },
+    {
+      "type": "library",
+      "name": "miniz_oxide",
+      "version": "0.8.9",
+      "description": "DEFLATE compression and decompression library rewritten in Rust based on miniz"
+    },
+    {
+      "type": "library",
+      "name": "mio",
+      "version": "1.1.1",
+      "description": "Lightweight non-blocking I/O."
+    },
+    {
+      "type": "library",
+      "name": "multer",
+      "version": "2.1.0",
+      "description": "An async parser for `multipart/form-data` content-type in Rust."
+    },
+    {
+      "type": "library",
+      "name": "multiaddr",
+      "version": "0.18.2",
+      "description": "Implementation of the multiaddr format"
+    },
+    {
+      "type": "library",
+      "name": "multibase",
+      "version": "0.9.2",
+      "description": "multibase in rust"
+    },
+    {
+      "type": "library",
+      "name": "multihash",
+      "version": "0.19.3",
+      "description": "Implementation of the multihash format"
+    },
+    {
+      "type": "library",
+      "name": "multistream-select",
+      "version": "0.13.0",
+      "description": "Multistream-select negotiation protocol for libp2p"
+    },
+    {
+      "type": "library",
+      "name": "native-tls",
+      "version": "0.2.14",
+      "description": "A wrapper over a platform's native TLS implementation"
+    },
+    {
+      "type": "library",
+      "name": "netlink-packet-core",
+      "version": "0.7.0",
+      "description": "netlink packet types"
+    },
+    {
+      "type": "library",
+      "name": "netlink-packet-route",
+      "version": "0.17.1",
+      "description": "netlink packet types"
+    },
+    {
+      "type": "library",
+      "name": "netlink-packet-utils",
+      "version": "0.5.2",
+      "description": "macros and helpers for parsing netlink messages"
+    },
+    {
+      "type": "library",
+      "name": "netlink-proto",
+      "version": "0.11.5",
+      "description": "async netlink protocol"
+    },
+    {
+      "type": "library",
+      "name": "netlink-sys",
+      "version": "0.8.7",
+      "description": "netlink sockets, with optional integration with tokio"
+    },
+    {
+      "type": "library",
+      "name": "nibble_vec",
+      "version": "0.1.0",
+      "description": "Vector data-structure for half-byte values."
+    },
+    {
+      "type": "library",
+      "name": "nix",
+      "version": "0.26.4",
+      "description": "Rust friendly bindings to *nix APIs"
+    },
+    {
+      "type": "library",
+      "name": "nohash-hasher",
+      "version": "0.2.0",
+      "description": "An implementation of `std::hash::Hasher` which does not hash at all."
+    },
+    {
+      "type": "library",
+      "name": "nom",
+      "version": "7.1.3",
+      "description": "A byte-oriented, zero-copy, parser combinators library"
+    },
+    {
+      "type": "library",
+      "name": "ntapi",
+      "version": "0.4.2",
+      "description": "FFI bindings for Native API"
+    },
+    {
+      "type": "library",
+      "name": "num",
+      "version": "0.4.3",
+      "description": "A collection of numeric types and traits for Rust, including bigint,\ncomplex, rational, range iterators, generic integers, and more!\n"
+    },
+    {
+      "type": "library",
+      "name": "num-bigint",
+      "version": "0.4.6",
+      "description": "Big integer implementation for Rust"
+    },
+    {
+      "type": "library",
+      "name": "num-complex",
+      "version": "0.4.6",
+      "description": "Complex numbers implementation for Rust"
+    },
+    {
+      "type": "library",
+      "name": "num-conv",
+      "version": "0.1.0",
+      "description": "`num_conv` is a crate to convert between integer types without using `as` casts. This provides\nbetter certainty when refactoring, makes the exact behavior of code more explicit, and allows using\nturbofish syntax.\n"
+    },
+    {
+      "type": "library",
+      "name": "num-integer",
+      "version": "0.1.46",
+      "description": "Integer traits and functions"
+    },
+    {
+      "type": "library",
+      "name": "num-iter",
+      "version": "0.1.45",
+      "description": "External iterators for generic mathematics"
+    },
+    {
+      "type": "library",
+      "name": "num-rational",
+      "version": "0.4.2",
+      "description": "Rational numbers implementation for Rust"
+    },
+    {
+      "type": "library",
+      "name": "num-traits",
+      "version": "0.2.19",
+      "description": "Numeric traits for generic mathematics"
+    },
+    {
+      "type": "library",
+      "name": "num_cpus",
+      "version": "1.17.0",
+      "description": "Get the number of CPUs on a machine."
+    },
+    {
+      "type": "library",
+      "name": "number_prefix",
+      "version": "0.4.0",
+      "description": "Library for numeric prefixes (kilo, giga, kibi)."
+    },
+    {
+      "type": "library",
+      "name": "object",
+      "version": "0.36.7",
+      "description": "A unified interface for reading and writing object file formats."
+    },
+    {
+      "type": "library",
+      "name": "oid-registry",
+      "version": "0.6.1",
+      "description": "Object Identifier (OID) database"
+    },
+    {
+      "type": "library",
+      "name": "oid-registry",
+      "version": "0.7.1",
+      "description": "Object Identifier (OID) database"
+    },
+    {
+      "type": "library",
+      "name": "once_cell",
+      "version": "1.21.3",
+      "description": "Single assignment cells and lazy values."
+    },
+    {
+      "type": "library",
+      "name": "once_cell_polyfill",
+      "version": "1.70.2",
+      "description": "Polyfill for `OnceCell` stdlib feature for use with older MSRVs"
+    },
+    {
+      "type": "library",
+      "name": "oorandom",
+      "version": "11.1.5",
+      "description": "A tiny, robust PRNG implementation."
+    },
+    {
+      "type": "library",
+      "name": "opaque-debug",
+      "version": "0.3.1",
+      "description": "Macro for opaque Debug trait implementation"
+    },
+    {
+      "type": "library",
+      "name": "openssl",
+      "version": "0.10.75",
+      "description": "OpenSSL bindings"
+    },
+    {
+      "type": "library",
+      "name": "openssl-macros",
+      "version": "0.1.1",
+      "description": "Internal macros used by the openssl crate."
+    },
+    {
+      "type": "library",
+      "name": "openssl-probe",
+      "version": "0.1.6",
+      "description": "Tool for helping to find SSL certificate locations on the system for OpenSSL\n"
+    },
+    {
+      "type": "library",
+      "name": "openssl-probe",
+      "version": "0.2.0",
+      "description": "Tool for helping to find SSL certificate locations on the system for OpenSSL\n"
+    },
+    {
+      "type": "library",
+      "name": "openssl-sys",
+      "version": "0.9.111",
+      "description": "FFI bindings to OpenSSL"
+    },
+    {
+      "type": "library",
+      "name": "option-ext",
+      "version": "0.2.0",
+      "description": "Extends `Option` with additional operations"
+    },
+    {
+      "type": "library",
+      "name": "ordered-float",
+      "version": "4.6.0",
+      "description": "Wrappers for total ordering on floats"
+    },
+    {
+      "type": "library",
+      "name": "parity-scale-codec",
+      "version": "3.7.5",
+      "description": "SCALE - Simple Concatenating Aggregated Little Endians"
+    },
+    {
+      "type": "library",
+      "name": "parity-scale-codec-derive",
+      "version": "3.7.5",
+      "description": "Serialization and deserialization derive macro for Parity SCALE Codec"
+    },
+    {
+      "type": "library",
+      "name": "parking",
+      "version": "2.2.1",
+      "description": "Thread parking and unparking"
+    },
+    {
+      "type": "library",
+      "name": "parking_lot",
+      "version": "0.12.5",
+      "description": "More compact and efficient implementations of the standard synchronization primitives."
+    },
+    {
+      "type": "library",
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "description": "An advanced API for creating custom synchronization primitives."
+    },
+    {
+      "type": "library",
+      "name": "paste",
+      "version": "1.0.15",
+      "description": "Macros for all your token pasting needs"
+    },
+    {
+      "type": "library",
+      "name": "pbkdf2",
+      "version": "0.12.2",
+      "description": "Generic implementation of PBKDF2"
+    },
+    {
+      "type": "library",
+      "name": "pem",
+      "version": "1.1.1",
+      "description": "Parse and encode PEM-encoded data."
+    },
+    {
+      "type": "library",
+      "name": "pem",
+      "version": "3.0.6",
+      "description": "Parse and encode PEM-encoded data."
+    },
+    {
+      "type": "library",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "description": "Percent encoding and decoding"
+    },
+    {
+      "type": "library",
+      "name": "phf",
+      "version": "0.13.1",
+      "description": "Runtime support for perfect hash function data structures"
+    },
+    {
+      "type": "library",
+      "name": "phf_shared",
+      "version": "0.13.1",
+      "description": "Support code shared by PHF libraries"
+    },
+    {
+      "type": "library",
+      "name": "pin-project",
+      "version": "1.1.10",
+      "description": "A crate for safe and ergonomic pin-projection.\n"
+    },
+    {
+      "type": "library",
+      "name": "pin-project-internal",
+      "version": "1.1.10",
+      "description": "Implementation detail of the `pin-project` crate.\n"
+    },
+    {
+      "type": "library",
+      "name": "pin-project-lite",
+      "version": "0.2.16",
+      "description": "A lightweight version of pin-project written with declarative macros.\n"
+    },
+    {
+      "type": "library",
+      "name": "pin-utils",
+      "version": "0.1.0",
+      "description": "Utilities for pinning\n"
+    },
+    {
+      "type": "library",
+      "name": "pkcs8",
+      "version": "0.10.2",
+      "description": "Pure Rust implementation of Public-Key Cryptography Standards (PKCS) #8:\nPrivate-Key Information Syntax Specification (RFC 5208), with additional\nsupport for PKCS#8v2 asymmetric key packages (RFC 5958)\n"
+    },
+    {
+      "type": "library",
+      "name": "pkg-config",
+      "version": "0.3.32",
+      "description": "A library to run the pkg-config system tool at build time in order to be used in\nCargo build scripts.\n"
+    },
+    {
+      "type": "library",
+      "name": "plotters",
+      "version": "0.3.7",
+      "description": "A Rust drawing library focus on data plotting for both WASM and native applications"
+    },
+    {
+      "type": "library",
+      "name": "plotters-backend",
+      "version": "0.3.7",
+      "description": "Plotters Backend API"
+    },
+    {
+      "type": "library",
+      "name": "plotters-svg",
+      "version": "0.3.7",
+      "description": "Plotters SVG backend"
+    },
+    {
+      "type": "library",
+      "name": "polling",
+      "version": "3.11.0",
+      "description": "Portable interface to epoll, kqueue, event ports, and IOCP"
+    },
+    {
+      "type": "library",
+      "name": "poly1305",
+      "version": "0.8.0",
+      "description": "The Poly1305 universal hash function and message authentication code"
+    },
+    {
+      "type": "library",
+      "name": "polyval",
+      "version": "0.6.2",
+      "description": "POLYVAL is a GHASH-like universal hash over GF(2^128) useful for constructing\na Message Authentication Code (MAC)\n"
+    },
+    {
+      "type": "library",
+      "name": "portable-atomic",
+      "version": "1.13.0",
+      "description": "Portable atomic types including support for 128-bit atomics, atomic float, etc.\n"
+    },
+    {
+      "type": "library",
+      "name": "portable-atomic-util",
+      "version": "0.2.4",
+      "description": "Synchronization primitives built with portable-atomic.\n"
+    },
+    {
+      "type": "library",
+      "name": "postcard",
+      "version": "1.1.3",
+      "description": "A no_std + serde compatible message library for Rust"
+    },
+    {
+      "type": "library",
+      "name": "postgres-protocol",
+      "version": "0.6.10",
+      "description": "Low level Postgres protocol APIs"
+    },
+    {
+      "type": "library",
+      "name": "postgres-types",
+      "version": "0.2.12",
+      "description": "Conversions between Rust and Postgres values"
+    },
+    {
+      "type": "library",
+      "name": "potential_utf",
+      "version": "0.1.4",
+      "description": "Unvalidated string and character types"
+    },
+    {
+      "type": "library",
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "description": "    `powerfmt` is a library that provides utilities for formatting values. This crate makes it\n    significantly easier to support filling to a minimum width with alignment, avoid heap\n    allocation, and avoid repetitive calculations.\n"
+    },
+    {
+      "type": "library",
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "description": "Cross-platform cryptography-oriented low-level SIMD library."
+    },
+    {
+      "type": "library",
+      "name": "pqcrypto-internals",
+      "version": "0.2.11",
+      "description": "bindings to common cryptography"
+    },
+    {
+      "type": "library",
+      "name": "pqcrypto-sphincsplus",
+      "version": "0.7.2",
+      "description": "Post-Quantum Signature Scheme sphincsplus"
+    },
+    {
+      "type": "library",
+      "name": "pqcrypto-traits",
+      "version": "0.3.5",
+      "description": "Shared traits for post-quantum cryptographic primitives"
+    },
+    {
+      "type": "library",
+      "name": "pretty_assertions",
+      "version": "1.4.1",
+      "description": "Overwrite `assert_eq!` and `assert_ne!` with drop-in replacements, adding colorful diffs."
+    },
+    {
+      "type": "library",
+      "name": "primitive-types",
+      "version": "0.12.2",
+      "description": "Primitive types shared by Ethereum and Substrate"
+    },
+    {
+      "type": "library",
+      "name": "proc-macro-crate",
+      "version": "3.4.0",
+      "description": "Replacement for crate (macro_rules keyword) in proc-macros\n"
+    },
+    {
+      "type": "library",
+      "name": "proc-macro2",
+      "version": "1.0.105",
+      "description": "A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case."
+    },
+    {
+      "type": "library",
+      "name": "proptest",
+      "version": "1.9.0",
+      "description": "Hypothesis-like property-based testing and shrinking.\n"
+    },
+    {
+      "type": "library",
+      "name": "pulley-interpreter",
+      "version": "35.0.0",
+      "description": "The Pulley interpreter, its bytecode definition, encoder, decoder, and etc..."
+    },
+    {
+      "type": "library",
+      "name": "pulley-macros",
+      "version": "35.0.0",
+      "description": "Internal pulley macros"
+    },
+    {
+      "type": "library",
+      "name": "quanta",
+      "version": "0.12.6",
+      "description": "high-speed timing library"
+    },
+    {
+      "type": "library",
+      "name": "quick-error",
+      "version": "1.2.3",
+      "description": "    A macro which makes error types pleasant to write.\n"
+    },
+    {
+      "type": "library",
+      "name": "quick-protobuf",
+      "version": "0.8.1",
+      "description": "A pure Rust protobuf (de)serializer. Quick."
+    },
+    {
+      "type": "library",
+      "name": "quick-protobuf-codec",
+      "version": "0.2.0",
+      "description": "Asynchronous de-/encoding of Protobuf structs using asynchronous-codec, unsigned-varint and quick-protobuf."
+    },
+    {
+      "type": "library",
+      "name": "quickcheck",
+      "version": "1.0.3",
+      "description": "Automatic property based testing with shrinking."
+    },
+    {
+      "type": "library",
+      "name": "quickcheck_macros",
+      "version": "1.1.0",
+      "description": "A macro attribute for quickcheck."
+    },
+    {
+      "type": "library",
+      "name": "quinn",
+      "version": "0.10.2",
+      "description": "Versatile QUIC transport protocol implementation"
+    },
+    {
+      "type": "library",
+      "name": "quinn-proto",
+      "version": "0.10.6",
+      "description": "State machine for the QUIC transport protocol"
+    },
+    {
+      "type": "library",
+      "name": "quinn-udp",
+      "version": "0.4.1",
+      "description": "UDP sockets with ECN information for the QUIC transport protocol"
+    },
+    {
+      "type": "library",
+      "name": "quote",
+      "version": "1.0.43",
+      "description": "Quasi-quoting macro quote!(...)"
+    },
+    {
+      "type": "library",
+      "name": "r-efi",
+      "version": "5.3.0",
+      "description": "UEFI Reference Specification Protocol Constants and Definitions"
+    },
+    {
+      "type": "library",
+      "name": "radium",
+      "version": "0.7.0",
+      "description": "Portable interfaces for maybe-atomic types"
+    },
+    {
+      "type": "library",
+      "name": "radix_trie",
+      "version": "0.2.1",
+      "description": "Generic radix trie data-structure."
+    },
+    {
+      "type": "library",
+      "name": "rand",
+      "version": "0.7.3",
+      "description": "Random number generators and other randomness functionality.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand",
+      "version": "0.8.5",
+      "description": "Random number generators and other randomness functionality.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand",
+      "version": "0.9.2",
+      "description": "Random number generators and other randomness functionality.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_chacha",
+      "version": "0.2.2",
+      "description": "ChaCha random number generator\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_chacha",
+      "version": "0.3.1",
+      "description": "ChaCha random number generator\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_chacha",
+      "version": "0.9.0",
+      "description": "ChaCha random number generator\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_core",
+      "version": "0.5.1",
+      "description": "Core random number generator traits and tools for implementation.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_core",
+      "version": "0.6.4",
+      "description": "Core random number generator traits and tools for implementation.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_core",
+      "version": "0.9.5",
+      "description": "Core random number generator traits and tools for implementation.\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_distr",
+      "version": "0.4.3",
+      "description": "Sampling from random number distributions\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_hc",
+      "version": "0.2.0",
+      "description": "HC128 random number generator\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_xorshift",
+      "version": "0.4.0",
+      "description": "Xorshift random number generator\n"
+    },
+    {
+      "type": "library",
+      "name": "rand_xoshiro",
+      "version": "0.7.0",
+      "description": "Xoshiro, xoroshiro and splitmix64 random number generators"
+    },
+    {
+      "type": "library",
+      "name": "raw-cpuid",
+      "version": "11.6.0",
+      "description": "A library to parse the x86 CPUID instruction, written in rust with no external dependencies. The implementation closely resembles the Intel CPUID manual description. The library does only depend on libcore."
+    },
+    {
+      "type": "library",
+      "name": "rayon",
+      "version": "1.11.0",
+      "description": "Simple work-stealing parallelism for Rust"
+    },
+    {
+      "type": "library",
+      "name": "rayon-core",
+      "version": "1.13.0",
+      "description": "Core APIs for Rayon"
+    },
+    {
+      "type": "library",
+      "name": "rcgen",
+      "version": "0.10.0",
+      "description": "Rust X.509 certificate generator"
+    },
+    {
+      "type": "library",
+      "name": "rcgen",
+      "version": "0.12.1",
+      "description": "Rust X.509 certificate generator"
+    },
+    {
+      "type": "library",
+      "name": "redis",
+      "version": "0.32.7",
+      "description": "Redis driver for Rust."
+    },
+    {
+      "type": "library",
+      "name": "redox_syscall",
+      "version": "0.5.18",
+      "description": "A Rust library to access raw Redox system calls"
+    },
+    {
+      "type": "library",
+      "name": "redox_users",
+      "version": "0.4.6",
+      "description": "A Rust library to access Redox users and groups functionality"
+    },
+    {
+      "type": "library",
+      "name": "redox_users",
+      "version": "0.5.2",
+      "description": "A Rust library to access Redox users and groups functionality"
+    },
+    {
+      "type": "library",
+      "name": "ref-cast",
+      "version": "1.0.25",
+      "description": "Safely cast &T to &U where the struct U contains a single field of type T."
+    },
+    {
+      "type": "library",
+      "name": "ref-cast-impl",
+      "version": "1.0.25",
+      "description": "Derive implementation for ref_cast::RefCast."
+    },
+    {
+      "type": "library",
+      "name": "regalloc2",
+      "version": "0.12.2",
+      "description": "Backtracking register allocator inspired from IonMonkey"
+    },
+    {
+      "type": "library",
+      "name": "regex",
+      "version": "1.12.2",
+      "description": "An implementation of regular expressions for Rust. This implementation uses\nfinite automata and guarantees linear time matching on all inputs.\n"
+    },
+    {
+      "type": "library",
+      "name": "regex-automata",
+      "version": "0.4.13",
+      "description": "Automata construction and matching using regular expressions."
+    },
+    {
+      "type": "library",
+      "name": "regex-lite",
+      "version": "0.1.8",
+      "description": "A lightweight regex engine that optimizes for binary size and compilation time.\n"
+    },
+    {
+      "type": "library",
+      "name": "regex-syntax",
+      "version": "0.8.8",
+      "description": "A regular expression parser."
+    },
+    {
+      "type": "library",
+      "name": "reqwest",
+      "version": "0.11.27",
+      "description": "higher level HTTP client library"
+    },
+    {
+      "type": "library",
+      "name": "reqwest",
+      "version": "0.12.28",
+      "description": "higher level HTTP client library"
+    },
+    {
+      "type": "library",
+      "name": "resolv-conf",
+      "version": "0.7.6",
+      "description": "The resolv.conf file parser"
+    },
+    {
+      "type": "library",
+      "name": "retain_mut",
+      "version": "0.1.9",
+      "description": "Provide retain_mut method that has the same functionality as retain but gives mutable borrow to the predicate."
+    },
+    {
+      "type": "library",
+      "name": "rfc6979",
+      "version": "0.4.0",
+      "description": "Pure Rust implementation of RFC6979: Deterministic Usage of the\nDigital Signature Algorithm (DSA) and Elliptic Curve Digital Signature Algorithm (ECDSA)\n"
+    },
+    {
+      "type": "library",
+      "name": "ring",
+      "version": "0.16.20",
+      "description": "Safe, fast, small crypto using Rust."
+    },
+    {
+      "type": "library",
+      "name": "ring",
+      "version": "0.17.14",
+      "description": "An experiment."
+    },
+    {
+      "type": "library",
+      "name": "ripemd",
+      "version": "0.1.3",
+      "description": "Pure Rust implementation of the RIPEMD hash functions"
+    },
+    {
+      "type": "library",
+      "name": "rtnetlink",
+      "version": "0.13.1",
+      "description": "manipulate linux networking resources via netlink"
+    },
+    {
+      "type": "library",
+      "name": "rusqlite",
+      "version": "0.29.0",
+      "description": "Ergonomic wrapper for SQLite"
+    },
+    {
+      "type": "library",
+      "name": "rustc-demangle",
+      "version": "0.1.27",
+      "description": "Rust compiler symbol demangling.\n"
+    },
+    {
+      "type": "library",
+      "name": "rustc-hash",
+      "version": "1.1.0",
+      "description": "speed, non-cryptographic hash used in rustc"
+    },
+    {
+      "type": "library",
+      "name": "rustc-hash",
+      "version": "2.1.1",
+      "description": "A speedy, non-cryptographic hashing algorithm used by rustc"
+    },
+    {
+      "type": "library",
+      "name": "rustc-hex",
+      "version": "2.1.0",
+      "description": "rustc-serialize compatible hex conversion traits\n"
+    },
+    {
+      "type": "library",
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "description": "A library for querying the version of a installed rustc compiler"
+    },
+    {
+      "type": "library",
+      "name": "rusticata-macros",
+      "version": "4.1.0",
+      "description": "Helper macros for Rusticata"
+    },
+    {
+      "type": "library",
+      "name": "rustix",
+      "version": "0.38.44",
+      "description": "Safe Rust bindings to POSIX/Unix/Linux/Winsock-like syscalls"
+    },
+    {
+      "type": "library",
+      "name": "rustix",
+      "version": "1.1.3",
+      "description": "Safe Rust bindings to POSIX/Unix/Linux/Winsock-like syscalls"
+    },
+    {
+      "type": "library",
+      "name": "rustix-linux-procfs",
+      "version": "0.1.1",
+      "description": "Utilities for opening Linux procfs files and directories"
+    },
+    {
+      "type": "library",
+      "name": "rustls",
+      "version": "0.21.12",
+      "description": "Rustls is a modern TLS library written in Rust."
+    },
+    {
+      "type": "library",
+      "name": "rustls",
+      "version": "0.22.4",
+      "description": "Rustls is a modern TLS library written in Rust."
+    },
+    {
+      "type": "library",
+      "name": "rustls",
+      "version": "0.23.36",
+      "description": "Rustls is a modern TLS library written in Rust."
+    },
+    {
+      "type": "library",
+      "name": "rustls-native-certs",
+      "version": "0.8.3",
+      "description": "rustls-native-certs allows rustls to use the platform native certificate store"
+    },
+    {
+      "type": "library",
+      "name": "rustls-pemfile",
+      "version": "1.0.4",
+      "description": "Basic .pem file parser for keys and certificates"
+    },
+    {
+      "type": "library",
+      "name": "rustls-pemfile",
+      "version": "2.2.0",
+      "description": "Basic .pem file parser for keys and certificates"
+    },
+    {
+      "type": "library",
+      "name": "rustls-pki-types",
+      "version": "1.14.0",
+      "description": "Shared types for the rustls PKI ecosystem"
+    },
+    {
+      "type": "library",
+      "name": "rustls-webpki",
+      "version": "0.101.7",
+      "description": "Web PKI X.509 Certificate Verification."
+    },
+    {
+      "type": "library",
+      "name": "rustls-webpki",
+      "version": "0.102.8",
+      "description": "Web PKI X.509 Certificate Verification."
+    },
+    {
+      "type": "library",
+      "name": "rustls-webpki",
+      "version": "0.103.9",
+      "description": "Web PKI X.509 Certificate Verification."
+    },
+    {
+      "type": "library",
+      "name": "rustversion",
+      "version": "1.0.22",
+      "description": "Conditional compilation according to rustc compiler version"
+    },
+    {
+      "type": "library",
+      "name": "rusty-fork",
+      "version": "0.3.1",
+      "description": "Cross-platform library for running Rust tests in sub-processes using a\nfork-like interface.\n"
+    },
+    {
+      "type": "library",
+      "name": "rw-stream-sink",
+      "version": "0.4.0",
+      "description": "Adaptator between Stream/Sink and AsyncRead/AsyncWrite"
+    },
+    {
+      "type": "library",
+      "name": "ryu",
+      "version": "1.0.22",
+      "description": "Fast floating point to string conversion"
+    },
+    {
+      "type": "library",
+      "name": "same-file",
+      "version": "1.0.6",
+      "description": "A simple crate for determining whether two file paths point to the same file.\n"
+    },
+    {
+      "type": "library",
+      "name": "scale-info",
+      "version": "2.11.6",
+      "description": "Info about SCALE encodable Rust types"
+    },
+    {
+      "type": "library",
+      "name": "scale-info-derive",
+      "version": "2.11.6",
+      "description": "Derive type info for SCALE encodable types"
+    },
+    {
+      "type": "library",
+      "name": "scc",
+      "version": "2.4.0",
+      "description": "High-performance containers and utilities for concurrent and asynchronous programming"
+    },
+    {
+      "type": "library",
+      "name": "schannel",
+      "version": "0.1.28",
+      "description": "Schannel bindings for rust, allowing SSL/TLS (e.g. https) without openssl"
+    },
+    {
+      "type": "library",
+      "name": "schemars",
+      "version": "0.9.0",
+      "description": "Generate JSON Schemas from Rust code"
+    },
+    {
+      "type": "library",
+      "name": "schemars",
+      "version": "1.2.0",
+      "description": "Generate JSON Schemas from Rust code"
+    },
+    {
+      "type": "library",
+      "name": "scoped-tls",
+      "version": "1.0.1",
+      "description": "Library implementation of the standard library's old `scoped_thread_local!`\nmacro for providing scoped access to thread local storage (TLS) so any type can\nbe stored into TLS.\n"
+    },
+    {
+      "type": "library",
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "description": "A RAII scope guard that will run a given closure when it goes out of scope,\neven if the code between panics (assuming unwinding panic).\n\nDefines the macros `defer!`, `defer_on_unwind!`, `defer_on_success!` as\nshorthands for guards with one of the implemented strategies.\n"
+    },
+    {
+      "type": "library",
+      "name": "sct",
+      "version": "0.7.1",
+      "description": "Certificate transparency SCT verification library"
+    },
+    {
+      "type": "library",
+      "name": "sdd",
+      "version": "3.0.10",
+      "description": "Scalable lock-free delayed memory reclaimer"
+    },
+    {
+      "type": "library",
+      "name": "sec1",
+      "version": "0.7.3",
+      "description": "Pure Rust implementation of SEC1: Elliptic Curve Cryptography encoding formats\nincluding ASN.1 DER-serialized private keys as well as the\nElliptic-Curve-Point-to-Octet-String encoding\n"
+    },
+    {
+      "type": "library",
+      "name": "secp256k1",
+      "version": "0.27.0",
+      "description": "Rust wrapper library for Pieter Wuille's `libsecp256k1`. Implements ECDSA and BIP 340 signatures for the SECG elliptic curve group secp256k1 and related utilities."
+    },
+    {
+      "type": "library",
+      "name": "secp256k1",
+      "version": "0.28.2",
+      "description": "Rust wrapper library for Pieter Wuille's `libsecp256k1`. Implements ECDSA and BIP 340 signatures for the SECG elliptic curve group secp256k1 and related utilities."
+    },
+    {
+      "type": "library",
+      "name": "secp256k1-sys",
+      "version": "0.8.2",
+      "description": "FFI for Pieter Wuille's `libsecp256k1` library."
+    },
+    {
+      "type": "library",
+      "name": "secp256k1-sys",
+      "version": "0.9.2",
+      "description": "FFI for Pieter Wuille's `libsecp256k1` library."
+    },
+    {
+      "type": "library",
+      "name": "security-framework",
+      "version": "2.11.1",
+      "description": "Security.framework bindings for macOS and iOS"
+    },
+    {
+      "type": "library",
+      "name": "security-framework",
+      "version": "3.5.1",
+      "description": "Security.framework bindings for macOS and iOS"
+    },
+    {
+      "type": "library",
+      "name": "security-framework-sys",
+      "version": "2.15.0",
+      "description": "Apple `Security.framework` low-level FFI bindings"
+    },
+    {
+      "type": "library",
+      "name": "semver",
+      "version": "1.0.27",
+      "description": "Parser and evaluator for Cargo's flavor of Semantic Versioning"
+    },
+    {
+      "type": "library",
+      "name": "serde",
+      "version": "1.0.228",
+      "description": "A generic serialization/deserialization framework"
+    },
+    {
+      "type": "library",
+      "name": "serde_core",
+      "version": "1.0.228",
+      "description": "Serde traits only, with no support for derive -- use the `serde` crate instead"
+    },
+    {
+      "type": "library",
+      "name": "serde_derive",
+      "version": "1.0.228",
+      "description": "Macros 1.1 implementation of #[derive(Serialize, Deserialize)]"
+    },
+    {
+      "type": "library",
+      "name": "serde_json",
+      "version": "1.0.149",
+      "description": "A JSON serialization file format"
+    },
+    {
+      "type": "library",
+      "name": "serde_qs",
+      "version": "0.8.5",
+      "description": "Querystrings for Serde"
+    },
+    {
+      "type": "library",
+      "name": "serde_repr",
+      "version": "0.1.20",
+      "description": "Derive Serialize and Deserialize that delegates to the underlying repr of a C-like enum."
+    },
+    {
+      "type": "library",
+      "name": "serde_spanned",
+      "version": "0.6.9",
+      "description": "Serde-compatible spanned Value"
+    },
+    {
+      "type": "library",
+      "name": "serde_urlencoded",
+      "version": "0.7.1",
+      "description": "`x-www-form-urlencoded` meets Serde"
+    },
+    {
+      "type": "library",
+      "name": "serde_with",
+      "version": "3.16.1",
+      "description": "Custom de/serialization functions for Rust's serde"
+    },
+    {
+      "type": "library",
+      "name": "serde_with_macros",
+      "version": "3.16.1",
+      "description": "proc-macro library for serde_with"
+    },
+    {
+      "type": "library",
+      "name": "serial_test",
+      "version": "3.3.1",
+      "description": "Allows for the creation of serialised Rust tests"
+    },
+    {
+      "type": "library",
+      "name": "serial_test_derive",
+      "version": "3.3.1",
+      "description": "Helper crate for serial_test"
+    },
+    {
+      "type": "library",
+      "name": "sha1",
+      "version": "0.10.6",
+      "description": "SHA-1 hash function"
+    },
+    {
+      "type": "library",
+      "name": "sha1_smol",
+      "version": "1.0.1",
+      "description": "Minimal dependency-free implementation of SHA1 for Rust."
+    },
+    {
+      "type": "library",
+      "name": "sha2",
+      "version": "0.10.9",
+      "description": "Pure Rust implementation of the SHA-2 hash function family\nincluding SHA-224, SHA-256, SHA-384, and SHA-512.\n"
+    },
+    {
+      "type": "library",
+      "name": "sha3",
+      "version": "0.9.1",
+      "description": "SHA-3 (Keccak) hash function"
+    },
+    {
+      "type": "library",
+      "name": "sha3",
+      "version": "0.10.8",
+      "description": "Pure Rust implementation of SHA-3, a family of Keccak-based hash functions\nincluding the SHAKE family of eXtendable-Output Functions (XOFs), as well as\nthe accelerated variant TurboSHAKE\n"
+    },
+    {
+      "type": "library",
+      "name": "shell-words",
+      "version": "1.1.1",
+      "description": "Process command line according to parsing rules of UNIX shell"
+    },
+    {
+      "type": "library",
+      "name": "shellexpand",
+      "version": "3.1.1",
+      "description": "Shell-like expansions in strings"
+    },
+    {
+      "type": "library",
+      "name": "shlex",
+      "version": "1.3.0",
+      "description": "Split a string into shell words, like Python's shlex."
+    },
+    {
+      "type": "library",
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "description": "Backend crate for signal-hook"
+    },
+    {
+      "type": "library",
+      "name": "signature",
+      "version": "2.2.0",
+      "description": "Traits for cryptographic signature algorithms (e.g. ECDSA, Ed25519)"
+    },
+    {
+      "type": "library",
+      "name": "simd-adler32",
+      "version": "0.3.8",
+      "description": "A SIMD-accelerated Adler-32 hash algorithm implementation."
+    },
+    {
+      "type": "library",
+      "name": "siphasher",
+      "version": "1.0.1",
+      "description": "SipHash-2-4, SipHash-1-3 and 128-bit variants in pure Rust"
+    },
+    {
+      "type": "library",
+      "name": "sketches-ddsketch",
+      "version": "0.2.2",
+      "description": "A direct port of the Golang DDSketch implementation.\n"
+    },
+    {
+      "type": "library",
+      "name": "sketches-ddsketch",
+      "version": "0.3.0",
+      "description": "A direct port of the Golang DDSketch implementation.\n"
+    },
+    {
+      "type": "library",
+      "name": "slab",
+      "version": "0.4.11",
+      "description": "Pre-allocated storage for a uniform data type"
+    },
+    {
+      "type": "library",
+      "name": "smallvec",
+      "version": "1.15.1",
+      "description": "'Small vector' optimization: store up to a small number of items on the stack"
+    },
+    {
+      "type": "library",
+      "name": "snow",
+      "version": "0.9.6",
+      "description": "A pure-rust implementation of the Noise Protocol Framework"
+    },
+    {
+      "type": "library",
+      "name": "socket2",
+      "version": "0.4.10",
+      "description": "Utilities for handling networking sockets with a maximal amount of configuration\npossible intended.\n"
+    },
+    {
+      "type": "library",
+      "name": "socket2",
+      "version": "0.5.10",
+      "description": "Utilities for handling networking sockets with a maximal amount of configuration\npossible intended.\n"
+    },
+    {
+      "type": "library",
+      "name": "socket2",
+      "version": "0.6.1",
+      "description": "Utilities for handling networking sockets with a maximal amount of configuration\npossible intended.\n"
+    },
+    {
+      "type": "library",
+      "name": "spin",
+      "version": "0.5.2",
+      "description": "Synchronization primitives based on spinning.\nThey may contain data, are usable without `std`,\nand static initializers are available.\n"
+    },
+    {
+      "type": "library",
+      "name": "spin",
+      "version": "0.9.8",
+      "description": "Spin-based synchronization primitives"
+    },
+    {
+      "type": "library",
+      "name": "spki",
+      "version": "0.7.3",
+      "description": "X.509 Subject Public Key Info (RFC5280) describing public keys as well as their\nassociated AlgorithmIdentifiers (i.e. OIDs)\n"
+    },
+    {
+      "type": "library",
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "description": "An unsafe marker trait for types like Box and Rc that dereference to a stable address even when moved, and hence can be used with libraries such as owning_ref and rental.\n"
+    },
+    {
+      "type": "library",
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "description": "Compile-time assertions to ensure that invariants are met."
+    },
+    {
+      "type": "library",
+      "name": "stringprep",
+      "version": "0.1.5",
+      "description": "An implementation of the stringprep algorithm"
+    },
+    {
+      "type": "library",
+      "name": "strsim",
+      "version": "0.11.1",
+      "description": "Implementations of string similarity metrics. Includes Hamming, Levenshtein,\nOSA, Damerau-Levenshtein, Jaro, Jaro-Winkler, and Sørensen-Dice.\n"
+    },
+    {
+      "type": "library",
+      "name": "subtle",
+      "version": "2.6.1",
+      "description": "Pure-Rust traits and utilities for constant-time cryptographic implementations."
+    },
+    {
+      "type": "library",
+      "name": "subtle-ng",
+      "version": "2.5.0",
+      "description": "Pure-Rust traits and utilities for constant-time cryptographic implementations."
+    },
+    {
+      "type": "library",
+      "name": "syn",
+      "version": "1.0.109",
+      "description": "Parser for Rust source code"
+    },
+    {
+      "type": "library",
+      "name": "syn",
+      "version": "2.0.114",
+      "description": "Parser for Rust source code"
+    },
+    {
+      "type": "library",
+      "name": "sync_wrapper",
+      "version": "0.1.2",
+      "description": "A tool for enlisting the compiler’s help in proving the absence of concurrency"
+    },
+    {
+      "type": "library",
+      "name": "sync_wrapper",
+      "version": "1.0.2",
+      "description": "A tool for enlisting the compiler's help in proving the absence of concurrency"
+    },
+    {
+      "type": "library",
+      "name": "synstructure",
+      "version": "0.12.6",
+      "description": "Helper methods and macros for custom derives"
+    },
+    {
+      "type": "library",
+      "name": "synstructure",
+      "version": "0.13.2",
+      "description": "Helper methods and macros for custom derives"
+    },
+    {
+      "type": "library",
+      "name": "sysinfo",
+      "version": "0.30.13",
+      "description": "Library to get system information such as processes, CPUs, disks, components and networks"
+    },
+    {
+      "type": "library",
+      "name": "system-configuration",
+      "version": "0.5.1",
+      "description": "Bindings to SystemConfiguration framework for macOS"
+    },
+    {
+      "type": "library",
+      "name": "system-configuration",
+      "version": "0.6.1",
+      "description": "Bindings to SystemConfiguration framework for macOS"
+    },
+    {
+      "type": "library",
+      "name": "system-configuration-sys",
+      "version": "0.5.0",
+      "description": "Low level bindings to SystemConfiguration framework for macOS"
+    },
+    {
+      "type": "library",
+      "name": "system-configuration-sys",
+      "version": "0.6.0",
+      "description": "Low level bindings to SystemConfiguration framework for macOS"
+    },
+    {
+      "type": "library",
+      "name": "system-interface",
+      "version": "0.27.3",
+      "description": "Extensions to the Rust standard library"
+    },
+    {
+      "type": "library",
+      "name": "tap",
+      "version": "1.0.1",
+      "description": "Generic extensions for tapping values in Rust"
+    },
+    {
+      "type": "library",
+      "name": "target-lexicon",
+      "version": "0.13.4",
+      "description": "LLVM target triple types"
+    },
+    {
+      "type": "library",
+      "name": "tempfile",
+      "version": "3.24.0",
+      "description": "A library for managing temporary files and directories."
+    },
+    {
+      "type": "library",
+      "name": "termcolor",
+      "version": "1.4.1",
+      "description": "A simple cross platform library for writing colored text to a terminal.\n"
+    },
+    {
+      "type": "library",
+      "name": "test_server",
+      "version": "0.1.0",
+      "description": null
+    },
+    {
+      "type": "library",
+      "name": "thiserror",
+      "version": "1.0.69",
+      "description": "derive(Error)"
+    },
+    {
+      "type": "library",
+      "name": "thiserror",
+      "version": "2.0.18",
+      "description": "derive(Error)"
+    },
+    {
+      "type": "library",
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "description": "Implementation detail of the `thiserror` crate"
+    },
+    {
+      "type": "library",
+      "name": "thiserror-impl",
+      "version": "2.0.18",
+      "description": "Implementation detail of the `thiserror` crate"
+    },
+    {
+      "type": "library",
+      "name": "time",
+      "version": "0.3.45",
+      "description": "Date and time library. Fully interoperable with the standard library. Mostly compatible with #![no_std]."
+    },
+    {
+      "type": "library",
+      "name": "time-core",
+      "version": "0.1.7",
+      "description": "This crate is an implementation detail and should not be relied upon directly."
+    },
+    {
+      "type": "library",
+      "name": "time-macros",
+      "version": "0.2.25",
+      "description": "    Procedural macros for the time crate.\n    This crate is an implementation detail and should not be relied upon directly.\n"
+    },
+    {
+      "type": "library",
+      "name": "tinystr",
+      "version": "0.8.2",
+      "description": "A small ASCII-only bounded length string representation."
+    },
+    {
+      "type": "library",
+      "name": "tinytemplate",
+      "version": "1.2.1",
+      "description": "Simple, lightweight template engine"
+    },
+    {
+      "type": "library",
+      "name": "tinyvec",
+      "version": "1.10.0",
+      "description": "`tinyvec` provides 100% safe vec-like data structures."
+    },
+    {
+      "type": "library",
+      "name": "tinyvec_macros",
+      "version": "0.1.1",
+      "description": "Some macros for tiny containers"
+    },
+    {
+      "type": "library",
+      "name": "tokio",
+      "version": "1.49.0",
+      "description": "An event-driven, non-blocking I/O platform for writing asynchronous I/O\nbacked applications.\n"
+    },
+    {
+      "type": "library",
+      "name": "tokio-macros",
+      "version": "2.6.0",
+      "description": "Tokio's proc macros.\n"
+    },
+    {
+      "type": "library",
+      "name": "tokio-native-tls",
+      "version": "0.3.1",
+      "description": "An implementation of TLS/SSL streams for Tokio using native-tls giving an implementation of TLS\nfor nonblocking I/O streams.\n"
+    },
+    {
+      "type": "library",
+      "name": "tokio-postgres",
+      "version": "0.7.16",
+      "description": "A native, asynchronous PostgreSQL client"
+    },
+    {
+      "type": "library",
+      "name": "tokio-rustls",
+      "version": "0.24.1",
+      "description": "Asynchronous TLS/SSL streams for Tokio using Rustls."
+    },
+    {
+      "type": "library",
+      "name": "tokio-rustls",
+      "version": "0.25.0",
+      "description": "Asynchronous TLS/SSL streams for Tokio using Rustls."
+    },
+    {
+      "type": "library",
+      "name": "tokio-rustls",
+      "version": "0.26.4",
+      "description": "Asynchronous TLS/SSL streams for Tokio using Rustls."
+    },
+    {
+      "type": "library",
+      "name": "tokio-stream",
+      "version": "0.1.18",
+      "description": "Utilities to work with `Stream` and `tokio`.\n"
+    },
+    {
+      "type": "library",
+      "name": "tokio-test",
+      "version": "0.4.5",
+      "description": "Testing utilities for Tokio- and futures-based code\n"
+    },
+    {
+      "type": "library",
+      "name": "tokio-tungstenite",
+      "version": "0.20.1",
+      "description": "Tokio binding for Tungstenite, the Lightweight stream-based WebSocket implementation"
+    },
+    {
+      "type": "library",
+      "name": "tokio-tungstenite",
+      "version": "0.21.0",
+      "description": "Tokio binding for Tungstenite, the Lightweight stream-based WebSocket implementation"
+    },
+    {
+      "type": "library",
+      "name": "tokio-util",
+      "version": "0.7.18",
+      "description": "Additional utilities for working with Tokio.\n"
+    },
+    {
+      "type": "library",
+      "name": "toml",
+      "version": "0.8.23",
+      "description": "A native Rust encoder and decoder of TOML-formatted files and streams. Provides\nimplementations of the standard Serialize/Deserialize traits for TOML data to\nfacilitate deserializing and serializing Rust structures.\n"
+    },
+    {
+      "type": "library",
+      "name": "toml_datetime",
+      "version": "0.6.11",
+      "description": "A TOML-compatible datetime type"
+    },
+    {
+      "type": "library",
+      "name": "toml_datetime",
+      "version": "0.7.5+spec-1.1.0",
+      "description": "A TOML-compatible datetime type"
+    },
+    {
+      "type": "library",
+      "name": "toml_edit",
+      "version": "0.22.27",
+      "description": "Yet another format-preserving TOML parser."
+    },
+    {
+      "type": "library",
+      "name": "toml_edit",
+      "version": "0.23.10+spec-1.0.0",
+      "description": "Yet another format-preserving TOML parser."
+    },
+    {
+      "type": "library",
+      "name": "toml_parser",
+      "version": "1.0.6+spec-1.1.0",
+      "description": "Yet another format-preserving TOML parser."
+    },
+    {
+      "type": "library",
+      "name": "toml_write",
+      "version": "0.1.2",
+      "description": "A low-level interface for writing out TOML\n"
+    },
+    {
+      "type": "library",
+      "name": "tower",
+      "version": "0.5.3",
+      "description": "Tower is a library of modular and reusable components for building robust\nclients and servers.\n"
+    },
+    {
+      "type": "library",
+      "name": "tower-http",
+      "version": "0.6.8",
+      "description": "Tower middleware and utilities for HTTP clients and servers"
+    },
+    {
+      "type": "library",
+      "name": "tower-layer",
+      "version": "0.3.3",
+      "description": "Decorates a `Service` to allow easy composition between `Service`s.\n"
+    },
+    {
+      "type": "library",
+      "name": "tower-service",
+      "version": "0.3.3",
+      "description": "Trait representing an asynchronous, request / response based, client or server.\n"
+    },
+    {
+      "type": "library",
+      "name": "tracing",
+      "version": "0.1.44",
+      "description": "Application-level tracing for Rust.\n"
+    },
+    {
+      "type": "library",
+      "name": "tracing-attributes",
+      "version": "0.1.31",
+      "description": "Procedural macro attributes for automatically instrumenting functions.\n"
+    },
+    {
+      "type": "library",
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "description": "Core primitives for application-level tracing.\n"
+    },
+    {
+      "type": "library",
+      "name": "trait-variant",
+      "version": "0.1.2",
+      "description": "Utilities for working with impl traits in Rust"
+    },
+    {
+      "type": "library",
+      "name": "trust-dns-proto",
+      "version": "0.22.0",
+      "description": "Trust-DNS is a safe and secure DNS library. This is the foundational DNS protocol library for all Trust-DNS projects.\n"
+    },
+    {
+      "type": "library",
+      "name": "trust-dns-proto",
+      "version": "0.23.2",
+      "description": "Trust-DNS is a safe and secure DNS library. This is the foundational DNS protocol library for all Trust-DNS projects.\n"
+    },
+    {
+      "type": "library",
+      "name": "trust-dns-resolver",
+      "version": "0.23.2",
+      "description": "Trust-DNS is a safe and secure DNS library. This Resolver library  uses the Client library to perform all DNS queries. The Resolver is intended to be a high-level library for any DNS record resolution see Resolver and AsyncResolver for supported resolution types. The Client can be used for other queries.\n"
+    },
+    {
+      "type": "library",
+      "name": "try-lock",
+      "version": "0.2.5",
+      "description": "A lightweight atomic lock."
+    },
+    {
+      "type": "library",
+      "name": "tungstenite",
+      "version": "0.20.1",
+      "description": "Lightweight stream-based WebSocket implementation"
+    },
+    {
+      "type": "library",
+      "name": "tungstenite",
+      "version": "0.21.0",
+      "description": "Lightweight stream-based WebSocket implementation"
+    },
+    {
+      "type": "library",
+      "name": "twox-hash",
+      "version": "2.1.2",
+      "description": "A Rust implementation of the XXHash and XXH3 algorithms"
+    },
+    {
+      "type": "library",
+      "name": "typenum",
+      "version": "1.19.0",
+      "description": "Typenum is a Rust library for type-level numbers evaluated at\n    compile time. It currently supports bits, unsigned integers, and signed\n    integers. It also provides a type-level array of type-level numbers, but its\n    implementation is incomplete."
+    },
+    {
+      "type": "library",
+      "name": "uint",
+      "version": "0.9.5",
+      "description": "Large fixed-size integer arithmetic"
+    },
+    {
+      "type": "library",
+      "name": "unarray",
+      "version": "0.1.4",
+      "description": "Utilities for working with uninitialized arrays"
+    },
+    {
+      "type": "library",
+      "name": "unicase",
+      "version": "2.9.0",
+      "description": "A case-insensitive wrapper around strings."
+    },
+    {
+      "type": "library",
+      "name": "unicode-bidi",
+      "version": "0.3.18",
+      "description": "Implementation of the Unicode Bidirectional Algorithm"
+    },
+    {
+      "type": "library",
+      "name": "unicode-ident",
+      "version": "1.0.22",
+      "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31"
+    },
+    {
+      "type": "library",
+      "name": "unicode-normalization",
+      "version": "0.1.25",
+      "description": "This crate provides functions for normalization of\nUnicode strings, including Canonical and Compatible\nDecomposition and Recomposition, as described in\nUnicode Standard Annex #15.\n"
+    },
+    {
+      "type": "library",
+      "name": "unicode-properties",
+      "version": "0.1.4",
+      "description": "Query character Unicode properties according to\nUAX #44 and UTR #51.\n"
+    },
+    {
+      "type": "library",
+      "name": "unicode-segmentation",
+      "version": "1.12.0",
+      "description": "This crate provides Grapheme Cluster, Word and Sentence boundaries\naccording to Unicode Standard Annex #29 rules.\n"
+    },
+    {
+      "type": "library",
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "description": "Determine displayed width of `char` and `str` types\naccording to Unicode Standard Annex #11 rules.\n"
+    },
+    {
+      "type": "library",
+      "name": "unicode-xid",
+      "version": "0.2.6",
+      "description": "Determine whether characters have the XID_Start\nor XID_Continue properties according to\nUnicode Standard Annex #31.\n"
+    },
+    {
+      "type": "library",
+      "name": "universal-hash",
+      "version": "0.5.1",
+      "description": "Traits which describe the functionality of universal hash functions (UHFs)"
+    },
+    {
+      "type": "library",
+      "name": "unsigned-varint",
+      "version": "0.7.2",
+      "description": "unsigned varint encoding"
+    },
+    {
+      "type": "library",
+      "name": "unsigned-varint",
+      "version": "0.8.0",
+      "description": "unsigned varint encoding"
+    },
+    {
+      "type": "library",
+      "name": "untrusted",
+      "version": "0.7.1",
+      "description": "Safe, fast, zero-panic, zero-crashing, zero-allocation parsing of untrusted inputs in Rust."
+    },
+    {
+      "type": "library",
+      "name": "untrusted",
+      "version": "0.9.0",
+      "description": "Safe, fast, zero-panic, zero-crashing, zero-allocation parsing of untrusted inputs in Rust."
+    },
+    {
+      "type": "library",
+      "name": "url",
+      "version": "2.5.8",
+      "description": "URL library for Rust, based on the WHATWG URL Standard"
+    },
+    {
+      "type": "library",
+      "name": "utf-8",
+      "version": "0.7.6",
+      "description": "Incremental, zero-copy UTF-8 decoding with error handling"
+    },
+    {
+      "type": "library",
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "description": "Iterator by char over potentially-invalid UTF-8 in &[u8]"
+    },
+    {
+      "type": "library",
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "description": "Table-driven UTF-8 parser"
+    },
+    {
+      "type": "library",
+      "name": "uuid",
+      "version": "1.19.0",
+      "description": "A library to generate and parse UUIDs."
+    },
+    {
+      "type": "library",
+      "name": "v_htmlescape",
+      "version": "0.15.8",
+      "description": "The simd optimized HTML escaping code"
+    },
+    {
+      "type": "library",
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "description": "A library to find native dependencies in a vcpkg tree at build\ntime in order to be used in Cargo build scripts.\n"
+    },
+    {
+      "type": "library",
+      "name": "version_check",
+      "version": "0.9.5",
+      "description": "Tiny crate to check the version of the installed/running rustc."
+    },
+    {
+      "type": "library",
+      "name": "void",
+      "version": "1.0.2",
+      "description": "The uninhabited void type for use in statically impossible cases."
+    },
+    {
+      "type": "library",
+      "name": "wait-timeout",
+      "version": "0.2.1",
+      "description": "A crate to wait on a child process with a timeout specified across Unix and\nWindows platforms.\n"
+    },
+    {
+      "type": "library",
+      "name": "waker-fn",
+      "version": "1.2.0",
+      "description": "Convert closures into wakers"
+    },
+    {
+      "type": "library",
+      "name": "walkdir",
+      "version": "2.5.0",
+      "description": "Recursively walk a directory."
+    },
+    {
+      "type": "library",
+      "name": "want",
+      "version": "0.3.1",
+      "description": "Detect when another Future wants a result."
+    },
+    {
+      "type": "library",
+      "name": "warp",
+      "version": "0.3.7",
+      "description": "serve the web at warp speeds"
+    },
+    {
+      "type": "library",
+      "name": "wasi",
+      "version": "0.9.0+wasi-snapshot-preview1",
+      "description": "Experimental WASI API bindings for Rust"
+    },
+    {
+      "type": "library",
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "description": "Experimental WASI API bindings for Rust"
+    },
+    {
+      "type": "library",
+      "name": "wasi",
+      "version": "0.14.7+wasi-0.2.4",
+      "description": "WASI API bindings for Rust"
+    },
+    {
+      "type": "library",
+      "name": "wasip2",
+      "version": "1.0.2+wasi-0.2.9",
+      "description": "WASIp2 API bindings for Rust"
+    },
+    {
+      "type": "library",
+      "name": "wasite",
+      "version": "1.0.2",
+      "description": "WASI Terminal Environment API"
+    },
+    {
+      "type": "library",
+      "name": "wasm-bindgen",
+      "version": "0.2.108",
+      "description": "Easy support for interacting between JS and Rust.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasm-bindgen-futures",
+      "version": "0.4.58",
+      "description": "Bridging the gap between Rust Futures and JavaScript Promises"
+    },
+    {
+      "type": "library",
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.108",
+      "description": "Definition of the `#[wasm_bindgen]` attribute, an internal dependency\n"
+    },
+    {
+      "type": "library",
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.108",
+      "description": "Implementation APIs for the `#[wasm_bindgen]` attribute"
+    },
+    {
+      "type": "library",
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.108",
+      "description": "Shared support between wasm-bindgen and wasm-bindgen cli, an internal\ndependency.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasm-encoder",
+      "version": "0.235.0",
+      "description": "A low-level WebAssembly encoder.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasm-encoder",
+      "version": "0.244.0",
+      "description": "A low-level WebAssembly encoder.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasmi",
+      "version": "0.31.2",
+      "description": "WebAssembly interpreter"
+    },
+    {
+      "type": "library",
+      "name": "wasmi_arena",
+      "version": "0.4.1",
+      "description": "Entity arena data structures for wasmi"
+    },
+    {
+      "type": "library",
+      "name": "wasmi_core",
+      "version": "0.13.0",
+      "description": "Core primitives for the wasmi WebAssembly interpreter"
+    },
+    {
+      "type": "library",
+      "name": "wasmparser",
+      "version": "0.235.0",
+      "description": "A simple event-driven library for parsing WebAssembly binary files.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasmparser",
+      "version": "0.244.0",
+      "description": "A simple event-driven library for parsing WebAssembly binary files.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasmparser-nostd",
+      "version": "0.100.2",
+      "description": "A simple event-driven library for parsing WebAssembly binary files.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasmprinter",
+      "version": "0.235.0",
+      "description": "Rust converter from the WebAssembly binary format to the text format.\n"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime",
+      "version": "35.0.0",
+      "description": "High-level API to expose the Wasmtime runtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-environ",
+      "version": "35.0.0",
+      "description": "Standalone environment support for WebAssembly code in Cranelift"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-asm-macros",
+      "version": "35.0.0",
+      "description": "INTERNAL: Macros for defining asm functions in Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-cache",
+      "version": "35.0.0",
+      "description": "INTERNAL: Support for automatic module caching with Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-component-macro",
+      "version": "35.0.0",
+      "description": "INTERNAL: Macros for deriving component interface types from Rust types"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-component-util",
+      "version": "35.0.0",
+      "description": "INTERNAL: Utility types and functions to support the component model in Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-cranelift",
+      "version": "35.0.0",
+      "description": "INTERNAL: Integration between Cranelift and Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-fiber",
+      "version": "35.0.0",
+      "description": "INTERNAL: Fiber support for Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-jit-debug",
+      "version": "35.0.0",
+      "description": "INTERNAL: JIT debug interfaces support for Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-jit-icache-coherence",
+      "version": "35.0.0",
+      "description": "INTERNAL: Utilities for JIT icache maintenance"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-math",
+      "version": "35.0.0",
+      "description": "INTERNAL: Low-level math routines used in Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-slab",
+      "version": "35.0.0",
+      "description": "INTERNAL: Uni-typed slab with a free list for use in Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-unwinder",
+      "version": "35.0.0",
+      "description": "INTERNAL: Wasmtime's unwind format and unwinder"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-versioned-export-macros",
+      "version": "35.0.0",
+      "description": "INTERNAL: Macros for defining versioned exports in Wasmtime"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-winch",
+      "version": "35.0.0",
+      "description": "INTERNAL: Integration between Wasmtime and Winch"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-internal-wit-bindgen",
+      "version": "35.0.0",
+      "description": "INTERNAL: `*.wit` support for the `wasmtime` crate's macros"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-wasi",
+      "version": "35.0.0",
+      "description": "WASI implementation in Rust"
+    },
+    {
+      "type": "library",
+      "name": "wasmtime-wasi-io",
+      "version": "35.0.0",
+      "description": "wasi-io common traits to be shared among other wasi implementations"
+    },
+    {
+      "type": "library",
+      "name": "wast",
+      "version": "35.0.2",
+      "description": "Customizable Rust parsers for the WebAssembly Text formats WAT and WAST\n"
+    },
+    {
+      "type": "library",
+      "name": "wast",
+      "version": "244.0.0",
+      "description": "Customizable Rust parsers for the WebAssembly Text formats WAT and WAST\n"
+    },
+    {
+      "type": "library",
+      "name": "wat",
+      "version": "1.244.0",
+      "description": "Rust parser for the WebAssembly Text format, WAT\n"
+    },
+    {
+      "type": "library",
+      "name": "web-sys",
+      "version": "0.3.85",
+      "description": "Bindings for all Web APIs, a procedurally generated crate from WebIDL\n"
+    },
+    {
+      "type": "library",
+      "name": "web-time",
+      "version": "1.1.0",
+      "description": "Drop-in replacement for std::time for Wasm in browsers"
+    },
+    {
+      "type": "library",
+      "name": "webpki-roots",
+      "version": "0.25.4",
+      "description": "Mozilla's CA root certificates for use with webpki"
+    },
+    {
+      "type": "library",
+      "name": "webpki-roots",
+      "version": "0.26.11",
+      "description": "Mozilla's CA root certificates for use with webpki"
+    },
+    {
+      "type": "library",
+      "name": "webpki-roots",
+      "version": "1.0.5",
+      "description": "Mozilla's CA root certificates for use with webpki"
+    },
+    {
+      "type": "library",
+      "name": "whoami",
+      "version": "2.0.2",
+      "description": "Rust library for getting information about the current user and environment"
+    },
+    {
+      "type": "library",
+      "name": "widestring",
+      "version": "1.2.1",
+      "description": "A wide string Rust library for converting to and from wide strings, such as those often used in Windows API or other FFI libaries. Both `u16` and `u32` string types are provided, including support for UTF-16 and UTF-32, malformed encoding, C-style strings, etc."
+    },
+    {
+      "type": "library",
+      "name": "wiggle",
+      "version": "35.0.0",
+      "description": "Runtime components of wiggle code generator"
+    },
+    {
+      "type": "library",
+      "name": "wiggle-generate",
+      "version": "35.0.0",
+      "description": "Library crate for wiggle code generator."
+    },
+    {
+      "type": "library",
+      "name": "wiggle-macro",
+      "version": "35.0.0",
+      "description": "Wiggle code generator"
+    },
+    {
+      "type": "library",
+      "name": "winapi",
+      "version": "0.3.9",
+      "description": "Raw FFI bindings for all of Windows API."
+    },
+    {
+      "type": "library",
+      "name": "winapi-i686-pc-windows-gnu",
+      "version": "0.4.0",
+      "description": "Import libraries for the i686-pc-windows-gnu target. Please don't use this crate directly, depend on winapi instead."
+    },
+    {
+      "type": "library",
+      "name": "winapi-util",
+      "version": "0.1.11",
+      "description": "A dumping ground for high level safe wrappers over windows-sys."
+    },
+    {
+      "type": "library",
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "version": "0.4.0",
+      "description": "Import libraries for the x86_64-pc-windows-gnu target. Please don't use this crate directly, depend on winapi instead."
+    },
+    {
+      "type": "library",
+      "name": "winch-codegen",
+      "version": "35.0.0",
+      "description": "Winch code generation library"
+    },
+    {
+      "type": "library",
+      "name": "windows",
+      "version": "0.52.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows",
+      "version": "0.53.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-core",
+      "version": "0.52.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-core",
+      "version": "0.53.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-core",
+      "version": "0.62.2",
+      "description": "Core type support for COM and Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-implement",
+      "version": "0.60.2",
+      "description": "The implement macro for the Windows crates"
+    },
+    {
+      "type": "library",
+      "name": "windows-interface",
+      "version": "0.59.3",
+      "description": "The interface macro for the Windows crates"
+    },
+    {
+      "type": "library",
+      "name": "windows-link",
+      "version": "0.2.1",
+      "description": "Linking for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-result",
+      "version": "0.1.2",
+      "description": "Windows error handling"
+    },
+    {
+      "type": "library",
+      "name": "windows-result",
+      "version": "0.4.1",
+      "description": "Windows error handling"
+    },
+    {
+      "type": "library",
+      "name": "windows-strings",
+      "version": "0.5.1",
+      "description": "Windows string types"
+    },
+    {
+      "type": "library",
+      "name": "windows-sys",
+      "version": "0.48.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-sys",
+      "version": "0.52.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-sys",
+      "version": "0.59.0",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-sys",
+      "version": "0.60.2",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "description": "Rust for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-targets",
+      "version": "0.48.5",
+      "description": "Import libs for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-targets",
+      "version": "0.52.6",
+      "description": "Import libs for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows-targets",
+      "version": "0.53.5",
+      "description": "Import libs for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_msvc",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_aarch64_msvc",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_gnu",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_gnu",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_gnu",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_gnullvm",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_msvc",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_i686_msvc",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnu",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnu",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnu",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_msvc",
+      "version": "0.48.5",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_msvc",
+      "version": "0.52.6",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "windows_x86_64_msvc",
+      "version": "0.53.1",
+      "description": "Import lib for Windows"
+    },
+    {
+      "type": "library",
+      "name": "winnow",
+      "version": "0.7.14",
+      "description": "A byte-oriented, zero-copy, parser combinators library"
+    },
+    {
+      "type": "library",
+      "name": "winreg",
+      "version": "0.50.0",
+      "description": "Rust bindings to MS Windows Registry API"
+    },
+    {
+      "type": "library",
+      "name": "winx",
+      "version": "0.36.4",
+      "description": "Windows API helper library"
+    },
+    {
+      "type": "library",
+      "name": "wiremock",
+      "version": "0.5.22",
+      "description": "HTTP mocking to test Rust applications."
+    },
+    {
+      "type": "library",
+      "name": "wit-bindgen",
+      "version": "0.51.0",
+      "description": "Rust bindings generator and runtime support for WIT and the component model.\nUsed when compiling Rust programs to the component model.\n"
+    },
+    {
+      "type": "library",
+      "name": "wit-parser",
+      "version": "0.235.0",
+      "description": "Tooling for parsing `*.wit` files and working with their contents.\n"
+    },
+    {
+      "type": "library",
+      "name": "witx",
+      "version": "0.9.1",
+      "description": "Parse and validate witx file format"
+    },
+    {
+      "type": "library",
+      "name": "wrfcoin-blockchain-core",
+      "version": "0.1.0",
+      "description": null
+    },
+    {
+      "type": "library",
+      "name": "wrfcoin-sdk",
+      "version": "1.0.0",
+      "description": "Comprehensive API for the Wrfcoin climate-focused blockchain platform. Includes weather data collection, smart contracts, cross-chain bridges, governance, and environmental impact tracking. "
+    },
+    {
+      "type": "library",
+      "name": "wrfcoin_cli",
+      "version": "0.1.0",
+      "description": "Command line interface for Wrfcoin"
+    },
+    {
+      "type": "library",
+      "name": "writeable",
+      "version": "0.6.2",
+      "description": "A more efficient alternative to fmt::Display"
+    },
+    {
+      "type": "library",
+      "name": "wyz",
+      "version": "0.5.1",
+      "description": "myrrlyn’s utility collection"
+    },
+    {
+      "type": "library",
+      "name": "x25519-dalek",
+      "version": "2.0.1",
+      "description": "X25519 elliptic curve Diffie-Hellman key exchange in pure-Rust, using curve25519-dalek."
+    },
+    {
+      "type": "library",
+      "name": "x509-parser",
+      "version": "0.15.1",
+      "description": "Parser for the X.509 v3 format (RFC 5280 certificates)"
+    },
+    {
+      "type": "library",
+      "name": "x509-parser",
+      "version": "0.16.0",
+      "description": "Parser for the X.509 v3 format (RFC 5280 certificates)"
+    },
+    {
+      "type": "library",
+      "name": "xml-rs",
+      "version": "0.8.28",
+      "description": "An XML library in pure Rust"
+    },
+    {
+      "type": "library",
+      "name": "xmltree",
+      "version": "0.10.3",
+      "description": "Parse an XML file into a simple tree-like structure"
+    },
+    {
+      "type": "library",
+      "name": "yamux",
+      "version": "0.12.1",
+      "description": "Multiplexer over reliable, ordered connections"
+    },
+    {
+      "type": "library",
+      "name": "yansi",
+      "version": "1.0.1",
+      "description": "A dead simple ANSI terminal color painting library."
+    },
+    {
+      "type": "library",
+      "name": "yasna",
+      "version": "0.5.2",
+      "description": "ASN.1 library for Rust"
+    },
+    {
+      "type": "library",
+      "name": "yoke",
+      "version": "0.8.1",
+      "description": "Abstraction allowing borrowed data to be carried along with the backing data it borrows from"
+    },
+    {
+      "type": "library",
+      "name": "yoke-derive",
+      "version": "0.8.1",
+      "description": "Custom derive for the yoke crate"
+    },
+    {
+      "type": "library",
+      "name": "zerocopy",
+      "version": "0.8.33",
+      "description": "Zerocopy makes zero-cost memory manipulation effortless. We write \"unsafe\" so you don't have to."
+    },
+    {
+      "type": "library",
+      "name": "zerocopy-derive",
+      "version": "0.8.33",
+      "description": "Custom derive for traits from the zerocopy crate"
+    },
+    {
+      "type": "library",
+      "name": "zerofrom",
+      "version": "0.1.6",
+      "description": "ZeroFrom trait for constructing"
+    },
+    {
+      "type": "library",
+      "name": "zerofrom-derive",
+      "version": "0.1.6",
+      "description": "Custom derive for the zerofrom crate"
+    },
+    {
+      "type": "library",
+      "name": "zeroize",
+      "version": "1.8.2",
+      "description": "Securely clear secrets from memory with a simple trait built on\nstable Rust primitives which guarantee memory is zeroed using an\noperation will not be 'optimized away' by the compiler.\nUses a portable pure Rust implementation that works everywhere,\neven WASM!\n"
+    },
+    {
+      "type": "library",
+      "name": "zeroize_derive",
+      "version": "1.4.3",
+      "description": "Custom derive support for zeroize"
+    },
+    {
+      "type": "library",
+      "name": "zerotrie",
+      "version": "0.2.3",
+      "description": "A data structure that efficiently maps strings to integers"
+    },
+    {
+      "type": "library",
+      "name": "zerovec",
+      "version": "0.11.5",
+      "description": "Zero-copy vector backed by a byte array"
+    },
+    {
+      "type": "library",
+      "name": "zerovec-derive",
+      "version": "0.11.2",
+      "description": "Custom derive for the zerovec crate"
+    },
+    {
+      "type": "library",
+      "name": "zmij",
+      "version": "1.0.15",
+      "description": "A double-to-string conversion algorithm based on Schubfach and yy"
+    },
+    {
+      "type": "library",
+      "name": "zstd",
+      "version": "0.13.3",
+      "description": "Binding for the zstd compression library."
+    },
+    {
+      "type": "library",
+      "name": "zstd-safe",
+      "version": "7.2.4",
+      "description": "Safe low-level bindings for the zstd compression library."
+    },
+    {
+      "type": "library",
+      "name": "zstd-sys",
+      "version": "2.0.16+zstd.1.5.7",
+      "description": "Low-level bindings for the zstd compression library."
+    }
+  ]
+}

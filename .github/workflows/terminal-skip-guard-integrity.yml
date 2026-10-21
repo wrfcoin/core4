@@ -1,0 +1,75 @@
+name: Terminal Skip Guard Integrity
+
+# Deliberately separate from every workflow it inspects.  It has no paths
+# filter: a workflow-only change must still run this guard, otherwise checking
+# terminal guards from inside their own filtered workflows is vacuous.
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# #2924: no path filter + push-on-main + no concurrency group meant every
+# push queued another full run on CT102 with nothing to cancel it — observed
+# directly at commit 44a58c9f5, where this job sat queued behind the backlog
+# for the better part of an hour before a later push made that exact commit's
+# result permanently unobtainable anyway. This job asserts a property of the
+# CURRENT TREE (do the terminal skip guards exist and behave correctly right
+# now) with no historical audit-trail requirement, so only the tip's result
+# is meaningful — unlike a ratchet, an intermediate commit's result is not
+# worth keeping once a later commit supersedes it.
+#
+# Trade-off, stated rather than left implicit: cancel-in-progress means a
+# superseded commit's run is cancelled before it can conclude, so "was main
+# healthy at commit X" becomes answerable only while X is still the tip.
+# That is the loss; the gain is a tip result that arrives instead of queuing
+# behind commits nobody needs evaluated anymore.
+#
+# Shape copied from secret-scanning.yml / workflow-path-coverage.yml, not
+# invented: `github.ref` differs between a PR (`refs/pull/<n>/merge`) and a
+# push (`refs/heads/<branch>`), so a PR run and a main-push run land in
+# different groups and cannot cancel each other.
+concurrency:
+  # #3036: two distinct main commits must never share a concurrency group.
+  # When they do, GitHub keeps only the most recent PENDING run in the group
+  # and cancels the earlier one — so on a deep queue every merge silently
+  # evicts its predecessor's main run before it ever executes. Measured
+  # 2026-09-01: 89 cancelled push-to-main runs in one day, each ending at the
+  # exact second its successor was created. The required context still fires
+  # on main; it just never produces a verdict, which is worse than not being
+  # required at all.
+  # Keying the group on the SHA for main pushes gives every commit its own
+  # group. PR branches are unaffected — they keep the shared group and the
+  # cancellation that saves the queue, which is what the group was added for.
+  # format() so every non-main-push event keeps a BYTE-IDENTICAL group to
+  # before this change — a '-shared' suffix would have silently orphaned
+  # in-flight PR runs from the group their peers join.
+  group: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && format('{0}-{1}-{2}', github.workflow, github.ref, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
+  # Exempt only main PUSHES from cancellation. A workflow_dispatch on main
+  # shares one group, so without this clause two manual runs would race to
+  # write the same required context — which unconditional cancellation
+  # previously prevented.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify-terminal-skip-guards:
+    # CT102 self-hosted (2026-08-30): PR-blocking guards must stay REAL when
+    # hosted minutes are exhausted (zero-step billing failures otherwise).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install structural parser
+        # The `|| import yaml` fallback keeps the step fail-closed on CT102,
+        # where Debian's externally-managed pip refuses the install but the
+        # system parser (python3-yaml) is preinstalled.
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml==6.0.2 || python3 -c "import yaml"
+      - name: Test terminal result semantics
+        run: python3 scripts/test_assert_gate_results.py
+      - name: Mutation-test the determinism aggregate
+        run: python3 scripts/test_determinism_matrix_gate.py
+      - name: Verify all exposed workflow guards
+        run: python3 scripts/check_terminal_skip_guards.py

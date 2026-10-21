@@ -1,0 +1,4 @@
+# Keep all generated local testnet artifacts out of version control.
+# This directory can contain private keys, mnemonics, and faucet secrets.
+*
+!.gitignore

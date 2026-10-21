@@ -1,0 +1,5 @@
+// Control for marker_in_string: the same marker as a real trailing comment
+// still suppresses the (deliberately planted) finding.
+fn allowlisted(private_key: &str) {
+    log::error!("key={private_key}"); // secret-leak-ok: fixture — a real comment marker must still work
+}

@@ -1,0 +1,48 @@
+# One-shot build vehicle for the physical producer-key proof-of-possession
+# ceremony. The final stage deliberately reuses the locally installed
+# production node runtime image: that is the environment which supplies
+# libykcs11.so and pkcs11-tool on the N5.
+#
+# It never receives a PIN at build time. Its default invocation has no
+# producer-id, so argument validation fails before PKCS#11 preflight or login.
+
+ARG RUNTIME_IMAGE=wrfcoin/native-chain:testnet-local
+
+# This builder is normally kept identical to infra/infra/docker/Dockerfile.core.
+# It intentionally leads that copy at Rust 1.98 during the core4-first upgrade;
+# the wrfcoin/infra#878 follow-up restores the cross-repo invariant.
+FROM rust:1.98.0-slim@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS builder
+
+ARG WRFCOIN_BUILD_REVISION
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    git \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+RUN test -n "${WRFCOIN_BUILD_REVISION}" \
+    && test "${WRFCOIN_BUILD_REVISION}" != "UNSTAMPED" \
+    && WRFCOIN_BUILD_REVISION="${WRFCOIN_BUILD_REVISION}" \
+       cargo build --release --locked \
+         -p wrfcoin-native-chain \
+         --features hsm \
+         --bin producer_key_pop
+
+FROM ${RUNTIME_IMAGE} AS runtime
+
+ARG WRFCOIN_BUILD_REVISION
+
+LABEL org.opencontainers.image.title="wrfcoin-producer-key-pop" \
+      org.opencontainers.image.revision="${WRFCOIN_BUILD_REVISION}" \
+      org.opencontainers.image.source="https://github.com/wrfcoin/core4"
+
+COPY --from=builder /build/target/release/producer_key_pop /usr/local/bin/producer_key_pop
+
+ENTRYPOINT ["/usr/local/bin/producer_key_pop"]

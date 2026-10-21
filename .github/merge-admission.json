@@ -1,0 +1,66 @@
+{
+  "$why": "Machine-readable half of docs/ci/MERGE_ADMISSION.md. Live effective rules verified via repos/<repo>/rules/branches/main on 2026-10-07. scripts/check_merge_admission.py compares contexts, strict policy, rules and metadata; mismatch exits RED and unavailable reads exit VOID. The workflow live-drift step remains advisory per #3198; controls/fixture tests stay blocking. This file does not edit owner-only rulesets.",
+  "verified_at": "2026-10-07T17:53:03Z",
+  "repos": {
+    "wrfcoin/core4": {
+      "ruleset_id": 19875840,
+      "ruleset_name": "main-protection",
+      "rules": [
+        "deletion",
+        "non_fast_forward",
+        "required_linear_history",
+        "pull_request",
+        "required_status_checks"
+      ],
+      "required_status_checks": [
+        "schedule-lint",
+        "detect-secrets baseline audit (merge tree)",
+        "verify-terminal-skip-guards",
+        "repository-input integration admission"
+      ],
+      "strict_required_status_checks_policy": true,
+      "pull_request": {
+        "required_approving_review_count": 0,
+        "allowed_merge_methods": [
+          "squash",
+          "rebase"
+        ]
+      },
+      "bypass_actors": [
+        {
+          "actor_type": "OrganizationAdmin",
+          "bypass_mode": "always"
+        }
+      ]
+    },
+    "wrfcoin/infra": {
+      "ruleset_id": 19875881,
+      "ruleset_name": "main-protection",
+      "rules": [
+        "deletion",
+        "non_fast_forward",
+        "required_linear_history",
+        "pull_request",
+        "required_status_checks"
+      ],
+      "required_status_checks": [
+        "scripts/tests suites",
+        "dependabot-coverage"
+      ],
+      "strict_required_status_checks_policy": false,
+      "pull_request": {
+        "required_approving_review_count": 0,
+        "allowed_merge_methods": [
+          "squash",
+          "rebase"
+        ]
+      },
+      "bypass_actors": [
+        {
+          "actor_type": "OrganizationAdmin",
+          "bypass_mode": "always"
+        }
+      ]
+    }
+  }
+}

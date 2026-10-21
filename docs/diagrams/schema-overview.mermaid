@@ -1,0 +1,18 @@
+graph TB
+    %% Wrfcoin Database Schema Overview
+
+    CORE["🗂️ Core Blockchain Operations<br/>8 tables"]
+    GOVERNANCE["🗂️ Governance & Voting System<br/>6 tables"]
+    REWARDS["🗂️ Achievements & Economic Incentives<br/>4 tables"]
+    IOT["🗂️ Environmental & Sensor Data<br/>5 tables"]
+    CROSSCHAIN["🗂️ Cross-Chain Operations<br/>3 tables"]
+    USERS["🗂️ User, Wallets, and Identity<br/>2 tables"]
+
+    %% Inter-schema relationships
+    CORE --> REWARDS
+    USERS --> REWARDS
+    IOT --> CORE
+    CROSSCHAIN --> CORE
+    GOVERNANCE --> USERS
+    ANALYTICS --> CORE
+    ORACLE --> CORE

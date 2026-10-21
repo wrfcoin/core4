@@ -1,0 +1,77 @@
+name: Loom Concurrency (parked)
+# NO-AUTOMATIC-TRIGGER: parked — weekly schedule commented out and the workflow
+# gh-disabled (2026-07-31, Actions budget). These loom models are this repo's ONLY
+# CI home for interleaving coverage (#2257), so while parked that coverage is zero.
+# Register and restore: docs/ci/parked-workflows.txt + docs/ci/reenable-parked-workflows.sh.
+
+# Loom explores thread interleavings exhaustively within a bounded model. The
+# models live in shared-protocol/tests/loom_mempool.rs and drive the PRODUCTION
+# `Mempool` type inside a `loom::sync::Mutex` — not a stand-in. See #2109.
+#
+# No `RUSTFLAGS: --cfg loom`, deliberately. That flag exists to swap `std::sync`
+# inside instrumented code; `Mempool` holds no synchronization of its own, so
+# there is nothing to instrument. It also cannot be used here: `--cfg loom` is
+# global, strips `tokio::net` (which is `cfg(not(loom))`), and breaks `hyper-util`
+# via reqwest before any model can run. The models therefore run under a plain
+# `cargo test`, which is why this workflow can actually be green.
+#
+# NOT PR-TRIGGERED. Exhaustive interleaving exploration is expensive and the org
+# Actions budget is under pressure. Note that the models are ordinary `cargo test`
+# integration tests, so `ci-readiness`'s Rust gate does NOT pick them up (it runs
+# `--lib`, not `--test loom_mempool`) — this workflow is their only home. If PR
+# coverage is wanted, schedule it deliberately rather than widening this trigger.
+
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: '0 4 * * 1' # weekly, Monday 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_preemptions:
+        description: 'LOOM_MAX_PREEMPTIONS (default 3; raise for a deeper run)'
+        required: false
+        default: '3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  loom:
+    name: Loom interleaving models (mempool)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
+      - name: Cache cargo registry and build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: loom-${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            loom-${{ runner.os }}-cargo-
+
+      # The acceptance probe for #2109, run BEFORE the real models: a model that
+      # cannot fail proves nothing. `--check-probe` plants a deliberate ordering
+      # bug, asserts loom finds it, and restores the file. If this step passes,
+      # the models below are known to be capable of failing.
+      - name: Self-test — loom must catch a planted ordering bug
+        run: scripts/loom_probe.sh
+
+      - name: Run loom interleaving models
+        env:
+          # 2 threads / 2 transactions keeps exploration bounded.
+          LOOM_MAX_PREEMPTIONS: ${{ github.event.inputs.max_preemptions || '3' }}
+        run: cargo test --locked -p wrfcoin-shared-protocol --test loom_mempool -- --nocapture

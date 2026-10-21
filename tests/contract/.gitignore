@@ -1,0 +1,10 @@
+# Test Results
+tests/results/
+tests/**/results/
+*.log
+coverage/
+junit.xml
+orchestration-*.xml
+orchestration-*.html
+orchestration-*.json
+execution-summary.json

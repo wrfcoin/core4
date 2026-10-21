@@ -1,0 +1,227 @@
+# Crate execution gates (#2921, owner decisions 1 and 3, 2026-08-31).
+#
+# WHY THIS EXISTS: the #2921 CI execution map found that of 21 workspace
+# crates, only p2p and wrfcoin_cli had full-suite PR execution behind
+# non-vacuity floors. consensus-engines — 441+ tests over BFT finality,
+# equivocation, and producer selection — executed on NO PR path, and the only
+# workflow that could have caught downstream breakage (ci-deploy-features)
+# does not even fire on consensus-engines paths. shared-protocol, the largest
+# crate (~2,100 tests), had a --no-run compile gate only; its floor deferral
+# was recorded in PR #2920 and lifted by the owner on 2026-08-31
+# (yes-with-floor). Fifteen crates were compile-only.
+#
+# Every step runs under scripts/cargo_test_nonvacuous.py: a bare execution
+# step without a floor converts "compile-only" into "executes something,
+# count unknown" — a different failure, not a fix (#2923). Floors below were
+# measured locally at main 044e7cc7f on 2026-08-31 (method: full `cargo test
+# --locked -p …` run, executed = sum of passed+failed across all libtest
+# summaries; summaries = summary-line count). Executed floors sit ~10%
+# under measurement (house margin, cf. p2p 486→430); summaries floors are
+# exact (binaries almost never churn, #2889). Raising floors as suites grow
+# is routine; lowering one needs the scrutiny of deleting a test.
+#
+#   consensus-engines            measured 474 / 5   → floors 420 / 5
+#   shared-protocol              measured 2123 / 45 → floors 1900 / 45
+#   privacy+zk-circuits+execution measured 222 / 13 → floors 200 / 13
+#   11-crate leaf lane           measured 201 / 24  → floors 180 / 24
+#
+# SEQUENCING DEPENDENCY (stated per the sprint manager, 2026-08-31): this
+# workflow ADDS LOAD to the single-process CT102 runner, whose queue already
+# runs deep. The coverage it adds is only as useful as the latency it lands
+# with. Runner slot count (1 → 3-4) and concurrency groups on the existing
+# workflows that lack them should land BEFORE or alongside this volume; those
+# changes are owned by other lanes and are deliberately not made here. This
+# workflow ships with its own concurrency group so it never stacks runs.
+#
+# shared-protocol PRs also run ci-deploy-features (its targeted --lib filter
+# steps and the p2p gate); the overlap is intentional — those steps pin exact
+# named behaviors, this one pins whole-suite execution volume.
+
+name: Crate Execution Gates
+
+on:
+  pull_request:
+    paths:
+      - 'consensus-engines/**'
+      - 'shared-protocol/**'
+      - 'privacy/**'
+      - 'zk-circuits/**'
+      - 'execution-engine/**'
+      - 'evm/**'
+      - 'meteo-types/**'
+      - 'geo-grid/**'
+      - 'forecast-score/**'
+      - 'dataset-manifest/**'
+      - 'keeper-proof/**'
+      - 'da/**'
+      - 'oracle-packet/**'
+      - 'sensor-attestation/**'
+      - 'reputation-engine/**'
+      - 'primitives/**'
+      - 'tests/integration/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/cargo_test_nonvacuous.py'
+      - 'scripts/test_cargo_test_nonvacuous.py'
+      - 'scripts/check_crate_execution_floor.py'
+      - 'scripts/test_check_crate_execution_floor.py'
+      - '.github/workflows/crate-execution-gates.yml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'consensus-engines/**'
+      - 'shared-protocol/**'
+      - 'privacy/**'
+      - 'zk-circuits/**'
+      - 'execution-engine/**'
+      - 'evm/**'
+      - 'meteo-types/**'
+      - 'geo-grid/**'
+      - 'forecast-score/**'
+      - 'dataset-manifest/**'
+      - 'keeper-proof/**'
+      - 'da/**'
+      - 'oracle-packet/**'
+      - 'sensor-attestation/**'
+      - 'reputation-engine/**'
+      - 'primitives/**'
+      - 'tests/integration/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/cargo_test_nonvacuous.py'
+      - 'scripts/test_cargo_test_nonvacuous.py'
+      - 'scripts/check_crate_execution_floor.py'
+      - 'scripts/test_check_crate_execution_floor.py'
+      - '.github/workflows/crate-execution-gates.yml'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '50 3 * * *'
+  workflow_dispatch: {}
+
+# PRs supersede only their own runs; main/nightly/manual verdicts are retained.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  execute:
+    # One job = one slot on the serial runner; the four lanes run as
+    # sequential steps inside it rather than as parallel jobs that would
+    # occupy the whole queue.
+    name: crate test execution (nonvacuous)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Put rustup's cargo on PATH
+        run: echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      # The gate of the gate: the wrapper must be able to demonstrate its own
+      # RED before its OK is accepted as evidence (docs/ci/VACUOUS_GATES.md
+      # check 1; same pattern as cli-test-gate.yml). The #2953 floor checker's
+      # regression suite runs here too — its tests execute nowhere else, and a
+      # guard whose own tests never run is the #2888 'never-runs' class this
+      # workflow exists to close (codex review on #2961).
+      - name: wrapper and floor self-tests
+        run: |
+          python3 scripts/test_cargo_test_nonvacuous.py
+          python3 scripts/cargo_test_nonvacuous.py --self-test
+          python3 scripts/test_check_crate_execution_floor.py
+
+      - name: consensus-engines (nonvacuous, floors 420/5)
+        id: consensus_engines
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 420 --min-summaries 5 -- \
+            test --locked -p wrfcoin-consensus-engines
+
+      - name: shared-protocol full suite (nonvacuous, floors 1900/45)
+        id: shared_protocol
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 1900 --min-summaries 45 -- \
+            test --locked -p wrfcoin-shared-protocol
+
+      - name: privacy + zk-circuits + execution-engine (nonvacuous, floors 200/13)
+        id: privacy_zk_execution
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 200 --min-summaries 13 -- \
+            test --locked -p wrfcoin-privacy -p wrfcoin-zk-circuits -p wrfcoin-execution-engine
+
+      - name: leaf crates x11 (nonvacuous, floors 180/24)
+        id: leaf_crates
+        run: |
+          python3 scripts/cargo_test_nonvacuous.py --min-executed 180 --min-summaries 24 -- \
+            test --locked \
+            -p wrfcoin-evm -p wrfcoin-meteo-types -p wrfcoin-geo-grid \
+            -p wrfcoin-forecast-score -p wrfcoin-dataset-manifest \
+            -p wrfcoin-keeper-proof -p wrfcoin-oracle-packet -p wrfcoin-da \
+            -p wrfcoin-sensor-attestation -p wrfcoin-reputation-engine \
+            -p wrf-primitives -p test_server
+
+      # #2953: the executed-crate floor. The four lanes above are SEQUENTIAL,
+      # so one early failure skips every later lane -- and before this step
+      # nothing in the job distinguished "16 crates passed" from "0 crates
+      # ran" (the real case: main job 99552091866, cargo off PATH, first lane
+      # dead, everything after skipped, wrapper self-test green). This step
+      # runs on every non-cancelled completion (`!cancelled()`; a cancelled
+      # run is a null state per #2945 and must not emit a floor verdict) and
+      # fails the job unless every lane's outcome is success, printing
+      # explicit RAN/SKIPPED lists and a positive attempted count.
+      #
+      # Attribution rule (#2953): any non-skipped outcome counts as EXECUTED.
+      # A lane that ran and failed is reported EXECUTED-and-red under its own
+      # name -- success-only counting would record it as "not executed" and
+      # let a genuinely red crate lower the executed count instead of
+      # failing the gate. Logic lives in scripts/check_crate_execution_floor.py
+      # (unit + process-level tests in scripts/test_check_crate_execution_floor.py)
+      # so both RED directions are testable off-runner.
+      - name: executed-crate floor (#2953)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_crate_execution_floor.py \
+            "consensus-engines=${{ steps.consensus_engines.outcome }}" \
+            "shared-protocol=${{ steps.shared_protocol.outcome }}" \
+            "privacy-zk-execution=${{ steps.privacy_zk_execution.outcome }}" \
+            "leaf-crates=${{ steps.leaf_crates.outcome }}"

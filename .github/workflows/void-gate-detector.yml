@@ -1,0 +1,95 @@
+# void-gate-detector.yml — report gates that produced no evidence at all (#2923).
+#
+# A VOID job concluded with no runner assigned and zero completed steps. It is
+# neither red nor green: nothing executed. It still renders as a check, which is
+# why it gets mistaken for a tracked failure and left alone. Determinism Lint was
+# VOID on main for NINETEEN DAYS (#2908) and nothing reported it — every instance
+# found on 2026-08-31 was caught by a human reading `runner_name` by accident.
+#
+# TRIGGERS, and why they are these:
+#
+#   push to main  — the defect this targets is MAIN going blind, and on a push
+#                   the run set is settled rather than in flight.
+#   dispatch      — for checking on demand.
+#   NO pull_request — on a PR the sibling checks are still running, so the
+#                   detector would either race them or report on a sample too
+#                   small to mean anything. A gate that reports "nothing wrong"
+#                   because it looked too early is the vacuity this issue is
+#                   about, so the PR trigger is left off deliberately.
+#   NO schedule   — scripts/schedule_trigger_lint.py forbids any active cron and
+#                   its allowlist is empty (#2652). Re-arming one is a reviewed
+#                   decision belonging in that file, not a side effect here.
+#
+# NO `paths:` FILTER, DELIBERATELY. A detector of gates that stopped reporting
+# must not be filterable out of reporting. It is pure Python plus API calls and
+# costs no Actions minutes on CT 102.
+
+name: VOID gate detector
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# #2945: this is the sharpest instance in that issue's set of 18 (now 19).
+# `github.ref` is constant on `main`, and this workflow's ONLY real trigger is
+# `push: branches: [main]` (workflow_dispatch shares the same ref when run
+# from main) — so with `cancel-in-progress: true`, the very next merge after
+# this workflow's own first run would cancel that run before it ever reports.
+# The detector built to catch a gate going VOID on main would have gone VOID
+# on main itself, on its own first push, the same way Determinism Lint did
+# for nineteen days (#2908, cited above). There is no `pull_request` trigger
+# to preserve here (deliberately, per the header above), so the literal
+# `${{ github.event_name == 'pull_request' }}` fix would just be a constant
+# `false` written obscurely; stating it directly instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  void-detector:
+    name: gates that produced no evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # STEP 1 — CONTROL. Proves the classifier reaches NO as well as YES. A
+      # detector that called everything VOID would pass its own detection case
+      # while being useless, and one that called nothing VOID would pass every
+      # real run (docs/ci/VACUOUS_GATES.md check 1).
+      - name: Control — VOID classification reaches both answers
+        run: python3 scripts/check_void_gates.py --self-test
+
+      # STEP 2 — the fixtures, including the mutation: a synthetic zero-step job
+      # must be detected, a healthy job must not be, an in-flight job must not
+      # be, and billing must be told apart from runner capacity.
+      - name: Fixtures and attribution
+        run: python3 scripts/test_check_void_gates.py
+
+      # STEP 3 — the detector itself, against main's settled runs. Fails on a
+      # workflow going VOID that is not already in the baseline, on an exemption
+      # past its review date, and on a baseline entry that has started working
+      # again (a stale exemption re-exempts a gate that could break unnoticed).
+      #
+      # --limit 100, NOT 30 (#2921). `--limit` caps the RUNS fetched, and the
+      # job floor is what decides whether the sample means anything. At 30 this
+      # step reported `INCONCLUSIVE: only 18 job(s) inspected, need 20` and
+      # exited 2 — red on main for hours while never reaching the verdicts it
+      # exists to produce. It could not have reported the stale hosted exemption
+      # that was live at the time, because it bailed at the floor first.
+      #
+      # Measured on main 2026-09-01, same tree: limit 30 -> 16 jobs (INCONCLUSIVE),
+      # 40 -> 29, 50 -> 46, 100 -> 129. 100 is also the API's per_page maximum, so
+      # this is still ONE request: raising the cap costs nothing and 30 bought
+      # nothing. The floors stay where they are — the sample got bigger, the bar
+      # did not move.
+      - name: Report VOID gates on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_void_gates.py --branch main --limit 100 --min-runs 5 --min-jobs 20

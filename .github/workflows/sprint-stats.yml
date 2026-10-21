@@ -1,0 +1,106 @@
+name: Sprint Stats (parked)
+# NO-AUTOMATIC-TRIGGER: parked — the weekly `schedule` is commented out and the
+# workflow is gh-disabled (2026-07-31, Actions budget). Register and restore
+# procedure: docs/ci/parked-workflows.txt + docs/ci/reenable-parked-workflows.sh.
+
+on:
+  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
+  # UI re-enable would silently re-arm the cron below. File-level park keeps
+  # the August-budget decision visible in the diff; re-arming is a reviewed
+  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
+  # schedule:
+  # - cron: "0 15 * * 5"
+  workflow_dispatch:
+    inputs:
+      sprint:
+        description: "Sprint number or label"
+        required: false
+      since:
+        description: "Merged PR window start, ISO8601"
+        required: false
+      until:
+        description: "Merged PR window end, ISO8601"
+        required: false
+      repos:
+        description: "Comma or space separated repo list"
+        required: false
+      active_sprint_issue:
+        description: "Issue number to comment with the report"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sprint-stats:
+    # Job-scoped API/artifact publication; forks retain read-only tokens.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.WRFCOIN_STATS_TOKEN || github.token }}
+      INPUT_SPRINT: ${{ inputs.sprint }}
+      INPUT_SINCE: ${{ inputs.since }}
+      INPUT_UNTIL: ${{ inputs.until }}
+      INPUT_REPOS: ${{ inputs.repos }}
+      INPUT_ISSUE: ${{ inputs.active_sprint_issue }}
+      DEFAULT_SPRINT: ${{ vars.ACTIVE_SPRINT_NUMBER }}
+      DEFAULT_SINCE: ${{ vars.ACTIVE_SPRINT_SINCE }}
+      DEFAULT_ISSUE: ${{ vars.ACTIVE_SPRINT_ISSUE }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Collect sprint stats
+        run: |
+          set -euo pipefail
+
+          sprint="${INPUT_SPRINT:-${DEFAULT_SPRINT:-}}"
+          since="${INPUT_SINCE:-${DEFAULT_SINCE:-}}"
+          until="${INPUT_UNTIL:-}"
+          repos="${INPUT_REPOS:-}"
+
+          if [[ -z "$sprint" ]]; then
+            sprint="$(date -u '+%Y%V')"
+          fi
+          if [[ -z "$since" ]]; then
+            since="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          fi
+          if [[ -z "$until" ]]; then
+            until="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          fi
+
+          args=(--sprint "$sprint" --since "$since" --until "$until" --update-history)
+          if [[ -n "$repos" ]]; then
+            args+=(--repos "$repos")
+          fi
+
+          bash scripts/sprint-stats.sh "${args[@]}" | tee sprint-stats.md
+
+      - name: Comment on active sprint issue
+        run: |
+          set -euo pipefail
+
+          issue="${INPUT_ISSUE:-${DEFAULT_ISSUE:-}}"
+          if [[ -z "$issue" ]]; then
+            echo "No active sprint issue configured; skipping issue comment."
+            exit 0
+          fi
+
+          gh issue comment "$issue" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file sprint-stats.md
+
+      - name: Upload stats artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sprint-stats
+          path: |
+            sprint-stats.md
+            docs/sprint-stats/history.csv

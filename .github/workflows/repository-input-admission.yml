@@ -1,0 +1,97 @@
+name: Repository-input integration admission
+
+# WORKFLOW-GATE: refuses a merge that changes a repository input an integration assertion reads
+# unless the integration ratchet has current-head evidence (Refs #2433, #2896, #3446)
+#
+# PROPOSAL IMPLEMENTED: docs/ci/REQUIRED-CHECKS-R21.md, owner option A. This file adds the ONE
+# unfiltered context `repository-input integration admission`. It is NOT required yet: the owner
+# changes the ruleset only after this lands and is reviewed. Never require a context that does not
+# exist, and never require a path-filtered one (a skipped required check can satisfy the platform).
+#
+# NO `paths:` FILTER, DELIBERATELY. The incident (#3436, #3446) was a path filter that did not select
+# the integration ratchet for a JSON input. An admission context behind its own filter could be
+# filtered out the same way. It fires on every PR and every push to main and always executes the
+# classifier controls, so an unrelated docs PR still produces executed evidence of its own scope.
+#
+# WHAT IT DOES NOT DO (so nobody mistakes it for more): it never re-runs, builds or downloads
+# anything. It reads the integration ratchet's run for the exact head through the Actions API
+# (pure Python, stdlib). If the ratchet has not finished, a PR is REFUSED as PENDING; re-run THIS
+# job alone afterwards (its evidence is live by head SHA, so a re-run is not a replay of a stale
+# merge ref). It deliberately does not poll: a job that waits would hold a CT102 runner while the
+# ratchet queues behind it. On a main push a still-running ratchet is also a failing (incomplete) context.
+# The re-run is event-driven and holds no runner: rerun-pending-admission.yml fires when the ratchet COMPLETES and
+# re-runs this job only if it failed with the PENDING marker step below (Refs #3446).
+#
+# BASE BINDING (SOL-R3 P1): evidence must be the merge of exactly this head into exactly this job's
+# (freshness-checked) base; the ratchet's checkout identity is read from the head of its job log.
+# `actions: read` covers the logs endpoint; the signed blob URL is fetched WITHOUT the token.
+#
+# ACTIVATION PREREQUISITE: this job does not re-run when only the base advances, so the completed status
+# is current-base only at the moment it ran. Before this context is required the OWNER must record
+# strict up-to-date (strict_required_status_checks_policy=true) or a reviewed merge queue. See
+# docs/ci/REPOSITORY-INPUT-ADMISSION.md. Not enforced by this workflow; no ruleset is changed here.
+
+on:
+  # Public launch: this legacy integration-evidence verifier runs after merge only.
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: unconditional cancellation would cancel the previous main verdict on every merge.
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  admission:
+    # The job name IS the status context the owner will require. Do not rename or embed a count (#2896).
+    name: post-merge repository-input integration admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Put rustup's cargo on PATH
+        # Not needed here; the runner service's environment does not source ~/.cargo/env.
+        run: echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      - name: Merge-ref freshness guard (#3005)
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/merge-ref-freshness
+
+      - name: Control — the classifier can say YES and NO
+        run: python3 scripts/check_repository_input_admission.py --self-test
+
+      - name: Unit tests (fail-closed evidence rules)
+        run: python3 scripts/test_check_repository_input_admission.py
+
+      - name: Classify the change and require integration evidence for relevant inputs
+        id: verdict
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Exit codes: 0 ADMIT, 1 REFUSE, 2 could not decide, 3 PENDING (ratchet not complete). Capture, then
+          # fail in a dedicated step below so the PENDING case has a structured, machine-readable marker.
+          set +e
+          python3 scripts/check_repository_input_admission.py
+          echo "rc=$?" >> "${GITHUB_OUTPUT}"
+          exit 0
+
+      - name: Verdict PENDING - integration ratchet not complete
+        # The step NAME is the signal read by rerun-pending-admission.yml (scripts/rerun_pending_admission.py);
+        # it must equal PENDING_STEP_NAME in scripts/check_repository_input_admission.py. Still a failing context.
+        if: steps.verdict.outputs.rc == '3'
+        run: |
+          echo "::error::PENDING: integration ratchet has no completed evidence yet; rerun-pending-admission.yml re-runs this job when it completes"
+          exit 1
+
+      - name: Verdict REFUSE or error
+        if: steps.verdict.outputs.rc != '0' && steps.verdict.outputs.rc != '3'
+        env:
+          RC: ${{ steps.verdict.outputs.rc }}
+        run: exit "${RC:-1}"

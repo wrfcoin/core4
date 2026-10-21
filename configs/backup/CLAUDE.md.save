@@ -1,0 +1,438 @@
+# CLAUDE.md
+
+This file provides guidance for AI agents working with the Wrfcoin blockchain platform codebase.
+
+## Project Overview
+
+Wrfcoin is a comprehensive climate-focused blockchain platform that integrates real-time weather data collection with advanced blockchain technology. The platform combines a Rust-based blockchain infrastructure with TypeScript/Node.js microservices and React frontend components to create a scalable ecosystem for climate data management and token earning mechanisms.
+
+### Core Technology Stack
+- **Blockchain Core**: Written in Rust with custom virtual machine (WVM)
+- **Backend Services**: TypeScript/Node.js microservices (TypeScript preferred over JavaScript)
+- **Frontend**: React with TypeScript
+- **Database**: PostgreSQL with Drizzle ORM
+- **Runtime**: Nix environment with multi-platform support
+
+### Available MCP Servers
+
+
+xxxx
+
+The agent can utilize the following MCP servers for enhanced functionality:
+- **context7**: Contextual understanding and analysis
+- **zen**: Additional LLMs such as Gemini Pro and Gemini Flash
+- **serena**:  Semantic code retrieval and editing tools
+- **playwright**: Automated testing and browser automation
+- **task-master**: Remember tasks for later, break into subtasks, find work to do
+
+## Development Commands
+
+### Frontend (React + Vite)
+```bash
+cd frontend
+npm run dev          # Start development server on port 5000
+npm run build        # Build for production
+npm run preview      # Preview production build
+```
+
+### Backend Services
+```bash
+# Core API server (primary backend)
+node backend/server/server.js                    # Port 5002
+
+# Main API endpoints (primary application server)
+node backend/server/main_api_server.js           # Port 4001
+
+# Specialized service servers
+node backend/server/cross_chain_protocol_server.js   # Port 3000
+node backend/server/wallet_server.js                 # Port 4000
+node backend/server/compute_networks_server.js       # Port 6000
+node backend/server/ai_ml_networks_server.js         # Port 6001
+node backend/server/storage_networks_server.js       # Port 7000
+```
+
+### Rust Blockchain Core
+```bash
+cd blockchain-core
+cargo build                              # Build project
+cargo run start --api --mine            # Start blockchain node with API and mining
+cargo run wallet <command>              # Wallet operations
+cargo run nft <command>                 # NFT operations
+cargo test                              # Run tests
+```
+
+### Testing
+```bash
+npm test                    # Run JavaScript/TypeScript tests with Jest
+cargo test                  # Run Rust tests
+```
+
+### Docker Deployment
+```bash
+docker-compose up -d        # Start all services
+docker-compose down         # Stop all services
+./infrastructure/deploy.sh docker    # Infrastructure deployment
+```
+
+## Architecture Overview
+
+### Multi-Language Integration
+- **Rust Core**: Blockchain implementation, consensus mechanisms, cryptography, custom WVM
+- **TypeScript Backend**: API servers, database integration, cross-chain protocols (preferred)
+- **React/TypeScript Frontend**: User interface, dashboard, NFT marketplace
+
+### Service Communication
+- Rust blockchain core interfaces with Node.js through `blockchain_adapter.js`
+- Uses child process execution to communicate with compiled Rust binaries
+- Fallback to mock data when Rust components unavailable for development
+
+### Database Architecture
+- PostgreSQL with Drizzle ORM for type-safe operations
+- Consolidated schemas in `backend/shared/schema*.ts`
+- ETL pipeline for weather data processing
+
+### Security Patterns
+- Multi-layer rate limiting with express-rate-limit
+- Comprehensive input validation using express-validator
+- Security headers with Helmet.js
+- Cryptographic wallet-based authentication
+
+## Key Architectural Patterns
+
+### Microservice Design
+Each backend server handles specialized functionality:
+- Cross-chain protocols (13+ bridge integrations)
+- Computational networks and AI/ML processing
+- Storage networks (IPFS, Filecoin, Arweave)
+- IoT sensor data collection and validation
+
+### Data Flow
+1. Weather/IoT data → ETL pipeline → Database validation
+2. Frontend API calls → Node.js services → Rust blockchain core
+3. Real-time updates via WebSocket connections
+4. Cross-chain operations through unified protocol server
+
+### Consensus Mechanisms (Rust)
+Supports multiple consensus types:
+- Proof of Work, Proof of Stake, Proof of Information
+- Proof of Publishing, Proof of Usefulness, Delegated PoS
+
+## Climate-Specific Features
+
+### Weather Data Integration
+- Physics-based consistency validation
+- Support for multiple weather station protocols
+- Environmental sensor IoT networks
+- Climate model execution (WRF, ICON, GFS)
+
+### Computational NFTs
+- Workflow execution with resource verification
+- AI/ML model deployment and inference
+- Carbon credit tracking and automation
+
+## Development Workflow
+
+1. **Frontend changes**: Work in `frontend/` directory, use hot reload
+2. **API development**: Modify servers in `backend/server/`
+3. **Blockchain core**: Rust development in `blockchain-core/`
+4. **Database changes**: Update schemas in `backend/shared/schema*.ts`
+5. **Cross-chain features**: Work with bridge protocols in cross-chain servers
+
+## Port Allocation
+- 3000: Cross-chain protocols
+- 4001: Main API server (primary application endpoints)
+- 5000: Frontend development server
+- 5002: Core API server (blockchain functionality)
+- 6000-6001: Compute and AI/ML networks
+- 7000: Storage networks
+
+## Important File Locations
+- Database schemas: `backend/shared/schema*.ts`
+- Blockchain adapter: `backend/server/blockchain_adapter.js`
+- Frontend services: `frontend/src/services/`
+- Rust binaries: `blockchain-core/target/release/`
+- Configuration: `backend/config/`
+- Security middleware: `backend/middleware/`
+
+## Key Project Files
+
+### Core Configuration
+- `replit.md` - Primary project context and user preferences
+- `CLAUDE.md` - AI agent guidance (this file)
+- `.mcp.json` - MCP server configuration
+- `package.json` - Node.js dependencies and scripts
+
+### Blockchain Core (Rust)
+- `blockchain-core/` - Main Rust blockchain implementation
+- `blockchain-core/src/main.rs` - Entry point
+- `blockchain-core/Cargo.toml` - Rust dependencies
+
+### Backend Services (TypeScript preferred)
+- `backend/server/` - Microservices implementation
+- `backend/shared/schema*.ts` - Database schemas with Drizzle ORM
+- `backend/middleware/` - Security and validation middleware
+
+### Frontend (React + TypeScript)
+- `frontend/src/` - React application source
+- `frontend/src/services/` - API and WebSocket services
+- `frontend/src/components/` - UI components
+
+## Available MCP Servers
+
+The project supports multiple MCP servers for enhanced AI capabilities:
+
+- **context7**: Advanced contextual understanding and code analysis
+- **consult7**: Expert consultation for technical decisions
+- **zen**: Mindful development practices and optimization
+- **serena**: Enhanced reasoning and complex problem-solving
+- **playwright**: Automated testing and browser interactions
+
+Configure in `.mcp.json` as needed for specific development workflows.
+
+### Essential MCP Tools
+MCP Server Tooling Guide
+
+This document outlines the command-line interface (CLI) tools available for each of the MCP servers. Understanding these tools will allow for more effective and direct interaction with the agents' capabilities.
+context7: Contextual Understanding and Analysis
+
+The context7 server provides up-to-date, version-specific documentation and code examples directly from the source. This is invaluable for avoiding outdated information or "hallucinated" APIs from a model's training data.
+
+CLI Tools / Usage:
+
+context7 is primarily invoked within a prompt to another AI tool using the use context7 command. However, it also exposes more direct CLI commands for developers:
+
+    resolve-library-id: Translates a general library name (e.g., "react") into a context7-compatible ID.
+
+    get-library-docs: Fetches documentation for a library using its context7-compatible ID. You can also specify a topic to narrow the focus of the documentation.
+
+When to Use:
+
+    Utilize context7 when you need to generate code that uses a specific library or framework and want to ensure the code is based on the latest, most accurate documentation.
+
+    It is especially useful when working with rapidly evolving libraries or when you are unsure about the correct implementation of a particular feature.
+
+zen: Additional LLMs (Gemini Pro/Flash)
+
+The zen server, through tools like the llm CLI, provides access to a wide variety of large language models, including Google's Gemini family. This allows for flexible and powerful text generation, analysis, and interaction.
+
+CLI Tools:
+
+The llm CLI is a versatile tool with a rich set of commands:
+
+      mcp__zen__analyze - Analyze files and code structure
+      mcp__zen__chat - Chat and brainstorm ideas
+      mcp__zen__consensus - Use consensus tool
+      mcp__zen__continue - Continue the previous conversation using the chat tool
+      mcp__zen__debug - Debug an issue or error
+      mcp__zen__listmodels - List available AI models
+      mcp__zen__planner - Break down complex ideas, problems, or projects into multiple manageable steps
+      mcp__zen__precommit - Step-by-step pre-commit validation workflow
+      mcp__zen__refactor - Refactor and improve code structure
+      mcp__zen__review - Perform a comprehensive code review
+      mcp__zen__testgen - Generate comprehensive tests
+      mcp__zen__thinkdeeper - Step-by-step deep thinking workflow with expert analysis
+      mcp__zen__tracer - Trace code execution paths
+
+
+When to Use:
+
+    Use the zen server and the llm CLI when you need to leverage different large language models for various tasks.
+
+    It's ideal for scripting, automation, and quick interactions with LLMs directly from your terminal, without needing a full-fledged application.
+
+serena: Semantic Code Retrieval and Editing
+
+serena is a powerful toolkit that gives an LLM IDE-like capabilities, allowing it to understand and modify your codebase at a deep, semantic level.
+
+CLI Tools:
+
+serena operates as an MCP server that can be run with the following command:
+
+    serena-mcp-server: Starts the Serena MCP server. It can be configured with various flags to tailor its behavior, such as --context to specify the environment (e.g., ide-assistant).
+
+Once running, serena provides a rich set of tools accessible to the connected LLM, including:
+
+    Code search and navigation tools.
+
+    Symbol-level code editing capabilities.
+
+    File operations.
+
+    Project management functions.
+
+    Shell command execution.
+
+When to Use:
+
+    Engage serena for complex coding tasks that require an understanding of the entire codebase.
+
+    It's perfect for refactoring, implementing new features, or any task where the LLM needs to act like a developer with full project context.
+
+playwright: Automated Testing and Browser Automation
+
+playwright is a robust framework for automating web browsers. Its CLI is a comprehensive suite for generating, running, and debugging browser-based tests and tasks.
+
+CLI Tools:
+
+    npx playwright test: Runs your test suite. It has numerous flags for customization, such as --headed (to see the browser), --project (to run tests for a specific browser), and --workers (for parallel execution).
+
+    npx playwright codegen <url>: Records your interactions with a webpage and generates a test script in your chosen language.
+
+    npx playwright install: Installs the necessary browser binaries.
+
+    npx playwright open <url>: Opens a browser window with Playwright's tools, allowing for easy emulation of devices, geolocations, and more.
+
+When to Use:
+
+    Leverage playwright for any task that involves browser automation, such as end-to-end testing of web applications, scraping data from websites, or automating repetitive web-based workflows.
+
+task-master: Task Management and Breakdown
+
+task-master is an AI-powered task management system designed for developers. It can parse requirements, create and track tasks, and integrate with your development workflow.
+
+CLI Tools:
+    task-master list: Displays the current list of tasks.
+    task-master add-task --prompt "<description>": Adds a new task.
+    task-master parse-prd <file>: Parses a Product Requirements Document (PRD) and generates tasks from it.
+    task-master analyze-complexity: Analyzes the complexity of the current tasks.
+
+    It also supports tags (--tag) to manage different contexts or feature branches.
+    help; // = shows available taskmaster commands
+
+    Daily workflow
+    get_tasks; // = task-master list
+    next_task; // = task-master next
+    get_task; // = task-master show <id>
+    set_task_status; // = task-master set-status
+
+    Task management
+    add_task; // = task-master add-task
+    expand_task; // = task-master expand
+    update_task; // = task-master update-task
+    update_subtask; // = task-master update-subtask
+    update; // = task-master update
+
+    Analysis
+    analyze_project_complexity; // = task-master analyze-complexity
+    complexity_report; // = task-master complexity-report
+
+When to Use:
+    Use task-master to bring structure to your development process. It's ideal for breaking down large features into smaller, manageable tasks, tracking progress, and getting an AI-driven perspective on your project's workload.
+
+
+#### 3. Multi-Claude Workflows
+
+For complex projects, use multiple Claude Code sessions:
+
+```bash
+# Terminal 1: Main implementation
+cd project && claude
+
+# Terminal 2: Testing and validation
+cd project-test-worktree && claude
+
+# Terminal 3: Documentation updates
+cd project-docs-worktree && claude
+```
+
+
+## Configuration & Setup
+
+### API Keys Required
+
+At least **one** of these API keys must be configured:
+
+- `ANTHROPIC_API_KEY` (Claude models) 
+- `PERPLEXITY_API_KEY` (Research features) 
+- [x] `OPENAI_API_KEY` (GPT models)
+- [x] `GOOGLE_API_KEY` (Gemini models)
+- `MISTRAL_API_KEY` (Mistral models)
+- `OPENROUTER_API_KEY` (Multiple models)
+- `XAI_API_KEY` (Grok models)
+
+An API key is required for any provider used across any of the 3 roles defined in the `models` command.
+
+### Model Configuration
+
+
+
+
+# Set specific models
+task-master models --set-main claude-sonnet-4-20250514
+task-master models --set-research gemini-2.5-flash-preview-04-17
+task-master models --set-fallback o3
+```
+
+## Task Structure & IDs
+
+## Claude Code Best Practices with Task Master
+
+### Context Management
+
+- Use `/clear` between different tasks to maintain focus
+- This CLAUDE.md file is automatically loaded for context
+- Use `task-master show <id>` to pull specific task context when needed
+
+### Iterative Implementation
+
+1. `task-master show <subtask-id>` - Understand requirements
+2. Explore codebase and plan implementation
+3. `task-master update-subtask --id=<id> --prompt="detailed plan"` - Log plan
+4. `task-master set-status --id=<id> --status=in-progress` - Start work
+5. Implement code following logged plan
+6. `task-master update-subtask --id=<id> --prompt="what worked/didn't work"` - Log progress
+7. `task-master set-status --id=<id> --status=done` - Complete task
+
+### Complex Workflows with Checklists
+
+For large migrations or multi-step processes:
+
+1. Create a markdown PRD file describing the new changes: `touch task-migration-checklist.md` (prds can be .txt or .md)
+2. Use Taskmaster to parse the new prd with `task-master parse-prd --append` (also available in MCP)
+3. Use Taskmaster to expand the newly generated tasks into subtasks. Consdier using `analyze-complexity` with the correct --to and --from IDs (the new ids) to identify the ideal subtask amounts for each task. Then expand them.
+4. Work through items systematically, checking them off as completed
+5. Use `task-master update-subtask` to log progress on each task/subtask and/or updating/researching them before/during implementation if getting stuck
+
+## Troubleshooting
+
+# Verify model configuration
+task-master models
+
+# Regenerate task files from tasks.json
+task-master generate
+
+# Fix dependency issues
+task-master fix-dependencies
+```
+
+These commands make AI calls and may take up to a minute:
+
+- `parse_prd` / `task-master parse-prd`
+- `analyze_project_complexity` / `task-master analyze-complexity`
+- `expand_task` / `task-master expand`
+- `expand_all` / `task-master expand --all`
+- `add_task` / `task-master add-task`
+- `update` / `task-master update`
+- `update_task` / `task-master update-task`
+- `update_subtask` / `task-master update-subtask`
+
+### File Management
+
+- Never manually edit `tasks.json` - use commands instead
+- Never manually edit `.taskmaster/config.json` - use `task-master models`
+- Task markdown files in `tasks/` are auto-generated
+- Run `task-master generate` after manual changes to tasks.json
+
+### Claude Code Session Management
+
+- Use `/clear` frequently to maintain focused context
+- Use headless mode for automation: claude -p "task-master next"
+
+### Research Mode
+
+- Add `--research` flag for research-based AI enhancement
+- Requires a research model API key like Perplexity (`PERPLEXITY_API_KEY`) in environment
+- Provides more informed task creation and updates
+- Recommended for complex technical tasks
+
+---

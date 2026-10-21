@@ -1,0 +1,32 @@
+[package]
+name = "wrfcoin-privacy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha3.workspace = true
+rand.workspace = true
+log.workspace = true
+
+curve25519-dalek = { version = "4.1", features = ["serde"] }
+zeroize = { version = "1.7", features = ["derive"] }
+arrayref = "0.3"
+chacha20poly1305 = "0.10"
+merlin = "3.0"
+rand_core = { version = "0.6", features = ["std"] }
+rustc-hash = "2.0"
+wrf-primitives.workspace = true
+# #2169: P-256 ECDSA verification for WebAuthn passkeys lives here (see
+# `src/p256_ecdsa.rs`) so the consensus crate's direct-dependency budget
+# (`scripts/check-dep-budget.sh`, 30) is untouched — this crate is already in
+# its graph and is where curve arithmetic belongs.
+p256.workspace = true
+
+[dev-dependencies]
+wrf-primitives = { workspace = true, features = ["integration-guard"] }
+proptest = "1.0"

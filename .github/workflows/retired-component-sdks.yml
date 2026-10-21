@@ -1,0 +1,46 @@
+name: Retired component SDK guard
+
+# Owner 2026-10-07: input-relevant PRs plus nightly on main and dispatch.
+# Inputs and evidence tradeoffs: WORKFLOW_JUSTIFICATION.md, relevance/nightly section.
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - '.github/workflows/retired-component-sdks.yml'
+      - '**/*package.json'
+      - '**/*.md'
+      - 'sdks/extensions/**'
+  push:
+    branches:
+      - 'main'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '34 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Data cap (infra#1113, owner ruling 2026-09-27): a new push to a PR cancels
+# that PR's superseded run. Every other event (push to main, schedule,
+# workflow_dispatch) gets a group unique to its run id, so it is never
+# cancelled and never evicted while pending (#2945, #3036).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  retired-components:
+    name: No retired React or Vue package claims
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify retired trees are not packaged or advertised
+        run: node sdks/extensions/check-retired-components.mjs

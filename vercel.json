@@ -1,0 +1,73 @@
+{
+  "version": 2,
+  "name": "wrfcoin",
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "buildCommand": "npm run build",
+        "outputDirectory": "dist"
+      }
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production",
+    "VITE_API_URL": "@api_url",
+    "VITE_CHAIN_ID": "@chain_id",
+    "VITE_INFURA_PROJECT_ID": "@infura_project_id",
+    "VITE_HSM_API_URL": "@hsm_api_url",
+    "VITE_VAPID_PUBLIC_KEY": "@vapid_public_key",
+    "VITE_WS_URL": "@websocket_url",
+    "VITE_ACURITE_DEVICE_ID": "@acurite_device_id"
+  },
+  "build": {
+    "env": {
+      "NODE_ENV": "production",
+      "VITE_API_URL": "@api_url",
+      "VITE_CHAIN_ID": "@chain_id",
+      "VITE_INFURA_PROJECT_ID": "@infura_project_id",
+      "VITE_HSM_API_URL": "@hsm_api_url",
+      "VITE_VAPID_PUBLIC_KEY": "@vapid_public_key",
+      "VITE_WS_URL": "@websocket_url",
+      "VITE_ACURITE_DEVICE_ID": "@acurite_device_id"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://wrfcoin-main-api.fly.dev/api/$1"
+    },
+    {
+      "source": "/((?!api).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=()"
+        }
+      ]
+    }
+  ]
+}

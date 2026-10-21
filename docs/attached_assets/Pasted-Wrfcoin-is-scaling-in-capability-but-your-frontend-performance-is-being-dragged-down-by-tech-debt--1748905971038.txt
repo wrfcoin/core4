@@ -1,0 +1,123 @@
+Wrfcoin is scaling in capability, but your frontend performance is being dragged down by tech debt, version collisions, and avoidable overhead. Let's chart the best plan forward.
+
+🚦 TL;DR Plan of Action
+
+✅ Phase 1: Remove Framework Duplication
+
+🎯 Goal: Shrink bundle size, reduce conflicts
+
+Pick one UI framework: Material-UI or Ant Design (but not both)
+
+Drop Vue.js since React is the primary renderer
+
+Select one charting library:  prefer Recharts or Chart.js
+
+🔧 Phase 2: Unify React Versions
+
+🎯 Goal: Prevent runtime errors and bloat
+
+Standardize on React 18.2.0 or 19.x, not both
+
+Ensure all sub-packages use resolutions in package.json to enforce version uniformity
+
+⚙️ Phase 3: Centralize API Requests
+
+🎯 Goal: Reduce network load and latency
+
+Use a frontend data-fetching layer (e.g., React Query or SWR)
+
+Add a backend data aggregator (API Gateway or GraphQL layer) to fetch all component data in one request
+
+🧠 Phase 4: SSR & Caching
+
+🎯 Goal: Speed up first paint, improve SEO
+
+Convert Vite+React to use SSR with hydration
+
+Add HTTP response caching (Redis or Varnish)
+
+Cache known static data (e.g. achievements, bridge status)
+
+📉 Phase 5: Trim Monitoring in Production
+
+🎯 Goal: Reduce hidden runtime overhead
+
+Keep Sentry only for frontend crash logs
+
+Remove or limit Prometheus + Winston logging unless you need high-frequency trace logs
+
+🔍 Framework Analysis (from your audit)
+
+Category
+
+Status
+
+Recommendation
+
+UI Libraries
+
+React, Vue, MUI, AntD
+
+Keep only React + 1 UI library
+
+Charting Libraries
+
+D3, Chart.js, Recharts
+
+Use only Recharts or Chart.js
+
+Styling
+
+Emotion, Bootstrap
+
+Remove Emotion unless critical
+
+Analytics
+
+Sentry, Prometheus, Logs
+
+Keep Sentry, remove redundant logs
+
+Crypto Libs
+
+ethers, bip32/39, crypto-js
+
+Audit usage, bundle to 1 lib if possible
+
+🚀 Tech Stack Recommendation Moving Forward
+
+Function
+
+Preferred Tool
+
+UI Framework
+
+React + MUI or AntD
+
+Charts
+
+Recharts
+
+CSS
+
+CSS modules or Tailwind
+
+Data Fetching (client)
+
+React Query or SWR
+
+API Gateway (server)
+
+Fastify, Express, or GraphQL
+
+Caching Layer
+
+Redis (with TTL + tags)
+
+SSR
+
+Next.js or Vite SSR
+
+Monitoring
+
+Sentry (prod-only)

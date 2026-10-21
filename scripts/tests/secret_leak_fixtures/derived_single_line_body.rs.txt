@@ -1,0 +1,4 @@
+// #3284: a brace-struct body written on ONE line. FIELD was anchored at line
+// start, so no field was seen and the derive was never flagged.
+#[derive(Debug, Clone)]
+pub struct SeedHolder { seed: [u8; 32] }

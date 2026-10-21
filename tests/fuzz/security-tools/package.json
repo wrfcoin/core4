@@ -1,0 +1,35 @@
+{
+  "name": "wrfcoin-security-tools",
+  "version": "1.0.0",
+  "description": "Comprehensive security testing tools for Wrfcoin blockchain platform",
+  "main": "index.js",
+  "scripts": {
+    "security:all": "npm run security:sast && npm run security:dast && npm run security:sca && npm run security:container",
+    "security:sast": "node sast/semgrep-scanner.js",
+    "security:dast": "node dast/zap-scanner.js",
+    "security:sca": "node sca/dependency-scanner.js",
+    "security:container": "node container/trivy-scanner.js",
+    "security:nuclei": "node penetration/nuclei-scanner.js",
+    "security:report": "node reporting/security-aggregator.js",
+    "security:baseline": "node dast/zap-baseline.js",
+    "security:full": "node dast/zap-full-scan.js",
+    "security:compliance": "node compliance/compliance-checker.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "child_process": "^1.0.2",
+    "fs-extra": "^11.2.0",
+    "path": "^0.12.7",
+    "winston": "^3.11.0",
+    "xml2js": "^0.6.2",
+    "json2csv": "^6.1.0",
+    "semver": "^7.5.4",
+    "uuid": "^9.0.1",
+    "@octokit/rest": "^20.0.2",
+    "markdown-it": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  }
+}

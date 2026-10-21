@@ -1,0 +1,555 @@
+{
+  "$schema_note": "Declares, per PR-filtered workflow, concrete example changes that MUST start it (and optionally must NOT). Checked by scripts/check_workflow_path_coverage.py (#2916). Example paths need not exist: they describe a hypothetical change, and a filter must be judged on what it would match, not on today's tree.",
+  "$why_external": "Declarations live here rather than inside each workflow so this guard touches no workflow file: #2668, #2448 and #2914 are open inside fuzz-nightly.yml and tdd-phase3c.yml.",
+  "max_unreviewed": 1,
+  "workflows": {
+    ".github/workflows/adversarial-tests.yml": {
+      "why": "Gates the adversarial corpus suite over the two crates' integration tests.",
+      "must_trigger": [
+        "native-chain/tests/some_attack.rs",
+        "consensus-engines/tests/some_attack.rs",
+        "scripts/adversarial_suite.py",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/adversarial-tests.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "native-chain/src/lib.rs",
+        "p2p/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "tests/integration/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ],
+      "must_not_trigger": [
+        "docs/governance/constitution.md"
+      ]
+    },
+    ".github/workflows/bincode-boundary-guard.yml": {
+      "why": "#2888 story 7: the skip_serializing_if-across-bincode scan (#2924). The defect can be introduced in ANY .rs file, so the filter is every Rust file plus the scanner and its tests; it must not fire on non-Rust pushes.",
+      "must_trigger": [
+        "shared-protocol/src/blockchain/transaction.rs",
+        "p2p/src/wire.rs",
+        "scripts/check_bincode_boundary_attrs.py",
+        "scripts/test_check_bincode_boundary_attrs.py",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/bincode-boundary-guard.yml",
+        ".github/actions/checkout-merge-tree/action.yml"
+      ],
+      "must_not_trigger": [
+        "docs/ci/BUILD_PROVENANCE.md",
+        ".github/workflows/schedule-lint.yml"
+      ]
+    },
+    ".github/workflows/build-provenance-gate.yml": {
+      "why": "#2888 story 7: runs wrfcoin-build-provenance's tests (#2882). The crate is dependency-free, so its inputs are the crate, the two wrappers the job runs, the root manifests and the toolchain pin \u2014 and nothing in another crate.",
+      "must_trigger": [
+        "build-provenance/src/lib.rs",
+        "scripts/attest_build.sh",
+        "scripts/cargo_test_nonvacuous.py",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "Cargo.toml",
+        ".cargo/config.toml",
+        ".github/workflows/build-provenance-gate.yml",
+        ".github/actions/checkout-merge-tree/action.yml"
+      ],
+      "must_not_trigger": [
+        "shared-protocol/src/lib.rs",
+        "docs/ci/BUILD_PROVENANCE.md"
+      ]
+    },
+    ".github/workflows/ci-deploy-features.yml": {
+      "why": "Compiles the deploy feature matrix; the toolchain pin and RPC surface are part of what it asserts.",
+      "must_trigger": [
+        "native-chain/src/main.rs",
+        "shared-protocol/src/lib.rs",
+        "p2p/src/lib.rs",
+        "rust-toolchain.toml",
+        "scripts/check_rpc_surface.py",
+        "consensus-engines/src/selection/bft_finality.rs",
+        "primitives/src/lib.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config.toml",
+        ".github/workflows/ci-deploy-features.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "keeper-proof/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "native-chain/src/lib.rs",
+        "oracle-packet/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "sdks/generated/rust/src/lib.rs",
+        "security-demo/src/lib.rs",
+        "sensor-attestation/src/lib.rs",
+        "tests/integration/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "tools/forecast-proto/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ]
+    },
+    ".github/workflows/cli-test-gate.yml": {
+      "why": "#2741: runs every wrfcoin_cli test target. Deliberately broad \u2014 the CLI path-depends on shared-protocol, so a closure-derived filter would rot in the direction of less coverage.",
+      "must_trigger": [
+        "tools/cli/WrfcoinCLI/src/main.rs",
+        "shared-protocol/src/lib.rs",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/cli-test-gate.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ],
+      "must_not_trigger": [
+        "docs/ci/BUILD_PROVENANCE.md"
+      ]
+    },
+    ".github/workflows/determinism-lint.yml": {
+      "why": "Mirrors check_determinism.py SCANNED_ROOTS. #2245 blocker 2 was this filter failing to cover shared-protocol/src. Both a crate-root file and a deep file are listed so that narrowing the glob in EITHER direction is caught. Cargo.lock and a member manifest start the serde-json-float-features job (#3333): a serde_json feature can be switched on from any manifest or lockfile change.",
+      "must_trigger": [
+        "consensus-engines/src/lib.rs",
+        "primitives/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "shared-protocol/src/blockchain/state.rs",
+        "native-chain/src/lib.rs",
+        "scripts/check_determinism.py",
+        "scripts/determinism_baseline.json",
+        "Cargo.lock",
+        "tools/cli/WrfcoinCLI/Cargo.toml",
+        "scripts/check_serde_json_float_features.py",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/determinism-lint.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "keeper-proof/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "oracle-packet/src/lib.rs",
+        "p2p/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "sdks/generated/rust/src/lib.rs",
+        "security-demo/src/lib.rs",
+        "sensor-attestation/src/lib.rs",
+        "tests/integration/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "tools/forecast-proto/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ]
+    },
+    ".github/workflows/disclaimer-surfaces.yml": {
+      "why": "#2166: guards the canonical disclaimer, README link, testnet startup notice and network-info URL. Every checked source surface, the checker and its workflow must trigger it; unrelated protocol and operator-guide edits must not.",
+      "must_trigger": [
+        "README.md",
+        "docs/TESTNET_DISCLAIMER.md",
+        "native-chain/src/bin/launch_api/main.rs",
+        "native-chain/src/bin/launch_api/routes/network.rs",
+        "scripts/check_disclaimer_surfaces.py",
+        ".github/workflows/disclaimer-surfaces.yml"
+      ],
+      "must_not_trigger": [
+        "shared-protocol/src/lib.rs",
+        "docs/TESTNET_OPERATOR_GUIDE_v3.md",
+        "scripts/check_network_isolation.py"
+      ]
+    },
+    ".github/workflows/determinism-matrix.yml": {
+      "why": "Cross-toolchain state-root comparison over the integration suite and the two crates it compares.",
+      "must_trigger": [
+        "tests/integration/some_case.rs",
+        "shared-protocol/src/lib.rs",
+        "primitives/src/lib.rs",
+        "scripts/compare_state_roots.py"
+      ]
+    },
+    ".github/workflows/fuzz-nightly.yml": {
+      "unreviewed": true,
+      "why": "#2668 is actively narrowing this filter to the harness paths, and #2914/#2448 are also open in this file. Pinning example paths now would either block that work or be rewritten by it. Review together with #2668, which already reasoned about the same drift risk and added a weekly backstop."
+    },
+    ".github/workflows/hsm-signer-ci.yml": {
+      "why": "HSM-feature test run over the crates that carry the signer surface.",
+      "must_trigger": [
+        "native-chain/src/lib.rs",
+        "shared-protocol/src/crypto/mod.rs",
+        "Cargo.lock"
+      ]
+    },
+    ".github/workflows/infra-signing-fixture-freshness.yml": {
+      "why": "Guards one vendored fixture; the filter is intentionally a single file.",
+      "must_trigger": [
+        "shared-protocol/tests/fixtures/golden/signing_preimage_v2.json"
+      ],
+      "must_not_trigger": [
+        "shared-protocol/src/lib.rs"
+      ]
+    },
+    ".github/workflows/input-panic-lint.yml": {
+      "why": "Panic-on-input lint over all Rust, plus its detector and baseline.",
+      "must_trigger": [
+        "shared-protocol/src/lib.rs",
+        "native-chain/src/bin/launch_api/main.rs",
+        "scripts/check_no_panic_on_input.py",
+        "scripts/panic_input_baseline.json",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/input-panic-lint.yml",
+        ".github/actions/checkout-merge-tree/action.yml"
+      ]
+    },
+    ".github/workflows/integration-ratchet.yml": {
+      "why": "#2888: the ratchet over integration targets. Its inventory and detector must trigger it, or the ratchet can be edited without running. Since #2888 story 7 it also carries the anti-rot compile gate (formerly test-target-compile.yml), so the executable counter is part of its anti-vacuity claim too.",
+      "must_trigger": [
+        "tests/integration/some_case.rs",
+        "shared-protocol/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/main.rs",
+        "scripts/integration_test_ratchet.json",
+        "scripts/integration_test_ratchet.py",
+        "scripts/count_test_executables.py"
+      ]
+    },
+    ".github/workflows/kani.yml": {
+      "why": "Bounded proofs of the economic arithmetic in consensus-engines.",
+      "must_trigger": [
+        "consensus-engines/src/economics/proofs.rs",
+        "docs/security/KANI_PROOFS.md"
+      ],
+      "must_not_trigger": [
+        "shared-protocol/src/lib.rs"
+      ]
+    },
+    ".github/workflows/named-test-targets.yml": {
+      "why": "Runs a named inventory of integration targets; the inventory itself must trigger it.",
+      "must_trigger": [
+        "scripts/named_test_targets.json",
+        "scripts/check_named_test_targets.py",
+        "native-chain/tests/chain_identity_split_2713.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/named-test-targets.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "native-chain/src/lib.rs",
+        "p2p/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ]
+    },
+    ".github/workflows/release-gate-fixtures.yml": {
+      "why": "#2331: the fixture harness for the release-signing and deploy-gate workflows. Both guarded workflows must trigger it, or their verification logic can merge with the harness unrun.",
+      "must_trigger": [
+        "scripts/test_release_gates.py",
+        ".github/workflows/release-signing.yml",
+        ".github/workflows/deploy-gate.yml"
+      ]
+    },
+    ".github/workflows/retired-component-sdks.yml": {
+      "why": "#3217: intentionally unfiltered because the guard audits every tracked package manifest and public Markdown file for restored React/Vue packaging or availability claims.",
+      "must_trigger": [
+        "sdks/extensions/react/package.json",
+        "docs/developer-getting-started.md",
+        "sdks/extensions/check-retired-components.mjs",
+        "package.json",
+        "README.md",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/retired-component-sdks.yml",
+        ".github/actions/checkout-merge-tree/action.yml"
+      ]
+    },
+    ".github/workflows/sdks-extensions-javascript.yml": {
+      "why": "Builds the JavaScript SDK extension and enforces cross-chain release-surface parity.",
+      "must_trigger": [
+        "sdks/extensions/javascript/src/index.js",
+        "sdks/generated/typescript/api.ts",
+        "docs/api/schemas/openapi.yaml",
+        "native-chain/src/bin/launch_api/routes/chain.rs",
+        "scripts/check-cross-chain-release-surface.mjs"
+      ],
+      "must_not_trigger": [
+        "shared-protocol/src/lib.rs"
+      ]
+    },
+    ".github/workflows/tdd-phase3c.yml": {
+      "why": "Phase 3C Rust gates and dispatch-only localhost API inputs, with full optional/build/dev/target dependency closure (owner 2026-10-07).",
+      "must_trigger": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/tdd-phase3c.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "native-chain/src/lib.rs",
+        "p2p/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ]
+    },
+    ".github/workflows/unsafe-policy.yml": {
+      "why": "SAFETY-comment baseline over the three crates that carry unsafe, plus its detector and baseline.",
+      "must_trigger": [
+        "primitives/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "scripts/unsafe_baseline.json",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/unsafe-policy.yml",
+        ".github/actions/checkout-merge-tree/action.yml"
+      ]
+    },
+    ".github/workflows/wrfcoin-cli-integration.yml": {
+      "why": "Executes CLI mocks and the real launch_api process smoke; includes shared-protocol and the full transitive local dependency closure previously missing from the PR filter.",
+      "must_trigger": [
+        "tools/cli/WrfcoinCLI/src/main.rs",
+        "native-chain/src/bin/launch_api/main.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/wrfcoin-cli-integration.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "native-chain/src/lib.rs",
+        "p2p/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ]
+    },
+    ".github/workflows/launch-api-bin-tests.yml": {
+      "why": "The only executor of the full launch_api bin test suite on any PR path (#2687); ci-deploy-features runs five FILTERED launch_api gates only. A filter miss here silently reopens the exact 427-test hole the workflow closes.",
+      "must_trigger": [
+        "native-chain/src/bin/launch_api/main.rs",
+        "native-chain/src/bin/launch_api/p2p_events.rs",
+        "native-chain/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "p2p/src/lib.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".github/workflows/launch-api-bin-tests.yml",
+        ".cargo/config.toml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ],
+      "must_not_trigger": [
+        "docs/governance/constitution.md"
+      ]
+    },
+    ".github/workflows/crate-execution-gates.yml": {
+      "why": "Executes the 16 crates #2921 found compile-only or unexecuted, under non-vacuity floors (#2927). A filter miss here recreates the exact gap the workflow exists to close.",
+      "must_trigger": [
+        "consensus-engines/src/selection/bft_finality.rs",
+        "shared-protocol/src/blockchain/state.rs",
+        "privacy/src/lib.rs",
+        "zk-circuits/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "primitives/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "tests/integration/src/lib.rs",
+        "Cargo.lock",
+        "scripts/cargo_test_nonvacuous.py",
+        "evm/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "forecast-score/src/blockchain.rs",
+        "dataset-manifest/src/lib.rs",
+        "keeper-proof/src/lib.rs",
+        "da/src/lib.rs",
+        "oracle-packet/src/lib.rs",
+        "sensor-attestation/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "scripts/test_cargo_test_nonvacuous.py",
+        "scripts/check_crate_execution_floor.py",
+        "scripts/test_check_crate_execution_floor.py",
+        ".github/workflows/crate-execution-gates.yml",
+        ".cargo/config.toml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "shared-protocol/src/lib.rs"
+      ],
+      "must_not_trigger": [
+        "native-chain/src/main.rs",
+        "p2p/src/lib.rs",
+        "docs/governance/constitution.md"
+      ]
+    },
+    ".github/workflows/native-chain-package-gate.yml": {
+      "why": "The #2911 package gate for native-chain. A filter miss here restores the exact 27-day hole the workflow closes: the crate's package-wide signal would silently stop running while its standing #2713 red kept looking the same. Includes shared-protocol and all normal/build/dev/target/optional local dependencies; the old shared-protocol exclusion was under-covered.",
+      "must_trigger": [
+        "native-chain/src/lib.rs",
+        "native-chain/src/bin/launch_api/main.rs",
+        "native-chain/tests/chain_identity_split_2713.rs",
+        "native-chain/tests/stress_tests.rs",
+        "scripts/package_test_baseline_gate.py",
+        "scripts/package_test_baselines.json",
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/native-chain-package-gate.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "build-provenance/src/lib.rs",
+        "consensus-engines/src/lib.rs",
+        "da/src/lib.rs",
+        "dataset-manifest/src/lib.rs",
+        "evm/src/lib.rs",
+        "execution-engine/src/lib.rs",
+        "forecast-score/src/lib.rs",
+        "geo-grid/src/lib.rs",
+        "meteo-types/src/lib.rs",
+        "p2p/src/lib.rs",
+        "primitives/src/lib.rs",
+        "privacy/src/lib.rs",
+        "reputation-engine/src/lib.rs",
+        "shared-protocol/src/lib.rs",
+        "tools/cli/WrfcoinCLI/src/lib.rs",
+        "zk-circuits/src/lib.rs"
+      ],
+      "must_not_trigger": [
+        "docs/governance/constitution.md"
+      ]
+    },
+    ".github/workflows/declared-ceiling-enforcement.yml": {
+      "why": "Advisory #2700 gate. Its PR filter is deliberately narrow \u2014 the ceiling declaration, the #2701 test, and the workflow itself \u2014 so an unrelated PR is not painted red by a repo-wide fact it did not cause and cannot fix. The negative below is the point: THREAT_MODEL.md cites these ceilings, so a reader may expect editing it to run this gate; it must not, because the gate asserts a fact about code, not about prose.",
+      "must_trigger": [
+        "shared-protocol/src/common/constants.rs",
+        "shared-protocol/tests/declared_ceilings_are_enforced.rs",
+        ".github/workflows/declared-ceiling-enforcement.yml"
+      ],
+      "must_not_trigger": [
+        "docs/security/THREAT_MODEL.md",
+        "native-chain/src/storage.rs"
+      ]
+    },
+    ".github/workflows/merge-admission-contract.yml": {
+      "why": "Asserts the live ruleset equals the written merge-admission contract (#2896 story 7). On PRs it must fire on the contract's own files and nothing else; every push to main runs it unfiltered.",
+      "must_trigger": [
+        ".github/merge-admission.json",
+        "docs/ci/MERGE_ADMISSION.md",
+        "scripts/check_merge_admission.py"
+      ],
+      "must_not_trigger": [
+        "native-chain/src/lib.rs",
+        "docs/ci/VACUOUS_GATES.md"
+      ]
+    },
+    ".github/workflows/workflow-path-coverage.yml": {
+      "must_trigger": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".github/workflows/workflow-path-coverage.yml",
+        ".github/actions/checkout-merge-tree/action.yml",
+        "scripts/fixtures/workflow_inventory_red/undeclared.yml",
+        "scripts/workflow_path_coverage.json",
+        ".github/repository-input-admission.json",
+        "scripts/test_relevance_nightly.py"
+      ],
+      "why": "Reads all workflows/actions/admission manifests, workflow coverage declarations, and the checker scripts/fixtures. Independent of required admission evidence."
+    }
+  }
+}

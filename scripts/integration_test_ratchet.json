@@ -1,0 +1,1062 @@
+{
+  "schema": 1,
+  "inventory": [
+    {
+      "package": "test_server",
+      "target": "determinism_differential"
+    },
+    {
+      "package": "test_server",
+      "target": "feature_schedule_parity"
+    },
+    {
+      "package": "test_server",
+      "target": "passkey_feature_parity_2169"
+    },
+    {
+      "package": "test_server",
+      "target": "schedule_extension_bootstrap_parity_3277",
+      "review": {
+        "source_pr": 3368,
+        "owning_issue": 3277,
+        "covers": "#3277 S5 T5: with the live chain's bootstrap row merged into the base (gate at height 3, inside the fixture), the committed determinism fixture replays byte-identically to expected_roots.json before and after the gate opens and across a restart at the gate: zero extensions move no state root (RED control: folding the extension section unconditionally)."
+      }
+    },
+    {
+      "package": "wrfcoin-consensus-engines",
+      "target": "bft_finality_aggregator_e2e"
+    },
+    {
+      "package": "wrfcoin-consensus-engines",
+      "target": "pop_forecast_verification"
+    },
+    {
+      "package": "wrfcoin-consensus-engines",
+      "target": "security_bridge"
+    },
+    {
+      "package": "wrfcoin-da",
+      "target": "light_client_2188"
+    },
+    {
+      "package": "wrfcoin-da",
+      "target": "sampling_2186"
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "basic_docker"
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "e2e_pipeline_no_mocks"
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "integration"
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "tdd_2_1_docker_harness"
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "wrf_nano_dry_run"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "node_bond_slice2"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "node_receipt_slice3"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "bft_finality_baseline_2793",
+      "review": {
+        "source_pr": 2809,
+        "owning_issue": 2793,
+        "covers": "Applying blocks beyond MAX_REORG_DEPTH cannot advance raw BFT finality; only the explicit finality-signal arm may advance it."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "bridge_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_fail_closed_2713"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "boot_gate_before_wal_replay_3301",
+      "review": {
+        "source_pr": 3301,
+        "owning_issue": 3301,
+        "covers": "#3301: boot installs the protocol gate from durable block 1 BEFORE loading state; a V1 chain whose block 1 schedules paymaster at 3 with a Stake at 4 in the WAL tail fails to load in the old order (load then gate) and reproduces the producer's tip state_root through gate_then_load_state; plus a source pin that launch_api main.rs loads state only through gate_then_load_state, with the real gate (assert_startup_protocol_compatibility, install_uncut_chain_protocol, archive_empty_but_height_recorded) in the closure."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "boot_gate_checkpointed_3301",
+      "review": {
+        "source_pr": 3301,
+        "owning_issue": 3301,
+        "covers": "#3301 F2: the checkpointed / snapshot-synced boot shape in its own process: checkpoint at 2, WAL tail 3..6 across a paymaster activation at 3 with a Stake at 4, block 1 the durable lowest block; load-before-gate fails, gate_then_load_state reproduces the producer's tip state_root."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_split_2713"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "commit_reveal_hash_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "cut_composition_lifecycle_2498"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "debug_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "dev_endpoints_2139",
+      "review": {
+        "source_pr": 3105,
+        "owning_issue": 2139,
+        "covers": "Dev endpoint modules and routes are compiled out unless dev-endpoints is enabled, shipping build profiles leave the feature off, and the documented surface remains classified disabled-in-release."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "error_redaction_2138",
+      "review": {
+        "source_pr": 3108,
+        "owning_issue": 2138,
+        "covers": "The launch_api envelope redacts internal errors: every leak class in a detail string is reduced to the public class and a correlation id in body, headers and status; a source-level pin that no INTERNAL_SERVER_ERROR envelope in routes/ bypasses envelope_redacted."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "faucet_sink_binding_lifecycle_3361",
+      "review": {
+        "source_pr": 3361,
+        "owning_issue": 3361,
+        "covers": "#3361 F2: the faucet-sink binding across its activation H_F, through restart (mid-run-up and after H_F), IBD from genesis, replay_verify, snapshot join (before and after H_F), and the clean halt of a binary without the ConsensusFeature variant at H_F-1 (refusing to boot at tip >= H_F). Own process (process-wide schedule/authority/overlay)."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "genesis_oracle_registration_s4"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "genesis_producer_roster",
+      "review": {
+        "source_pr": 2983,
+        "owning_issue": 2971,
+        "covers": "The pinned three-host testnet producer roster resolves to the genesis committee, producer authority is enforced per member, and no placeholder key or payout address can reach a real cut."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "genesis_state_wal_replay_recovery_2501"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "governance_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "host_origin_2136",
+      "review": {
+        "source_pr": 3107,
+        "owning_issue": 2136,
+        "covers": "DNS-rebinding, Host and Origin validation runs from the real headers before any handler: a refused request never reaches its handler, a wildcard cannot be configured, CORS never reflects, and the admin set matches the surface document."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "hsm_producer_keypair_selfcheck_2405"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "hsm_signer"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "late_quorum_reward_wal_replay_2464"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "launch_api_test_support"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "mining_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "network_info"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "network_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "operator_mempool"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "oracle_attester_runtime_2464"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "oracle_governance_declaration_2712"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "oracle_governance_rotation_2712"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "oracle_registration_wal_replay_2055"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "oracle_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "partition_mode_block_production"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "partition_mode_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "peer_churn_e2e"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "producer_auth_append_boundary_2290"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "producer_auth_persisted_boot_2290"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "producer_signed_wal_parity_2226"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "quality_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "query_cost_2137"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "reorg_finalization_parity_1810"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "reorg_persist_batch_recalc_1977"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "replay_harness_2750"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "replay_verify_schedule_extension_3332",
+      "review": {
+        "source_pr": 3334,
+        "owning_issue": 3332,
+        "covers": "#3332: replay_verify replays under the effective feature schedule (base plus applied #3277 extensions), refreshing it on the genesis anchor and after every applied block like the node: an extension in the genesis anchor (Stake in block 1) and one applied by block 3 (Stake at 3 + MIN_RUNUP_BLOCKS) both put AccountAuthorizationDispatch in force, the SmartAccount-declared Stake is refused as the producer refused it, and every committed root verifies; removing either refresh diverges at the Stake height (RED)."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "restored_producer_set_is_unbound_2290"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_halt_3277",
+      "review": {
+        "source_pr": 3328,
+        "owning_issue": 3277,
+        "covers": "#3277 S3 T2: an applied schedule extension naming a feature this binary lacks installs the #3093 clean-halt deadline at its activation (refuse H, run through H-1, boot refused at tip >= H); a known feature installs none and activates; the deadline only ever tightens, including across a reorg that drops the extension."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "network_upgrade_schedule_view_3277",
+      "review": {
+        "source_pr": 3375,
+        "owning_issue": 3277,
+        "covers": "#3277 S6 + #3361 F4: GET /network/upgrade (real handler, real AppState) reports the effective feature schedule with per-entry source (genesis / bootstrap-shaped base row / extension seq N), known flags, run-up warnings for an unknown pending entry inside RUN_UP_BLOCKS and the installed #3093 halt deadline, plus the faucet sink {address, source, active_from} (binding on 777 after activation, none before, genesis address wins); a node restarted from its checkpoint and one that installed a snapshot report identical scheduled/faucet_sink objects; the body carries no bearer token or signer key (RED on main: no scheduled object). Runs in a child process: included launch_api unit tests share the binary and the schedule globals are process-wide."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "faucet_sink_binding_parity_3361",
+      "review": {
+        "source_pr": 3363,
+        "owning_issue": 3361,
+        "covers": "#3361 F1: on a 777 chain with no genesis faucet and faucet_sink_binding scheduled at H_F through the extension overlay, the real producer, the P2P applier (extract_transitions) and WAL replay from genesis agree on state_root, emission ledger and faucet balance at H_F-1, H_F and H_F+1; the bound wallet is unpaid at H_F-1 and paid exactly the faucet slice from H_F (RED on main: producer faucet spend 0 at H_F). Runs in a child process: the included extractor unit tests share the binary and the overlay is process-wide."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_routes_3277",
+      "review": {
+        "source_pr": 3364,
+        "owning_issue": 3277,
+        "covers": "#3277 S4: POST /transactions/governance/schedule-extensions is operator-only, refuses by admission policy (unknown / not-schedulable names) and by full V1-V9 validity at the node's next height with the named reason (too-soon activation, wrong sequence, no signatures), admits a valid extension to the mempool and reports its latest valid carrying height, and refuses a duplicate; nothing is admitted on any refusal. Own process (process-wide gate and authority)."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_authority_call_sites_3277",
+      "review": {
+        "source_pr": 3368,
+        "owning_issue": 3277,
+        "covers": "#3277 S5 F1: a source scan over shared-protocol, native-chain and the CLI proves install_schedule_extension_authority_from_block1 has exactly one production caller (native-chain/src/upgrade.rs), the test-only constructor appears in production code only as its own cfg(any(test, feature = test-support)) definition, and the unrestricted installer is gone."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_boot_3277",
+      "review": {
+        "source_pr": 3368,
+        "owning_issue": 3277,
+        "covers": "#3277 S5, core4#3368 review P2-1/P3-2: on a PERSISTED chain whose block 1 is the live chain's, upgrade::arm_block1_protocol_at_boot (the launch_api boot gate) installs the base schedule with the bootstrap (schedule_extension at H_ENABLE) and the pinned authority; a block-1 storage error, an empty archive, or a lowest block that is not block 1 refuses boot and installs nothing (fail-closed). Each scenario in its own re-exec child."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_node_paths_3277",
+      "review": {
+        "source_pr": 3368,
+        "owning_issue": 3277,
+        "covers": "#3277 S5, review P3-3: on a fresh node (provisional base, no authority) the shared block-1 hook, taken by IBD/P2P join, snapshot join and a self-mined block 1, re-resolves the base WITH the live chain's bootstrap and installs the pinned authority; a source pin shows every node path (boot gate, P2P apply, mining, snapshot install before its state install, replay_verify) reaches the block-1 inputs, and that the hook installs the authority before its provisional check."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_tx_replay_3277",
+      "review": {
+        "source_pr": 3364,
+        "owning_issue": 3277,
+        "covers": "#3277 S4: replay_verify (production entry point, no observer) replays a chain whose schedule extension rides in block 3 as a real FeatureScheduleExtension transaction: extraction applies it, the overlay refresh puts AccountAuthorizationDispatch in force at 3 + MIN_RUNUP_BLOCKS, the SmartAccount-declared Stake at that activation is refused as the producer refused it, and every committed root verifies; a discrimination guard shows the Stake extracts under the base schedule alone."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "schedule_extension_wal_replay_3277",
+      "review": {
+        "source_pr": 3328,
+        "owning_issue": 3277,
+        "covers": "#3277 S3: a restart replays each WAL block under the effective feature schedule (block-1 base plus extensions applied before it): an extension carried in the WAL tail (per-block refresh) and one in the checkpoint anchor (anchor refresh) both put a later paymaster Stake in force and reproduce the producer state_root; plain load_state fails (RED); launch_api refreshes from the restored state after the #3093 genesis deadline and refuses boot at tip >= activation."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "security_attacks"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "signing_keys_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "snapshot_sync_apply"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "stake_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "storage_migration_2727"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "stress_tests"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "transactions_routes"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "upgrade_notice_runtime"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "upgrade_required_halt"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "wal_replay_finalization_determinism_1980"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "ws_ceilings_2135"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "ws_identity_acl"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "zk_key_persistence"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "zk_params_drift"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "block_backfill_wiring"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "cold_start_convergence"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "missing_genesis_parent_regression"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "reconnect_resume_regression"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "sentry_allowlist_2120"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "uncut_chain_arms_activation_table_2578"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "uninstalled_activation_table_refusal_1396"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "uninstalled_signing_version_refusal_2275"
+    },
+    {
+      "package": "wrfcoin-privacy",
+      "target": "privacy_e2e"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_settlement_slice4"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_fraud_slice5"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "account_authorization_dispatch_2168"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "authorization_debit_height_2168"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "paymaster_activation_2171"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "privacy_legacy_3413"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "weather_skew_block_time_allowance_3270",
+      "review": {
+        "source_pr": 3280,
+        "owning_issue": 3270,
+        "covers": "#3270 option B through the real State::apply_transition with the reference node's h21101-h21108 header timestamps, one re-exec child per leg: no schedule (live) rejects the halt backlog with the exact logged error and writes nothing (the carried timestamp is inert); scheduled before the pre-halt reading accepts the backlog, records the accepting block's header time as root material, and still rejects a 10-day-future reading; scheduled after it falls back to the block-count rule."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "weather_skew_block_time_allowance_replay_3270",
+      "review": {
+        "source_pr": 3280,
+        "owning_issue": 3270,
+        "covers": "#3270 S9 replay_verify leg: a persisted chain of real weather commit/reveal transactions with the reference node's halt header gaps (7 blocks, 30h) is produced under weather_skew_block_time_allowance, then a fresh process running the production replay_persisted_chain (no observer, nothing pre-installed) arms the schedule from the chain's own block 1 (#3277 S5), re-extracts every block with its header time and verifies every root; the same blocks with a block 1 that does not stamp the schedule diverge exactly at the first accepted reading (discrimination)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "block_producer_authority"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "verify_cost_budget_2143"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "block_producer_authority_v2"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "block_producer_signing"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "canonical_encoding"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "chain_reorg"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "commit_reveal_expiry"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "compute_receipt_ts_compat"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "consensus_invariants"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "cross_domain_replay"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "declared_ceilings_are_enforced"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "earn_loop_oracle_gate_e2e"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "economic_property_tests"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "error_redaction",
+      "review": {
+        "source_pr": 3108,
+        "owning_issue": 2138,
+        "covers": "Every InternalError variant converts to a public shape that leaks nothing: for each ErrorKind, a detail carrying paths, versions, host names, store fragments and secret-name segments yields a static public message plus a correlation id, and the redaction scanner finds no leak class in the output."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "emission_partition_supply_bound_2846",
+      "review": {
+        "source_pr": 2855,
+        "owning_issue": 2846,
+        "covers": "Realized mints across coinbase, gamification, contribution, and authorized attester paths stay within each block's ADR-003 partition through reduction, terminal, deferred-backlog, producer, P2P, and WAL-replay cases."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "feature_gates_are_declared",
+      "review": {
+        "source_pr": 2979,
+        "owning_issue": 2975,
+        "covers": "Every `#[cfg(feature = \"...\")]` in shared-protocol names a feature declared in [features]. An undeclared gate is always false, so the code it guards is never compiled, type-checked or tested while still reading as a shipped capability (the #2316 data_hub and #2975 governance defects)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "feature_schedule_1396",
+      "review": {
+        "source_pr": 3101,
+        "owning_issue": 3092,
+        "covers": "Consensus feature-activation schedule parsed from genesis metadata; asserts a feature scheduled at height H flips on producer, applier and replay surfaces at exactly H and moves no state root (finishes #1396)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "feeless_boundary_tests"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "forecast_integration"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "hsm_attestation_seam_2464"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "invariant_harness"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "layer2_pipeline"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "loom_mempool"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "native_smart_account_signing"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "network_isolation_2161"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "no_secret_in_output"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "operator_lifecycle_and_supply_cap"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "oracle_attester_e2e_2464"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "oracle_fourth_registration_midchain",
+      "review": {
+        "source_pr": 3271,
+        "owning_issue": 2833,
+        "covers": "A governance-signed epoch-2 OracleRegistration batch seating a 4th oracle with quorum 2, mined above height 1 on a chain whose genesis declared N=3/K=2: producer, follower and from-genesis re-sync converge on one state root; 2-of-4 attestations pay and 1-of-4 does not (deferred, not wedged, at live heights); replayed registrations are evicted and refused by the epoch rule; the low-quality override quorum stays 3 and the reward quorum stays 2; a quorum-3 batch pays nothing with two live attesters."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "feature_schedule_block1_reresolve_3277",
+      "review": {
+        "source_pr": 3328,
+        "owning_issue": 3277,
+        "covers": "#3277 F4: a node booted on an empty volume re-resolves its base feature schedule from the synced block 1 exactly once, so consensus stops depending on the cut-time WRFCOIN_GENESIS_ACTIVATION_SCHEDULE; own process because it installs the process-wide base."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "feature_schedule_extension_holder_3277",
+      "review": {
+        "source_pr": 3328,
+        "owning_issue": 3277,
+        "covers": "#3277 S3: effective feature schedule = base (genesis) plus applied extensions refreshed from canonical State; replace-not-merge on refresh, the base always wins a name, first-unknown reporting, and T3 at schedule level (a branch-only extension changes no feature_active answer within MAX_REORG_DEPTH of the fork)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "schedule_extension_tx_3277",
+      "review": {
+        "source_pr": 3364,
+        "owning_issue": 3277,
+        "covers": "#3277 S4: the FeatureScheduleExtension transaction end to end: T4 V1-V9 each with an accept and a reject case through the stateful block path (verify_launch_state_invariants), tampered chain/genesis/sequence/name/height/version/commit fields, a replayed tx and an UpgradeNotice signature presented as an extension's all rejected; verify_block rejects an unparsable payload; T8: the mempool refuses unknown and not-schedulable names while the same tx in a block is valid and applies; the producer includes an admitted extension only once the gate is active, in sequence order. Own process (process-wide gate and authority)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "faucet_sink_binding_admission_3361",
+      "review": {
+        "source_pr": 3361,
+        "owning_issue": 3361,
+        "covers": "#3361 F3: on the chain whose block 1 is the LEGACY_FAUCET_BINDINGS row's hash, the mempool admits and the producer includes the faucet_sink_binding extension (E0f); a faucet_sink_binding* name without a row stays refused there, yet a block carrying it is valid and applies (T8). Own process (process-wide gate and authority)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "schedule_extension_bootstrap_3277",
+      "review": {
+        "source_pr": 3368,
+        "owning_issue": 3277,
+        "covers": "#3277 S5 F1: a block 1 hashing to the live 777/testnet genesis installs the base schedule WITH the bootstrap row (schedule_extension at H_ENABLE) and an authority built only from the bootstrap row identity and the D1 pin; a re-cut chain reusing 777/testnet (another block 1) gets neither, so every extension fails closed. The re-cut case runs in a child process."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "gamification_supply_journal"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "genesis_777_replay_differential"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "genesis_testnet_888"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "gross_outlier_guard_activation_3131"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "faucet_sink_binding_activation_3361",
+      "review": {
+        "source_pr": 3363,
+        "owning_issue": 3361,
+        "covers": "#3361 F1: faucet_sink_binding scheduled at H_F through the extension overlay pays the owner-bound 777 faucet wallet exactly its slice from H_F through the real ApplyFaucetReward arm (account created, fully spendable, once per block); a genesis-recorded sink always wins; a non-777 chain is never paid; the mint is min(slice, MAX_SUPPLY headroom) at both sides of the first reduction and zero where emission is zero (RED on main: nothing minted)."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_owner_slash_identity_activation_3214",
+      "review": {
+        "source_pr": 3218,
+        "owning_issue": 3214,
+        "covers": "#3214: unscheduled ConsensusFeature::StationOwnerSlashIdentity scheduled at H in-test only; below H a data-quality violation keeps the pre-#3214 station_id trigger and debits nobody, at H the trigger binds the registered wrf/0x owner and finalization burns exactly 30 units with reputation and cooldown effects, and an unregistered station fails closed."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_owner_consent_3345"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_owner_transfer_recovery_3345"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_active_reward_gate_3347"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_owner_ledger_3345_3347"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_owner_admission_precheck"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "station_owner_cli"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registration_nonce_3345"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "oracle_quorum"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "partition_convergence"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_activation_2169"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_webauthn_2169"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pipeline_snapshot_tests"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "producer_auth_enforcement_e2e_2290"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "proptest_block_time_scaling"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "proptest_properties"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "protocol_support_3093"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pws_accuracy_integration"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "remote_ceremony_kit_3096"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "reorg_convergence"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "reward_integration"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "reward_tier_fold_3098",
+      "review": {
+        "source_pr": 3099,
+        "owning_issue": 3098,
+        "covers": "Weather reward tier: widened NWS pressure band and second-worst-variable fold pinned against the built-in bands \u2014 a station good on most metrics is no longer tiered Outlier (0.1x) by one borderline metric; two wrong variables still tier Outlier; the 2026-09-11 KDLH residuals tier Good."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "signature_malleability"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "signed_type_inventory"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_share_contracts"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_rejection_atomicity_3535"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "signing_preimage_v2_golden"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "slash_evidence_types"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "slash_unstake"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "slashing_integration"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "state_root_commitment_2219"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registration_production_path_2537"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "tdd_4_1_tps_bench"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "tdd_reward_determinism"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "upgrade_notice"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "validator_key_rotation"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "weather_reward_e2e"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "wycheproof"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "yubikey_signer"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "api_client_integration"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "cli_api_contract"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "command_group_integration"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "service_target_integration"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "snapshot_fetch_3126"
+    },
+    {
+      "package": "wrfcoin_cli",
+      "target": "node_bond_operator_s6a"
+    },
+    {
+      "package": "wrfcoin-forecast-proto",
+      "target": "key_security",
+      "review": {
+        "source_pr": 3072,
+        "owning_issue": 3070,
+        "covers": "Generated prototype forecast keys are written private and never printed; key files with permissions wider than 0600 are refused before use with errors that hide key material; environment-supplied keys and --help disclose no secrets."
+      }
+    },
+    {
+      "package": "wrfcoin-forecast-proto",
+      "target": "skill_loop",
+      "review": {
+        "source_pr": 3435,
+        "owning_issue": 3244,
+        "covers": "Actual prototype executable: chain-bound next-height feature view, signed persistence-RMSE strategy and byte-identical feature-off artifacts; malformed feature view and aggregate score overflow stop transaction publication."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "stake_gate_off_baseline_3430",
+      "review": {
+        "source_pr": 3466,
+        "owning_issue": 3430,
+        "covers": "Gate-OFF baseline for the Stake/Unstake consensus prerequisite: KNOWN-DEFECT goldens for the replayed Stake that locks twice with nonce 0 and the producer root differing from the peer root, with fixed-clock state roots and block hashes. Calls the historical extractor/apply/finalization seam directly (not mempool admission, gossip or a node runtime)."
+      }
+    },
+    {
+      "package": "wrfcoin-zk-circuits",
+      "target": "differential",
+      "review": {
+        "source_pr": 3180,
+        "owning_issue": 2179,
+        "covers": "Native-vs-circuit correctness equivalence for range, confidential-transfer, selective-disclosure and weather circuits: each circuit accepts and rejects exactly what the native check does (including the #819 selective-disclosure attack), and canonical constraint counts cannot drop silently."
+      }
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "slash_evidence_gate_3398",
+      "review": {
+        "source_pr": 3496,
+        "owning_issue": 3398,
+        "covers": "Option C S1 unscheduled feature registration, known-feature pairing and deterministic refusal OFF and ON."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "slash_evidence_gate_off_parity_3398",
+      "review": {
+        "source_pr": 3496,
+        "owning_issue": 3398,
+        "covers": "Gate-OFF report submissions refuse without changing serialized state or root bytes; fixture roots and block hashes match unchanged main staking goldens."
+      }
+    }
+  ],
+  "external_coverage": [
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "cut_composition_lifecycle_2498",
+      "workflow": ".github/workflows/named-test-targets.yml",
+      "step": "cut_composition_lifecycle"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "peer_churn_e2e",
+      "workflow": ".github/workflows/ci-deploy-features.yml",
+      "step": "p2p_churn"
+    }
+  ],
+  "known_failures": [
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_split_2713",
+      "test": "declared_signing_defaults_disagree_with_the_reporting_fallbacks",
+      "pattern": "signing fallback \\(`wrfcoin-main`\\) and the reporting fallback \\(`777`\\) are different constants"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_split_2713",
+      "test": "empty_string_export_diverges_by_a_different_mechanism",
+      "pattern": "applies no emptiness filter\\) while signing under `wrfcoin-main`"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_split_2713",
+      "test": "unset_chain_id_reports_and_signs_the_same_identity",
+      "pattern": "REPORTS chain_id `777` while every signature it produces is bound to `wrfcoin-main`"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "chain_identity_split_2713",
+      "test": "unset_network_id_reports_and_signs_the_same_identity",
+      "pattern": "REPORTS network_id `unknown` while signing under `mainnet`"
+    }
+  ],
+  "docker_gated": [
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "basic_docker",
+      "reason": "bollard client against the live Docker daemon (core4#2893); the persistent build runner is not in the docker group and cannot open /var/run/docker.sock, an owner-only fix (infra#881)."
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "e2e_pipeline_no_mocks",
+      "reason": "#![cfg(feature = \"docker-tests\")]; a real DockerRunner (bollard) against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "tdd_2_1_docker_harness",
+      "reason": "#![cfg(feature = \"docker-tests\")]; Docker-based WRF execution harness, same host-permission gap as basic_docker (core4#2893)."
+    },
+    {
+      "package": "wrfcoin-execution-engine",
+      "target": "wrf_nano_dry_run",
+      "reason": "#![cfg(feature = \"docker-tests\")]; DockerRunner::new() against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+    }
+  ],
+  "zero_test_exceptions": [
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "stress_tests",
+      "reason": "Deliberately test-free by design (see the target's own doc comment): a compile-drift shim wiring tests/stress/'s standalone async HTTP load-test drivers into `cargo check --workspace` so they don't rot silently. Those drivers run against a live node at WRFCOIN_TEST_API_URL and are intentionally excluded from `cargo test` -- see tests/stress/README.md for how to run them manually. Zero #[test] functions is the intended, reviewed state, not a coverage gap."
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "hsm_signer",
+      "reason": "2 real #[test] functions, both #[ignore]d BY DESIGN -- verified against the issue that made it so, not assumed: core4#2748 (closed) reported this target as reporting PASSED when HSM_TEST_ENABLED != 1 (a skipped HSM test indistinguishable from a verified one); core4#2876 (merged 2026-08-31) fixed it to skip HONESTLY -- #[ignore] plus a --min-executed companion gate, so a default run reports a countable \"0 passed; 0 failed; 2 ignored\" instead of a silent pass, and fails loudly if run without an HSM. Not runnable in CI without a provisioned softhsm2 token (docs/operator/hsm.md); run manually with -- --ignored."
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "cold_start_convergence",
+      "reason": "1 real #[test], #[ignore]d BY DESIGN from its very first commit -- verified via `git log --follow`, not assumed: 1c72725b7 (2026-05-20, core4#1613, now closed) added this as \"a live-gated ignored integration test scaffold\", commit message stating the intent explicitly (\"normal cargo test shows the test ignored, and --ignored without WRF_TEST_PEER_ADDR returns a skip-success\"). Not a regression -- it has never run by default. Requires a live testnet peer; run manually with WRF_TEST_PEER_ADDR set and -- --ignored."
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "yubikey_signer",
+      "reason": "1 real #[test], #[ignore]d BY DESIGN from its very first commit -- verified via `git log --follow`, not assumed: e7e06a6ef (2026-05-22, PR #1670, \"YubiKey 5 PKCS#11 client support\") introduced this file already carrying #[ignore], with its own doc comment explaining why (\"never runs without the operator opting in\"). Not a regression -- it has never run by default. Requires a physical YubiKey 5 (docs/hsm/yubikey.md); opt in with WRFCOIN_HSM_TEST_YUBIKEY=1 -- --ignored."
+    }
+  ],
+  "node_share_matrix": {
+    "package": "wrfcoin-native-chain",
+    "binary": "launch_api",
+    "features": "p2p",
+    "tests": [
+      "tests::node_share_slice6b::tests::node_share_on_mining_peer_checkpoint_wal_snapshot_and_outage_parity",
+      "tests::node_receipt_slice3::tests::actual_bonded_receiver_install_endorse_archive_submit_and_extractor_parity",
+      "p2p_events::tests::producer_applier_and_wal_agree_on_node_bond_lifecycle_1682",
+      "tests::node_settlement_slice4::tests::close_and_maturity_producer_peer_extractor_wal_checkpoint_and_reorg_parity"
+    ],
+    "shared_targets": [
+      "node_share_contracts",
+      "node_settlement_slice4",
+      "node_fraud_slice5"
+    ],
+    "expected_roots": "tests/integration/fixtures/determinism/expected_node_share_roots.json"
+  }
+}

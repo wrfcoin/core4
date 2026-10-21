@@ -1,0 +1,45 @@
+version: 2
+updates:
+  # NOTE: frontend/ dependabot entry removed — extracted to github.com/wrfcoin/frontend
+  # NOTE: backend/ dependabot entry removed — extracted to github.com/wrfcoin/backend
+  # NOTE: blockchain-core dependabot entry removed — crate archived to github.com/wrfcoin/blockchain-core
+  # NOTE: Smart contracts dependabot entry removed — extracted to github.com/wrfcoin/smart-contracts
+
+  # SDK dependencies
+  - package-ecosystem: 'npm'
+    directory: '/sdks/extensions/javascript'
+    schedule:
+      interval: 'weekly'
+      time: '02:00'
+      timezone: 'UTC'
+    open-pull-requests-limit: 5
+    reviewers:
+      - 'wrfcoin-security-team'
+    labels:
+      - 'dependencies'
+      - 'sdk'
+      - 'security'
+
+  # NOTE: Docker dependabot entry removed — infra/ extracted to github.com/wrfcoin/infra
+
+  # GitHub Actions dependencies
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      time: '02:00'
+      timezone: 'UTC'
+    open-pull-requests-limit: 5
+    reviewers:
+      - 'wrfcoin-security-team'
+      - 'wrfcoin-devops-team'
+    labels:
+      - 'dependencies'
+      - 'github-actions'
+      - 'ci-cd'
+      - 'security'
+    commit-message:
+      prefix: 'feat(deps-actions)'
+      include: 'scope'
+
+  # NOTE: Terraform dependabot entry removed — infra/ extracted to github.com/wrfcoin/infra

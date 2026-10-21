@@ -1,0 +1,6 @@
+fn emit(signing_key: &str) {
+    log::debug!(
+        "loaded signer {}",
+        signing_key
+    );
+}

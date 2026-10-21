@@ -1,0 +1,71 @@
+# Reference sentry topology (#2120): one validator behind two sentries.
+#
+# This file is DOCUMENTATION of the shape `docs/security/SENTRY_TOPOLOGY.md` describes.
+# It is not the testnet deployment (that lives in wrfcoin/infra) and it is not wired to
+# any image build. WRFCOIN_P2P_NODE_ROLE and WRFCOIN_P2P_SENTRY_ALLOWLIST are consumed by
+# `P2pConfig::apply_role_env` (p2p/src/config.rs); launch_api's boot path must call it
+# before `P2pNode::start` — that one-line call is boot-path work recorded on #2120 and is
+# NOT part of the PR that added this file. Until it lands, a launch_api node runs as `public`
+# whatever these variables say. Copy it, fill in the peer ids, and run
+# `python3 scripts/check_interface_binding.py --compose-ps "$(docker compose ps --format ...)"`
+# as the pre-flight gate before exposing anything.
+#
+# Failure modes each separation prevents:
+#   - a public peer that can reach the validator's P2P port directly can pin, flood or
+#     eclipse the producer; here only the sentries can reach it (private network) and the
+#     validator additionally refuses any inbound peer not in its allowlist at connection time;
+#   - a validator RPC/admin interface off-loopback is one credential leak from producing
+#     malicious blocks; here it is loopback only and the process refuses to start otherwise;
+#   - /metrics off-loopback leaks height, peers and timing to anyone; loopback for every role.
+
+services:
+  validator:
+    image: wrfcoin/launch_api:local   # built locally (see native-chain/Dockerfile); never a registry pull
+    environment:
+      WRFCOIN_P2P_NODE_ROLE: validator
+      # Peer ids of the two sentries below (libp2p PeerId strings). A validator with an
+      # empty or missing allowlist refuses to start.
+      WRFCOIN_P2P_SENTRY_ALLOWLIST: "12D3KooW...SENTRY_A,12D3KooW...SENTRY_B"
+      # Operator interfaces stay on loopback inside the container; nothing publishes them.
+      WRFCOIN_API_HOST: 127.0.0.1
+      WRFCOIN_API_PORT: "8556"
+      # (`InterfaceBinding` has no environment names yet; metrics/admin loopback is what
+      # `validate` enforces on the struct and what the pre-flight script checks on Compose.)
+      # Bootstrap only to the sentries.
+      WRFCOIN_P2P_BOOTSTRAP: "/dns4/sentry-a/tcp/9000/p2p/12D3KooW...SENTRY_A,/dns4/sentry-b/tcp/9000/p2p/12D3KooW...SENTRY_B"
+    networks:
+      - consensus       # private: only the sentries
+    # No `ports:` — the validator publishes nothing to the host.
+
+  sentry-a:
+    image: wrfcoin/launch_api:local
+    environment:
+      # sentry ⇒ boots as a reader: production disabled, no producer signer
+      # required (#2120). Equivalent to WRFCOIN_SYNC_ONLY=true.
+      WRFCOIN_P2P_NODE_ROLE: sentry
+      WRFCOIN_API_HOST: 127.0.0.1
+      WRFCOIN_P2P_BOOTSTRAP: "/dns4/validator/tcp/9000/p2p/12D3KooW...VALIDATOR"
+    ports:
+      - "0.0.0.0:9001:9000"   # P2P is the only interface legitimately reachable off-box
+    networks:
+      - consensus
+      - public
+
+  sentry-b:
+    image: wrfcoin/launch_api:local
+    environment:
+      # sentry ⇒ boots as a reader: production disabled, no producer signer
+      # required (#2120). Equivalent to WRFCOIN_SYNC_ONLY=true.
+      WRFCOIN_P2P_NODE_ROLE: sentry
+      WRFCOIN_API_HOST: 127.0.0.1
+      WRFCOIN_P2P_BOOTSTRAP: "/dns4/validator/tcp/9000/p2p/12D3KooW...VALIDATOR"
+    ports:
+      - "0.0.0.0:9002:9000"
+    networks:
+      - consensus
+      - public
+
+networks:
+  consensus:
+    internal: true    # no route to the host network: public peers cannot reach the validator
+  public: {}

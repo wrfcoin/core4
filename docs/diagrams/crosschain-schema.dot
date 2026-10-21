@@ -1,0 +1,16 @@
+digraph crosschain_schema {
+    label="Cross-Chain Operations";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    cross_chain_bridges [label="{cross_chain_bridges|{id (PK)|created_at|updated_at}}"];
+    axelar_chains [label="{axelar_chains|{id (PK)|created_at|updated_at}}"];
+    layer_zero_chains [label="{layer_zero_chains|{id (PK)|created_at|updated_at}}"];
+
+    cross_chain_bridges -> bridge_transactions [label="1:N"];
+    cross_chain_bridges -> cross_chain_transfers [label="1:N"];
+    axelar_chains -> axelar_transfers [label="1:N"];
+    axelar_chains -> axelar_messages [label="1:N"];
+    layer_zero_chains -> layer_zero_messages [label="1:N"];
+    layer_zero_chains -> layer_zero_token_transfers [label="1:N"];
+}

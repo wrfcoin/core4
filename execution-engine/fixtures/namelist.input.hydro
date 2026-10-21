@@ -1,0 +1,43 @@
+&time_control
+ run_hours = 24,
+ start_year = 2026,
+ start_month = 01,
+ start_day = 01,
+ start_hour = 00,
+ end_year = 2026,
+ end_month = 01,
+ end_day = 02,
+ end_hour = 00,
+ interval_seconds = 10800,
+ history_interval = 60,
+ frames_per_outfile = 1000,
+ io_form_history = 2,
+ io_form_input = 2,
+ io_form_boundary = 2,
+/
+&domains
+ max_dom = 1,
+ e_we = 100,
+ e_sn = 100,
+ e_vert = 30,
+ dx = 10000,
+ dy = 10000,
+ num_metgrid_levels = 34,
+/
+&physics
+ mp_physics = 6,
+ ra_lw_physics = 1,
+ ra_sw_physics = 1,
+ sf_sfclay_physics = 1,
+ sf_surface_physics = 2,
+ bl_pbl_physics = 1,
+ cu_physics = 1,
+/
+&hydro
+ hydro_opt = 1,
+ channel_routing = 1,
+ subrtswcrt = 1,
+ ovrtswcrt = 1,
+ gwbaseswcrt = 1,
+ land_surface_model = 2,
+/

@@ -1,0 +1,64 @@
+# cargo-audit configuration — core4
+#
+# This file exists so that an accepted advisory has somewhere honest to live.
+#
+# Before #2316, `supply-chain-security.yml` ran `cargo audit --json … || true`.
+# Seven advisories were being found and discarded on every scheduled run, and
+# the gate reported success. The fix removes the `|| true`, which means the gate
+# now goes RED while those advisories are open — as it should.
+#
+# The wrong way to make it green again is another `|| true`. The right way is
+# one of:
+#
+#   1. Upgrade the affected crate (preferred, and possible for several of the
+#      current seven — see the triage issue linked from PR #2316).
+#   2. Add an entry below, in a reviewed diff, with the four things a reader
+#      needs a year from now: which advisory, why it does not apply here, who
+#      decided, and when it must be revisited.
+#
+# The ignore list is DELIBERATELY EMPTY. Populating it is a risk-acceptance
+# decision about specific vulnerabilities, and that is not a decision a CI
+# cleanup gets to make silently on someone's behalf. The seven currently-open
+# advisories are enumerated in the triage issue with their reachability and
+# patch status; whether any of them is acceptable is for that issue to settle.
+#
+# Format when an entry is justified:
+#
+#   [advisories]
+#   ignore = [
+#     # RUSTSEC-YYYY-NNNN — <crate> <version>
+#     #   why:      the vulnerable path is not reachable because <specific reason>
+#     #   decided:  <who>, <YYYY-MM-DD>, in <PR or issue>
+#     #   revisit:  <YYYY-MM-DD> — remove when <upstream fix / migration> lands
+#     "RUSTSEC-YYYY-NNNN",
+#   ]
+#
+# An entry without all four lines is not an exemption, it is a `|| true` with
+# extra steps.
+
+[advisories]
+ignore = [
+  # RUSTSEC-2026-0118 — hickory-proto 0.25.2
+  #   why:      core4 enables neither libp2p dns nor mdns, so hickory-proto is absent from the all-features production graph
+  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
+  #   revisit:  2026-10-28 — remove when libp2p upgrades or either discovery feature is enabled
+  "RUSTSEC-2026-0118",
+  # RUSTSEC-2026-0119 — hickory-proto 0.25.2
+  #   why:      core4 enables neither libp2p dns nor mdns, so the affected encoder is not compiled
+  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
+  #   revisit:  2026-10-28 — remove when libp2p upgrades or either discovery feature is enabled
+  "RUSTSEC-2026-0119",
+  # RUSTSEC-2025-0055 — tracing-subscriber 0.2.25
+  #   why:      ark-relations enables only the registry layer; the affected fmt and ansi features are not compiled
+  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
+  #   revisit:  2026-10-28 — remove when arkworks upgrades to tracing-subscriber 0.3.20 or newer
+  "RUSTSEC-2025-0055",
+]
+
+# Unmaintained / unsound / yanked notices are informational. They are reported
+# by the advisory workflow's separate advisory step (`cargo audit --deny
+# warnings`, `continue-on-error: true`) and are deliberately not part of the
+# blocking gate: they are maintenance signals, and blocking on them would make
+# the vulnerability gate red for a non-vulnerability reason — the same
+# "red without discrimination" #2316 removes from the dependency budget.
+informational_warnings = ["unmaintained", "unsound", "yanked"]

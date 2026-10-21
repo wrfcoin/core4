@@ -1,0 +1,202 @@
+name: launch_api bin tests (self-hosted)
+
+# WHY THIS EXISTS
+#
+# `native-chain/src/bin/launch_api/**` carries its unit tests inside the BINARY
+# target (`#[cfg(test)] mod tests`). The only way to execute them is
+# `cargo test -p wrfcoin-native-chain --bin launch_api`, and no PR path runs the
+# FULL suite today. `ci-readiness.yml`'s `pull_request:` trigger has been parked
+# since 2026-07-31; what grew instead is five FILTERED launch_api gates inside
+# `ci-deploy-features.yml` (#2760, #2780, #2782, #2786, #2787), each pinning
+# named tests by exact count — and three of their comments state outright that
+# they exist because the bin tests do not run on PRs. Filtered gates pin exact
+# behaviors; this workflow pins whole-suite execution volume. The overlap is
+# intentional and mirrors the crate-execution-gates / ci-deploy-features split.
+#
+# The original gap was not theoretical. Measured 2026-08-03 on `main` @
+# 51eb1a4a8: the full run was 427 tests, 1 FAILED
+# (`tests::stake_routes_return_state_backed_fields_and_consistent_metrics`) —
+# a broken test had reached `main` and stayed, because no gate could see it.
+# `cargo check` cannot catch this class: it does not compile a binary's test
+# profile, so a `#[cfg(test)]` block can fail to compile OR fail to pass while
+# every existing check stays green.
+#
+# COST: self-hosted CT102 only — zero hosted minutes. ci-deploy-features
+# already builds this exact binary with the same feature set on the same
+# machine's shared /build target dir, so PR runs are warm in the common case.
+#
+# FEATURES: `--features p2p` matches ci-deploy-features' five launch_api steps
+# byte-for-byte, so this run REUSES their build artifacts instead of compiling
+# a new permutation. Features are additive, so this is a superset of a
+# default-feature run. Known, deliberate exclusion: tests gated
+# `#[cfg(feature = "execution")]` (e.g. p2p_events.rs:4280 as of 2026-08-31)
+# compile to nothing here AND in ci-deploy-features — closing that hole means
+# building the p2p+execution permutation and is a separate decision, not a
+# silent side effect of this gate. Re-derive the exclusion set with:
+#   rg -n 'cfg\(feature = "execution"\)' native-chain/src/bin/launch_api/
+
+on:
+  pull_request:
+    paths:
+      - 'native-chain/**'
+      - 'shared-protocol/**'
+      - 'p2p/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/launch-api-bin-tests.yml'
+      - '.cargo/**'
+      - '**/Cargo.toml'
+      - '.github/actions/**'
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'zk-circuits/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '**/*.env'
+      - '**/.env'
+      - '**/.env.*'
+      - '**/*.json'
+      - '**/*.jsonl'
+      - '**/*.toml'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.sh'
+      - '**/*.conf'
+  # Owner relevance/nightly ruling 2026-10-07; schedule policy Refs #2498.
+  schedule:
+    - cron: '39 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# The #2928 shape, matching every CT102 workflow migrated in #2929:
+# workflow-unique group keyed on ref, UNCONDITIONAL cancel-in-progress. A
+# superseded run's verdict has no retained value — this gate answers "does the
+# CURRENT head's launch_api suite pass", and only the newest SHA answers that.
+#
+# An earlier draft used a machine-keyed group to guard the shared /build
+# CARGO_TARGET_DIR against concurrent cargo jobs. That is a real, machine-level
+# problem — now tracked with measurements and fix options in #2964 — but one
+# workflow's concurrency group cannot solve it (other cargo workflows are
+# outside the group), and GitHub holds only one pending run per group, so a
+# machine-keyed no-cancel group silently drops the middle run of any burst.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  launch-api-bin-tests:
+    name: cargo test --bin launch_api (CT102)
+    # Self-hosted ONLY. If no CT102 runner is online this job QUEUES rather
+    # than skipping — deliberate: a skipped job reads GREEN in rollups, which
+    # is exactly the failure mode this workflow exists to close.
+    runs-on: ubuntu-latest
+    # Ceiling for a cold build of the launch_api p2p test profile; warm runs
+    # (the common case — ci-deploy-features builds the same artifacts) finish
+    # in minutes and the suite itself runs in seconds. NOTE (#2964): with
+    # three core4 runners sharing one CARGO_TARGET_DIR, time spent blocked on
+    # cargo's build-dir lock counts against this budget too.
+    timeout-minutes: 45
+    env:
+      # CT 101 — the LIVE testnet node — runs on the same physical host. The
+      # LXC is uncapped (measured 2026-08-31: 16 cores / 32 GB, the old
+      # "6-core/12 GB" figure is stale), so this cap is what actually leaves
+      # headroom for the node; '4' matches the figure ci-readiness used.
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      # The convention proven live on CT102 (#2950, green on
+      # crate-execution-gates the same day): the runner user's rustup shim
+      # directory. The job-level .env supplies CARGO_HOME/RUSTUP_HOME/
+      # CARGO_TARGET_DIR (see #2964 for the current shared-/build layout);
+      # this step only makes cargo reachable and fails with a named error if
+      # the toolchain is missing rather than a shell builtin's message.
+      - name: Put rustup's cargo on PATH
+        run: |
+          set -euo pipefail
+          test -x "${HOME}/.cargo/bin/cargo" \
+            || { echo "::error::cargo not found at ${HOME}/.cargo/bin — CT102 toolchain missing"; exit 1; }
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          cargo --version || "${HOME}/.cargo/bin/cargo" --version
+
+      # HISTORY: this gate shipped with a red-first exemption for
+      # `stake_routes_return_state_backed_fields_and_consistent_metrics`
+      # (failing on `main` @ 51eb1a4a8, 2026-08-03 — before any gate could see
+      # it). The exemption guard re-ran the test alone on every PR and went RED
+      # the moment it passed. That fired on its first real CT102 run
+      # (33450030502, 2026-08-31: 1 passed), so the exemption and its --skip
+      # were retired here the same day — the self-invalidation working as
+      # designed. If a launch_api test breaks on main again, reintroduce the
+      # exemption WITH its still-fails guard (see this file's history at
+      # af4e649c8), never a bare --skip.
+      - name: cargo test -p wrfcoin-native-chain --bin launch_api --features p2p
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$(mktemp)"
+          trap 'rm -f "$report"' EXIT
+
+          # `pipefail` + `if` is deliberate: a bare `cmd | tee` reports tee's
+          # exit status, turning a RED cargo run into a green step.
+          if ! cargo test --locked -p wrfcoin-native-chain --bin launch_api \
+            --features p2p 2>&1 | tee "$report"; then
+            echo '::error::launch_api bin suite failed (cargo exited nonzero)'
+            exit 1
+          fi
+
+          # A filter that matches nothing still prints `running 0 tests` and
+          # exits 0. Require a real, non-vacuous result:
+          #   - the summary says ok
+          #   - nothing failed
+          #   - ZERO tests filtered out (no exemption exists; a nonzero count
+          #     means someone reintroduced a filter without its guard)
+          summary="$(grep -E '^test result:' "$report" | tail -1)"
+          echo "summary: ${summary}"
+
+          grep -qE '^test result: ok\.' <<<"$summary" \
+            || { echo '::error::launch_api bin suite did not report ok'; exit 1; }
+          grep -qE '[^0-9]0 failed' <<<"$summary" \
+            || { echo '::error::launch_api bin suite reported failures'; exit 1; }
+          grep -qE '[^0-9]0 filtered out' <<<"$summary" \
+            || { echo '::error::expected 0 filtered-out tests — this gate carries no exemption. A nonzero count means a filter was added without a still-fails guard (see file history at af4e649c8 for the pattern).'; exit 1; }
+
+          passed="$(sed -E 's/.*ok\. ([0-9]+) passed.*/\1/' <<<"$summary")"
+          if [ "$passed" -lt 400 ]; then
+            echo "::error::only ${passed} tests executed — the suite was 427 in 2026-08; below 400 means a feature flag or filter silently dropped most of it"
+            exit 1
+          fi
+          echo "launch_api bin suite: ${passed} passed, 0 filtered out"

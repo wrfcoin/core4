@@ -1,0 +1,113 @@
+{
+  "default": {
+    "description": "Standard blockchain testing scenario",
+    "accountCount": 10,
+    "initialBalance": "1000000000000000000000",
+    "blockTime": 3000,
+    "networkId": 31337,
+    "features": [
+      "realistic_gas_prices",
+      "block_mining_simulation",
+      "transaction_pool",
+      "smart_contract_support"
+    ]
+  },
+
+  "high-throughput": {
+    "description": "High transaction throughput scenario",
+    "accountCount": 100,
+    "initialBalance": "10000000000000000000000",
+    "blockTime": 1000,
+    "networkId": 31337,
+    "features": [
+      "fast_block_times",
+      "large_transaction_pool",
+      "high_gas_limits",
+      "parallel_processing"
+    ]
+  },
+
+  "congested": {
+    "description": "Network congestion scenario with high gas prices",
+    "accountCount": 50,
+    "initialBalance": "500000000000000000000",
+    "blockTime": 15000,
+    "networkId": 31337,
+    "features": [
+      "slow_block_times",
+      "high_gas_prices",
+      "transaction_pool_overflow",
+      "delayed_confirmations"
+    ]
+  },
+
+  "low-gas": {
+    "description": "Low gas environment for testing edge cases",
+    "accountCount": 5,
+    "initialBalance": "100000000000000000",
+    "blockTime": 5000,
+    "networkId": 31337,
+    "features": [
+      "low_initial_balances",
+      "gas_estimation_challenges",
+      "transaction_failures",
+      "insufficient_funds"
+    ]
+  },
+
+  "mainnet-fork": {
+    "description": "Simulates mainnet-like conditions",
+    "accountCount": 200,
+    "initialBalance": "1000000000000000000000",
+    "blockTime": 12000,
+    "networkId": 1,
+    "features": [
+      "mainnet_gas_prices",
+      "realistic_block_times",
+      "complex_transactions",
+      "contract_interactions"
+    ]
+  },
+
+  "unstable": {
+    "description": "Unstable network with frequent reorgs and failures",
+    "accountCount": 20,
+    "initialBalance": "1000000000000000000000",
+    "blockTime": 8000,
+    "networkId": 31337,
+    "features": [
+      "chain_reorganizations",
+      "intermittent_failures",
+      "variable_block_times",
+      "transaction_reverts"
+    ]
+  },
+
+  "minimal": {
+    "description": "Minimal setup for basic testing",
+    "accountCount": 2,
+    "initialBalance": "1000000000000000000000",
+    "blockTime": 1000,
+    "networkId": 31337,
+    "features": [
+      "fast_confirmations",
+      "minimal_complexity",
+      "predictable_behavior",
+      "debug_friendly"
+    ]
+  },
+
+  "layer2": {
+    "description": "Layer 2 network simulation with instant finality",
+    "accountCount": 50,
+    "initialBalance": "1000000000000000000000",
+    "blockTime": 100,
+    "networkId": 421613,
+    "features": [
+      "instant_finality",
+      "low_gas_costs",
+      "high_throughput",
+      "optimistic_rollups"
+    ]
+  }
+}

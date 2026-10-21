@@ -1,0 +1,233 @@
+# Prometheus alerting rules for mock service monitoring
+groups:
+  - name: mock_services_health
+    interval: 30s
+    rules:
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: 'Service {{ $labels.job }} is down'
+          description: 'Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute.'
+
+      - alert: CriticalServiceUnhealthy
+        expr: health_checker_service_status{critical="true"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: health
+        annotations:
+          summary: 'Critical service {{ $labels.service }} is unhealthy'
+          description: 'Critical service {{ $labels.name }} ({{ $labels.service }}) has been unhealthy for more than 2 minutes.'
+
+      - alert: ServiceHighResponseTime
+        expr: health_checker_service_response_time_ms > 5000
+        for: 3m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: 'Service {{ $labels.service }} has high response time'
+          description: 'Service {{ $labels.service }} response time is {{ $value }}ms, which is above the 5000ms threshold.'
+
+      - alert: ServiceConsecutiveFailures
+        expr: health_checker_service_consecutive_failures >= 5
+        for: 1m
+        labels:
+          severity: warning
+          category: reliability
+        annotations:
+          summary: 'Service {{ $labels.service }} has multiple consecutive failures'
+          description: 'Service {{ $labels.service }} has {{ $value }} consecutive failures.'
+
+  - name: mock_weather_oracle
+    interval: 30s
+    rules:
+      - alert: WeatherMockHighErrorRate
+        expr: rate(weather_mock_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          category: errors
+        annotations:
+          summary: 'Weather mock service has high error rate'
+          description: 'Weather mock service error rate is {{ $value | humanizePercentage }} over the last 5 minutes.'
+
+      - alert: WeatherMockNoDataUpdates
+        expr: increase(weather_mock_data_updates_total[10m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: data
+        annotations:
+          summary: 'Weather mock service stopped generating data updates'
+          description: 'Weather mock service has not generated any data updates in the last 10 minutes.'
+
+  - name: mock_blockchain_rpc
+    interval: 30s
+    rules:
+      - alert: BlockchainMockHighLatency
+        expr: blockchain_mock_response_time_ms > 1000
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: 'Blockchain mock RPC has high latency'
+          description: 'Blockchain mock RPC average response time is {{ $value }}ms, above the 1000ms threshold.'
+
+      - alert: BlockchainMockStoppedMining
+        expr: increase(blockchain_mock_block_number[5m]) == 0
+        for: 3m
+        labels:
+          severity: critical
+          category: blockchain
+        annotations:
+          summary: 'Blockchain mock stopped mining blocks'
+          description: 'Blockchain mock has not mined any new blocks in the last 5 minutes.'
+
+      - alert: BlockchainMockTxPoolOverflow
+        expr: blockchain_mock_pending_transactions > 1000
+        for: 2m
+        labels:
+          severity: warning
+          category: blockchain
+        annotations:
+          summary: 'Blockchain mock transaction pool overflow'
+          description: 'Blockchain mock has {{ $value }} pending transactions, indicating possible congestion.'
+
+  - name: mock_carbon_oracle
+    interval: 30s
+    rules:
+      - alert: CarbonMockPriceStale
+        expr: time() - carbon_mock_price_updates_total > 300
+        for: 2m
+        labels:
+          severity: warning
+          category: data
+        annotations:
+          summary: 'Carbon mock price data is stale'
+          description: 'Carbon mock has not updated prices for more than 5 minutes.'
+
+      - alert: CarbonMockLowVolume
+        expr: carbon_mock_volume_24h < 1000
+        for: 10m
+        labels:
+          severity: info
+          category: data
+        annotations:
+          summary: 'Carbon mock has low trading volume'
+          description: 'Carbon mock 24h volume is {{ $value }}, which is unusually low.'
+
+  - name: database_health
+    interval: 30s
+    rules:
+      - alert: PostgreSQLConnectionsHigh
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: 'PostgreSQL has high number of connections'
+          description: 'PostgreSQL has {{ $value }} active connections, approaching limits.'
+
+      - alert: PostgreSQLSlowQueries
+        expr: rate(pg_stat_statements_mean_time[5m]) > 1000
+        for: 3m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: 'PostgreSQL has slow queries'
+          description: 'PostgreSQL average query time is {{ $value }}ms over the last 5 minutes.'
+
+      - alert: RedisMemoryUsageHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          category: memory
+        annotations:
+          summary: 'Redis memory usage is high'
+          description: 'Redis is using {{ $value | humanizePercentage }} of available memory.'
+
+      - alert: RedisConnectionsRejected
+        expr: increase(redis_rejected_connections_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: 'Redis is rejecting connections'
+          description: 'Redis rejected {{ $value }} connections in the last 5 minutes.'
+
+  - name: system_resources
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: 'High CPU usage detected'
+          description: 'CPU usage is {{ $value | humanizePercentage }} for more than 5 minutes.'
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: 'High memory usage detected'
+          description: 'Memory usage is {{ $value | humanizePercentage }} for more than 5 minutes.'
+
+      - alert: LowDiskSpace
+        expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: 'Low disk space on {{ $labels.mountpoint }}'
+          description: 'Disk usage is {{ $value | humanizePercentage }} on {{ $labels.mountpoint }}.'
+
+      - alert: HighDiskIOWait
+        expr: rate(node_cpu_seconds_total{mode="iowait"}[5m]) * 100 > 20
+        for: 5m
+        labels:
+          severity: warning
+          category: system
+        annotations:
+          summary: 'High disk I/O wait time'
+          description: 'Disk I/O wait time is {{ $value | humanizePercentage }} for more than 5 minutes.'
+
+  - name: integration_tests
+    interval: 60s
+    rules:
+      - alert: IntegrationTestFailures
+        expr: increase(integration_test_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: testing
+        annotations:
+          summary: 'Integration tests are failing'
+          description: '{{ $value }} integration tests have failed in the last 10 minutes.'
+
+      - alert: TestEnvironmentUnstable
+        expr: count(health_checker_service_status{critical="true"} == 0) > 1
+        for: 5m
+        labels:
+          severity: critical
+          category: testing
+        annotations:
+          summary: 'Test environment is unstable'
+          description: '{{ $value }} critical services are unhealthy, making the test environment unstable.'

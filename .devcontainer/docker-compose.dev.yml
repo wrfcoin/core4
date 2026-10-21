@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  # Main development workspace container
+  workspace:
+    build:
+      context: ../
+      dockerfile: .devcontainer/Dockerfile.dev
+    volumes:
+      # Mount the entire project
+      - ../:/workspace:cached
+
+      # Cache volumes for better performance
+      - node_modules:/workspace/node_modules
+      - cargo_cache:/usr/local/cargo/registry
+      - cargo_target:/workspace/blockchain-core/target
+      - vscode_extensions:/home/vscode/.vscode-server/extensions
+
+      # Docker socket for Docker-in-Docker
+      - /var/run/docker.sock:/var/run/docker-host.sock:ro
+
+    environment:
+      # Development environment
+      - NODE_ENV=development
+      - RUST_LOG=debug
+      - CARGO_TARGET_DIR=/workspace/blockchain-core/target
+
+      # Test configuration (use environment variables for credentials)
+      - TEST_DATABASE_URL=postgresql://postgres:${DEV_POSTGRES_PASSWORD:-devpassword}@test-db:5432/wrfcoin_test
+      - REDIS_URL=redis://test-redis:6379
+
+      # Development service URLs
+      - API_URL=http://localhost:4001
+      - FRONTEND_URL=http://localhost:3000
+      - GRAPHQL_URL=http://localhost:4001/graphql
+
+      # Playwright configuration
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
+
+      # Docker host configuration
+      - DOCKER_HOST=unix:///var/run/docker-host.sock
+
+    ports:
+      - '3000:3000' # Frontend development server
+      - '3001:3001' # Test frontend
+      - '4000:4000' # Wallet server
+      - '4001:4001' # Main API server
+      - '5432:5432' # PostgreSQL (when running locally)
+      - '6379:6379' # Redis (when running locally)
+      - '8000:8000' # Governance server
+      - '8080:8080' # Weather earnings
+      - '8090:8090' # Quality monitoring
+      - '9001:9001' # Node discovery
+      - '8001:8001' # MkDocs serve
+      - '9090:9090' # Prometheus (monitoring)
+      - '3002:3002' # Grafana (monitoring)
+
+    networks:
+      - wrfcoin-dev
+
+    # Keep container running
+    command: sleep infinity
+
+    depends_on:
+      - test-db
+      - test-redis
+
+    # Security configuration
+    cap_add:
+      - SYS_PTRACE # For debugging
+    security_opt:
+      - seccomp:unconfined # For debugging
+
+  # Test database for development
+  test-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: wrfcoin_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-devpassword}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - '5433:5432' # Different port to avoid conflicts
+    networks:
+      - wrfcoin-dev
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Test Redis for development
+  test-redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - '6380:6379' # Different port to avoid conflicts
+    networks:
+      - wrfcoin-dev
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Local IPFS node for testing
+  ipfs:
+    image: ipfs/kubo:latest
+    environment:
+      - IPFS_PROFILE=test
+    volumes:
+      - ipfs_data:/data/ipfs
+    ports:
+      - '4002:4001' # API port (avoid conflict with main API)
+      - '5001:5001' # Gateway port
+      - '8082:8080' # Web UI port (avoid conflict with weather earnings)
+    networks:
+      - wrfcoin-dev
+
+  # Local blockchain node (Hardhat Network)
+  hardhat-node:
+    build:
+      context: ../
+      dockerfile: .devcontainer/Dockerfile.hardhat
+    volumes:
+      - ../contracts:/workspace/contracts:cached
+      - hardhat_cache:/workspace/contracts/cache
+      - hardhat_artifacts:/workspace/contracts/artifacts
+    ports:
+      - '8545:8545' # Hardhat node RPC
+      - '8546:8546' # Hardhat node WebSocket
+    networks:
+      - wrfcoin-dev
+    command: npx hardhat node --hostname 0.0.0.0 --port 8545
+    environment:
+      - NODE_ENV=development
+
+volumes:
+  node_modules:
+  cargo_cache:
+  cargo_target:
+  vscode_extensions:
+  postgres_data:
+  redis_data:
+  ipfs_data:
+  hardhat_cache:
+  hardhat_artifacts:
+
+networks:
+  wrfcoin-dev:
+    driver: bridge

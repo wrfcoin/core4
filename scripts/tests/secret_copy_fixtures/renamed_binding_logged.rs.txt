@@ -1,0 +1,4 @@
+fn leak(handle: &KeyHandle) {
+    let innocuous = handle.expose_secret().to_owned();
+    log::debug!("value {innocuous:?}");
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@wrfcoin/mcp-server",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "WRFCoin MCP server for AI agent integration",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "test": "node --import tsx --test --test-concurrency=2 src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": ">=1.26.0",
+    "axios": "^1.15.0",
+    "dotenv": "^16.5.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "path-to-regexp": ">=8.4.0",
+    "express-rate-limit": ">=8.2.2",
+    "hono": ">=4.12.4",
+    "@hono/node-server": ">=1.19.10"
+  }
+}

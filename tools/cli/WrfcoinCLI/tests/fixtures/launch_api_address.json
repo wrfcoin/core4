@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "data": {
+    "address": "0x1111111111111111111111111111111111111111",
+    "balance": "100",
+    "nonce": "7",
+    "stake_required": "0",
+    "stake_locked": "0",
+    "spendable_balance": "100",
+    "earned_balance_total": "0",
+    "contribution_rewards": {
+      "real_paid": "0",
+      "real_pending": "0",
+      "synthetic_paid": "0",
+      "unclassified_paid": "0",
+      "real_decision_count": 0,
+      "synthetic_decision_count": 0,
+      "unclassified_decision_count": 0
+    }
+  },
+  "error": null,
+  "meta": {
+    "request_id": "req_fixture",
+    "timestamp": "2026-09-18T00:00:00Z",
+    "api_version": "v1"
+  }
+}

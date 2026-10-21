@@ -1,0 +1,34 @@
+[package]
+name = "test_server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "test_server"
+path = "src/main.rs"
+
+[[test]]
+name = "determinism_differential"
+path = "determinism_differential.rs"
+
+[[test]]
+name = "feature_schedule_parity"
+path = "feature_schedule_parity.rs"
+
+[[test]]
+name = "passkey_feature_parity_2169"
+path = "passkey_feature_parity_2169.rs"
+
+[[test]]
+name = "schedule_extension_bootstrap_parity_3277"
+path = "schedule_extension_bootstrap_parity_3277.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wrfcoin-shared-protocol = { path = "../../shared-protocol" }
+bincode = "1.3"

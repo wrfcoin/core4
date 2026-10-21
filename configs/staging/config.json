@@ -1,0 +1,80 @@
+{
+  "$schema": "../../backend/config/environment-schema.json",
+  "environment": "staging",
+  "description": "Staging environment configuration for pre-production testing",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 4001,
+    "trustProxy": true,
+    "requestTimeout": 30000,
+    "keepAliveTimeout": 65000
+  },
+
+  "database": {
+    "ssl": true,
+    "poolSize": 20,
+    "connectionTimeout": 10000,
+    "idleTimeout": 30000,
+    "logging": false
+  },
+
+  "redis": {
+    "enabled": true,
+    "host": "redis-staging",
+    "port": 6379,
+    "db": 0,
+    "keyPrefix": "wrfcoin:staging:",
+    "tls": false
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "includeTimestamp": true,
+    "includeStackTrace": false,
+    "sensitiveDataMasking": true
+  },
+
+  "security": {
+    "hsmRequired": false,
+    "mfaRequired": true,
+    "sessionDuration": 43200,
+    "rateLimit": {
+      "enabled": true,
+      "windowMs": 60000,
+      "max": 200
+    },
+    "cors": {
+      "enabled": true,
+      "origins": ["https://staging.wrfcoin.io"],
+      "credentials": true
+    }
+  },
+
+  "blockchain": {
+    "network": "testnet",
+    "confirmations": 3,
+    "gasMultiplier": 1.2,
+    "defaultGasLimit": 500000
+  },
+
+  "features": {
+    "experimentalBridges": true,
+    "betaAiModels": true,
+    "newCarbonCalculation": true,
+    "physicsValidationProfile": "operational"
+  },
+
+  "iot": {
+    "dataValidationLevel": "moderate",
+    "sensorTimeout": 45000,
+    "maxDataAge": 1800000
+  },
+
+  "monitoring": {
+    "metricsEnabled": true,
+    "tracingEnabled": true,
+    "healthCheckInterval": 15000
+  }
+}

@@ -1,0 +1,32 @@
+[TITLE]
+WRFCoin Water Quality Analysis - us-east
+
+[JUNCTIONS]
+;ID  Elev  Demand
+J1   100   0.5
+J2   90    0.3
+
+[RESERVOIRS]
+;ID  Head
+R1   150
+
+[PIPES]
+;ID  Node1  Node2  Length  Diameter  Roughness
+P1   R1     J1     1000   300       100
+P2   J1     J2     800    200       100
+
+[QUALITY]
+;Node  InitQual
+R1     1.0
+
+[REACTIONS]
+Global Bulk -0.5
+Global Wall -1.0
+
+[TIMES]
+Duration  24:00
+Hydraulic Timestep  0:15
+Quality Timestep  0:05
+Report Timestep  1:00
+
+[END]

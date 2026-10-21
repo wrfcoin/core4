@@ -1,0 +1,13 @@
+[package]
+name = "wrfcoin-oracle-packet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wrfcoin-shared-protocol = { path = "../shared-protocol" }
+
+[dev-dependencies]
+rand.workspace = true

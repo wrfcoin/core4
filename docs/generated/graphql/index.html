@@ -1,0 +1,2948 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WRFCoin GraphQL API Documentation</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        background: #f8f9fa;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 40px;
+        border-radius: 10px;
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 10px;
+      }
+
+      .nav {
+        background: white;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 30px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      .nav ul {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+      }
+
+      .nav a {
+        color: #667eea;
+        text-decoration: none;
+        font-weight: 600;
+        padding: 10px 15px;
+        border-radius: 5px;
+        transition: all 0.2s ease;
+      }
+
+      .nav a:hover {
+        background: #667eea;
+        color: white;
+      }
+
+      .section {
+        background: white;
+        border-radius: 8px;
+        padding: 30px;
+        margin-bottom: 30px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      .section h2 {
+        color: #2c3e50;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 2px solid #eee;
+      }
+
+      .type-card {
+        background: #f8f9fa;
+        border-radius: 6px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border-left: 4px solid #667eea;
+      }
+
+      .type-card h3 {
+        color: #2c3e50;
+        margin-bottom: 15px;
+      }
+
+      .field {
+        background: white;
+        padding: 10px 15px;
+        margin: 5px 0;
+        border-radius: 4px;
+        border-left: 3px solid #28a745;
+        font-family: 'Courier New', monospace;
+      }
+
+      .field-name {
+        color: #e83e8c;
+        font-weight: bold;
+      }
+
+      .field-type {
+        color: #6f42c1;
+      }
+
+      .schema-section {
+        background: #2d3748;
+        color: #e2e8f0;
+        padding: 20px;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+
+      .schema-section pre {
+        margin: 0;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        line-height: 1.4;
+      }
+
+      .endpoint {
+        background: #e3f2fd;
+        border: 1px solid #2196f3;
+        border-radius: 4px;
+        padding: 10px 15px;
+        margin: 10px 0;
+        font-family: monospace;
+      }
+
+      .footer {
+        text-align: center;
+        margin-top: 50px;
+        padding: 30px;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      @media (max-width: 768px) {
+        .nav ul {
+          flex-direction: column;
+        }
+
+        .container {
+          padding: 10px;
+        }
+
+        .header {
+          padding: 20px;
+        }
+
+        .header h1 {
+          font-size: 1.8rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>📊 GraphQL API Documentation</h1>
+        <p>WRFCoin Platform GraphQL Schema Reference</p>
+      </div>
+
+      <div class="nav">
+        <ul>
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#queries">Queries</a></li>
+          <li><a href="#mutations">Mutations</a></li>
+          <li><a href="#types">Types</a></li>
+          <li><a href="#enums">Enums</a></li>
+          <li><a href="#schema">Full Schema</a></li>
+        </ul>
+      </div>
+
+      <div id="overview" class="section">
+        <h2>🌍 Overview</h2>
+        <p>
+          The WRFCoin GraphQL API provides a comprehensive interface for
+          interacting with the climate-focused blockchain platform. This API
+          supports:
+        </p>
+        <ul style="margin: 20px 0; padding-left: 20px">
+          <li>
+            <strong>Weather Data Operations</strong> - Submit and query
+            environmental sensor data
+          </li>
+          <li>
+            <strong>Blockchain Queries</strong> - Access transaction and block
+            information
+          </li>
+          <li>
+            <strong>Wallet Management</strong> - Handle wallet operations and
+            balance queries
+          </li>
+          <li>
+            <strong>NFT Operations</strong> - Mint, transfer, and query NFTs
+          </li>
+          <li>
+            <strong>Governance</strong> - DAO proposals and voting mechanisms
+          </li>
+          <li>
+            <strong>Carbon Credits</strong> - Environmental impact tracking and
+            trading
+          </li>
+        </ul>
+
+        <div class="endpoint">
+          <strong>GraphQL Endpoint:</strong> POST http://localhost:4000/graphql
+        </div>
+
+        <p style="margin-top: 20px">
+          <strong>Authentication:</strong> Most operations require
+          authentication via JWT token in the Authorization header.
+        </p>
+      </div>
+
+      <div id="queries" class="section">
+        <h2>🔍 Queries</h2>
+
+        <p>Query operations for reading data from the platform</p>
+
+        <div class="type-card">
+          <h3>Query</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">wrfToken</span>:
+              <span class="field-type">WRFToken</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherStation</span>(id: ID!):
+              <span class="field-type">WeatherStation</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderBy</span>:
+              <span class="field-type">String = "id"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderDirection</span>:
+              <span class="field-type">String = "asc"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">where</span>:
+              <span class="field-type">WeatherStationFilter</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stationId</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">from</span>:
+              <span class="field-type">DateTime</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">to</span>:
+              <span class="field-type">DateTime</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 100</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonCredit</span>(id: ID!):
+              <span class="field-type">CarbonCredit</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderBy</span>:
+              <span class="field-type">String = "id"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderDirection</span>:
+              <span class="field-type">String = "asc"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">where</span>:
+              <span class="field-type">CarbonCreditFilter</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computationalNFT</span>(id: ID!):
+              <span class="field-type">ComputationalNFT</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderBy</span>:
+              <span class="field-type">String = "id"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderDirection</span>:
+              <span class="field-type">String = "asc"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">where</span>:
+              <span class="field-type">ComputationalNFTFilter</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposal</span>(id: ID!):
+              <span class="field-type">GovernanceProposal</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderBy</span>:
+              <span class="field-type">String = "id"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">orderDirection</span>:
+              <span class="field-type">String = "asc"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">where</span>:
+              <span class="field-type">ProposalFilter</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">ammPool</span>(id: ID!):
+              <span class="field-type">CarbonCreditAMM</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>(address: Address!):
+              <span class="field-type">User</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">first</span>:
+              <span class="field-type">Int = 10</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">skip</span>:
+              <span class="field-type">Int = 0</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">marketData</span>(timestamp: DateTime):
+              <span class="field-type">MarketData</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">from</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">to</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">interval</span>:
+              <span class="field-type">String = "1h"</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">search</span>(query: String!, type:
+              SearchType): <span class="field-type">[SearchResult!]!</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="mutations" class="section">
+        <h2>✏️ Mutations</h2>
+
+        <p>Mutation operations for modifying data on the platform</p>
+
+        <div class="type-card">
+          <h3>Mutation</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">submitWeatherData</span>(input:
+              WeatherDataInput!):
+              <span class="field-type">WeatherDataSubmissionResult!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">trackCarbonActivity</span>(input:
+              CarbonActivityInput!):
+              <span class="field-type">CarbonActivityResult!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">castVote</span>(input: VoteInput!):
+              <span class="field-type">VoteResult!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">prepareSwap</span>(input: SwapInput!):
+              <span class="field-type">TransactionPreparation!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">prepareTransfer</span>(input:
+              TransferInput!):
+              <span class="field-type">TransactionPreparation!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">prepareStake</span>(input: StakeInput!):
+              <span class="field-type">TransactionPreparation!</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="types" class="section">
+        <h2>📋 Types</h2>
+
+        <p>Custom types used throughout the GraphQL schema</p>
+
+        <div class="type-card">
+          <h3>WRFToken</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">address</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">symbol</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">name</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">decimals</span>:
+              <span class="field-type">Int!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalSupply</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">maxSupply</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">paused</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherRewardRate</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherStations</span>:
+              <span class="field-type">[WeatherStation!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votes</span>:
+              <span class="field-type">[Vote!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposals</span>:
+              <span class="field-type">[GovernanceProposal!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>WeatherStation</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">address</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stationId</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">location</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">isActive</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">lastRewardTime</span>:
+              <span class="field-type">DateTime</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalRewards</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">qualityScore</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherData</span>:
+              <span class="field-type">[WeatherData!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">latestWeatherData</span>:
+              <span class="field-type">WeatherData</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>WeatherData</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stationId</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">temperature</span>:
+              <span class="field-type">Float! # In celsius * 100</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">humidity</span>:
+              <span class="field-type">Float! # 0-100%</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pressure</span>:
+              <span class="field-type">Float! # In hPa * 100</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">windSpeed</span>:
+              <span class="field-type">Float! # In m/s * 100</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rainfall</span>:
+              <span class="field-type">Float! # In mm * 100</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">confidence</span>:
+              <span class="field-type">Float! # 0-100%</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">station</span>:
+              <span class="field-type">WeatherStation!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonCredit</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">tokenId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonOffset</span>:
+              <span class="field-type">BigInt! # CO2 equivalent in grams</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">projectType</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">verificationStandard</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">issuanceDate</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">expiryDate</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">location</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">isRetired</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">issuer</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">certificationHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">forSale</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">price</span>:
+              <span class="field-type">WeiAmount</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">owner</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transfers</span>:
+              <span class="field-type">[CarbonCreditTransfer!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">retirements</span>:
+              <span class="field-type">[CarbonCreditRetirement!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonCreditTransfer</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">tokenId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">from</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">to</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">price</span>:
+              <span class="field-type">WeiAmount</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonCreditRetirement</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">tokenId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">retiringEntity</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonOffset</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>ComputationalNFT</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">tokenId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">modelType</span>:
+              <span class="field-type">ModelType!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">modelName</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">inputData</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computeResources</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">executionTime</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stakeAmount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">status</span>:
+              <span class="field-type">ComputeStatus!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">resultData</span>:
+              <span class="field-type">String</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">resultHash</span>:
+              <span class="field-type">String</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">createdAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">executedAt</span>:
+              <span class="field-type">DateTime</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computeProvider</span>:
+              <span class="field-type">Address</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">isVerified</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">owner</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">job</span>:
+              <span class="field-type">ComputeJob!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>ComputeJob</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">nft</span>:
+              <span class="field-type">ComputationalNFT!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">provider</span>:
+              <span class="field-type">ComputeProvider</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rewards</span>:
+              <span class="field-type">[ComputeReward!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>ComputeProvider</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">address</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">isAuthorized</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalComputeTime</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">successfulJobs</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">failedJobs</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stakedTokens</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">hardwareSpecs</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">jobs</span>:
+              <span class="field-type">[ComputeJob!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>ComputeReward</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">provider</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computeTime</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>GovernanceProposal</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposalId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">title</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">description</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposer</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">targets</span>:
+              <span class="field-type">[Address!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">values</span>:
+              <span class="field-type">[WeiAmount!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">calldatas</span>:
+              <span class="field-type">[String!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votingType</span>:
+              <span class="field-type">VotingType!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votingDelay</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votingPeriod</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">quorumFraction</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">emergencyProposal</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">state</span>:
+              <span class="field-type">ProposalState!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">startBlock</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">endBlock</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">forVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">againstVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">abstainVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votes</span>:
+              <span class="field-type">[Vote!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">createdAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">executedAt</span>:
+              <span class="field-type">DateTime</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Vote</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposalId</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">voter</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">support</span>:
+              <span class="field-type">VoteChoice!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weight</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">reason</span>:
+              <span class="field-type">String</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">quadraticCredits</span>:
+              <span class="field-type">BigInt</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rankedChoices</span>:
+              <span class="field-type">[Int!]</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">fractionalVotes</span>:
+              <span class="field-type">FractionalVote</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>FractionalVote</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">forVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">againstVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">abstainVotes</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonCreditAMM</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">address</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">token0</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">token1</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">reserve0</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">reserve1</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">feeBasisPoints</span>:
+              <span class="field-type">Int!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">protocolFeeBasisPoints</span>:
+              <span class="field-type">Int!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalSupply</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">price0CumulativeLast</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">price1CumulativeLast</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">kLast</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">swaps</span>:
+              <span class="field-type">[Swap!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">mints</span>:
+              <span class="field-type">[Mint!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">burns</span>:
+              <span class="field-type">[Burn!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">flashLoans</span>:
+              <span class="field-type">[FlashLoan!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Swap</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pool</span>:
+              <span class="field-type">CarbonCreditAMM!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">sender</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">to</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount0In</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount1In</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount0Out</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount1Out</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Mint</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pool</span>:
+              <span class="field-type">CarbonCreditAMM!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">sender</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount0</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount1</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">liquidity</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Burn</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pool</span>:
+              <span class="field-type">CarbonCreditAMM!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">sender</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">to</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount0</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount1</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">liquidity</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>FlashLoan</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pool</span>:
+              <span class="field-type">CarbonCreditAMM!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">borrower</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount0</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount1</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">fee0</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">fee1</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>User</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">address</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">wrfBalance</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonCredits</span>:
+              <span class="field-type">[CarbonCredit!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computationalNFTs</span>:
+              <span class="field-type">[ComputationalNFT!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonFootprint</span>:
+              <span class="field-type">CarbonFootprint</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">votes</span>:
+              <span class="field-type">[Vote!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">proposals</span>:
+              <span class="field-type">[GovernanceProposal!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherStations</span>:
+              <span class="field-type">[WeatherStation!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">swaps</span>:
+              <span class="field-type">[Swap!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">liquidityPositions</span>:
+              <span class="field-type">[LiquidityPosition!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stakingPositions</span>:
+              <span class="field-type">[StakingPosition!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rewards</span>:
+              <span class="field-type">[Reward!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonFootprint</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalEmissions</span>:
+              <span class="field-type">Float! # kg CO2e</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalOffsets</span>:
+              <span class="field-type">Float! # kg CO2e</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">netEmissions</span>:
+              <span class="field-type">Float! # kg CO2e</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">calculationDate</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">activities</span>:
+              <span class="field-type">[CarbonActivity!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">recommendations</span>:
+              <span class="field-type">[CarbonRecommendation!]!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonActivity</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">activityType</span>:
+              <span class="field-type">CarbonActivityType!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">category</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">unit</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonEmission</span>:
+              <span class="field-type">Float! # kg CO2e</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">confidence</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">source</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">location</span>:
+              <span class="field-type">Location</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Location</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">latitude</span>:
+              <span class="field-type">Float</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">longitude</span>:
+              <span class="field-type">Float</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonRecommendation</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">title</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">description</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">potentialSavings</span>:
+              <span class="field-type">Float! # kg CO2e</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">priority</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">category</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">generatedAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>LiquidityPosition</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">pool</span>:
+              <span class="field-type">CarbonCreditAMM!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">liquidity</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">token0Amount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">token1Amount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">createdAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">updatedAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>StakingPosition</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">lockDuration</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rewardRate</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">stakedAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">unlocksAt</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">claimed</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Reward</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">type</span>:
+              <span class="field-type">RewardType!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">amount</span>:
+              <span class="field-type">WeiAmount!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">source</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>MarketData</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">id</span>:
+              <span class="field-type">ID!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">wrfPrice</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">wrfMarketCap</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">wrfVolume24h</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonCreditVolume24h</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">averageCarbonPrice</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalCarbonCredits</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">retiredCarbonCredits</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalUsers</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">activeWeatherStations</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">computeJobs24h</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">totalValueLocked</span>:
+              <span class="field-type">Float!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>Subscription</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">weatherDataUpdated</span>(stationId:
+              String): <span class="field-type">WeatherData!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">newCarbonCredit</span>:
+              <span class="field-type">CarbonCredit!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">newComputeJob</span>:
+              <span class="field-type">ComputationalNFT!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">newProposal</span>:
+              <span class="field-type">GovernanceProposal!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">swapExecuted</span>(pool: Address):
+              <span class="field-type">Swap!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">priceUpdated</span>(token: Address):
+              <span class="field-type">PriceUpdate!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">userActivityUpdated</span>(address:
+              Address!): <span class="field-type">UserActivity!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>WeatherDataSubmissionResult</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">success</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">weatherData</span>:
+              <span class="field-type">WeatherData</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">rewards</span>:
+              <span class="field-type">WeiAmount</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">error</span>:
+              <span class="field-type">String</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonActivityResult</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">success</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">activity</span>:
+              <span class="field-type">CarbonActivity</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">carbonEmission</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">recommendations</span>:
+              <span class="field-type">[CarbonRecommendation!]!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">error</span>:
+              <span class="field-type">String</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>VoteResult</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">success</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">vote</span>:
+              <span class="field-type">Vote</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionHash</span>:
+              <span class="field-type">String</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">error</span>:
+              <span class="field-type">String</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>TransactionPreparation</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">success</span>:
+              <span class="field-type">Boolean!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">transactionData</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">gasEstimate</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">nonce</span>:
+              <span class="field-type">BigInt!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">error</span>:
+              <span class="field-type">String</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>PriceUpdate</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">token</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">price</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">change24h</span>:
+              <span class="field-type">Float!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="type-card">
+          <h3>UserActivity</h3>
+
+          <div>
+            <div class="field">
+              <span class="field-name">user</span>:
+              <span class="field-type">Address!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">type</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">data</span>:
+              <span class="field-type">String!</span>
+            </div>
+
+            <div class="field">
+              <span class="field-name">timestamp</span>:
+              <span class="field-type">DateTime!</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="enums" class="section">
+        <h2>🏷️ Enums</h2>
+
+        <div class="type-card">
+          <h3>ModelType</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>ComputeStatus</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>VotingType</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>ProposalState</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>VoteChoice</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>CarbonActivityType</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>RewardType</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+
+        <div class="type-card">
+          <h3>SearchType</h3>
+          <p style="color: #7f8c8d; font-style: italic">No values defined.</p>
+        </div>
+      </div>
+
+      <div id="schema" class="section">
+        <h2>📜 Full Schema</h2>
+        <p>Complete GraphQL schema definition:</p>
+        <div class="schema-section">
+          <pre>
+# Wrfcoin GraphQL Schema
+# Comprehensive GraphQL API for the Wrfcoin ecosystem
+# Supports all smart contracts, blockchain operations, and data models
+
+# Scalar types
+scalar DateTime
+scalar BigInt
+scalar Bytes32
+scalar Address
+scalar WeiAmount
+
+# Core token information
+type WRFToken {
+  id: ID!
+  address: Address!
+  symbol: String!
+  name: String!
+  decimals: Int!
+  totalSupply: WeiAmount!
+  maxSupply: WeiAmount!
+  paused: Boolean!
+  
+  # Weather station rewards
+  weatherRewardRate: WeiAmount!
+  weatherStations: [WeatherStation!]!
+  
+  # Governance features
+  votes: [Vote!]!
+  proposals: [GovernanceProposal!]!
+}
+
+# Weather stations and data
+type WeatherStation {
+  id: ID!
+  address: Address!
+  stationId: String!
+  location: String!
+  isActive: Boolean!
+  lastRewardTime: DateTime
+  totalRewards: WeiAmount!
+  qualityScore: Float!
+  
+  # Weather data
+  weatherData: [WeatherData!]!
+  latestWeatherData: WeatherData
+}
+
+type WeatherData {
+  id: ID!
+  stationId: String!
+  timestamp: DateTime!
+  temperature: Float! # In celsius * 100
+  humidity: Float! # 0-100%
+  pressure: Float! # In hPa * 100
+  windSpeed: Float! # In m/s * 100
+  rainfall: Float! # In mm * 100
+  confidence: Float! # 0-100%
+  
+  station: WeatherStation!
+}
+
+# Carbon credits and environmental data
+type CarbonCredit {
+  id: ID!
+  tokenId: BigInt!
+  carbonOffset: BigInt! # CO2 equivalent in grams
+  projectType: String!
+  verificationStandard: String!
+  issuanceDate: DateTime!
+  expiryDate: DateTime!
+  location: String!
+  isRetired: Boolean!
+  issuer: Address!
+  certificationHash: String!
+  
+  # Trading information
+  forSale: Boolean!
+  price: WeiAmount
+  owner: Address!
+  
+  # Marketplace data
+  transfers: [CarbonCreditTransfer!]!
+  retirements: [CarbonCreditRetirement!]!
+}
+
+type CarbonCreditTransfer {
+  id: ID!
+  tokenId: BigInt!
+  from: Address!
+  to: Address!
+  price: WeiAmount
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+type CarbonCreditRetirement {
+  id: ID!
+  tokenId: BigInt!
+  retiringEntity: Address!
+  carbonOffset: BigInt!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+# Computational NFTs
+type ComputationalNFT {
+  id: ID!
+  tokenId: BigInt!
+  modelType: ModelType!
+  modelName: String!
+  inputData: String!
+  computeResources: String!
+  executionTime: BigInt!
+  stakeAmount: WeiAmount!
+  status: ComputeStatus!
+  resultData: String
+  resultHash: String
+  createdAt: DateTime!
+  executedAt: DateTime
+  computeProvider: Address
+  isVerified: Boolean!
+  
+  owner: Address!
+  job: ComputeJob!
+}
+
+enum ModelType {
+  WEATHER_FORECAST
+  CLIMATE_MODEL
+  AIR_QUALITY
+  CARBON_ANALYSIS
+}
+
+enum ComputeStatus {
+  CREATED
+  QUEUED
+  EXECUTING
+  COMPLETED
+  FAILED
+}
+
+type ComputeJob {
+  id: ID!
+  nft: ComputationalNFT!
+  provider: ComputeProvider
+  rewards: [ComputeReward!]!
+}
+
+type ComputeProvider {
+  id: ID!
+  address: Address!
+  isAuthorized: Boolean!
+  totalComputeTime: BigInt!
+  successfulJobs: BigInt!
+  failedJobs: BigInt!
+  stakedTokens: WeiAmount!
+  hardwareSpecs: String!
+  
+  jobs: [ComputeJob!]!
+}
+
+type ComputeReward {
+  id: ID!
+  provider: Address!
+  amount: WeiAmount!
+  computeTime: BigInt!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+# Governance system
+type GovernanceProposal {
+  id: ID!
+  proposalId: BigInt!
+  title: String!
+  description: String!
+  proposer: Address!
+  targets: [Address!]!
+  values: [WeiAmount!]!
+  calldatas: [String!]!
+  
+  # Voting configuration
+  votingType: VotingType!
+  votingDelay: BigInt!
+  votingPeriod: BigInt!
+  quorumFraction: BigInt!
+  emergencyProposal: Boolean!
+  
+  # State
+  state: ProposalState!
+  startBlock: BigInt!
+  endBlock: BigInt!
+  forVotes: WeiAmount!
+  againstVotes: WeiAmount!
+  abstainVotes: WeiAmount!
+  
+  # Votes
+  votes: [Vote!]!
+  
+  # Timestamps
+  createdAt: DateTime!
+  executedAt: DateTime
+}
+
+enum VotingType {
+  SIMPLE_MAJORITY
+  QUADRATIC
+  RANKED_CHOICE
+  FRACTIONAL
+}
+
+enum ProposalState {
+  PENDING
+  ACTIVE
+  CANCELED
+  DEFEATED
+  SUCCEEDED
+  QUEUED
+  EXPIRED
+  EXECUTED
+}
+
+type Vote {
+  id: ID!
+  proposalId: BigInt!
+  voter: Address!
+  support: VoteChoice!
+  weight: WeiAmount!
+  reason: String
+  timestamp: DateTime!
+  transactionHash: String!
+  
+  # Voting type specific data
+  quadraticCredits: BigInt
+  rankedChoices: [Int!]
+  fractionalVotes: FractionalVote
+}
+
+enum VoteChoice {
+  AGAINST
+  FOR
+  ABSTAIN
+}
+
+type FractionalVote {
+  forVotes: WeiAmount!
+  againstVotes: WeiAmount!
+  abstainVotes: WeiAmount!
+}
+
+# Carbon credit AMM and trading
+type CarbonCreditAMM {
+  id: ID!
+  address: Address!
+  token0: Address!
+  token1: Address!
+  reserve0: WeiAmount!
+  reserve1: WeiAmount!
+  feeBasisPoints: Int!
+  protocolFeeBasisPoints: Int!
+  totalSupply: WeiAmount!
+  
+  # Price information
+  price0CumulativeLast: BigInt!
+  price1CumulativeLast: BigInt!
+  kLast: BigInt!
+  
+  # Trading activity
+  swaps: [Swap!]!
+  mints: [Mint!]!
+  burns: [Burn!]!
+  flashLoans: [FlashLoan!]!
+}
+
+type Swap {
+  id: ID!
+  pool: CarbonCreditAMM!
+  sender: Address!
+  to: Address!
+  amount0In: WeiAmount!
+  amount1In: WeiAmount!
+  amount0Out: WeiAmount!
+  amount1Out: WeiAmount!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+type Mint {
+  id: ID!
+  pool: CarbonCreditAMM!
+  sender: Address!
+  amount0: WeiAmount!
+  amount1: WeiAmount!
+  liquidity: WeiAmount!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+type Burn {
+  id: ID!
+  pool: CarbonCreditAMM!
+  sender: Address!
+  to: Address!
+  amount0: WeiAmount!
+  amount1: WeiAmount!
+  liquidity: WeiAmount!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+type FlashLoan {
+  id: ID!
+  pool: CarbonCreditAMM!
+  borrower: Address!
+  amount0: WeiAmount!
+  amount1: WeiAmount!
+  fee0: WeiAmount!
+  fee1: WeiAmount!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+# User accounts and activity
+type User {
+  id: ID!
+  address: Address!
+  
+  # Token balances
+  wrfBalance: WeiAmount!
+  carbonCredits: [CarbonCredit!]!
+  computationalNFTs: [ComputationalNFT!]!
+  
+  # Activity
+  carbonFootprint: CarbonFootprint
+  votes: [Vote!]!
+  proposals: [GovernanceProposal!]!
+  weatherStations: [WeatherStation!]!
+  
+  # Trading activity
+  swaps: [Swap!]!
+  liquidityPositions: [LiquidityPosition!]!
+  
+  # Staking and rewards
+  stakingPositions: [StakingPosition!]!
+  rewards: [Reward!]!
+}
+
+type CarbonFootprint {
+  id: ID!
+  user: Address!
+  totalEmissions: Float! # kg CO2e
+  totalOffsets: Float! # kg CO2e
+  netEmissions: Float! # kg CO2e
+  calculationDate: DateTime!
+  
+  activities: [CarbonActivity!]!
+  recommendations: [CarbonRecommendation!]!
+}
+
+type CarbonActivity {
+  id: ID!
+  user: Address!
+  activityType: CarbonActivityType!
+  category: String!
+  amount: Float!
+  unit: String!
+  carbonEmission: Float! # kg CO2e
+  confidence: Float!
+  source: String!
+  timestamp: DateTime!
+  location: Location
+}
+
+enum CarbonActivityType {
+  TRANSPORTATION
+  ENERGY
+  FOOD
+  DIGITAL
+}
+
+type Location {
+  latitude: Float
+  longitude: Float
+}
+
+type CarbonRecommendation {
+  id: ID!
+  user: Address!
+  title: String!
+  description: String!
+  potentialSavings: Float! # kg CO2e
+  priority: String!
+  category: String!
+  generatedAt: DateTime!
+}
+
+type LiquidityPosition {
+  id: ID!
+  user: Address!
+  pool: CarbonCreditAMM!
+  liquidity: WeiAmount!
+  token0Amount: WeiAmount!
+  token1Amount: WeiAmount!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type StakingPosition {
+  id: ID!
+  user: Address!
+  amount: WeiAmount!
+  lockDuration: BigInt!
+  rewardRate: WeiAmount!
+  stakedAt: DateTime!
+  unlocksAt: DateTime!
+  claimed: Boolean!
+}
+
+type Reward {
+  id: ID!
+  user: Address!
+  type: RewardType!
+  amount: WeiAmount!
+  source: String!
+  timestamp: DateTime!
+  transactionHash: String!
+}
+
+enum RewardType {
+  WEATHER_DATA
+  COMPUTE_PROVISION
+  STAKING
+  GOVERNANCE
+  CARBON_OFFSET
+}
+
+# Analytics and market data
+type MarketData {
+  id: ID!
+  timestamp: DateTime!
+  
+  # Token prices
+  wrfPrice: Float!
+  wrfMarketCap: Float!
+  wrfVolume24h: Float!
+  
+  # Carbon credit market
+  carbonCreditVolume24h: Float!
+  averageCarbonPrice: Float!
+  totalCarbonCredits: BigInt!
+  retiredCarbonCredits: BigInt!
+  
+  # Network statistics
+  totalUsers: BigInt!
+  activeWeatherStations: BigInt!
+  computeJobs24h: BigInt!
+  totalValueLocked: Float!
+}
+
+# Query root type
+type Query {
+  # Token information
+  wrfToken: WRFToken
+  
+  # Weather data
+  weatherStation(id: ID!): WeatherStation
+  weatherStations(
+    first: Int = 10
+    skip: Int = 0
+    orderBy: String = "id"
+    orderDirection: String = "asc"
+    where: WeatherStationFilter
+  ): [WeatherStation!]!
+  
+  weatherData(
+    stationId: String!
+    from: DateTime
+    to: DateTime
+    first: Int = 100
+  ): [WeatherData!]!
+  
+  # Carbon credits
+  carbonCredit(id: ID!): CarbonCredit
+  carbonCredits(
+    first: Int = 10
+    skip: Int = 0
+    orderBy: String = "id"
+    orderDirection: String = "asc"
+    where: CarbonCreditFilter
+  ): [CarbonCredit!]!
+  
+  # Computational NFTs
+  computationalNFT(id: ID!): ComputationalNFT
+  computationalNFTs(
+    first: Int = 10
+    skip: Int = 0
+    orderBy: String = "id"
+    orderDirection: String = "asc"
+    where: ComputationalNFTFilter
+  ): [ComputationalNFT!]!
+  
+  # Governance
+  proposal(id: ID!): GovernanceProposal
+  proposals(
+    first: Int = 10
+    skip: Int = 0
+    orderBy: String = "id"
+    orderDirection: String = "asc"
+    where: ProposalFilter
+  ): [GovernanceProposal!]!
+  
+  # AMM and trading
+  ammPool(id: ID!): CarbonCreditAMM
+  ammPools(
+    first: Int = 10
+    skip: Int = 0
+  ): [CarbonCreditAMM!]!
+  
+  # Users
+  user(address: Address!): User
+  users(
+    first: Int = 10
+    skip: Int = 0
+  ): [User!]!
+  
+  # Analytics
+  marketData(timestamp: DateTime): MarketData
+  marketDataHistory(
+    from: DateTime!
+    to: DateTime!
+    interval: String = "1h"
+  ): [MarketData!]!
+  
+  # Search
+  search(query: String!, type: SearchType): [SearchResult!]!
+}
+
+# Mutation root type
+type Mutation {
+  # Weather data
+  submitWeatherData(input: WeatherDataInput!): WeatherDataSubmissionResult!
+  
+  # Carbon tracking
+  trackCarbonActivity(input: CarbonActivityInput!): CarbonActivityResult!
+  
+  # Voting
+  castVote(input: VoteInput!): VoteResult!
+  
+  # Trading (via signed transactions)
+  prepareSwap(input: SwapInput!): TransactionPreparation!
+  prepareTransfer(input: TransferInput!): TransactionPreparation!
+  prepareStake(input: StakeInput!): TransactionPreparation!
+}
+
+# Subscription root type
+type Subscription {
+  # Real-time updates
+  weatherDataUpdated(stationId: String): WeatherData!
+  newCarbonCredit: CarbonCredit!
+  newComputeJob: ComputationalNFT!
+  newProposal: GovernanceProposal!
+  swapExecuted(pool: Address): Swap!
+  
+  # Market updates
+  priceUpdated(token: Address): PriceUpdate!
+  
+  # User-specific updates
+  userActivityUpdated(address: Address!): UserActivity!
+}
+
+# Input types
+input WeatherDataInput {
+  stationId: String!
+  temperature: Float!
+  humidity: Float!
+  pressure: Float!
+  windSpeed: Float!
+  rainfall: Float!
+  confidence: Float!
+  signature: String!
+}
+
+input CarbonActivityInput {
+  userId: String!
+  activityType: CarbonActivityType!
+  category: String!
+  amount: Float!
+  unit: String!
+  source: String = "manual"
+  location: LocationInput
+}
+
+input LocationInput {
+  latitude: Float!
+  longitude: Float!
+}
+
+input VoteInput {
+  proposalId: BigInt!
+  support: VoteChoice!
+  reason: String
+  signature: String!
+}
+
+input SwapInput {
+  tokenIn: Address!
+  tokenOut: Address!
+  amountIn: String!
+  amountOutMin: String!
+  deadline: BigInt!
+  slippageTolerance: Float!
+}
+
+input TransferInput {
+  tokenId: BigInt!
+  to: Address!
+  amount: String!
+}
+
+input StakeInput {
+  amount: String!
+  lockDuration: BigInt!
+}
+
+# Filter input types
+input WeatherStationFilter {
+  isActive: Boolean
+  location_contains: String
+  qualityScore_gte: Float
+}
+
+input CarbonCreditFilter {
+  projectType: String
+  verificationStandard: String
+  isRetired: Boolean
+  forSale: Boolean
+  issuer: Address
+}
+
+input ComputationalNFTFilter {
+  modelType: ModelType
+  status: ComputeStatus
+  owner: Address
+  isVerified: Boolean
+}
+
+input ProposalFilter {
+  state: ProposalState
+  proposer: Address
+  votingType: VotingType
+  emergencyProposal: Boolean
+}
+
+# Result types
+type WeatherDataSubmissionResult {
+  success: Boolean!
+  weatherData: WeatherData
+  rewards: WeiAmount
+  error: String
+}
+
+type CarbonActivityResult {
+  success: Boolean!
+  activity: CarbonActivity
+  carbonEmission: Float!
+  recommendations: [CarbonRecommendation!]!
+  error: String
+}
+
+type VoteResult {
+  success: Boolean!
+  vote: Vote
+  transactionHash: String
+  error: String
+}
+
+type TransactionPreparation {
+  success: Boolean!
+  transactionData: String!
+  gasEstimate: String!
+  nonce: BigInt!
+  error: String
+}
+
+# Search types
+enum SearchType {
+  ALL
+  USERS
+  CARBON_CREDITS
+  PROPOSALS
+  WEATHER_STATIONS
+  COMPUTE_JOBS
+}
+
+union SearchResult = User | CarbonCredit | GovernanceProposal | WeatherStation | ComputationalNFT
+
+# Event types for subscriptions
+type PriceUpdate {
+  token: Address!
+  price: Float!
+  change24h: Float!
+  timestamp: DateTime!
+}
+
+type UserActivity {
+  user: Address!
+  type: String!
+  data: String!
+  timestamp: DateTime!
+}</pre
+          >
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>
+          <strong>WRFCoin GraphQL API Documentation</strong><br />
+          Generated on 7/14/2025 at 10:01:54 AM<br />
+          <a href="/" style="color: #667eea">← Back to Documentation Home</a>
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

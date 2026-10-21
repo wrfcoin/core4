@@ -1,0 +1,37 @@
+# Scope the Prettier gate to code the repo actually maintains (#2233).
+# Generated, vendored, and prose-dump content churns on every regeneration,
+# which keeps the gate permanently red while verifying nothing.
+
+# AI/tool harness content (much of it auto-generated or tool-managed)
+.claude/
+.taskmaster/
+.gemini/
+.devcontainer/
+
+# Vendored
+zen-mcp-server/
+tools/zen-mcp-server/
+
+# Generated or deprecated output
+sdks/generated/
+artifacts/
+reports/
+research/
+sbom/
+security/sbom/
+loop-build/
+loop-build.md
+replit.md
+
+# Prose/report dumps. Includes files that are not valid instances of their
+# extension (docs/analysis/nodejs_dependencies.json is captured npm error
+# text; docs/testing/test-toast-security.html is malformed) which crash the
+# parser outright.
+docs/
+mkdocs.yml
+
+# Legacy test files with genuinely invalid JS syntax that Prettier cannot
+# parse (e.g. Solidity `3 days` literals in a .js file). Tracked in #2233;
+# fix or retire them rather than formatting around them.
+tests/security/CompleteBridgeSecurityPipeline.integration.test.cjs
+tests/unit/smart-contracts/legacy/SecureVotingSystemIntegration.test.js

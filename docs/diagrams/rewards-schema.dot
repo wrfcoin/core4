@@ -1,0 +1,17 @@
+digraph rewards_schema {
+    label="Achievements & Economic Incentives";
+    rankdir=TB;
+    node [shape=record, style=filled, fillcolor=lightblue];
+
+    achievements [label="{achievements|{id (PK)|category_id (FK)|created_at|updated_at}}"];
+    achievement_categories [label="{achievement_categories|{id (PK)|created_at|updated_at}}"];
+    user_achievements [label="{user_achievements|{id (PK)|achievement_id (FK)|created_at|updated_at}}"];
+    mining_rewards [label="{mining_rewards|{id (PK)|created_at|updated_at}}"];
+
+    achievements -> achievement_categories [label="N:1"];
+    achievements -> user_achievements [label="1:N"];
+    achievements -> achievement_progress [label="1:N"];
+    achievement_categories -> achievements [label="1:N"];
+    user_achievements -> achievements [label="N:1"];
+    mining_rewards -> mining_contributions [label="1:N"];
+}

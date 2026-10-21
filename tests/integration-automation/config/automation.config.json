@@ -1,0 +1,122 @@
+{
+  "profiles": {
+    "fast": {
+      "description": "Quick integration test run for development",
+      "timeout": 30000,
+      "parallel": 6,
+      "retry": 1,
+      "coverage": false,
+      "services": ["blockchain"],
+      "testPattern": "tests/integration-automation/suites/api-integration.test.js"
+    },
+    "standard": {
+      "description": "Standard integration test suite",
+      "timeout": 90000,
+      "parallel": 4,
+      "retry": 2,
+      "coverage": false,
+      "services": ["blockchain", "weather", "carbon"],
+      "testPattern": "tests/integration-automation/suites/**/*.test.js"
+    },
+    "comprehensive": {
+      "description": "Full integration test suite with coverage",
+      "timeout": 180000,
+      "parallel": 2,
+      "retry": 3,
+      "coverage": true,
+      "services": ["blockchain", "weather", "carbon", "mockserver"],
+      "testPattern": "tests/integration-automation/**/*.test.js"
+    },
+    "ci": {
+      "description": "CI/CD optimized test execution",
+      "timeout": 120000,
+      "parallel": 2,
+      "retry": 2,
+      "coverage": true,
+      "services": ["blockchain", "weather", "carbon"],
+      "testPattern": "tests/integration-automation/suites/**/*.test.js",
+      "dockerReset": true,
+      "verbose": true
+    }
+  },
+
+  "services": {
+    "blockchain": {
+      "url": "http://localhost:8545",
+      "healthEndpoint": "/health",
+      "metricsEndpoint": "/metrics",
+      "description": "Enhanced Blockchain RPC Mock Service"
+    },
+    "weather": {
+      "url": "http://localhost:3010",
+      "healthEndpoint": "/health",
+      "metricsEndpoint": "/metrics",
+      "description": "Enhanced Weather Oracle Mock Service"
+    },
+    "carbon": {
+      "url": "http://localhost:3020",
+      "healthEndpoint": "/health",
+      "metricsEndpoint": "/metrics",
+      "description": "Enhanced Carbon Oracle Mock Service"
+    },
+    "mockserver": {
+      "url": "http://localhost:1080",
+      "healthEndpoint": "/mockserver/status",
+      "description": "MockServer for advanced mocking"
+    }
+  },
+
+  "database": {
+    "primary": "postgresql://postgres:testpass@localhost:5432/wrfcoin_test",
+    "replica": "postgresql://postgres:testpass@localhost:5433/wrfcoin_test",
+    "redis": "redis://localhost:6379"
+  },
+
+  "reporting": {
+    "formats": ["html", "json", "junit"],
+    "outputDir": "tests/results/integration-automation",
+    "trends": {
+      "enabled": true,
+      "retentionDays": 30,
+      "alertThresholds": {
+        "successRate": 95,
+        "avgDuration": 60000,
+        "failureRate": 5
+      }
+    }
+  },
+
+  "automation": {
+    "sequencer": {
+      "enabled": true,
+      "prioritizeShortTests": true,
+      "resolveDependencies": true
+    },
+    "orchestrator": {
+      "waitForServicesTimeout": 120000,
+      "serviceHealthCheckInterval": 5000,
+      "continueOnFailure": false
+    },
+    "reporter": {
+      "realTimeMetrics": true,
+      "performanceTracking": true,
+      "alerting": {
+        "enabled": true,
+        "channels": ["console", "file"]
+      }
+    }
+  },
+
+  "ci": {
+    "github": {
+      "generateSummary": true,
+      "createBadges": true,
+      "setOutputs": true
+    },
+    "artifacts": {
+      "retainReports": true,
+      "uploadCoverage": true,
+      "notifySlack": false
+    }
+  }
+}

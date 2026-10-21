@@ -1,0 +1,16 @@
+config:
+  target: 'http://localhost:8080'
+  phases:
+    - duration: 30
+      arrivalRate: 5
+      name: 'Simple load test'
+
+scenarios:
+  - name: 'Health Check Load Test'
+    weight: 100
+    flow:
+      - get:
+          url: '/health'
+          expect:
+            - statusCode: 200
+            - hasProperty: 'status'

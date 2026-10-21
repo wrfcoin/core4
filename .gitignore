@@ -1,0 +1,364 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.temp-package-resolutions.json
+.temp-package.json
+temp-clean-package.json
+
+# Environment variables and secrets
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.*.local
+*.pem
+*.key
+*_key
+*_secret
+credentials.json
+secrets.json
+secrets/
+
+# Log files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+build/
+dist/
+target/
+out/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Rust specific
+target/
+debug/
+**/*.rs.bk
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+*.redb
+data/
+
+# Temp files
+.tmp/
+.temp/
+tmp/
+temp/
+
+# Cache
+.cache/
+.eslintcache
+.parcel-cache
+
+# Hardhat/Solidity build artifacts
+contracts/artifacts/
+contracts/cache/
+
+# Turborepo cache
+.turbo/
+.turbo-cache/
+.turbo-metrics.json
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Compiled binary addons
+build/Release
+
+# Dependency directories
+jspm_packages/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache
+.cache/
+
+# Next.js build output
+.next/
+out/
+
+# Nuxt.js build / generate output
+.nuxt/
+dist/
+
+# Gatsby files
+.cache/
+public/
+
+# vuepress build output
+.vuepress/dist/
+
+# Serverless directories
+.serverless/
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test/
+
+# Private keys for wallet generation and storage
+keys/
+wallets/
+*wallet*key*
+*wallet*seed*
+
+# Certificate files
+*.cert
+*.crt
+
+# Backup files
+*.bak
+*~
+*.swp
+*.swo
+
+# Logs
+logs
+dev-debug.log
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# tasks/ .serena/cache/
+.serena/cache/
+
+# ===========================================
+# DEPRECATED LEGACY ROOT DIRECTORIES
+# ===========================================
+# These directories should not exist at root level anymore
+# Files should be moved to appropriate standardized locations:
+# - Backend code → backend/
+# - Smart contracts → contracts/
+# - Tests → tests/
+# - Documentation → docs/
+# - Infrastructure → infra/
+
+# Legacy test directories (consolidate to tests/)
+/test-archive/
+/fuzz-testing/
+/consolidated-tests/
+/test-results/
+
+# Legacy documentation files (move to docs/)
+# Note: Allow existing files but prevent new legacy structure
+/legacy-docs/
+/old-docs/
+
+# Legacy infrastructure (move to infra/)
+/infrastructure/
+/deployment/
+/k8s/
+/terraform/
+/helm/
+
+# Legacy asset directories (organize appropriately)
+/assets/*/
+/static/*/
+/public/*/
+
+# Legacy temporary directories
+/temp/
+/temporary/
+/scratch/
+/working/
+
+# Legacy backup directories
+/backup/
+/backups/
+/old/
+/archive-*/
+
+# Prevent creation of new top-level source directories
+# (enforce standardized structure)
+/api/
+/services/
+/workers/
+/lib/
+/libs/
+/utils-*/
+/helpers/
+/middleware-*/
+/models/
+/controllers/
+/routes-*/
+
+*storybook.log
+
+# MCP Configuration Files (contain API keys)
+*.mcp.json
+.mcp.json
+.vscode/mcp.json
+.windsurf/mcp.json
+.cursor/mcp.json
+.roo/mcp.json
+
+# Environment files (comprehensive)
+.env
+.env.local
+.env.*.local
+*.env
+.env.*
+!.env.example
+!.env.test.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.test.example
+!**/.env.local.example
+
+# API Keys and secrets
+**/api-keys.json
+**/secrets.json
+*.key
+*.pem
+\!/services/meshtastic-gateway/
+
+# JWT RSA Keys (Task 94.2)
+keys/jwt-private.pem
+
+# ===========================================
+# ADDITIONAL CLEANUP PATTERNS (Task 86)
+# ===========================================
+
+# Backup directories (improved patterns)
+docs-backup-*/
+backup-*/
+
+# Improved temp patterns (catch temp_* and temp-* variants)
+temp_*/
+temp-*/
+
+# IDE caches (full directory)
+.serena/
+
+# Python cache at root level
+__pycache__/
+**/__pycache__/
+
+# Large generated analysis artifacts
+integration_report.json
+file_manifest.json
+file_domain_mapping.json
+responsibility_matrix.json
+error_analysis.json
+
+
+# E2E test video recordings (can be regenerated)
+tests/archive/e2e/
+
+# Technical debt documentation (auto-generated)
+docs/technical-debt/
+
+# Empty marker/temp files
+**/0
+
+# Playwright reports (can be regenerated)
+playwright-report/
+
+# ===========================================
+# E2E / TEST RESULT ARTIFACTS (issue #458)
+# ===========================================
+# Generated test results, reports, and recordings — not tracked in git
+tests/e2e/wallet-test-results/
+tests/e2e/wallet-html-report/
+tests/e2e/reports/
+tests/e2e/e2e/
+tests/e2e/test-results/
+tests/e2e/*-results/
+tests/reports/
+tests/results/
+tests/integration-automation/tests/results/
+tests/fuzz/fuzz-testing/reports/
+tests/fuzz/reporting/
+
+# Temporary test artifacts
+temp-test/
+
+# Runtime/test run markers and local stability artifacts
+**/.last-run.json
+reports/*.pid
+reports/stability-test-*.json
+
+# Local IDE workspace metadata
+.windsurf/
+
+# Assets and reports to ignore
+attached_assets/
+.bfg-report/
+..bfg-report/
+
+# Frontend component analysis reports (can be regenerated)
+frontend/reports/
+
+# ===========================================
+# UI VERIFICATION OUTPUTS (Task 123)
+# ===========================================
+# These are generated test artifacts that should not be tracked
+tests/e2e/ui-verification/screenshots/
+tests/e2e/ui-verification/traces/
+tests/e2e/ui-verification/reports/
+tests/e2e/ui-verification/accessibility/
+
+# ===========================================
+# LOCAL DEVELOPMENT ARTIFACTS
+# ===========================================
+# Solidity files cache (build artifact)
+cache/
+
+# Git worktrees (local development only)
+worktrees/
+.worktrees/
+
+# ts-rs output. The `ts` feature on meteo-types / forecast-score writes
+# generated TypeScript into the crate source tree at test time; the checked-in
+# copies live in backend/shared/generated-types/.
+meteo-types/bindings/
+forecast-score/bindings/
+
+# Disposable genesis rehearsal databases, synthetic keys and local evidence.
+/round-r-evidence/

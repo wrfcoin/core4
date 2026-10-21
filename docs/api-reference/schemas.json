@@ -1,0 +1,1578 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WRFCoin Platform API Schemas",
+  "description": "Comprehensive schema definitions for all data models used in the WRFCoin platform APIs",
+  "version": "1.0.0",
+
+  "definitions": {
+    "common": {
+      "EthereumAddress": {
+        "type": "string",
+        "pattern": "^0x[a-fA-F0-9]{40}$",
+        "description": "Valid Ethereum-style address"
+      },
+
+      "TransactionHash": {
+        "type": "string",
+        "pattern": "^0x[a-fA-F0-9]{64}$",
+        "description": "Valid transaction or block hash"
+      },
+
+      "WeiAmount": {
+        "type": "string",
+        "pattern": "^[0-9]+$",
+        "description": "Amount in Wei (smallest unit), as string to avoid precision loss"
+      },
+
+      "ISO8601DateTime": {
+        "type": "string",
+        "format": "date-time",
+        "description": "ISO 8601 formatted date-time string"
+      },
+
+      "PositiveInteger": {
+        "type": "integer",
+        "minimum": 1
+      },
+
+      "NonNegativeInteger": {
+        "type": "integer",
+        "minimum": 0
+      },
+
+      "Coordinates": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          }
+        },
+        "required": ["latitude", "longitude"],
+        "additionalProperties": false
+      }
+    },
+
+    "blockchain": {
+      "Block": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/definitions/common/PositiveInteger" },
+          "blockHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "blockHeight": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "previousHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "merkleRoot": { "$ref": "#/definitions/common/TransactionHash" },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "nonce": { "type": "string" },
+          "difficulty": { "type": "string" },
+          "gasLimit": { "$ref": "#/definitions/common/WeiAmount" },
+          "gasUsed": { "$ref": "#/definitions/common/WeiAmount" },
+          "miner": { "$ref": "#/definitions/common/EthereumAddress" },
+          "size": { "$ref": "#/definitions/common/PositiveInteger" },
+          "transactionCount": {
+            "$ref": "#/definitions/common/NonNegativeInteger"
+          },
+          "transactions": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/blockchain/Transaction" }
+          },
+          "consensusData": {
+            "type": "object",
+            "properties": {
+              "mechanism": {
+                "type": "string",
+                "enum": ["PoW", "PoS", "DPoS", "PoI", "PoP", "PoU"]
+              },
+              "validators": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/common/EthereumAddress" }
+              },
+              "stakeAmount": { "$ref": "#/definitions/common/WeiAmount" },
+              "weatherData": {
+                "$ref": "#/definitions/weather/WeatherConsensusData"
+              }
+            }
+          }
+        },
+        "required": ["id", "blockHash", "blockHeight", "timestamp", "miner"],
+        "additionalProperties": false
+      },
+
+      "Transaction": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "#/definitions/common/PositiveInteger" },
+          "txHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "blockHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "blockHeight": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "from": { "$ref": "#/definitions/common/EthereumAddress" },
+          "to": { "$ref": "#/definitions/common/EthereumAddress" },
+          "value": { "$ref": "#/definitions/common/WeiAmount" },
+          "gasPrice": { "$ref": "#/definitions/common/WeiAmount" },
+          "gasLimit": { "$ref": "#/definitions/common/WeiAmount" },
+          "gasUsed": { "$ref": "#/definitions/common/WeiAmount" },
+          "nonce": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "confirmed", "failed", "reverted"]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "transfer",
+              "contract",
+              "cross_chain",
+              "carbon_credit",
+              "computational_nft",
+              "weather_data"
+            ]
+          },
+          "data": {
+            "type": "string",
+            "description": "Hexadecimal transaction data"
+          },
+          "logs": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/blockchain/TransactionLog" }
+          }
+        },
+        "required": [
+          "id",
+          "txHash",
+          "from",
+          "to",
+          "value",
+          "timestamp",
+          "status",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+
+      "TransactionLog": {
+        "type": "object",
+        "properties": {
+          "address": { "$ref": "#/definitions/common/EthereumAddress" },
+          "topics": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "data": { "type": "string" },
+          "logIndex": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "transactionIndex": {
+            "$ref": "#/definitions/common/NonNegativeInteger"
+          },
+          "removed": { "type": "boolean" }
+        },
+        "required": ["address", "topics", "data", "logIndex"],
+        "additionalProperties": false
+      },
+
+      "NetworkInfo": {
+        "type": "object",
+        "properties": {
+          "networkId": { "type": "string" },
+          "chainId": { "$ref": "#/definitions/common/PositiveInteger" },
+          "blockHeight": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "networkHashrate": { "type": "string" },
+          "difficulty": { "type": "string" },
+          "consensusMechanism": {
+            "type": "string",
+            "enum": ["PoW", "PoS", "DPoS", "PoI", "PoP", "PoU"]
+          },
+          "validators": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "networkVersion": { "type": "string" },
+          "averageBlockTime": { "type": "string" },
+          "totalTransactions": {
+            "$ref": "#/definitions/common/NonNegativeInteger"
+          },
+          "activeNodes": { "$ref": "#/definitions/common/NonNegativeInteger" }
+        },
+        "required": [
+          "networkId",
+          "chainId",
+          "blockHeight",
+          "consensusMechanism"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "wallet": {
+      "Wallet": {
+        "type": "object",
+        "properties": {
+          "address": { "$ref": "#/definitions/common/EthereumAddress" },
+          "publicKey": { "type": "string" },
+          "mnemonic": {
+            "type": "string",
+            "description": "BIP-39 mnemonic phrase - handle with extreme care"
+          },
+          "derivationPath": {
+            "type": "string",
+            "pattern": "^m/44'/[0-9]+'/[0-9]+'/[0-9]+/[0-9]+$",
+            "default": "m/44'/60'/0'/0/0"
+          },
+          "isHDWallet": { "type": "boolean" },
+          "encryptionMethod": {
+            "type": "string",
+            "enum": ["none", "scrypt", "pbkdf2", "argon2"]
+          },
+          "keystore": {
+            "type": "object",
+            "description": "Encrypted keystore object"
+          }
+        },
+        "required": ["address", "publicKey", "isHDWallet"],
+        "additionalProperties": false
+      },
+
+      "WalletBalance": {
+        "type": "object",
+        "properties": {
+          "address": { "$ref": "#/definitions/common/EthereumAddress" },
+          "balance": { "$ref": "#/definitions/common/WeiAmount" },
+          "tokens": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/wallet/TokenBalance" }
+          },
+          "nfts": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/wallet/NFTBalance" }
+          },
+          "stakedAmount": { "$ref": "#/definitions/common/WeiAmount" },
+          "lockedAmount": { "$ref": "#/definitions/common/WeiAmount" },
+          "pendingRewards": { "$ref": "#/definitions/common/WeiAmount" }
+        },
+        "required": ["address", "balance", "tokens", "nfts"],
+        "additionalProperties": false
+      },
+
+      "TokenBalance": {
+        "type": "object",
+        "properties": {
+          "contractAddress": { "$ref": "#/definitions/common/EthereumAddress" },
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "balance": { "$ref": "#/definitions/common/WeiAmount" },
+          "decimals": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18
+          },
+          "price": {
+            "type": "object",
+            "properties": {
+              "usd": { "type": "number" },
+              "wrf": { "type": "number" }
+            }
+          }
+        },
+        "required": ["contractAddress", "symbol", "balance", "decimals"],
+        "additionalProperties": false
+      },
+
+      "NFTBalance": {
+        "type": "object",
+        "properties": {
+          "contractAddress": { "$ref": "#/definitions/common/EthereumAddress" },
+          "tokenId": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "imageUrl": { "type": "string", "format": "uri" },
+          "animationUrl": { "type": "string", "format": "uri" },
+          "attributes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "trait_type": { "type": "string" },
+                "value": {
+                  "oneOf": [{ "type": "string" }, { "type": "number" }]
+                },
+                "display_type": { "type": "string" }
+              },
+              "required": ["trait_type", "value"]
+            }
+          },
+          "rarity": {
+            "type": "object",
+            "properties": {
+              "rank": { "$ref": "#/definitions/common/PositiveInteger" },
+              "score": { "type": "number" },
+              "rarityTier": {
+                "type": "string",
+                "enum": ["common", "uncommon", "rare", "epic", "legendary"]
+              }
+            }
+          }
+        },
+        "required": ["contractAddress", "tokenId"],
+        "additionalProperties": false
+      }
+    },
+
+    "carbonCredits": {
+      "CarbonCreditBatch": {
+        "type": "object",
+        "properties": {
+          "tokenId": { "$ref": "#/definitions/common/PositiveInteger" },
+          "totalSupply": { "$ref": "#/definitions/common/WeiAmount" },
+          "immobilizedSupply": { "$ref": "#/definitions/common/WeiAmount" },
+          "retiredSupply": { "$ref": "#/definitions/common/WeiAmount" },
+          "availableSupply": { "$ref": "#/definitions/common/WeiAmount" },
+          "projectId": { "type": "string" },
+          "vintage": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 2100
+          },
+          "methodology": { "type": "string" },
+          "projectType": {
+            "type": "string",
+            "enum": [
+              "forestry",
+              "renewable_energy",
+              "methane_capture",
+              "direct_air_capture",
+              "soil_carbon",
+              "blue_carbon",
+              "biochar",
+              "mineralization"
+            ]
+          },
+          "registryStandard": {
+            "type": "string",
+            "enum": ["VCS", "GS", "CDM", "CAR", "ACR", "PLAN_VIVO"]
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "country": { "type": "string" },
+              "region": { "type": "string" },
+              "coordinates": { "$ref": "#/definitions/common/Coordinates" },
+              "area": { "type": "number" }
+            },
+            "required": ["country"]
+          },
+          "issuer": { "$ref": "#/definitions/common/EthereumAddress" },
+          "verifier": { "type": "string" },
+          "issuanceDate": {
+            "type": "integer",
+            "description": "Unix timestamp"
+          },
+          "expiryDate": {
+            "type": "integer",
+            "description": "Unix timestamp"
+          },
+          "certificationHash": { "type": "string" },
+          "registryUrl": { "type": "string", "format": "uri" },
+          "isActive": { "type": "boolean" },
+          "qualityMetrics": {
+            "type": "object",
+            "properties": {
+              "additionality": { "type": "number", "minimum": 0, "maximum": 1 },
+              "permanence": { "type": "number", "minimum": 0, "maximum": 1 },
+              "leakage": { "type": "number", "minimum": 0, "maximum": 1 },
+              "cobenefits": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["biodiversity", "water", "soil", "air", "community"]
+                }
+              }
+            }
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "currentPrice": { "type": "number" },
+              "currency": { "type": "string" },
+              "priceHistory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "date": { "$ref": "#/definitions/common/ISO8601DateTime" },
+                    "price": { "type": "number" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "tokenId",
+          "totalSupply",
+          "projectId",
+          "vintage",
+          "projectType",
+          "registryStandard",
+          "location",
+          "issuer",
+          "issuanceDate",
+          "isActive"
+        ],
+        "additionalProperties": false
+      },
+
+      "CarbonCreditRetirement": {
+        "type": "object",
+        "properties": {
+          "retirementId": { "type": "string" },
+          "tokenId": { "$ref": "#/definitions/common/PositiveInteger" },
+          "amount": { "$ref": "#/definitions/common/WeiAmount" },
+          "retirer": { "$ref": "#/definitions/common/EthereumAddress" },
+          "beneficiary": { "type": "string" },
+          "retirementReason": { "type": "string" },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "transactionHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "blockNumber": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "certificateHash": { "type": "string" },
+          "registryRetirementId": { "type": "string" }
+        },
+        "required": [
+          "retirementId",
+          "tokenId",
+          "amount",
+          "retirer",
+          "retirementReason",
+          "timestamp",
+          "transactionHash"
+        ],
+        "additionalProperties": false
+      },
+
+      "CarbonCreditTransfer": {
+        "type": "object",
+        "properties": {
+          "transferId": { "type": "string" },
+          "tokenId": { "$ref": "#/definitions/common/PositiveInteger" },
+          "from": { "$ref": "#/definitions/common/EthereumAddress" },
+          "to": { "$ref": "#/definitions/common/EthereumAddress" },
+          "amount": { "$ref": "#/definitions/common/WeiAmount" },
+          "transferType": {
+            "type": "string",
+            "enum": ["direct", "marketplace", "immobilization", "redemption"]
+          },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "transactionHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "fees": {
+            "type": "object",
+            "properties": {
+              "platformFee": { "$ref": "#/definitions/common/WeiAmount" },
+              "gasFee": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "required": [
+          "transferId",
+          "tokenId",
+          "from",
+          "to",
+          "amount",
+          "transferType",
+          "timestamp",
+          "transactionHash"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "weather": {
+      "WeatherStation": {
+        "type": "object",
+        "properties": {
+          "stationId": { "type": "string" },
+          "name": { "type": "string" },
+          "owner": { "$ref": "#/definitions/common/EthereumAddress" },
+          "location": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "coordinates": { "$ref": "#/definitions/common/Coordinates" },
+              "elevation": { "type": "number" },
+              "timezone": { "type": "string" }
+            },
+            "required": ["coordinates"]
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "ambient_weather",
+              "weatherflow",
+              "davis",
+              "netatmo",
+              "ecowitt",
+              "rainwise",
+              "oregon_scientific"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "inactive", "maintenance", "error"]
+          },
+          "sensors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sensorId": { "type": "string" },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "temperature",
+                    "humidity",
+                    "pressure",
+                    "wind_speed",
+                    "wind_direction",
+                    "rainfall",
+                    "solar_radiation",
+                    "uv_index",
+                    "soil_moisture",
+                    "co2",
+                    "pm2_5",
+                    "pm10"
+                  ]
+                },
+                "unit": { "type": "string" },
+                "accuracy": { "type": "number" },
+                "lastCalibration": {
+                  "$ref": "#/definitions/common/ISO8601DateTime"
+                }
+              },
+              "required": ["sensorId", "type", "unit"]
+            }
+          },
+          "registrationDate": {
+            "$ref": "#/definitions/common/ISO8601DateTime"
+          },
+          "lastUpdate": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "dataQuality": {
+            "type": "object",
+            "properties": {
+              "accuracy": { "type": "number", "minimum": 0, "maximum": 1 },
+              "completeness": { "type": "number", "minimum": 0, "maximum": 1 },
+              "timeliness": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "rewards": {
+            "type": "object",
+            "properties": {
+              "totalEarned": { "$ref": "#/definitions/common/WeiAmount" },
+              "currentTier": {
+                "type": "string",
+                "enum": ["bronze", "silver", "gold", "platinum"]
+              },
+              "multiplier": { "type": "number" }
+            }
+          }
+        },
+        "required": [
+          "stationId",
+          "name",
+          "owner",
+          "location",
+          "network",
+          "status",
+          "sensors"
+        ],
+        "additionalProperties": false
+      },
+
+      "WeatherReading": {
+        "type": "object",
+        "properties": {
+          "readingId": { "type": "string" },
+          "stationId": { "type": "string" },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "temperature": { "type": "number" },
+              "humidity": { "type": "number", "minimum": 0, "maximum": 100 },
+              "pressure": { "type": "number" },
+              "windSpeed": { "type": "number", "minimum": 0 },
+              "windDirection": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 360
+              },
+              "rainfall": { "type": "number", "minimum": 0 },
+              "solarRadiation": { "type": "number", "minimum": 0 },
+              "uvIndex": { "type": "number", "minimum": 0 },
+              "soilMoisture": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "co2Level": { "type": "number", "minimum": 0 },
+              "pm2_5": { "type": "number", "minimum": 0 },
+              "pm10": { "type": "number", "minimum": 0 }
+            }
+          },
+          "dataSource": { "type": "string" },
+          "confidence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "validationStatus": {
+            "type": "string",
+            "enum": ["validated", "pending", "flagged", "rejected"]
+          },
+          "qualityFlags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "outlier",
+                "sensor_error",
+                "calibration_due",
+                "maintenance_required"
+              ]
+            }
+          },
+          "blockHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "merkleProof": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": [
+          "readingId",
+          "stationId",
+          "timestamp",
+          "metrics",
+          "dataSource",
+          "confidence"
+        ],
+        "additionalProperties": false
+      },
+
+      "WeatherConsensusData": {
+        "type": "object",
+        "properties": {
+          "consensusType": {
+            "type": "string",
+            "enum": [
+              "proof_of_information",
+              "proof_of_location",
+              "proof_of_presence"
+            ]
+          },
+          "validatorStations": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "dataAgreement": { "type": "number", "minimum": 0, "maximum": 1 },
+          "spatialValidation": {
+            "type": "object",
+            "properties": {
+              "neighboringStations": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "correlationScore": { "type": "number" }
+            }
+          },
+          "temporalValidation": {
+            "type": "object",
+            "properties": {
+              "historicalConsistency": { "type": "number" },
+              "trendAnalysis": { "type": "string" }
+            }
+          }
+        },
+        "required": ["consensusType", "validatorStations", "dataAgreement"],
+        "additionalProperties": false
+      }
+    },
+
+    "crossChain": {
+      "CrossChainBridge": {
+        "type": "object",
+        "properties": {
+          "bridgeId": { "type": "string" },
+          "name": { "type": "string" },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "axelar",
+              "layerzero",
+              "wormhole",
+              "ibc",
+              "xcmp",
+              "ilpv4",
+              "near_rainbow",
+              "optimism",
+              "thorchain",
+              "chainflip",
+              "base",
+              "celer",
+              "hyperlane"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "inactive", "maintenance", "emergency_halt"]
+          },
+          "supportedChains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chainId": { "type": "string" },
+                "name": { "type": "string" },
+                "nativeToken": { "type": "string" },
+                "rpcUrl": { "type": "string", "format": "uri" }
+              },
+              "required": ["chainId", "name"]
+            }
+          },
+          "supportedAssets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": { "type": "string" },
+                "sourceContract": {
+                  "$ref": "#/definitions/common/EthereumAddress"
+                },
+                "destinationContract": {
+                  "$ref": "#/definitions/common/EthereumAddress"
+                },
+                "decimals": { "type": "integer" }
+              }
+            }
+          },
+          "fees": {
+            "type": "object",
+            "properties": {
+              "baseFee": { "$ref": "#/definitions/common/WeiAmount" },
+              "percentageFee": { "type": "number" },
+              "gasLimit": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          },
+          "performance": {
+            "type": "object",
+            "properties": {
+              "averageFinality": { "type": "string" },
+              "successRate": { "type": "number" },
+              "dailyVolume": { "type": "string" },
+              "totalValueLocked": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "required": [
+          "bridgeId",
+          "name",
+          "protocol",
+          "status",
+          "supportedChains",
+          "supportedAssets"
+        ],
+        "additionalProperties": false
+      },
+
+      "CrossChainTransfer": {
+        "type": "object",
+        "properties": {
+          "transferId": { "type": "string" },
+          "bridgeId": { "type": "string" },
+          "sourceChain": { "type": "string" },
+          "destinationChain": { "type": "string" },
+          "asset": { "type": "string" },
+          "amount": { "$ref": "#/definitions/common/WeiAmount" },
+          "sender": { "$ref": "#/definitions/common/EthereumAddress" },
+          "recipient": { "$ref": "#/definitions/common/EthereumAddress" },
+          "status": {
+            "type": "string",
+            "enum": [
+              "initiated",
+              "pending_source",
+              "pending_destination",
+              "confirmed",
+              "completed",
+              "failed",
+              "expired"
+            ]
+          },
+          "sourceTxHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "destinationTxHash": {
+            "oneOf": [
+              { "$ref": "#/definitions/common/TransactionHash" },
+              { "type": "null" }
+            ]
+          },
+          "fees": {
+            "type": "object",
+            "properties": {
+              "bridgeFee": { "$ref": "#/definitions/common/WeiAmount" },
+              "sourceFee": { "$ref": "#/definitions/common/WeiAmount" },
+              "destinationFee": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          },
+          "timestamps": {
+            "type": "object",
+            "properties": {
+              "initiated": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "sourceConfirmed": {
+                "$ref": "#/definitions/common/ISO8601DateTime"
+              },
+              "destinationConfirmed": {
+                "$ref": "#/definitions/common/ISO8601DateTime"
+              },
+              "completed": { "$ref": "#/definitions/common/ISO8601DateTime" }
+            }
+          },
+          "estimatedCompletionTime": {
+            "$ref": "#/definitions/common/ISO8601DateTime"
+          },
+          "proofs": {
+            "type": "object",
+            "properties": {
+              "merkleProof": { "type": "array", "items": { "type": "string" } },
+              "validatorSignatures": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "required": [
+          "transferId",
+          "bridgeId",
+          "sourceChain",
+          "destinationChain",
+          "asset",
+          "amount",
+          "sender",
+          "recipient",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "compute": {
+      "ComputeJob": {
+        "type": "object",
+        "properties": {
+          "jobId": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": [
+              "weather_model",
+              "ml_training",
+              "data_processing",
+              "nft_computation",
+              "consensus_validation",
+              "oracle_computation"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "assigned",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "submitter": { "$ref": "#/definitions/common/EthereumAddress" },
+          "assignedNode": { "type": "string" },
+          "computeResources": {
+            "type": "object",
+            "properties": {
+              "cpu": { "type": "number", "minimum": 0.1 },
+              "memory": { "type": "number", "minimum": 0.1 },
+              "storage": { "type": "number", "minimum": 0.1 },
+              "gpu": { "type": "boolean" },
+              "gpuType": { "type": "string" },
+              "networkBandwidth": { "type": "number" }
+            },
+            "required": ["cpu", "memory"]
+          },
+          "inputData": {
+            "type": "object",
+            "properties": {
+              "dataHash": { "type": "string" },
+              "dataSize": { "type": "number" },
+              "dataSource": { "type": "string", "format": "uri" },
+              "parameters": { "type": "object" }
+            }
+          },
+          "outputData": {
+            "type": "object",
+            "properties": {
+              "resultHash": { "type": "string" },
+              "resultSize": { "type": "number" },
+              "resultLocation": { "type": "string", "format": "uri" },
+              "metadata": { "type": "object" }
+            }
+          },
+          "timestamps": {
+            "type": "object",
+            "properties": {
+              "submitted": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "assigned": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "started": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "completed": { "$ref": "#/definitions/common/ISO8601DateTime" }
+            }
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "estimatedCost": { "$ref": "#/definitions/common/WeiAmount" },
+              "actualCost": { "$ref": "#/definitions/common/WeiAmount" },
+              "paymentToken": { "type": "string" }
+            }
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "verificationNodes": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "consensusReached": { "type": "boolean" },
+              "verificationHash": { "type": "string" }
+            }
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": { "type": "object" }
+            }
+          }
+        },
+        "required": [
+          "jobId",
+          "type",
+          "status",
+          "priority",
+          "submitter",
+          "computeResources"
+        ],
+        "additionalProperties": false
+      },
+
+      "ComputeNode": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string" },
+          "operator": { "$ref": "#/definitions/common/EthereumAddress" },
+          "status": {
+            "type": "string",
+            "enum": ["online", "offline", "busy", "maintenance"]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "maxCpu": { "type": "number" },
+              "maxMemory": { "type": "number" },
+              "maxStorage": { "type": "number" },
+              "hasGpu": { "type": "boolean" },
+              "gpuSpecs": { "type": "string" },
+              "supportedJobTypes": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "currentLoad": {
+            "type": "object",
+            "properties": {
+              "cpuUsage": { "type": "number", "minimum": 0, "maximum": 1 },
+              "memoryUsage": { "type": "number", "minimum": 0, "maximum": 1 },
+              "storageUsage": { "type": "number", "minimum": 0, "maximum": 1 },
+              "activeJobs": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "performance": {
+            "type": "object",
+            "properties": {
+              "completedJobs": { "type": "integer" },
+              "successRate": { "type": "number" },
+              "averageProcessingTime": { "type": "number" },
+              "reputation": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "rewards": {
+            "type": "object",
+            "properties": {
+              "totalEarned": { "$ref": "#/definitions/common/WeiAmount" },
+              "pendingRewards": { "$ref": "#/definitions/common/WeiAmount" },
+              "stakeAmount": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          },
+          "registrationDate": {
+            "$ref": "#/definitions/common/ISO8601DateTime"
+          },
+          "lastSeen": { "$ref": "#/definitions/common/ISO8601DateTime" }
+        },
+        "required": [
+          "nodeId",
+          "operator",
+          "status",
+          "capabilities",
+          "currentLoad"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "nft": {
+      "ComputationalNFT": {
+        "type": "object",
+        "properties": {
+          "tokenId": { "type": "string" },
+          "contractAddress": { "$ref": "#/definitions/common/EthereumAddress" },
+          "owner": { "$ref": "#/definitions/common/EthereumAddress" },
+          "creator": { "$ref": "#/definitions/common/EthereumAddress" },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "image": { "type": "string", "format": "uri" },
+              "animationUrl": { "type": "string", "format": "uri" },
+              "externalUrl": { "type": "string", "format": "uri" }
+            }
+          },
+          "computationalData": {
+            "type": "object",
+            "properties": {
+              "algorithm": { "type": "string" },
+              "modelType": { "type": "string" },
+              "inputSchema": { "type": "object" },
+              "outputSchema": { "type": "object" },
+              "complexity": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "computeRequirements": {
+                "type": "object",
+                "properties": {
+                  "cpu": { "type": "number" },
+                  "memory": { "type": "number" },
+                  "gpu": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          "recipe": {
+            "type": "object",
+            "properties": {
+              "recipeId": { "type": "string" },
+              "version": { "type": "string" },
+              "code": { "type": "string" },
+              "dependencies": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "executionEnvironment": { "type": "string" }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "dataSource": { "type": "string" },
+              "trainingData": { "type": "string" },
+              "validationResults": { "type": "object" },
+              "certification": { "type": "string" }
+            }
+          },
+          "execution": {
+            "type": "object",
+            "properties": {
+              "executionCount": { "type": "integer" },
+              "lastExecution": {
+                "$ref": "#/definitions/common/ISO8601DateTime"
+              },
+              "averageExecutionTime": { "type": "number" },
+              "successRate": { "type": "number" }
+            }
+          },
+          "marketplace": {
+            "type": "object",
+            "properties": {
+              "isForSale": { "type": "boolean" },
+              "price": { "$ref": "#/definitions/common/WeiAmount" },
+              "currency": { "type": "string" },
+              "royalty": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "creationDate": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "lastModified": { "$ref": "#/definitions/common/ISO8601DateTime" }
+        },
+        "required": [
+          "tokenId",
+          "contractAddress",
+          "owner",
+          "creator",
+          "metadata",
+          "computationalData",
+          "creationDate"
+        ],
+        "additionalProperties": false
+      },
+
+      "NFTExecution": {
+        "type": "object",
+        "properties": {
+          "executionId": { "type": "string" },
+          "tokenId": { "type": "string" },
+          "executor": { "$ref": "#/definitions/common/EthereumAddress" },
+          "computeJobId": { "type": "string" },
+          "inputData": { "type": "object" },
+          "outputData": { "type": "object" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "running", "completed", "failed"]
+          },
+          "timestamps": {
+            "type": "object",
+            "properties": {
+              "requested": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "started": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "completed": { "$ref": "#/definitions/common/ISO8601DateTime" }
+            }
+          },
+          "cost": { "$ref": "#/definitions/common/WeiAmount" },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "verified": { "type": "boolean" },
+              "verificationHash": { "type": "string" },
+              "witnesses": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "required": [
+          "executionId",
+          "tokenId",
+          "executor",
+          "inputData",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "governance": {
+      "Proposal": {
+        "type": "object",
+        "properties": {
+          "proposalId": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "proposer": { "$ref": "#/definitions/common/EthereumAddress" },
+          "type": {
+            "type": "string",
+            "enum": [
+              "parameter_change",
+              "treasury_spend",
+              "upgrade",
+              "emergency",
+              "consensus_change",
+              "carbon_policy"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "active",
+              "pending",
+              "executed",
+              "defeated",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "votingPeriod": {
+            "type": "object",
+            "properties": {
+              "start": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "end": { "$ref": "#/definitions/common/ISO8601DateTime" }
+            }
+          },
+          "votes": {
+            "type": "object",
+            "properties": {
+              "for": { "$ref": "#/definitions/common/WeiAmount" },
+              "against": { "$ref": "#/definitions/common/WeiAmount" },
+              "abstain": { "$ref": "#/definitions/common/WeiAmount" },
+              "totalVotes": { "$ref": "#/definitions/common/WeiAmount" },
+              "quorum": { "$ref": "#/definitions/common/WeiAmount" },
+              "threshold": { "type": "number" }
+            }
+          },
+          "execution": {
+            "type": "object",
+            "properties": {
+              "targets": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/common/EthereumAddress" }
+              },
+              "values": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/common/WeiAmount" }
+              },
+              "calldatas": { "type": "array", "items": { "type": "string" } },
+              "executionHash": { "type": "string" }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "ipfsHash": { "type": "string" },
+              "tags": { "type": "array", "items": { "type": "string" } },
+              "category": { "type": "string" }
+            }
+          }
+        },
+        "required": [
+          "proposalId",
+          "title",
+          "description",
+          "proposer",
+          "type",
+          "status",
+          "votingPeriod"
+        ],
+        "additionalProperties": false
+      },
+
+      "Vote": {
+        "type": "object",
+        "properties": {
+          "voteId": { "type": "string" },
+          "proposalId": { "type": "string" },
+          "voter": { "$ref": "#/definitions/common/EthereumAddress" },
+          "choice": {
+            "type": "string",
+            "enum": ["for", "against", "abstain"]
+          },
+          "weight": { "$ref": "#/definitions/common/WeiAmount" },
+          "reason": { "type": "string" },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "transactionHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "delegation": {
+            "type": "object",
+            "properties": {
+              "isDelegated": { "type": "boolean" },
+              "delegateFrom": {
+                "$ref": "#/definitions/common/EthereumAddress"
+              },
+              "delegateTo": { "$ref": "#/definitions/common/EthereumAddress" }
+            }
+          }
+        },
+        "required": [
+          "voteId",
+          "proposalId",
+          "voter",
+          "choice",
+          "weight",
+          "timestamp",
+          "transactionHash"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "mining": {
+      "MiningPool": {
+        "type": "object",
+        "properties": {
+          "poolId": { "type": "string" },
+          "name": { "type": "string" },
+          "operator": { "$ref": "#/definitions/common/EthereumAddress" },
+          "type": {
+            "type": "string",
+            "enum": ["proof_of_work", "proof_of_stake", "proof_of_information"]
+          },
+          "algorithm": { "type": "string" },
+          "hashrate": { "type": "string" },
+          "difficulty": { "type": "string" },
+          "blockReward": { "$ref": "#/definitions/common/WeiAmount" },
+          "fee": { "type": "number", "minimum": 0, "maximum": 1 },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": { "$ref": "#/definitions/common/EthereumAddress" },
+                "contribution": { "type": "number" },
+                "joinDate": { "$ref": "#/definitions/common/ISO8601DateTime" }
+              }
+            }
+          },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "blocksFound": { "type": "integer" },
+              "totalRewards": { "$ref": "#/definitions/common/WeiAmount" },
+              "avgBlockTime": { "type": "number" },
+              "efficiency": { "type": "number" }
+            }
+          },
+          "consensus": {
+            "type": "object",
+            "properties": {
+              "mechanism": { "type": "string" },
+              "validators": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/common/EthereumAddress" }
+              },
+              "weatherDataRequired": { "type": "boolean" }
+            }
+          }
+        },
+        "required": [
+          "poolId",
+          "name",
+          "operator",
+          "type",
+          "hashrate",
+          "blockReward",
+          "fee"
+        ],
+        "additionalProperties": false
+      },
+
+      "MiningReward": {
+        "type": "object",
+        "properties": {
+          "rewardId": { "type": "string" },
+          "blockHash": { "$ref": "#/definitions/common/TransactionHash" },
+          "blockHeight": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "miner": { "$ref": "#/definitions/common/EthereumAddress" },
+          "poolId": { "type": "string" },
+          "amount": { "$ref": "#/definitions/common/WeiAmount" },
+          "rewardType": {
+            "type": "string",
+            "enum": [
+              "block_reward",
+              "transaction_fees",
+              "weather_bonus",
+              "consensus_reward"
+            ]
+          },
+          "timestamp": { "$ref": "#/definitions/common/ISO8601DateTime" },
+          "distribution": {
+            "type": "object",
+            "properties": {
+              "minerShare": { "$ref": "#/definitions/common/WeiAmount" },
+              "poolFee": { "$ref": "#/definitions/common/WeiAmount" },
+              "stakeholderRewards": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "required": [
+          "rewardId",
+          "blockHash",
+          "blockHeight",
+          "miner",
+          "amount",
+          "rewardType",
+          "timestamp"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "defi": {
+      "LiquidityPool": {
+        "type": "object",
+        "properties": {
+          "poolAddress": { "$ref": "#/definitions/common/EthereumAddress" },
+          "token0": { "$ref": "#/definitions/common/EthereumAddress" },
+          "token1": { "$ref": "#/definitions/common/EthereumAddress" },
+          "token0Symbol": { "type": "string" },
+          "token1Symbol": { "type": "string" },
+          "reserve0": { "$ref": "#/definitions/common/WeiAmount" },
+          "reserve1": { "$ref": "#/definitions/common/WeiAmount" },
+          "totalSupply": { "$ref": "#/definitions/common/WeiAmount" },
+          "fee": { "type": "string" },
+          "feeProtocol": { "type": "integer" },
+          "tvl": { "type": "number" },
+          "volume24h": { "type": "number" },
+          "apr": { "type": "number" },
+          "apy": { "type": "number" },
+          "price": {
+            "type": "object",
+            "properties": {
+              "token0Price": { "type": "number" },
+              "token1Price": { "type": "number" },
+              "lpTokenPrice": { "type": "number" }
+            }
+          },
+          "carbon": {
+            "type": "object",
+            "properties": {
+              "isCarbonPair": { "type": "boolean" },
+              "carbonIntensity": { "type": "number" },
+              "offsetCredits": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "required": [
+          "poolAddress",
+          "token0",
+          "token1",
+          "reserve0",
+          "reserve1",
+          "totalSupply",
+          "fee"
+        ],
+        "additionalProperties": false
+      },
+
+      "YieldFarm": {
+        "type": "object",
+        "properties": {
+          "farmAddress": { "$ref": "#/definitions/common/EthereumAddress" },
+          "name": { "type": "string" },
+          "liquidityPool": { "$ref": "#/definitions/common/EthereumAddress" },
+          "rewardTokens": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/common/EthereumAddress" }
+          },
+          "baseRewardRate": { "$ref": "#/definitions/common/WeiAmount" },
+          "carbonMultiplier": { "type": "number" },
+          "qualityBonus": { "type": "number" },
+          "minStakeDuration": { "type": "integer" },
+          "farmType": {
+            "type": "string",
+            "enum": ["standard", "premium", "carbon_intensive"]
+          },
+          "isActive": { "type": "boolean" },
+          "totalStaked": { "$ref": "#/definitions/common/WeiAmount" },
+          "totalRewards": { "$ref": "#/definitions/common/WeiAmount" },
+          "apr": { "type": "number" },
+          "apy": { "type": "number" },
+          "carbonCredits": {
+            "type": "object",
+            "properties": {
+              "requiredCredits": { "$ref": "#/definitions/common/WeiAmount" },
+              "carbonDiscount": { "type": "number" },
+              "offsetGenerated": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "required": [
+          "farmAddress",
+          "name",
+          "liquidityPool",
+          "rewardTokens",
+          "baseRewardRate",
+          "farmType",
+          "isActive"
+        ],
+        "additionalProperties": false
+      }
+    },
+
+    "api": {
+      "PaginationParams": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "additionalProperties": false
+      },
+
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "currentPage": { "$ref": "#/definitions/common/PositiveInteger" },
+          "totalPages": { "$ref": "#/definitions/common/PositiveInteger" },
+          "totalItems": { "$ref": "#/definitions/common/NonNegativeInteger" },
+          "itemsPerPage": { "$ref": "#/definitions/common/PositiveInteger" },
+          "hasNextPage": { "type": "boolean" },
+          "hasPreviousPage": { "type": "boolean" }
+        },
+        "required": [
+          "currentPage",
+          "totalPages",
+          "totalItems",
+          "itemsPerPage",
+          "hasNextPage",
+          "hasPreviousPage"
+        ],
+        "additionalProperties": false
+      },
+
+      "FilterParams": {
+        "type": "object",
+        "properties": {
+          "dateRange": {
+            "type": "object",
+            "properties": {
+              "startDate": { "$ref": "#/definitions/common/ISO8601DateTime" },
+              "endDate": { "$ref": "#/definitions/common/ISO8601DateTime" }
+            }
+          },
+          "status": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "address": { "$ref": "#/definitions/common/EthereumAddress" },
+          "amount": {
+            "type": "object",
+            "properties": {
+              "min": { "$ref": "#/definitions/common/WeiAmount" },
+              "max": { "$ref": "#/definitions/common/WeiAmount" }
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+
+      "ErrorDetails": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "field": { "type": "string" },
+          "value": { "type": "string" },
+          "suggestion": { "type": "string" }
+        },
+        "required": ["code", "message"],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+fn boom(mnemonic: &str) {
+    panic!(
+        "recovery failed for {}",
+        mnemonic
+    );
+}

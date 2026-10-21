@@ -1,0 +1,109 @@
+
+graph TB
+    subgraph "🛡️ Perimeter Security"
+        WAF[Web Application Firewall<br/>OWASP Protection]
+        DDOS[DDoS Protection<br/>Rate Limiting | Traffic Analysis]
+        VPN[VPN Gateway<br/>Secure Remote Access]
+    end
+    
+    subgraph "🔐 Authentication & Authorization"
+        MFA[Multi-Factor Authentication<br/>TOTP | Hardware Tokens]
+        JWT[JWT Token Service<br/>Stateless Authentication]
+        RBAC[Role-Based Access Control<br/>Granular Permissions]
+        OAUTH[OAuth 2.0 / OIDC<br/>Third-party Integration]
+    end
+    
+    subgraph "🏛️ Hardware Security Module (HSM)"
+        HSM_CORE[HSM Core<br/>Cryptographic Operations]
+        KEY_GEN[Key Generation<br/>True Random Sources]
+        SIGNING[Digital Signing<br/>Non-extractable Keys]
+        ENCRYPTION[Data Encryption<br/>AES-256 | RSA-4096]
+    end
+    
+    subgraph "🔒 Cryptographic Services"
+        WALLET_CRYPTO[Wallet Cryptography<br/>BIP-39/44 | Multi-sig]
+        BLOCK_CRYPTO[Blockchain Cryptography<br/>Quantum-resistant Algorithms]
+        DATA_CRYPTO[Data Encryption<br/>End-to-end Encryption]
+        COMM_CRYPTO[Communication Security<br/>TLS 1.3 | Perfect Forward Secrecy]
+    end
+    
+    subgraph "🛡️ Network Security"
+        FIREWALL[Next-Gen Firewall<br/>Deep Packet Inspection]
+        IDS[Intrusion Detection<br/>Signature & Anomaly Based]
+        IPS[Intrusion Prevention<br/>Real-time Blocking]
+        SIEM[Security Information<br/>Event Management]
+    end
+    
+    subgraph "📊 Security Monitoring"
+        LOG_AGGR[Log Aggregation<br/>Centralized Logging]
+        THREAT_INTEL[Threat Intelligence<br/>IOC Feeds | ML Detection]
+        INCIDENT[Incident Response<br/>Automated & Manual]
+        FORENSICS[Digital Forensics<br/>Evidence Collection]
+    end
+    
+    subgraph "🔍 Compliance & Auditing"
+        SOC2[SOC 2 Compliance<br/>Type II Certification]
+        GDPR[GDPR Compliance<br/>Data Protection]
+        AUDIT_LOG[Audit Logging<br/>Immutable Records]
+        COMPLIANCE[Compliance Monitoring<br/>Continuous Assessment]
+    end
+    
+    subgraph "🛡️ Data Protection"
+        BACKUP[Encrypted Backups<br/>3-2-1 Strategy]
+        DLP[Data Loss Prevention<br/>Sensitive Data Monitoring]
+        RETENTION[Data Retention<br/>Policy Enforcement]
+        PRIVACY[Privacy Controls<br/>Anonymization | Pseudonymization]
+    end
+    
+    %% Security flow connections
+    WAF --> MFA
+    DDOS --> JWT
+    VPN --> RBAC
+    
+    MFA --> HSM_CORE
+    JWT --> KEY_GEN
+    RBAC --> SIGNING
+    OAUTH --> ENCRYPTION
+    
+    HSM_CORE --> WALLET_CRYPTO
+    KEY_GEN --> BLOCK_CRYPTO
+    SIGNING --> DATA_CRYPTO
+    ENCRYPTION --> COMM_CRYPTO
+    
+    WALLET_CRYPTO --> FIREWALL
+    BLOCK_CRYPTO --> IDS
+    DATA_CRYPTO --> IPS
+    COMM_CRYPTO --> SIEM
+    
+    FIREWALL --> LOG_AGGR
+    IDS --> THREAT_INTEL
+    IPS --> INCIDENT
+    SIEM --> FORENSICS
+    
+    LOG_AGGR --> SOC2
+    THREAT_INTEL --> GDPR
+    INCIDENT --> AUDIT_LOG
+    FORENSICS --> COMPLIANCE
+    
+    SOC2 --> BACKUP
+    GDPR --> DLP
+    AUDIT_LOG --> RETENTION
+    COMPLIANCE --> PRIVACY
+    
+    classDef perimeter fill:#e8f8f5,stroke:#27ae60,stroke-width:2px
+    classDef auth fill:#ebf3fd,stroke:#3498db,stroke-width:2px
+    classDef hsm fill:#fdf2e9,stroke:#f39c12,stroke-width:2px
+    classDef crypto fill:#fadbd8,stroke:#e74c3c,stroke-width:2px
+    classDef network fill:#f4f6f6,stroke:#95a5a6,stroke-width:2px
+    classDef monitoring fill:#f8f9f9,stroke:#34495e,stroke-width:2px
+    classDef compliance fill:#ebedef,stroke:#85929e,stroke-width:2px
+    classDef protection fill:#fef9e7,stroke:#f4d03f,stroke-width:2px
+    
+    class WAF,DDOS,VPN perimeter
+    class MFA,JWT,RBAC,OAUTH auth
+    class HSM_CORE,KEY_GEN,SIGNING,ENCRYPTION hsm
+    class WALLET_CRYPTO,BLOCK_CRYPTO,DATA_CRYPTO,COMM_CRYPTO crypto
+    class FIREWALL,IDS,IPS,SIEM network
+    class LOG_AGGR,THREAT_INTEL,INCIDENT,FORENSICS monitoring
+    class SOC2,GDPR,AUDIT_LOG,COMPLIANCE compliance
+    class BACKUP,DLP,RETENTION,PRIVACY protection

@@ -1,0 +1,21 @@
+# thread sweep — prove phase only, 2+10 (warmup+timed) per point
+# commit=a35974e64  rustc=rustc 1.88.0 (6b00bc388 2025-06-23)
+# kernel=6.6.87.2-microsoft-standard-WSL2  cpu=AMD Ryzen 9 5950X 16-Core Processor  cores=32
+# RAYON_NUM_THREADS is the swept variable; every other setting matches profile A.
+# A SEPARATE experiment from the A/B/D profile sweeps: same machine and commit, different
+# run. Its 4-thread figure is therefore close to, but not identical with, profile B's —
+# expecting exact agreement between two independent runs would be the single-sample
+# mistake this document exists to record.
+threads,case,prove_min_ms,prove_median_ms,prove_max_ms
+1,range-proof/8,29.2,29.4,29.8
+1,weather-model/128,842.9,857.8,870.2
+2,range-proof/8,18.0,18.7,18.8
+2,weather-model/128,500.1,508.9,512.9
+4,range-proof/8,13.7,14.0,14.7
+4,weather-model/128,334.1,341.6,352.7
+8,range-proof/8,15.2,16.7,18.4
+8,weather-model/128,260.5,265.0,273.5
+16,range-proof/8,31.9,35.9,39.3
+16,weather-model/128,259.5,269.5,277.4
+32,range-proof/8,43.4,57.4,62.8
+32,weather-model/128,299.4,316.2,369.9

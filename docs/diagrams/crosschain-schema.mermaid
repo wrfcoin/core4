@@ -1,0 +1,27 @@
+erDiagram
+    %% Cross-Chain Operations
+
+    CROSS_CHAIN_BRIDGES {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    AXELAR_CHAINS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    LAYER_ZERO_CHAINS {
+        id PK
+        created_at TIMESTAMP
+        updated_at TIMESTAMP
+    }
+
+    CROSS_CHAIN_BRIDGES ||--o{ BRIDGE_TRANSACTIONS : "has many"
+    CROSS_CHAIN_BRIDGES ||--o{ CROSS_CHAIN_TRANSFERS : "has many"
+    AXELAR_CHAINS ||--o{ AXELAR_TRANSFERS : "has many"
+    AXELAR_CHAINS ||--o{ AXELAR_MESSAGES : "has many"
+    LAYER_ZERO_CHAINS ||--o{ LAYER_ZERO_MESSAGES : "has many"
+    LAYER_ZERO_CHAINS ||--o{ LAYER_ZERO_TOKEN_TRANSFERS : "has many"

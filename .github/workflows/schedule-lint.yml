@@ -1,0 +1,56 @@
+# Schedule-trigger lint (#2498 / #2657 review).
+#
+# This is a STANDALONE workflow with NO paths filter, deliberately (#2657
+# review, findings 1 and 2): the lint's subject is other workflows' trigger
+# sets, so it must fire on EVERY pull request — a paths filter scoped to the
+# linted files is how a checker silently stops checking (the #2650 class), and
+# hosting it inside ci-readiness both excluded the workflow tree from its own
+# trigger paths and tied the lint's existence to a trigger #2659 removes.
+#
+# Cost: one ubuntu job of ~1 minute per PR — the thing it guards against is a
+# silently re-armed cron billing unbounded minutes monthly.
+name: schedule-lint
+on:
+  pull_request:
+  # Also evaluate `main` itself (#2981). `schedule-lint` is one of the three
+  # REQUIRED status checks on `main`, and until this line it ran ONLY on
+  # pull_request — so the branch it protects was never measured against it and
+  # `schedule-lint` was absent from main's check-runs entirely.
+  #
+  # That gap matters most for exactly what this lint guards: a silently re-armed
+  # cron billing unbounded minutes. Anything reaching `main` outside a
+  # PR-evaluated path was invisible to the only check watching for it.
+  #
+  # No paths filter here, for the same reason the pull_request trigger has none
+  # (see the header): the lint's subject is other workflows' trigger sets, so a
+  # filter scoped to the linted files is how a checker silently stops checking.
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Data cap (infra#1113, owner ruling 2026-09-27): a new push to a PR cancels
+# that PR's superseded run. Every other event (push to main, schedule,
+# workflow_dispatch) gets a group unique to its run id, so it is never
+# cancelled and never evicted while pending (#2945, #3036).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  schedule-lint:
+    # CT102 self-hosted (2026-08-30): PR-blocking guards must stay REAL when
+    # hosted minutes are exhausted (zero-step billing failures otherwise).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install PyYAML (pinned, matching ci-readiness preflight)
+        # The `|| import yaml` fallback keeps the step fail-closed on CT102,
+        # where Debian's externally-managed pip refuses the install but the
+        # system parser (python3-yaml) is preinstalled.
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml==6.0.2 || python3 -c "import yaml"
+      - name: Schedule-trigger lint
+        run: python3 scripts/schedule_trigger_lint.py

@@ -1,0 +1,23 @@
+{
+  "description": "compute-receipt fixture: vector-002-high-work-factor",
+  "fixture_version": 1,
+  "receipt": {
+    "task_id": "weather-forecast-grid-37",
+    "worker_id": "ff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e",
+    "work_hash": "5fa7b8e93cf1d6e2a48c0d5f7b9e3a1c8d2f4e6a9b0c1d2e3f4a5b6c7d8e9f01",
+    "work_factor": 50000,
+    "completed_at": 1730500000,
+    "nonce": "abcdef0123456789abcdef0123456789",
+    "signature": "45f94bee85da1f6276cbb3db5f56847bc1712ccf1245100acec9c2a276b2874bb8c9fdc9eb54a0fae15d99ff4d54de42d40912c7f8b0509e039ad8260ecaa00b"
+  },
+  "signing_message": "wrfcoin-sign-v1|wrfcoin.compute_receipt.v1|wrfcoin-main|mainnet|ff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e|1730500000|abcdef0123456789abcdef0123456789|615ed1c331dd83eb05099187f607b29a1aa28576db9c9ff045eff0e169434afe",
+  "inputs": {
+    "task_id": "weather-forecast-grid-37",
+    "worker_secret_key": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    "worker_public_key": "ff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e",
+    "work_hash": "5fa7b8e93cf1d6e2a48c0d5f7b9e3a1c8d2f4e6a9b0c1d2e3f4a5b6c7d8e9f01",
+    "work_factor": 50000,
+    "completed_at": 1730500000,
+    "nonce": "abcdef0123456789abcdef0123456789"
+  }
+}

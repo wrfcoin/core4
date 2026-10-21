@@ -1,0 +1,17 @@
+[package]
+name = "wrfcoin-sdk"
+version = "1.0.0"
+authors = ["api@wrfcoin.com"]
+description = "Comprehensive API for the Wrfcoin climate-focused blockchain platform. Includes weather data collection, smart contracts, governance, and environmental impact tracking. "
+license = "MIT"
+edition = "2021"
+
+[dependencies]
+serde = { version = "^1.0", features = ["derive"] }
+serde_with = { version = "^3.8", default-features = false, features = ["base64", "std", "macros"] }
+serde_json = "^1.0"
+serde_repr = "^0.1"
+url = "^2.5"
+reqwest = { version = "^0.12", default-features = false, features = ["json", "multipart"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+chrono = { version = "0.4", features = ["serde"] }

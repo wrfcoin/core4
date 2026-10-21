@@ -1,0 +1,2295 @@
+{
+  "types": {
+    "queries": [
+      {
+        "name": "Query",
+        "fields": [
+          {
+            "name": "wrfToken",
+            "args": "",
+            "type": "WRFToken",
+            "description": ""
+          },
+          {
+            "name": "weatherStation",
+            "args": "(id: ID!)",
+            "type": "WeatherStation",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "orderBy",
+            "args": "",
+            "type": "String = \"id\"",
+            "description": ""
+          },
+          {
+            "name": "orderDirection",
+            "args": "",
+            "type": "String = \"asc\"",
+            "description": ""
+          },
+          {
+            "name": "where",
+            "args": "",
+            "type": "WeatherStationFilter",
+            "description": ""
+          },
+          {
+            "name": "stationId",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "from",
+            "args": "",
+            "type": "DateTime",
+            "description": ""
+          },
+          {
+            "name": "to",
+            "args": "",
+            "type": "DateTime",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 100",
+            "description": ""
+          },
+          {
+            "name": "carbonCredit",
+            "args": "(id: ID!)",
+            "type": "CarbonCredit",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "orderBy",
+            "args": "",
+            "type": "String = \"id\"",
+            "description": ""
+          },
+          {
+            "name": "orderDirection",
+            "args": "",
+            "type": "String = \"asc\"",
+            "description": ""
+          },
+          {
+            "name": "where",
+            "args": "",
+            "type": "CarbonCreditFilter",
+            "description": ""
+          },
+          {
+            "name": "computationalNFT",
+            "args": "(id: ID!)",
+            "type": "ComputationalNFT",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "orderBy",
+            "args": "",
+            "type": "String = \"id\"",
+            "description": ""
+          },
+          {
+            "name": "orderDirection",
+            "args": "",
+            "type": "String = \"asc\"",
+            "description": ""
+          },
+          {
+            "name": "where",
+            "args": "",
+            "type": "ComputationalNFTFilter",
+            "description": ""
+          },
+          {
+            "name": "proposal",
+            "args": "(id: ID!)",
+            "type": "GovernanceProposal",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "orderBy",
+            "args": "",
+            "type": "String = \"id\"",
+            "description": ""
+          },
+          {
+            "name": "orderDirection",
+            "args": "",
+            "type": "String = \"asc\"",
+            "description": ""
+          },
+          {
+            "name": "where",
+            "args": "",
+            "type": "ProposalFilter",
+            "description": ""
+          },
+          {
+            "name": "ammPool",
+            "args": "(id: ID!)",
+            "type": "CarbonCreditAMM",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "(address: Address!)",
+            "type": "User",
+            "description": ""
+          },
+          {
+            "name": "first",
+            "args": "",
+            "type": "Int = 10",
+            "description": ""
+          },
+          {
+            "name": "skip",
+            "args": "",
+            "type": "Int = 0",
+            "description": ""
+          },
+          {
+            "name": "marketData",
+            "args": "(timestamp: DateTime)",
+            "type": "MarketData",
+            "description": ""
+          },
+          {
+            "name": "from",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "to",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "interval",
+            "args": "",
+            "type": "String = \"1h\"",
+            "description": ""
+          },
+          {
+            "name": "search",
+            "args": "(query: String!, type: SearchType)",
+            "type": "[SearchResult!]!",
+            "description": ""
+          }
+        ]
+      }
+    ],
+    "mutations": [
+      {
+        "name": "Mutation",
+        "fields": [
+          {
+            "name": "submitWeatherData",
+            "args": "(input: WeatherDataInput!)",
+            "type": "WeatherDataSubmissionResult!",
+            "description": ""
+          },
+          {
+            "name": "trackCarbonActivity",
+            "args": "(input: CarbonActivityInput!)",
+            "type": "CarbonActivityResult!",
+            "description": ""
+          },
+          {
+            "name": "castVote",
+            "args": "(input: VoteInput!)",
+            "type": "VoteResult!",
+            "description": ""
+          },
+          {
+            "name": "prepareSwap",
+            "args": "(input: SwapInput!)",
+            "type": "TransactionPreparation!",
+            "description": ""
+          },
+          {
+            "name": "prepareTransfer",
+            "args": "(input: TransferInput!)",
+            "type": "TransactionPreparation!",
+            "description": ""
+          },
+          {
+            "name": "prepareStake",
+            "args": "(input: StakeInput!)",
+            "type": "TransactionPreparation!",
+            "description": ""
+          }
+        ]
+      }
+    ],
+    "types": [
+      {
+        "name": "WRFToken",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "address",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "symbol",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "name",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "decimals",
+            "args": "",
+            "type": "Int!",
+            "description": ""
+          },
+          {
+            "name": "totalSupply",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "maxSupply",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "paused",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "weatherRewardRate",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "weatherStations",
+            "args": "",
+            "type": "[WeatherStation!]!",
+            "description": ""
+          },
+          {
+            "name": "votes",
+            "args": "",
+            "type": "[Vote!]!",
+            "description": ""
+          },
+          {
+            "name": "proposals",
+            "args": "",
+            "type": "[GovernanceProposal!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "WeatherStation",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "address",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "stationId",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "location",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "isActive",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "lastRewardTime",
+            "args": "",
+            "type": "DateTime",
+            "description": ""
+          },
+          {
+            "name": "totalRewards",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "qualityScore",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "weatherData",
+            "args": "",
+            "type": "[WeatherData!]!",
+            "description": ""
+          },
+          {
+            "name": "latestWeatherData",
+            "args": "",
+            "type": "WeatherData",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "WeatherData",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "stationId",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "temperature",
+            "args": "",
+            "type": "Float! # In celsius * 100",
+            "description": ""
+          },
+          {
+            "name": "humidity",
+            "args": "",
+            "type": "Float! # 0-100%",
+            "description": ""
+          },
+          {
+            "name": "pressure",
+            "args": "",
+            "type": "Float! # In hPa * 100",
+            "description": ""
+          },
+          {
+            "name": "windSpeed",
+            "args": "",
+            "type": "Float! # In m/s * 100",
+            "description": ""
+          },
+          {
+            "name": "rainfall",
+            "args": "",
+            "type": "Float! # In mm * 100",
+            "description": ""
+          },
+          {
+            "name": "confidence",
+            "args": "",
+            "type": "Float! # 0-100%",
+            "description": ""
+          },
+          {
+            "name": "station",
+            "args": "",
+            "type": "WeatherStation!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonCredit",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "tokenId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "carbonOffset",
+            "args": "",
+            "type": "BigInt! # CO2 equivalent in grams",
+            "description": ""
+          },
+          {
+            "name": "projectType",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "verificationStandard",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "issuanceDate",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "expiryDate",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "location",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "isRetired",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "issuer",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "certificationHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "forSale",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "price",
+            "args": "",
+            "type": "WeiAmount",
+            "description": ""
+          },
+          {
+            "name": "owner",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "transfers",
+            "args": "",
+            "type": "[CarbonCreditTransfer!]!",
+            "description": ""
+          },
+          {
+            "name": "retirements",
+            "args": "",
+            "type": "[CarbonCreditRetirement!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonCreditTransfer",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "tokenId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "from",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "to",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "price",
+            "args": "",
+            "type": "WeiAmount",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonCreditRetirement",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "tokenId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "retiringEntity",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "carbonOffset",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "ComputationalNFT",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "tokenId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "modelType",
+            "args": "",
+            "type": "ModelType!",
+            "description": ""
+          },
+          {
+            "name": "modelName",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "inputData",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "computeResources",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "executionTime",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "stakeAmount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "status",
+            "args": "",
+            "type": "ComputeStatus!",
+            "description": ""
+          },
+          {
+            "name": "resultData",
+            "args": "",
+            "type": "String",
+            "description": ""
+          },
+          {
+            "name": "resultHash",
+            "args": "",
+            "type": "String",
+            "description": ""
+          },
+          {
+            "name": "createdAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "executedAt",
+            "args": "",
+            "type": "DateTime",
+            "description": ""
+          },
+          {
+            "name": "computeProvider",
+            "args": "",
+            "type": "Address",
+            "description": ""
+          },
+          {
+            "name": "isVerified",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "owner",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "job",
+            "args": "",
+            "type": "ComputeJob!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "ComputeJob",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "nft",
+            "args": "",
+            "type": "ComputationalNFT!",
+            "description": ""
+          },
+          {
+            "name": "provider",
+            "args": "",
+            "type": "ComputeProvider",
+            "description": ""
+          },
+          {
+            "name": "rewards",
+            "args": "",
+            "type": "[ComputeReward!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "ComputeProvider",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "address",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "isAuthorized",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "totalComputeTime",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "successfulJobs",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "failedJobs",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "stakedTokens",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "hardwareSpecs",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "jobs",
+            "args": "",
+            "type": "[ComputeJob!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "ComputeReward",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "provider",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "computeTime",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "GovernanceProposal",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "proposalId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "title",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "description",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "proposer",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "targets",
+            "args": "",
+            "type": "[Address!]!",
+            "description": ""
+          },
+          {
+            "name": "values",
+            "args": "",
+            "type": "[WeiAmount!]!",
+            "description": ""
+          },
+          {
+            "name": "calldatas",
+            "args": "",
+            "type": "[String!]!",
+            "description": ""
+          },
+          {
+            "name": "votingType",
+            "args": "",
+            "type": "VotingType!",
+            "description": ""
+          },
+          {
+            "name": "votingDelay",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "votingPeriod",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "quorumFraction",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "emergencyProposal",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "state",
+            "args": "",
+            "type": "ProposalState!",
+            "description": ""
+          },
+          {
+            "name": "startBlock",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "endBlock",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "forVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "againstVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "abstainVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "votes",
+            "args": "",
+            "type": "[Vote!]!",
+            "description": ""
+          },
+          {
+            "name": "createdAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "executedAt",
+            "args": "",
+            "type": "DateTime",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Vote",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "proposalId",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "voter",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "support",
+            "args": "",
+            "type": "VoteChoice!",
+            "description": ""
+          },
+          {
+            "name": "weight",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "reason",
+            "args": "",
+            "type": "String",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "quadraticCredits",
+            "args": "",
+            "type": "BigInt",
+            "description": ""
+          },
+          {
+            "name": "rankedChoices",
+            "args": "",
+            "type": "[Int!]",
+            "description": ""
+          },
+          {
+            "name": "fractionalVotes",
+            "args": "",
+            "type": "FractionalVote",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "FractionalVote",
+        "fields": [
+          {
+            "name": "forVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "againstVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "abstainVotes",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonCreditAMM",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "address",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "token0",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "token1",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "reserve0",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "reserve1",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "feeBasisPoints",
+            "args": "",
+            "type": "Int!",
+            "description": ""
+          },
+          {
+            "name": "protocolFeeBasisPoints",
+            "args": "",
+            "type": "Int!",
+            "description": ""
+          },
+          {
+            "name": "totalSupply",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "price0CumulativeLast",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "price1CumulativeLast",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "kLast",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "swaps",
+            "args": "",
+            "type": "[Swap!]!",
+            "description": ""
+          },
+          {
+            "name": "mints",
+            "args": "",
+            "type": "[Mint!]!",
+            "description": ""
+          },
+          {
+            "name": "burns",
+            "args": "",
+            "type": "[Burn!]!",
+            "description": ""
+          },
+          {
+            "name": "flashLoans",
+            "args": "",
+            "type": "[FlashLoan!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Swap",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "pool",
+            "args": "",
+            "type": "CarbonCreditAMM!",
+            "description": ""
+          },
+          {
+            "name": "sender",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "to",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount0In",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount1In",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount0Out",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount1Out",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Mint",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "pool",
+            "args": "",
+            "type": "CarbonCreditAMM!",
+            "description": ""
+          },
+          {
+            "name": "sender",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount0",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount1",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "liquidity",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Burn",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "pool",
+            "args": "",
+            "type": "CarbonCreditAMM!",
+            "description": ""
+          },
+          {
+            "name": "sender",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "to",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount0",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount1",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "liquidity",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "FlashLoan",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "pool",
+            "args": "",
+            "type": "CarbonCreditAMM!",
+            "description": ""
+          },
+          {
+            "name": "borrower",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount0",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "amount1",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "fee0",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "fee1",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "User",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "address",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "wrfBalance",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "carbonCredits",
+            "args": "",
+            "type": "[CarbonCredit!]!",
+            "description": ""
+          },
+          {
+            "name": "computationalNFTs",
+            "args": "",
+            "type": "[ComputationalNFT!]!",
+            "description": ""
+          },
+          {
+            "name": "carbonFootprint",
+            "args": "",
+            "type": "CarbonFootprint",
+            "description": ""
+          },
+          {
+            "name": "votes",
+            "args": "",
+            "type": "[Vote!]!",
+            "description": ""
+          },
+          {
+            "name": "proposals",
+            "args": "",
+            "type": "[GovernanceProposal!]!",
+            "description": ""
+          },
+          {
+            "name": "weatherStations",
+            "args": "",
+            "type": "[WeatherStation!]!",
+            "description": ""
+          },
+          {
+            "name": "swaps",
+            "args": "",
+            "type": "[Swap!]!",
+            "description": ""
+          },
+          {
+            "name": "liquidityPositions",
+            "args": "",
+            "type": "[LiquidityPosition!]!",
+            "description": ""
+          },
+          {
+            "name": "stakingPositions",
+            "args": "",
+            "type": "[StakingPosition!]!",
+            "description": ""
+          },
+          {
+            "name": "rewards",
+            "args": "",
+            "type": "[Reward!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonFootprint",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "totalEmissions",
+            "args": "",
+            "type": "Float! # kg CO2e",
+            "description": ""
+          },
+          {
+            "name": "totalOffsets",
+            "args": "",
+            "type": "Float! # kg CO2e",
+            "description": ""
+          },
+          {
+            "name": "netEmissions",
+            "args": "",
+            "type": "Float! # kg CO2e",
+            "description": ""
+          },
+          {
+            "name": "calculationDate",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "activities",
+            "args": "",
+            "type": "[CarbonActivity!]!",
+            "description": ""
+          },
+          {
+            "name": "recommendations",
+            "args": "",
+            "type": "[CarbonRecommendation!]!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonActivity",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "activityType",
+            "args": "",
+            "type": "CarbonActivityType!",
+            "description": ""
+          },
+          {
+            "name": "category",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "amount",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "unit",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "carbonEmission",
+            "args": "",
+            "type": "Float! # kg CO2e",
+            "description": ""
+          },
+          {
+            "name": "confidence",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "source",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "location",
+            "args": "",
+            "type": "Location",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Location",
+        "fields": [
+          {
+            "name": "latitude",
+            "args": "",
+            "type": "Float",
+            "description": ""
+          },
+          {
+            "name": "longitude",
+            "args": "",
+            "type": "Float",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonRecommendation",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "title",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "description",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "potentialSavings",
+            "args": "",
+            "type": "Float! # kg CO2e",
+            "description": ""
+          },
+          {
+            "name": "priority",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "category",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "generatedAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "LiquidityPosition",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "pool",
+            "args": "",
+            "type": "CarbonCreditAMM!",
+            "description": ""
+          },
+          {
+            "name": "liquidity",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "token0Amount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "token1Amount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "createdAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "updatedAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "StakingPosition",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "amount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "lockDuration",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "rewardRate",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "stakedAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "unlocksAt",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "claimed",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Reward",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "type",
+            "args": "",
+            "type": "RewardType!",
+            "description": ""
+          },
+          {
+            "name": "amount",
+            "args": "",
+            "type": "WeiAmount!",
+            "description": ""
+          },
+          {
+            "name": "source",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "MarketData",
+        "fields": [
+          {
+            "name": "id",
+            "args": "",
+            "type": "ID!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          },
+          {
+            "name": "wrfPrice",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "wrfMarketCap",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "wrfVolume24h",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "carbonCreditVolume24h",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "averageCarbonPrice",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "totalCarbonCredits",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "retiredCarbonCredits",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "totalUsers",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "activeWeatherStations",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "computeJobs24h",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "totalValueLocked",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "Subscription",
+        "fields": [
+          {
+            "name": "weatherDataUpdated",
+            "args": "(stationId: String)",
+            "type": "WeatherData!",
+            "description": ""
+          },
+          {
+            "name": "newCarbonCredit",
+            "args": "",
+            "type": "CarbonCredit!",
+            "description": ""
+          },
+          {
+            "name": "newComputeJob",
+            "args": "",
+            "type": "ComputationalNFT!",
+            "description": ""
+          },
+          {
+            "name": "newProposal",
+            "args": "",
+            "type": "GovernanceProposal!",
+            "description": ""
+          },
+          {
+            "name": "swapExecuted",
+            "args": "(pool: Address)",
+            "type": "Swap!",
+            "description": ""
+          },
+          {
+            "name": "priceUpdated",
+            "args": "(token: Address)",
+            "type": "PriceUpdate!",
+            "description": ""
+          },
+          {
+            "name": "userActivityUpdated",
+            "args": "(address: Address!)",
+            "type": "UserActivity!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "WeatherDataSubmissionResult",
+        "fields": [
+          {
+            "name": "success",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "weatherData",
+            "args": "",
+            "type": "WeatherData",
+            "description": ""
+          },
+          {
+            "name": "rewards",
+            "args": "",
+            "type": "WeiAmount",
+            "description": ""
+          },
+          {
+            "name": "error",
+            "args": "",
+            "type": "String",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "CarbonActivityResult",
+        "fields": [
+          {
+            "name": "success",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "activity",
+            "args": "",
+            "type": "CarbonActivity",
+            "description": ""
+          },
+          {
+            "name": "carbonEmission",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "recommendations",
+            "args": "",
+            "type": "[CarbonRecommendation!]!",
+            "description": ""
+          },
+          {
+            "name": "error",
+            "args": "",
+            "type": "String",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "VoteResult",
+        "fields": [
+          {
+            "name": "success",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "vote",
+            "args": "",
+            "type": "Vote",
+            "description": ""
+          },
+          {
+            "name": "transactionHash",
+            "args": "",
+            "type": "String",
+            "description": ""
+          },
+          {
+            "name": "error",
+            "args": "",
+            "type": "String",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "TransactionPreparation",
+        "fields": [
+          {
+            "name": "success",
+            "args": "",
+            "type": "Boolean!",
+            "description": ""
+          },
+          {
+            "name": "transactionData",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "gasEstimate",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "nonce",
+            "args": "",
+            "type": "BigInt!",
+            "description": ""
+          },
+          {
+            "name": "error",
+            "args": "",
+            "type": "String",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "PriceUpdate",
+        "fields": [
+          {
+            "name": "token",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "price",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "change24h",
+            "args": "",
+            "type": "Float!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "UserActivity",
+        "fields": [
+          {
+            "name": "user",
+            "args": "",
+            "type": "Address!",
+            "description": ""
+          },
+          {
+            "name": "type",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "data",
+            "args": "",
+            "type": "String!",
+            "description": ""
+          },
+          {
+            "name": "timestamp",
+            "args": "",
+            "type": "DateTime!",
+            "description": ""
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "ModelType",
+        "values": []
+      },
+      {
+        "name": "ComputeStatus",
+        "values": []
+      },
+      {
+        "name": "VotingType",
+        "values": []
+      },
+      {
+        "name": "ProposalState",
+        "values": []
+      },
+      {
+        "name": "VoteChoice",
+        "values": []
+      },
+      {
+        "name": "CarbonActivityType",
+        "values": []
+      },
+      {
+        "name": "RewardType",
+        "values": []
+      },
+      {
+        "name": "SearchType",
+        "values": []
+      }
+    ],
+    "scalars": [
+      {
+        "name": "DateTime"
+      },
+      {
+        "name": "BigInt"
+      },
+      {
+        "name": "Bytes32"
+      },
+      {
+        "name": "Address"
+      },
+      {
+        "name": "WeiAmount"
+      }
+    ]
+  },
+  "schema": "# Wrfcoin GraphQL Schema\n# Comprehensive GraphQL API for the Wrfcoin ecosystem\n# Supports all smart contracts, blockchain operations, and data models\n\n# Scalar types\nscalar DateTime\nscalar BigInt\nscalar Bytes32\nscalar Address\nscalar WeiAmount\n\n# Core token information\ntype WRFToken {\n  id: ID!\n  address: Address!\n  symbol: String!\n  name: String!\n  decimals: Int!\n  totalSupply: WeiAmount!\n  maxSupply: WeiAmount!\n  paused: Boolean!\n  \n  # Weather station rewards\n  weatherRewardRate: WeiAmount!\n  weatherStations: [WeatherStation!]!\n  \n  # Governance features\n  votes: [Vote!]!\n  proposals: [GovernanceProposal!]!\n}\n\n# Weather stations and data\ntype WeatherStation {\n  id: ID!\n  address: Address!\n  stationId: String!\n  location: String!\n  isActive: Boolean!\n  lastRewardTime: DateTime\n  totalRewards: WeiAmount!\n  qualityScore: Float!\n  \n  # Weather data\n  weatherData: [WeatherData!]!\n  latestWeatherData: WeatherData\n}\n\ntype WeatherData {\n  id: ID!\n  stationId: String!\n  timestamp: DateTime!\n  temperature: Float! # In celsius * 100\n  humidity: Float! # 0-100%\n  pressure: Float! # In hPa * 100\n  windSpeed: Float! # In m/s * 100\n  rainfall: Float! # In mm * 100\n  confidence: Float! # 0-100%\n  \n  station: WeatherStation!\n}\n\n# Carbon credits and environmental data\ntype CarbonCredit {\n  id: ID!\n  tokenId: BigInt!\n  carbonOffset: BigInt! # CO2 equivalent in grams\n  projectType: String!\n  verificationStandard: String!\n  issuanceDate: DateTime!\n  expiryDate: DateTime!\n  location: String!\n  isRetired: Boolean!\n  issuer: Address!\n  certificationHash: String!\n  \n  # Trading information\n  forSale: Boolean!\n  price: WeiAmount\n  owner: Address!\n  \n  # Marketplace data\n  transfers: [CarbonCreditTransfer!]!\n  retirements: [CarbonCreditRetirement!]!\n}\n\ntype CarbonCreditTransfer {\n  id: ID!\n  tokenId: BigInt!\n  from: Address!\n  to: Address!\n  price: WeiAmount\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\ntype CarbonCreditRetirement {\n  id: ID!\n  tokenId: BigInt!\n  retiringEntity: Address!\n  carbonOffset: BigInt!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\n# Computational NFTs\ntype ComputationalNFT {\n  id: ID!\n  tokenId: BigInt!\n  modelType: ModelType!\n  modelName: String!\n  inputData: String!\n  computeResources: String!\n  executionTime: BigInt!\n  stakeAmount: WeiAmount!\n  status: ComputeStatus!\n  resultData: String\n  resultHash: String\n  createdAt: DateTime!\n  executedAt: DateTime\n  computeProvider: Address\n  isVerified: Boolean!\n  \n  owner: Address!\n  job: ComputeJob!\n}\n\nenum ModelType {\n  WEATHER_FORECAST\n  CLIMATE_MODEL\n  AIR_QUALITY\n  CARBON_ANALYSIS\n}\n\nenum ComputeStatus {\n  CREATED\n  QUEUED\n  EXECUTING\n  COMPLETED\n  FAILED\n}\n\ntype ComputeJob {\n  id: ID!\n  nft: ComputationalNFT!\n  provider: ComputeProvider\n  rewards: [ComputeReward!]!\n}\n\ntype ComputeProvider {\n  id: ID!\n  address: Address!\n  isAuthorized: Boolean!\n  totalComputeTime: BigInt!\n  successfulJobs: BigInt!\n  failedJobs: BigInt!\n  stakedTokens: WeiAmount!\n  hardwareSpecs: String!\n  \n  jobs: [ComputeJob!]!\n}\n\ntype ComputeReward {\n  id: ID!\n  provider: Address!\n  amount: WeiAmount!\n  computeTime: BigInt!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\n# Governance system\ntype GovernanceProposal {\n  id: ID!\n  proposalId: BigInt!\n  title: String!\n  description: String!\n  proposer: Address!\n  targets: [Address!]!\n  values: [WeiAmount!]!\n  calldatas: [String!]!\n  \n  # Voting configuration\n  votingType: VotingType!\n  votingDelay: BigInt!\n  votingPeriod: BigInt!\n  quorumFraction: BigInt!\n  emergencyProposal: Boolean!\n  \n  # State\n  state: ProposalState!\n  startBlock: BigInt!\n  endBlock: BigInt!\n  forVotes: WeiAmount!\n  againstVotes: WeiAmount!\n  abstainVotes: WeiAmount!\n  \n  # Votes\n  votes: [Vote!]!\n  \n  # Timestamps\n  createdAt: DateTime!\n  executedAt: DateTime\n}\n\nenum VotingType {\n  SIMPLE_MAJORITY\n  QUADRATIC\n  RANKED_CHOICE\n  FRACTIONAL\n}\n\nenum ProposalState {\n  PENDING\n  ACTIVE\n  CANCELED\n  DEFEATED\n  SUCCEEDED\n  QUEUED\n  EXPIRED\n  EXECUTED\n}\n\ntype Vote {\n  id: ID!\n  proposalId: BigInt!\n  voter: Address!\n  support: VoteChoice!\n  weight: WeiAmount!\n  reason: String\n  timestamp: DateTime!\n  transactionHash: String!\n  \n  # Voting type specific data\n  quadraticCredits: BigInt\n  rankedChoices: [Int!]\n  fractionalVotes: FractionalVote\n}\n\nenum VoteChoice {\n  AGAINST\n  FOR\n  ABSTAIN\n}\n\ntype FractionalVote {\n  forVotes: WeiAmount!\n  againstVotes: WeiAmount!\n  abstainVotes: WeiAmount!\n}\n\n# Carbon credit AMM and trading\ntype CarbonCreditAMM {\n  id: ID!\n  address: Address!\n  token0: Address!\n  token1: Address!\n  reserve0: WeiAmount!\n  reserve1: WeiAmount!\n  feeBasisPoints: Int!\n  protocolFeeBasisPoints: Int!\n  totalSupply: WeiAmount!\n  \n  # Price information\n  price0CumulativeLast: BigInt!\n  price1CumulativeLast: BigInt!\n  kLast: BigInt!\n  \n  # Trading activity\n  swaps: [Swap!]!\n  mints: [Mint!]!\n  burns: [Burn!]!\n  flashLoans: [FlashLoan!]!\n}\n\ntype Swap {\n  id: ID!\n  pool: CarbonCreditAMM!\n  sender: Address!\n  to: Address!\n  amount0In: WeiAmount!\n  amount1In: WeiAmount!\n  amount0Out: WeiAmount!\n  amount1Out: WeiAmount!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\ntype Mint {\n  id: ID!\n  pool: CarbonCreditAMM!\n  sender: Address!\n  amount0: WeiAmount!\n  amount1: WeiAmount!\n  liquidity: WeiAmount!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\ntype Burn {\n  id: ID!\n  pool: CarbonCreditAMM!\n  sender: Address!\n  to: Address!\n  amount0: WeiAmount!\n  amount1: WeiAmount!\n  liquidity: WeiAmount!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\ntype FlashLoan {\n  id: ID!\n  pool: CarbonCreditAMM!\n  borrower: Address!\n  amount0: WeiAmount!\n  amount1: WeiAmount!\n  fee0: WeiAmount!\n  fee1: WeiAmount!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\n# User accounts and activity\ntype User {\n  id: ID!\n  address: Address!\n  \n  # Token balances\n  wrfBalance: WeiAmount!\n  carbonCredits: [CarbonCredit!]!\n  computationalNFTs: [ComputationalNFT!]!\n  \n  # Activity\n  carbonFootprint: CarbonFootprint\n  votes: [Vote!]!\n  proposals: [GovernanceProposal!]!\n  weatherStations: [WeatherStation!]!\n  \n  # Trading activity\n  swaps: [Swap!]!\n  liquidityPositions: [LiquidityPosition!]!\n  \n  # Staking and rewards\n  stakingPositions: [StakingPosition!]!\n  rewards: [Reward!]!\n}\n\ntype CarbonFootprint {\n  id: ID!\n  user: Address!\n  totalEmissions: Float! # kg CO2e\n  totalOffsets: Float! # kg CO2e\n  netEmissions: Float! # kg CO2e\n  calculationDate: DateTime!\n  \n  activities: [CarbonActivity!]!\n  recommendations: [CarbonRecommendation!]!\n}\n\ntype CarbonActivity {\n  id: ID!\n  user: Address!\n  activityType: CarbonActivityType!\n  category: String!\n  amount: Float!\n  unit: String!\n  carbonEmission: Float! # kg CO2e\n  confidence: Float!\n  source: String!\n  timestamp: DateTime!\n  location: Location\n}\n\nenum CarbonActivityType {\n  TRANSPORTATION\n  ENERGY\n  FOOD\n  DIGITAL\n}\n\ntype Location {\n  latitude: Float\n  longitude: Float\n}\n\ntype CarbonRecommendation {\n  id: ID!\n  user: Address!\n  title: String!\n  description: String!\n  potentialSavings: Float! # kg CO2e\n  priority: String!\n  category: String!\n  generatedAt: DateTime!\n}\n\ntype LiquidityPosition {\n  id: ID!\n  user: Address!\n  pool: CarbonCreditAMM!\n  liquidity: WeiAmount!\n  token0Amount: WeiAmount!\n  token1Amount: WeiAmount!\n  createdAt: DateTime!\n  updatedAt: DateTime!\n}\n\ntype StakingPosition {\n  id: ID!\n  user: Address!\n  amount: WeiAmount!\n  lockDuration: BigInt!\n  rewardRate: WeiAmount!\n  stakedAt: DateTime!\n  unlocksAt: DateTime!\n  claimed: Boolean!\n}\n\ntype Reward {\n  id: ID!\n  user: Address!\n  type: RewardType!\n  amount: WeiAmount!\n  source: String!\n  timestamp: DateTime!\n  transactionHash: String!\n}\n\nenum RewardType {\n  WEATHER_DATA\n  COMPUTE_PROVISION\n  STAKING\n  GOVERNANCE\n  CARBON_OFFSET\n}\n\n# Analytics and market data\ntype MarketData {\n  id: ID!\n  timestamp: DateTime!\n  \n  # Token prices\n  wrfPrice: Float!\n  wrfMarketCap: Float!\n  wrfVolume24h: Float!\n  \n  # Carbon credit market\n  carbonCreditVolume24h: Float!\n  averageCarbonPrice: Float!\n  totalCarbonCredits: BigInt!\n  retiredCarbonCredits: BigInt!\n  \n  # Network statistics\n  totalUsers: BigInt!\n  activeWeatherStations: BigInt!\n  computeJobs24h: BigInt!\n  totalValueLocked: Float!\n}\n\n# Query root type\ntype Query {\n  # Token information\n  wrfToken: WRFToken\n  \n  # Weather data\n  weatherStation(id: ID!): WeatherStation\n  weatherStations(\n    first: Int = 10\n    skip: Int = 0\n    orderBy: String = \"id\"\n    orderDirection: String = \"asc\"\n    where: WeatherStationFilter\n  ): [WeatherStation!]!\n  \n  weatherData(\n    stationId: String!\n    from: DateTime\n    to: DateTime\n    first: Int = 100\n  ): [WeatherData!]!\n  \n  # Carbon credits\n  carbonCredit(id: ID!): CarbonCredit\n  carbonCredits(\n    first: Int = 10\n    skip: Int = 0\n    orderBy: String = \"id\"\n    orderDirection: String = \"asc\"\n    where: CarbonCreditFilter\n  ): [CarbonCredit!]!\n  \n  # Computational NFTs\n  computationalNFT(id: ID!): ComputationalNFT\n  computationalNFTs(\n    first: Int = 10\n    skip: Int = 0\n    orderBy: String = \"id\"\n    orderDirection: String = \"asc\"\n    where: ComputationalNFTFilter\n  ): [ComputationalNFT!]!\n  \n  # Governance\n  proposal(id: ID!): GovernanceProposal\n  proposals(\n    first: Int = 10\n    skip: Int = 0\n    orderBy: String = \"id\"\n    orderDirection: String = \"asc\"\n    where: ProposalFilter\n  ): [GovernanceProposal!]!\n  \n  # AMM and trading\n  ammPool(id: ID!): CarbonCreditAMM\n  ammPools(\n    first: Int = 10\n    skip: Int = 0\n  ): [CarbonCreditAMM!]!\n  \n  # Users\n  user(address: Address!): User\n  users(\n    first: Int = 10\n    skip: Int = 0\n  ): [User!]!\n  \n  # Analytics\n  marketData(timestamp: DateTime): MarketData\n  marketDataHistory(\n    from: DateTime!\n    to: DateTime!\n    interval: String = \"1h\"\n  ): [MarketData!]!\n  \n  # Search\n  search(query: String!, type: SearchType): [SearchResult!]!\n}\n\n# Mutation root type\ntype Mutation {\n  # Weather data\n  submitWeatherData(input: WeatherDataInput!): WeatherDataSubmissionResult!\n  \n  # Carbon tracking\n  trackCarbonActivity(input: CarbonActivityInput!): CarbonActivityResult!\n  \n  # Voting\n  castVote(input: VoteInput!): VoteResult!\n  \n  # Trading (via signed transactions)\n  prepareSwap(input: SwapInput!): TransactionPreparation!\n  prepareTransfer(input: TransferInput!): TransactionPreparation!\n  prepareStake(input: StakeInput!): TransactionPreparation!\n}\n\n# Subscription root type\ntype Subscription {\n  # Real-time updates\n  weatherDataUpdated(stationId: String): WeatherData!\n  newCarbonCredit: CarbonCredit!\n  newComputeJob: ComputationalNFT!\n  newProposal: GovernanceProposal!\n  swapExecuted(pool: Address): Swap!\n  \n  # Market updates\n  priceUpdated(token: Address): PriceUpdate!\n  \n  # User-specific updates\n  userActivityUpdated(address: Address!): UserActivity!\n}\n\n# Input types\ninput WeatherDataInput {\n  stationId: String!\n  temperature: Float!\n  humidity: Float!\n  pressure: Float!\n  windSpeed: Float!\n  rainfall: Float!\n  confidence: Float!\n  signature: String!\n}\n\ninput CarbonActivityInput {\n  userId: String!\n  activityType: CarbonActivityType!\n  category: String!\n  amount: Float!\n  unit: String!\n  source: String = \"manual\"\n  location: LocationInput\n}\n\ninput LocationInput {\n  latitude: Float!\n  longitude: Float!\n}\n\ninput VoteInput {\n  proposalId: BigInt!\n  support: VoteChoice!\n  reason: String\n  signature: String!\n}\n\ninput SwapInput {\n  tokenIn: Address!\n  tokenOut: Address!\n  amountIn: String!\n  amountOutMin: String!\n  deadline: BigInt!\n  slippageTolerance: Float!\n}\n\ninput TransferInput {\n  tokenId: BigInt!\n  to: Address!\n  amount: String!\n}\n\ninput StakeInput {\n  amount: String!\n  lockDuration: BigInt!\n}\n\n# Filter input types\ninput WeatherStationFilter {\n  isActive: Boolean\n  location_contains: String\n  qualityScore_gte: Float\n}\n\ninput CarbonCreditFilter {\n  projectType: String\n  verificationStandard: String\n  isRetired: Boolean\n  forSale: Boolean\n  issuer: Address\n}\n\ninput ComputationalNFTFilter {\n  modelType: ModelType\n  status: ComputeStatus\n  owner: Address\n  isVerified: Boolean\n}\n\ninput ProposalFilter {\n  state: ProposalState\n  proposer: Address\n  votingType: VotingType\n  emergencyProposal: Boolean\n}\n\n# Result types\ntype WeatherDataSubmissionResult {\n  success: Boolean!\n  weatherData: WeatherData\n  rewards: WeiAmount\n  error: String\n}\n\ntype CarbonActivityResult {\n  success: Boolean!\n  activity: CarbonActivity\n  carbonEmission: Float!\n  recommendations: [CarbonRecommendation!]!\n  error: String\n}\n\ntype VoteResult {\n  success: Boolean!\n  vote: Vote\n  transactionHash: String\n  error: String\n}\n\ntype TransactionPreparation {\n  success: Boolean!\n  transactionData: String!\n  gasEstimate: String!\n  nonce: BigInt!\n  error: String\n}\n\n# Search types\nenum SearchType {\n  ALL\n  USERS\n  CARBON_CREDITS\n  PROPOSALS\n  WEATHER_STATIONS\n  COMPUTE_JOBS\n}\n\nunion SearchResult = User | CarbonCredit | GovernanceProposal | WeatherStation | ComputationalNFT\n\n# Event types for subscriptions\ntype PriceUpdate {\n  token: Address!\n  price: Float!\n  change24h: Float!\n  timestamp: DateTime!\n}\n\ntype UserActivity {\n  user: Address!\n  type: String!\n  data: String!\n  timestamp: DateTime!\n}",
+  "generatedAt": "2025-07-14T17:01:54.672Z"
+}

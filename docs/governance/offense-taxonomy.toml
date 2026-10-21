@@ -1,0 +1,597 @@
+# Offense Taxonomy and Sanction Matrix — WRFCoin Governance
+#
+# This file is the canonical, machine-readable specification for all protocol
+# offenses and their sanction outcomes. Rust (shared-protocol), Solidity, and
+# TypeScript implementations MUST produce identical outcomes for the same
+# (offense_code, severity_tier) pair.
+#
+# Values use integer basis points (bps). 10000 bps = 100%.
+# Actor class is accepted but NEVER changes the sanction outcome (equal liability).
+
+[meta]
+version = 1
+schema_version = "1.0"
+
+# ---------------------------------------------------------------------------
+# DATA INTEGRITY
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "DATA-001"
+name = "DataInvalidReveal"
+category = "data_integrity"
+default_severity = "major"
+description = "All participants must submit valid reveals matching their commits. Invalid reveals undermine round integrity."
+
+[offenses.sanctions.minor]
+slash_bps_min = 50
+slash_bps_max = 100
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 100
+
+[offenses.sanctions.moderate]
+slash_bps_min = 100
+slash_bps_max = 300
+suspension_blocks = 1000
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.major]
+slash_bps_min = 300
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.critical]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 50000
+appeal_eligible = false
+cooldown_blocks = 10000
+
+[[offenses]]
+code = "DATA-002"
+name = "DataLowQuality"
+category = "data_integrity"
+default_severity = "moderate"
+description = "All participants must submit weather data meeting minimum quality thresholds. Repeated low-quality submissions trigger escalating sanctions."
+
+[offenses.sanctions.minor]
+slash_bps_min = 25
+slash_bps_max = 50
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 100
+
+[offenses.sanctions.moderate]
+slash_bps_min = 50
+slash_bps_max = 150
+suspension_blocks = 1000
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.major]
+slash_bps_min = 150
+slash_bps_max = 300
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.critical]
+slash_bps_min = 300
+slash_bps_max = 600
+suspension_blocks = 25000
+appeal_eligible = false
+cooldown_blocks = 10000
+
+[[offenses]]
+code = "DATA-003"
+name = "DataFabrication"
+category = "data_integrity"
+default_severity = "critical"
+description = "All participants must submit authentic weather observations. Fabricated or forged data results in severe sanctions."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 200
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 200
+
+[offenses.sanctions.moderate]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 1000
+
+[offenses.sanctions.major]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 5000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1000
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+# ---------------------------------------------------------------------------
+# CONSENSUS
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "CONS-001"
+name = "ConsensusDoubleSign"
+category = "consensus"
+default_severity = "critical"
+description = "Validators must not sign conflicting blocks at the same height. Double signing threatens chain finality."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 300
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.moderate]
+slash_bps_min = 300
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.major]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 10000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1000
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+[[offenses]]
+code = "CONS-002"
+name = "ConsensusSurroundVote"
+category = "consensus"
+default_severity = "critical"
+description = "Validators must not cast votes that surround or are surrounded by their prior votes. Surround voting enables long-range attacks."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 300
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.moderate]
+slash_bps_min = 300
+slash_bps_max = 600
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.major]
+slash_bps_min = 600
+slash_bps_max = 1200
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 10000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1200
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+[[offenses]]
+code = "CONS-003"
+name = "ConsensusDowntime"
+category = "consensus"
+default_severity = "minor"
+description = "Validators must maintain minimum uptime requirements. Extended downtime degrades network liveness."
+
+[offenses.sanctions.minor]
+slash_bps_min = 10
+slash_bps_max = 25
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 100
+
+[offenses.sanctions.moderate]
+slash_bps_min = 25
+slash_bps_max = 75
+suspension_blocks = 1000
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.major]
+slash_bps_min = 75
+slash_bps_max = 200
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.critical]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 25000
+appeal_eligible = false
+cooldown_blocks = 10000
+
+[[offenses]]
+code = "CONS-004"
+name = "ConsensusInvalidBlock"
+category = "consensus"
+default_severity = "major"
+description = "Validators must only propose blocks that pass all validity checks. Invalid block proposals waste network resources."
+
+[offenses.sanctions.minor]
+slash_bps_min = 50
+slash_bps_max = 100
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 200
+
+[offenses.sanctions.moderate]
+slash_bps_min = 100
+slash_bps_max = 300
+suspension_blocks = 2000
+appeal_eligible = true
+cooldown_blocks = 1000
+
+[offenses.sanctions.major]
+slash_bps_min = 300
+slash_bps_max = 600
+suspension_blocks = 10000
+appeal_eligible = true
+cooldown_blocks = 5000
+
+[offenses.sanctions.critical]
+slash_bps_min = 600
+slash_bps_max = 1200
+suspension_blocks = 50000
+appeal_eligible = false
+cooldown_blocks = 25000
+
+# ---------------------------------------------------------------------------
+# ORACLE
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "ORAC-001"
+name = "OracleAttestationFraud"
+category = "oracle"
+default_severity = "critical"
+description = "Oracles must submit truthful attestations with valid signatures. Fraudulent attestations corrupt data integrity."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 200
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 300
+
+[offenses.sanctions.moderate]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 1500
+
+[offenses.sanctions.major]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 7000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1000
+slash_bps_max = 1500
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+[[offenses]]
+code = "ORAC-002"
+name = "OracleUnregistered"
+category = "oracle"
+default_severity = "major"
+description = "Oracles must be registered in the active oracle set before submitting attestations. Unregistered oracle activity is rejected."
+
+[offenses.sanctions.minor]
+slash_bps_min = 50
+slash_bps_max = 100
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 200
+
+[offenses.sanctions.moderate]
+slash_bps_min = 100
+slash_bps_max = 300
+suspension_blocks = 2000
+appeal_eligible = true
+cooldown_blocks = 1000
+
+[offenses.sanctions.major]
+slash_bps_min = 300
+slash_bps_max = 500
+suspension_blocks = 10000
+appeal_eligible = true
+cooldown_blocks = 5000
+
+[offenses.sanctions.critical]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 50000
+appeal_eligible = false
+cooldown_blocks = 25000
+
+[[offenses]]
+code = "ORAC-003"
+name = "OracleDoubleAttestation"
+category = "oracle"
+default_severity = "major"
+description = "Oracles must submit at most one attestation per commit round. Double attestations can skew consensus outcomes."
+
+[offenses.sanctions.minor]
+slash_bps_min = 75
+slash_bps_max = 150
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 200
+
+[offenses.sanctions.moderate]
+slash_bps_min = 150
+slash_bps_max = 400
+suspension_blocks = 3000
+appeal_eligible = true
+cooldown_blocks = 1000
+
+[offenses.sanctions.major]
+slash_bps_min = 400
+slash_bps_max = 800
+suspension_blocks = 15000
+appeal_eligible = true
+cooldown_blocks = 5000
+
+[offenses.sanctions.critical]
+slash_bps_min = 800
+slash_bps_max = 1500
+suspension_blocks = 75000
+appeal_eligible = false
+cooldown_blocks = 30000
+
+# ---------------------------------------------------------------------------
+# GOVERNANCE
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "GOVN-001"
+name = "GovernanceVoteManipulation"
+category = "governance"
+default_severity = "critical"
+description = "All participants must cast votes reflecting genuine intent. Vote manipulation undermines democratic governance."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 200
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.moderate]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.major]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 10000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1000
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+[[offenses]]
+code = "GOVN-002"
+name = "GovernanceBribery"
+category = "governance"
+default_severity = "critical"
+description = "All participants must not offer or accept inducements for voting. Bribery corrupts governance outcomes."
+
+[offenses.sanctions.minor]
+slash_bps_min = 150
+slash_bps_max = 300
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.moderate]
+slash_bps_min = 300
+slash_bps_max = 600
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.major]
+slash_bps_min = 600
+slash_bps_max = 1200
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 10000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1200
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000
+
+# ---------------------------------------------------------------------------
+# OPERATIONAL
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "OPER-001"
+name = "OperationalRateLimitAbuse"
+category = "operational"
+default_severity = "minor"
+description = "All participants must respect published rate limits. Exceeding rate limits degrades service for other participants."
+
+[offenses.sanctions.minor]
+slash_bps_min = 10
+slash_bps_max = 25
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 100
+
+[offenses.sanctions.moderate]
+slash_bps_min = 25
+slash_bps_max = 75
+suspension_blocks = 1000
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.major]
+slash_bps_min = 75
+slash_bps_max = 200
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.critical]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 25000
+appeal_eligible = false
+cooldown_blocks = 10000
+
+[[offenses]]
+code = "OPER-002"
+name = "OperationalSpam"
+category = "operational"
+default_severity = "moderate"
+description = "All participants must not flood the network with low-value or duplicate transactions. Spam consumes shared resources."
+
+[offenses.sanctions.minor]
+slash_bps_min = 15
+slash_bps_max = 40
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 100
+
+[offenses.sanctions.moderate]
+slash_bps_min = 40
+slash_bps_max = 100
+suspension_blocks = 2000
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.major]
+slash_bps_min = 100
+slash_bps_max = 250
+suspension_blocks = 10000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.critical]
+slash_bps_min = 250
+slash_bps_max = 500
+suspension_blocks = 50000
+appeal_eligible = false
+cooldown_blocks = 10000
+
+# ---------------------------------------------------------------------------
+# ECONOMIC
+# ---------------------------------------------------------------------------
+
+[[offenses]]
+code = "ECON-001"
+name = "EconomicWashTrading"
+category = "economic"
+default_severity = "major"
+description = "All participants must not execute self-trades to inflate volume or manipulate metrics. Wash trading distorts market signals."
+
+[offenses.sanctions.minor]
+slash_bps_min = 50
+slash_bps_max = 150
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 300
+
+[offenses.sanctions.moderate]
+slash_bps_min = 150
+slash_bps_max = 400
+suspension_blocks = 3000
+appeal_eligible = true
+cooldown_blocks = 1500
+
+[offenses.sanctions.major]
+slash_bps_min = 400
+slash_bps_max = 800
+suspension_blocks = 15000
+appeal_eligible = true
+cooldown_blocks = 5000
+
+[offenses.sanctions.critical]
+slash_bps_min = 800
+slash_bps_max = 1500
+suspension_blocks = 75000
+appeal_eligible = false
+cooldown_blocks = 30000
+
+[[offenses]]
+code = "ECON-002"
+name = "EconomicMarketManipulation"
+category = "economic"
+default_severity = "critical"
+description = "All participants must not engage in coordinated price manipulation or front-running. Market manipulation harms all traders."
+
+[offenses.sanctions.minor]
+slash_bps_min = 100
+slash_bps_max = 200
+suspension_blocks = 0
+appeal_eligible = true
+cooldown_blocks = 500
+
+[offenses.sanctions.moderate]
+slash_bps_min = 200
+slash_bps_max = 500
+suspension_blocks = 5000
+appeal_eligible = true
+cooldown_blocks = 2000
+
+[offenses.sanctions.major]
+slash_bps_min = 500
+slash_bps_max = 1000
+suspension_blocks = 25000
+appeal_eligible = true
+cooldown_blocks = 10000
+
+[offenses.sanctions.critical]
+slash_bps_min = 1000
+slash_bps_max = 2000
+suspension_blocks = 100000
+appeal_eligible = false
+cooldown_blocks = 50000

@@ -1,0 +1,291 @@
+/**
+ * Custom CSS for WRFCoin TypeDoc Documentation
+ */
+
+/* Root variables for consistent theming */
+:root {
+  --wrfcoin-primary: #667eea;
+  --wrfcoin-secondary: #764ba2;
+  --wrfcoin-accent: #f093fb;
+  --wrfcoin-text: #2c3e50;
+  --wrfcoin-text-light: #7f8c8d;
+  --wrfcoin-bg: #f8f9fa;
+  --wrfcoin-card: #ffffff;
+  --wrfcoin-border: #e1e8ed;
+}
+
+/* Header customization */
+.tsd-page-title h1 {
+  background: linear-gradient(
+    135deg,
+    var(--wrfcoin-primary) 0%,
+    var(--wrfcoin-secondary) 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 700;
+}
+
+/* Navigation styling */
+.tsd-navigation a {
+  color: var(--wrfcoin-text);
+  transition: color 0.2s ease;
+}
+
+.tsd-navigation a:hover {
+  color: var(--wrfcoin-primary);
+}
+
+.tsd-navigation .current {
+  background: linear-gradient(
+    135deg,
+    var(--wrfcoin-primary) 0%,
+    var(--wrfcoin-secondary) 100%
+  );
+  color: white !important;
+  border-radius: 4px;
+}
+
+/* Content area improvements */
+.container {
+  max-width: 1200px;
+}
+
+/* Code blocks */
+.tsd-signature {
+  background: var(--wrfcoin-bg);
+  border: 1px solid var(--wrfcoin-border);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+/* Method signatures */
+.tsd-signature-type {
+  color: var(--wrfcoin-primary);
+  font-weight: 600;
+}
+
+/* Parameters */
+.tsd-parameters {
+  background: var(--wrfcoin-card);
+  border: 1px solid var(--wrfcoin-border);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+/* Example blocks */
+.tsd-example {
+  background: #f8f9fa;
+  border-left: 4px solid var(--wrfcoin-primary);
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+
+/* Warning and note blocks */
+.tsd-note {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-left: 4px solid #fdcb6e;
+  padding: 12px 16px;
+  border-radius: 0 4px 4px 0;
+  margin: 16px 0;
+}
+
+.tsd-warning {
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  border-left: 4px solid #dc3545;
+  padding: 12px 16px;
+  border-radius: 0 4px 4px 0;
+  margin: 16px 0;
+}
+
+/* Member sections */
+.tsd-member {
+  border-bottom: 1px solid var(--wrfcoin-border);
+  padding-bottom: 24px;
+  margin-bottom: 24px;
+}
+
+.tsd-member:last-child {
+  border-bottom: none;
+}
+
+/* Kind icons */
+.tsd-kind-icon {
+  filter: hue-rotate(200deg) saturate(1.2);
+}
+
+/* Source links */
+.tsd-sources {
+  background: var(--wrfcoin-bg);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 16px;
+}
+
+.tsd-sources a {
+  color: var(--wrfcoin-text-light);
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.tsd-sources a:hover {
+  color: var(--wrfcoin-primary);
+}
+
+/* Search box */
+.tsd-search input {
+  border: 2px solid var(--wrfcoin-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  transition: border-color 0.2s ease;
+}
+
+.tsd-search input:focus {
+  border-color: var(--wrfcoin-primary);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+/* Breadcrumbs */
+.tsd-breadcrumb {
+  background: var(--wrfcoin-bg);
+  border-radius: 6px;
+  padding: 8px 16px;
+  margin-bottom: 20px;
+}
+
+.tsd-breadcrumb a {
+  color: var(--wrfcoin-text-light);
+  text-decoration: none;
+}
+
+.tsd-breadcrumb a:hover {
+  color: var(--wrfcoin-primary);
+}
+
+/* Type information */
+.tsd-type-parameters {
+  background: #e3f2fd;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+/* Comments and descriptions */
+.tsd-comment {
+  line-height: 1.6;
+  color: var(--wrfcoin-text);
+}
+
+.tsd-comment p {
+  margin-bottom: 12px;
+}
+
+.tsd-comment h1,
+.tsd-comment h2,
+.tsd-comment h3,
+.tsd-comment h4 {
+  color: var(--wrfcoin-text);
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+
+/* Tags */
+.tsd-tag {
+  background: var(--wrfcoin-primary);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-right: 8px;
+}
+
+.tsd-tag.ts-flagOptional {
+  background: #17a2b8;
+}
+
+.tsd-tag.ts-flagReadonly {
+  background: #6c757d;
+}
+
+.tsd-tag.ts-flagDeprecated {
+  background: #dc3545;
+}
+
+/* Footer */
+.tsd-generator {
+  border-top: 1px solid var(--wrfcoin-border);
+  padding-top: 20px;
+  margin-top: 40px;
+  text-align: center;
+  color: var(--wrfcoin-text-light);
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+  .container {
+    padding: 0 16px;
+  }
+
+  .tsd-signature {
+    font-size: 14px;
+    overflow-x: auto;
+  }
+
+  .tsd-navigation {
+    font-size: 14px;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --wrfcoin-text: #e9ecef;
+    --wrfcoin-text-light: #adb5bd;
+    --wrfcoin-bg: #212529;
+    --wrfcoin-card: #343a40;
+    --wrfcoin-border: #495057;
+  }
+
+  body {
+    background-color: #1a1a1a;
+    color: var(--wrfcoin-text);
+  }
+
+  .tsd-signature {
+    background: var(--wrfcoin-card);
+  }
+
+  .tsd-navigation .current {
+    background: linear-gradient(
+      135deg,
+      var(--wrfcoin-primary) 0%,
+      var(--wrfcoin-secondary) 100%
+    );
+  }
+}
+
+/* Print styles */
+@media print {
+  .tsd-navigation {
+    display: none;
+  }
+
+  .container {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .tsd-signature {
+    background: #f8f9fa !important;
+    -webkit-print-color-adjust: exact;
+  }
+}

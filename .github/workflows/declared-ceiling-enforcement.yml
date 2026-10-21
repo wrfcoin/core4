@@ -1,0 +1,257 @@
+name: Declared Ceiling Enforcement (advisory)
+
+# ADVISORY, AND EXPECTED RED. This gate runs the #2701 test that demonstrates #2700:
+# MAX_BLOCK_SIZE, MAX_TRANSACTION_DATA_SIZE and MEMPOOL_CAPACITY are declared in
+# shared-protocol/src/common/constants.rs, cited by docs/security/PROTOCOL_SPEC.md as
+# protocol bounds and by docs/security/THREAT_MODEL.md as a resource-exhaustion
+# mitigation, and consumed by zero lines of code. Until enforcement lands, this job
+# FAILS. That failure is the finding.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# #2701 was RED only in a hand-run terminal. #2704 corrects the threat model by citing
+# it. A documentation correction resting on an undemonstrated test result is the same
+# unfalsifiable-gate defect the test was written to expose, one level up. This file is
+# what makes the redness a check result instead of an assertion in a PR body.
+#
+# WHY NOT continue-on-error
+# -------------------------
+# `continue-on-error: true` would turn this into wrapper-only success: a green check
+# whose green means nothing. Under the workspace evidence standard that is VOID, and
+# VOID can neither admit nor block. This job therefore fails for real.
+#
+# WHY THAT IS SAFE — verified 2026-08-31, and the earlier reason was WRONG
+# ------------------------------------------------------------------------
+# This file previously said "main carries no required status checks". That was true when
+# written (2026-08-04) and is FALSE now, so do not trust the shape of this paragraph
+# without re-running the command below. On 2026-08-31 required status checks were added
+# to main on owner authorization. Ruleset `main-protection` (id 19875840, enforcement
+# `active`) now carries a `required_status_checks` rule with exactly three contexts:
+#
+#   schedule-lint
+#   detect-secrets baseline audit (merge tree)
+#   verify-terminal-skip-guards
+#
+# with `strict_required_status_checks_policy: false` and an OrganizationAdmin bypass
+# (`bypass_mode: always`).
+#
+# This job's context — "advisory — RED until #2700 ceilings are enforced" — is NOT in
+# that list. That, and only that, is why its red cannot block a merge. The safety
+# argument is now "this context is not required", not "no context is required"; the
+# latter is no longer available and must not be reintroduced.
+#
+# Re-verify against the RULESET, not legacy branch protection:
+#   gh api repos/wrfcoin/core4/rulesets/19875840
+# `gh api repos/wrfcoin/core4/branches/main/protection` still returns 404 "Branch not
+# protected" because the requirement lives in a ruleset. Reading that 404 as "nothing is
+# required" is the exact error this comment block previously made. (Same trap is live in
+# #2960, which reasons from that 404.)
+#
+# If this context is ever ADDED to the required list, park this workflow first — an
+# advisory that is expected to be RED must never hold admission authority.
+# Precedent: frontend #271/#272.
+#
+# TRIGGER SHAPE, AND ITS ONE KNOWN GAP
+# ------------------------------------
+# On `pull_request` the paths are deliberately narrow — the declaration, the test, and
+# this file — so an unrelated PR is not painted red by a repo-wide fact it did not cause
+# and cannot fix. On `push: main` the filter is `**/*.rs`, because that is where the
+# repo-wide fact belongs and it makes the red->green flip automatic: the merge that
+# wires enforcement re-runs this gate without anyone remembering to.
+#
+# The gap that buys: a PR that adds enforcement in native-chain or consensus-engines
+# without touching constants.rs will NOT run this gate before merge. Mitigation is
+# explicit, not implicit — run it by hand on that branch:
+#   gh workflow run declared-ceiling-enforcement.yml --ref <branch>
+# and paste the run URL in the PR. Reviewers of any #2700 enforcement PR should require
+# that. No cron: the org Actions budget has been exhausted twice this sprint, and
+# scripts/schedule_trigger_lint.py holds an empty ALLOWED_SCHEDULES on purpose.
+#
+# HOW TO RETIRE THIS FILE
+# -----------------------
+# When enforcement lands, step 2 exits 0 and this job goes green. At that point remove
+# the #[ignore] from every_declared_ceiling_is_consumed_by_code (it then passes inside
+# the normal unfiltered suites) and delete this workflow — a standing advisory that has
+# gone permanently green is a stale exemption, and a stale exemption is worse than none.
+
+on:
+  pull_request:
+    paths:
+      - 'shared-protocol/src/common/constants.rs'
+      - 'shared-protocol/tests/declared_ceilings_are_enforced.rs'
+      - '.github/workflows/declared-ceiling-enforcement.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '.github/workflows/declared-ceiling-enforcement.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # #2945: github.ref is constant on main; unconditional cancellation cancels the previous main verdict on every merge.
+
+jobs:
+  # Exactly one job, no `needs:` edges — so there is no fan-out in which a skipped
+  # dependency could read as success, and scripts/check_terminal_skip_guards.py has
+  # nothing to guard here. The check-run result IS the test result.
+  ceiling-enforcement-advisory:
+    # Quoted deliberately: an unquoted `#` starts a YAML comment, which silently
+    # truncated this to "advisory — RED until" and made the check context name lie.
+    name: "advisory — RED until #2700 ceilings are enforced"
+    # Self-hosted, like every workflow migrated in #2929. This file previously said
+    # `ubuntu-latest`; on 2026-09-01 its own PR run was VOID (runner="", steps=0 —
+    # hosted runners on this repo are billing-dead), a zero-step null failure from the
+    # workflow whose entire purpose is making a red attributable. Self-hosted only: if
+    # no CT102 runner is online this QUEUES rather than producing a null verdict.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # CT 101 — the live testnet node — shares the physical host; leave it headroom.
+      CARGO_BUILD_JOBS: '4'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'  # repository pin; enforced by scripts/check_toolchain_pin.py
+
+      # No cache step: the CT102 runner .env supplies a shared warm CARGO_TARGET_DIR
+      # (/build, see #2964), so a hosted-cache round-trip would archive the wrong
+      # directory and waste transfer on every run.
+
+      # Merge-order guard: this workflow runs #2701's test file. On a tree where #2701
+      # has not merged (this PR's own merge tree, pre-#2701 main) the target does not
+      # exist, and cargo's "no test target" error would surface as "CONTROL FAILED —
+      # scanner broken", which misattributes. Say what is actually wrong instead.
+      - name: The #2701 test file exists on this tree
+        run: |
+          if [ ! -f shared-protocol/tests/declared_ceilings_are_enforced.rs ]; then
+            echo "::error::shared-protocol/tests/declared_ceilings_are_enforced.rs is not"
+            echo "::error::on this tree — #2701 has not merged here. Merge order: #2701"
+            echo "::error::first, then this workflow. This run is VOID for #2700 purposes:"
+            echo "::error::it says nothing about the ceilings in either direction."
+            exit 2
+          fi
+
+      # STEP 1 — anti-vacuity control. This MUST pass. It runs the two control tests
+      # from #2701 and nothing else:
+      #   scanner_examined_a_real_source_tree ....... >200 .rs files walked, constants
+      #                                               still declared where expected
+      #   positive_control_..._has_consumers ........ MAX_BLOCK_EMISSION, which IS
+      #                                               enforced, is seen as enforced
+      # A scanner that finds nothing looks identical to a codebase with nothing to find.
+      # If this step fails, step 2's red is NOT attributable to the missing ceiling and
+      # the job says so rather than claiming a finding it has not earned.
+      - name: Control — the scanner works, so a zero-consumer result means something
+        run: |
+          # `set +e` is load-bearing: GitHub runs `run:` under `bash -e`, which would
+          # abort the step on cargo's nonzero exit BEFORE `rc=$?` is read — turning a
+          # classified failure back into an unclassified one. Capture rc on the very
+          # next line; anything in between (even a printf with a subshell) resets `$?`.
+          set +e
+          cargo test --locked -p wrfcoin-shared-protocol \
+            --test declared_ceilings_are_enforced \
+            -- --skip every_declared_ceiling_is_consumed_by_code \
+            > control.log 2>&1
+          rc=$?
+          set -e
+          # Printed in full, never piped through `head`/`tail`: a clipped summary has
+          # twice this sprint reported a RED run as exit 0.
+          cat control.log
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::CONTROL FAILED (rc=$rc) — the #2701 scanner is broken. Any red"
+            echo "::error::below would be unattributable. Fix the scanner; do not read this"
+            echo "::error::run as evidence about #2700 in either direction."
+            exit "$rc"
+          fi
+          # A `--skip` that filtered out everything would leave this step green with zero
+          # assertions executed. Require both controls to have actually run.
+          if ! grep -q 'test result: ok\. 2 passed' control.log; then
+            echo "::error::CONTROL VACUOUS — expected exactly 2 control tests to pass."
+            echo "::error::Zero-step success is VOID; failing instead."
+            exit 2
+          fi
+          echo "Control OK: 2 anti-vacuity tests executed and passed."
+
+      # STEP 2 — the observation. Expected to FAIL today. Three outcomes, kept distinct
+      # so a broken gate can never be mistaken for a finding, nor a finding for a fluke:
+      #   exit 0  — ceilings now have consumers. #2700 is fixed. Go read the retirement
+      #             note at the top of this file.
+      #   exit 1  — REAL-RED, attributable: the test ran, failed, and printed the #2700
+      #             marker. This is the expected state and the whole point.
+      #   exit 2  — the test did not run, or failed without the marker (compile error,
+      #             missing target, wrong feature set). GATE BROKEN, not a finding.
+      - name: Observe — every_declared_ceiling_is_consumed_by_code
+        run: |
+          set +e
+          # `--ignored` is load-bearing: the observation test is #[ignore] on its own
+          # branch (#2701) precisely so unfiltered suite runs (crate-execution-gates'
+          # shared-protocol full suite) stay green — this workflow is the one place
+          # that opts into the RED.
+          cargo test --locked -p wrfcoin-shared-protocol \
+            --test declared_ceilings_are_enforced \
+            -- --ignored --exact every_declared_ceiling_is_consumed_by_code \
+            > ceiling.log 2>&1
+          rc=$?
+          set -e
+          cat ceiling.log
+
+          # A filter that matched nothing exits 0 with "0 passed; 0 failed" — green,
+          # zero-step, VOID. Require the named test to have actually run.
+          if ! grep -qE 'test result: (ok|FAILED)\. [01] passed; [01] failed' ceiling.log \
+             || grep -q '0 passed; 0 failed' ceiling.log; then
+            echo "::error::GATE VACUOUS — the ceiling test did not run (filter matched"
+            echo "::error::nothing, or the test was renamed). Zero executed assertions"
+            echo "::error::cannot admit or block. Fix the filter."
+            exit 2
+          fi
+
+          if [ "$rc" -eq 0 ]; then
+            echo "::notice::GREEN — every declared ceiling now has a consumer outside its"
+            echo "::notice::declaration. #2700 appears enforced. Fold this test into"
+            echo "::notice::ci-readiness.yml and delete this workflow."
+            exit 0
+          fi
+
+          if grep -q 'test result: FAILED' ceiling.log \
+             && grep -q '#2700 — these declared ceilings are consumed by NO code' ceiling.log; then
+            echo "::error::REAL-RED, and this is the expected result. The test executed and"
+            echo "::error::failed because MAX_BLOCK_SIZE, MAX_TRANSACTION_DATA_SIZE and"
+            echo "::error::MEMPOOL_CAPACITY are consumed by no code. See #2700 / #2701 / #2704."
+            echo "::error::This check is ADVISORY: its context is not in ruleset main-protection's"
+            echo "::error::required list, so this red does not gate your PR. Do not silence it —"
+            echo "::error::enforce or remove."
+            exit 1
+          fi
+
+          echo "::error::GATE BROKEN (rc=$rc) — the ceiling test did not produce an"
+          echo "::error::attributable assertion failure. This run is VOID: it is not evidence"
+          echo "::error::that the ceilings are enforced, and not evidence that they are not."
+          exit 2

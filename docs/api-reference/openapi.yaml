@@ -1,0 +1,1520 @@
+# NOT the testnet API: this spec does not describe the routes the testnet node (launch_api) serves.
+# The hand-derived node contract is docs/api/launch-api.openapi.yaml (core4#3245); see
+# docs/api/generated-code-inventory.md (core4#2995). Do not read operations below as available on the testnet.
+openapi: 3.0.3
+info:
+  title: WRFCoin Weather Forecasting Blockchain Platform API
+  description: |
+    Comprehensive API documentation for the WRFCoin platform - a revolutionary weather forecasting blockchain platform that combines climate data collection, carbon credit trading, and DeFi features.
+
+    ## Platform Overview
+
+    WRFCoin is an enterprise-grade blockchain platform featuring:
+    - **Service APIs** - Blockchain, IoT, AI/ML, storage, and governance surfaces
+    - **Quantum-Resistant Security** - HSM integration and advanced cryptographic protocols
+    - **Carbon Credit Trading** - Full DeFi suite with AMM, yield farming, and insurance
+    - **Weather Data Integration** - 20+ IoT sensor platforms and weather station networks
+    - **AI/ML Computing** - Distributed computational NFTs and model deployment
+
+    ## API Architecture
+
+    The platform operates as a distributed microservices ecosystem with specialized endpoints:
+    - **Main API Server (Port 4001)** - Primary application endpoints and dashboard
+    - **Wallet Server (Port 4000)** - BIP-39/44 wallet and transaction management
+    - **Compute Networks (Port 6000)** - Distributed computing and job scheduling
+    - **AI/ML Networks (Port 6001)** - Machine learning model deployment and inference
+    - **Storage Networks (Port 7000)** - IPFS, Filecoin, and Arweave integration
+    - **IoT Sensor Networks (Port 3002)** - Environmental sensor data collection
+    - **Weather Earnings (Port 8080)** - Weather station reward distribution
+    - **Governance Server (Port 8000)** - DAO proposals and voting mechanisms
+    - **Node Discovery (Port 9001)** - P2P network coordination
+
+    ## Authentication
+
+    The API supports multiple authentication methods:
+    - **Private Key Signatures** - For blockchain transactions
+    - **API Keys** - For service-to-service communication
+    - **JWT Tokens** - For session-based authentication
+    - **HSM Integration** - For enterprise-grade security
+
+    ## Rate Limiting
+
+    Rate limits are enforced per service:
+    - **General Operations**: 100 requests per 15 minutes per IP
+    - **Trading Operations**: 10 requests per minute per IP
+    - **IoT Data Ingestion**: 1000 requests per hour per device
+
+    ## Error Handling
+
+    All APIs return consistent error responses with detailed error codes and messages.
+    Standard HTTP status codes are used with additional WRFCoin-specific error codes.
+
+    ## SDKs and Integration
+
+    Official SDKs available for:
+    - JavaScript/TypeScript (Node.js & Browser)
+    - Python
+    - Go
+    - Rust
+    - Java
+    - C#
+    - Swift (iOS)
+    - Kotlin (Android)
+
+  version: 1.0.0
+  contact:
+    name: WRFCoin API Support
+    url: https://wrfcoin.org/support
+    email: api-support@wrfcoin.org
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: https://wrfcoin.org/terms
+
+servers:
+  - url: https://api.wrfcoin.org
+    description: Production server
+  - url: https://testnet-api.wrfcoin.org
+    description: Testnet server
+  - url: http://localhost:4001
+    description: Local development server
+
+tags:
+  - name: blockchain
+    description: Core blockchain operations and information
+  - name: wallet
+    description: Wallet management and transaction operations
+  - name: carbon-credits
+    description: Carbon credit trading and management
+  - name: defi
+    description: DeFi operations including AMM, yield farming, and governance
+  - name: weather
+    description: Weather data and sensor network operations
+  - name: iot
+    description: IoT sensor networks and device management
+  - name: compute
+    description: Distributed computing and AI/ML operations
+  - name: storage
+    description: Decentralized storage networks
+  - name: governance
+    description: DAO governance and voting mechanisms
+  - name: mining
+    description: Mining operations and reward distribution
+  - name: nft
+    description: NFT marketplace and computational NFTs
+  - name: security
+    description: Security and compliance operations
+
+paths:
+  # Main API Server (Port 4001) Endpoints
+  /api/health:
+    get:
+      tags: [blockchain]
+      summary: Health check endpoint
+      description: Check the health status of the main API server
+      operationId: getHealthStatus
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                success: true
+                data:
+                  status: 'healthy'
+                  timestamp: '2024-01-01T00:00:00.000Z'
+                  services:
+                    blockchain: 'online'
+                    database: 'online'
+                    cache: 'online'
+                timestamp: '2024-01-01T00:00:00.000Z'
+                requestId: 'req-123'
+
+  /api/dashboard/stats:
+    get:
+      tags: [blockchain]
+      summary: Get dashboard statistics
+      description: Retrieve comprehensive dashboard statistics including network metrics, token information, and platform activity
+      operationId: getDashboardStats
+      responses:
+        '200':
+          description: Dashboard statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStatsResponse'
+              example:
+                success: true
+                data:
+                  totalNodes: 25
+                  activeValidators: 12
+                  totalTransactions: 5000
+                  networkHashrate: '500 TH/s'
+                  averageBlockTime: '12s'
+                  totalSupply: '1000000 WRF'
+                  circulatingSupply: '800000 WRF'
+                  marketCap: '$50M'
+                  price: '$0.0625'
+                  volume24h: '$125K'
+                timestamp: '2024-01-01T00:00:00.000Z'
+                requestId: 'req-124'
+
+  /api/blockchain/info:
+    get:
+      tags: [blockchain]
+      summary: Get blockchain information
+      description: Retrieve current blockchain network information including block height, network status, and consensus details
+      operationId: getBlockchainInfo
+      responses:
+        '200':
+          description: Blockchain information retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockchainInfoResponse'
+
+  /api/blockchain/blocks:
+    get:
+      tags: [blockchain]
+      summary: Get recent blocks
+      description: Retrieve a list of the most recent blocks in the blockchain
+      operationId: getLatestBlocks
+      parameters:
+        - name: limit
+          in: query
+          description: Number of blocks to retrieve (max 100)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Number of blocks to skip
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Recent blocks retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlocksResponse'
+
+    post:
+      tags: [blockchain]
+      summary: Create new block
+      description: Submit a new block to the blockchain (mining/validator operation)
+      operationId: createBlock
+      security:
+        - PrivateKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBlockRequest'
+      responses:
+        '201':
+          description: Block created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/blockchain/block/hash/{hash}:
+    get:
+      tags: [blockchain]
+      summary: Get block by hash
+      description: Retrieve detailed information about a specific block using its hash
+      operationId: getBlockByHash
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: Block hash
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{64}$'
+            example: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+      responses:
+        '200':
+          description: Block retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/transactions:
+    get:
+      tags: [blockchain]
+      summary: Get transactions
+      description: Retrieve a list of transactions with optional filtering
+      operationId: getTransactions
+      parameters:
+        - name: address
+          in: query
+          description: Filter by sender or recipient address
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{40}$'
+        - name: type
+          in: query
+          description: Filter by transaction type
+          schema:
+            type: string
+            enum: [transfer, contract, cross_chain, carbon_credit]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionsResponse'
+
+    post:
+      tags: [blockchain]
+      summary: Create transaction
+      description: Submit a new transaction to the blockchain
+      operationId: createTransaction
+      security:
+        - PrivateKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionRequest'
+      responses:
+        '201':
+          description: Transaction created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # Wallet Server (Port 4000) Endpoints
+  /wallet/create:
+    post:
+      tags: [wallet]
+      summary: Create new wallet
+      description: Generate a new BIP-39/44 compatible wallet with mnemonic phrase
+      operationId: createWallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWalletRequest'
+      responses:
+        '201':
+          description: Wallet created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletResponse'
+
+  /wallet/{address}/balance:
+    get:
+      tags: [wallet]
+      summary: Get wallet balance
+      description: Retrieve the balance and token holdings for a specific wallet address
+      operationId: getWalletBalance
+      parameters:
+        - name: address
+          in: path
+          required: true
+          description: Wallet address
+          schema:
+            type: string
+            pattern: '^0x[a-fA-F0-9]{40}$'
+      responses:
+        '200':
+          description: Wallet balance retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletBalanceResponse'
+
+  /wallet/send:
+    post:
+      tags: [wallet]
+      summary: Send transaction
+      description: Send tokens or interact with smart contracts
+      operationId: sendTransaction
+      security:
+        - PrivateKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendTransactionRequest'
+      responses:
+        '201':
+          description: Transaction sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+
+  # Carbon Credits API Endpoints
+  /api/carbon-credits/batches:
+    get:
+      tags: [carbon-credits]
+      summary: Get carbon credit batches
+      description: Retrieve carbon credit batches with pagination and filtering options
+      operationId: getCarbonCreditBatches
+      parameters:
+        - name: page
+          in: query
+          description: Page number
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: projectType
+          in: query
+          description: Filter by project type
+          schema:
+            type: string
+            enum:
+              [forestry, renewable_energy, methane_capture, direct_air_capture]
+        - name: vintage
+          in: query
+          description: Filter by vintage year
+          schema:
+            type: integer
+            minimum: 2020
+            maximum: 2030
+        - name: registryStandard
+          in: query
+          description: Filter by registry standard
+          schema:
+            type: string
+            enum: [VCS, GS, CDM, CAR]
+      responses:
+        '200':
+          description: Carbon credit batches retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarbonCreditBatchesResponse'
+
+  /api/carbon-credits/batches/{tokenId}:
+    get:
+      tags: [carbon-credits]
+      summary: Get carbon credit batch details
+      description: Retrieve detailed information about a specific carbon credit batch
+      operationId: getCarbonCreditBatch
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          description: Token ID of the carbon credit batch
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Carbon credit batch details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarbonCreditBatchResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/carbon-credits/batches/{tokenId}/retire:
+    post:
+      tags: [carbon-credits]
+      summary: Retire carbon credits
+      description: Permanently retire (burn) carbon credits with an on-chain retirement certificate
+      operationId: retireCarbonCredits
+      security:
+        - PrivateKeyAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          description: Token ID of the batch to retire from
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetireCarbonCreditsRequest'
+      responses:
+        '201':
+          description: Carbon credits retired successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetireCarbonCreditsResponse'
+
+  # Weather Data and IoT Endpoints
+  /api/weather/data:
+    get:
+      tags: [weather, iot]
+      summary: Get weather data
+      description: Retrieve weather data from connected sensor networks and weather stations
+      operationId: getWeatherData
+      parameters:
+        - name: location
+          in: query
+          required: true
+          description: Geographic location (lat,lon or place name)
+          schema:
+            type: string
+            example: '40.7128,-74.0060'
+        - name: startDate
+          in: query
+          description: Start date for data range (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: End date for data range (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: metrics
+          in: query
+          description: Comma-separated list of metrics to retrieve
+          schema:
+            type: string
+            example: 'temperature,humidity,pressure,windSpeed'
+      responses:
+        '200':
+          description: Weather data retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherDataResponse'
+
+  /api/weather/stations:
+    get:
+      tags: [weather, iot]
+      summary: Get weather stations
+      description: Retrieve list of connected weather stations and their status
+      operationId: getWeatherStations
+      parameters:
+        - name: status
+          in: query
+          description: Filter by station status
+          schema:
+            type: string
+            enum: [active, inactive, maintenance]
+        - name: network
+          in: query
+          description: Filter by network provider
+          schema:
+            type: string
+            enum: [ambient_weather, weatherflow, davis, netatmo]
+      responses:
+        '200':
+          description: Weather stations retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherStationsResponse'
+
+    post:
+      tags: [weather, iot]
+      summary: Register weather station
+      description: Register a new weather station with the network
+      operationId: registerWeatherStation
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterWeatherStationRequest'
+      responses:
+        '201':
+          description: Weather station registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherStationResponse'
+
+  # Compute Networks (Port 6000) Endpoints
+  /api/compute/jobs:
+    get:
+      tags: [compute]
+      summary: Get compute jobs
+      description: Retrieve list of distributed computing jobs
+      operationId: getComputeJobs
+      parameters:
+        - name: status
+          in: query
+          description: Filter by job status
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+        - name: type
+          in: query
+          description: Filter by job type
+          schema:
+            type: string
+            enum: [weather_model, ml_training, data_processing, nft_computation]
+      responses:
+        '200':
+          description: Compute jobs retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeJobsResponse'
+
+    post:
+      tags: [compute]
+      summary: Submit compute job
+      description: Submit a new computational job to the distributed network
+      operationId: submitComputeJob
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitComputeJobRequest'
+      responses:
+        '201':
+          description: Compute job submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeJobResponse'
+
+components:
+  securitySchemes:
+    PrivateKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Private key signature-based authentication for blockchain transactions
+
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service authentication
+
+    JWTAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for session-based authentication
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid input parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: 'Invalid input parameters'
+            timestamp: '2024-01-01T00:00:00.000Z'
+            requestId: 'req-400'
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: 'Invalid or missing authentication'
+            timestamp: '2024-01-01T00:00:00.000Z'
+            requestId: 'req-401'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: 'Resource not found'
+            timestamp: '2024-01-01T00:00:00.000Z'
+            requestId: 'req-404'
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: 'Rate limit exceeded. Please try again later.'
+            timestamp: '2024-01-01T00:00:00.000Z'
+            requestId: 'req-429'
+
+  schemas:
+    # Base API Response Schema
+    ApiResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Indicates if the request was successful
+        data:
+          oneOf:
+            - type: object
+            - type: array
+            - type: 'null'
+          description: Response data payload
+        error:
+          type: string
+          nullable: true
+          description: Error message if request failed
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the response
+        requestId:
+          type: string
+          description: Unique identifier for the request
+      required:
+        - success
+        - timestamp
+        - requestId
+
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            success:
+              type: boolean
+              enum: [false]
+            data:
+              type: 'null'
+            error:
+              type: string
+
+    # Health and Dashboard Schemas
+    HealthResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [healthy, degraded, unhealthy]
+                services:
+                  type: object
+                  additionalProperties:
+                    type: string
+                    enum: [online, offline, degraded]
+                uptime:
+                  type: number
+                  description: Service uptime in seconds
+
+    DashboardStatsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DashboardStats'
+
+    DashboardStats:
+      type: object
+      properties:
+        totalNodes:
+          type: integer
+          description: Total number of network nodes
+        activeValidators:
+          type: integer
+          description: Number of active validators
+        totalTransactions:
+          type: integer
+          description: Total transactions processed
+        networkHashrate:
+          type: string
+          description: Current network hashrate
+        averageBlockTime:
+          type: string
+          description: Average block generation time
+        totalSupply:
+          type: string
+          description: Total token supply
+        circulatingSupply:
+          type: string
+          description: Circulating token supply
+        marketCap:
+          type: string
+          description: Current market capitalization
+        price:
+          type: string
+          description: Current token price
+        volume24h:
+          type: string
+          description: 24-hour trading volume
+
+    # Blockchain Schemas
+    BlockchainInfoResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/BlockchainInfo'
+
+    BlockchainInfo:
+      type: object
+      properties:
+        networkId:
+          type: string
+        chainId:
+          type: integer
+        blockHeight:
+          type: integer
+        networkHashrate:
+          type: string
+        difficulty:
+          type: string
+        consensusMechanism:
+          type: string
+          enum: [PoW, PoS, DPoS, PoI, PoP]
+        validators:
+          type: integer
+        networkVersion:
+          type: string
+
+    BlocksResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                blocks:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Block'
+                pagination:
+                  $ref: '#/components/schemas/Pagination'
+
+    BlockResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Block'
+
+    Block:
+      type: object
+      properties:
+        id:
+          type: integer
+        blockHash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        blockHeight:
+          type: integer
+        previousHash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        merkleRoot:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        timestamp:
+          type: string
+          format: date-time
+        nonce:
+          type: string
+        difficulty:
+          type: string
+        gasLimit:
+          type: string
+        gasUsed:
+          type: string
+        miner:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        size:
+          type: integer
+        transactionCount:
+          type: integer
+
+    CreateBlockRequest:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            type: string
+            description: Transaction hashes to include in the block
+        nonce:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        privateKey:
+          type: string
+          description: Private key for block signing
+      required:
+        - transactions
+        - nonce
+        - privateKey
+
+    # Transaction Schemas
+    TransactionsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                transactions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Transaction'
+                pagination:
+                  $ref: '#/components/schemas/Pagination'
+
+    TransactionResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Transaction'
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        txHash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        blockHash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        blockHeight:
+          type: integer
+        from:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        to:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        value:
+          type: string
+          description: Transaction value in Wei
+        gasPrice:
+          type: string
+          description: Gas price in Wei
+        gasLimit:
+          type: string
+          description: Gas limit
+        gasUsed:
+          type: string
+          description: Gas used
+        nonce:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, confirmed, failed]
+        type:
+          type: string
+          enum: [transfer, contract, cross_chain, carbon_credit]
+        data:
+          type: string
+          description: Transaction data payload
+
+    CreateTransactionRequest:
+      type: object
+      properties:
+        to:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Recipient address
+        value:
+          type: string
+          description: Amount to transfer (in Wei)
+        gasPrice:
+          type: string
+          description: Gas price (in Wei)
+        gasLimit:
+          type: string
+          description: Gas limit
+        data:
+          type: string
+          description: Transaction data (for contract calls)
+        privateKey:
+          type: string
+          description: Private key for transaction signing
+      required:
+        - to
+        - value
+        - privateKey
+
+    # Wallet Schemas
+    CreateWalletRequest:
+      type: object
+      properties:
+        entropy:
+          type: string
+          description: Optional entropy for wallet generation
+        derivationPath:
+          type: string
+          description: BIP-44 derivation path
+          default: "m/44'/60'/0'/0/0"
+      required: []
+
+    WalletResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Wallet'
+
+    Wallet:
+      type: object
+      properties:
+        address:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        publicKey:
+          type: string
+        mnemonic:
+          type: string
+          description: BIP-39 mnemonic phrase (handle securely)
+        derivationPath:
+          type: string
+        isHDWallet:
+          type: boolean
+
+    WalletBalanceResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WalletBalance'
+
+    WalletBalance:
+      type: object
+      properties:
+        address:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        balance:
+          type: string
+          description: Native token balance
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenBalance'
+        nfts:
+          type: array
+          items:
+            $ref: '#/components/schemas/NFTBalance'
+
+    TokenBalance:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        symbol:
+          type: string
+        name:
+          type: string
+        balance:
+          type: string
+        decimals:
+          type: integer
+
+    NFTBalance:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        tokenId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        imageUrl:
+          type: string
+        attributes:
+          type: array
+          items:
+            type: object
+
+    SendTransactionRequest:
+      type: object
+      properties:
+        to:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        value:
+          type: string
+        gasPrice:
+          type: string
+        gasLimit:
+          type: string
+        data:
+          type: string
+        privateKey:
+          type: string
+      required:
+        - to
+        - value
+        - privateKey
+
+    # Carbon Credits Schemas
+    CarbonCreditBatchesResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                batches:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CarbonCreditBatch'
+                pagination:
+                  $ref: '#/components/schemas/Pagination'
+
+    CarbonCreditBatchResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CarbonCreditBatch'
+
+    CarbonCreditBatch:
+      type: object
+      properties:
+        tokenId:
+          type: integer
+        totalSupply:
+          type: string
+          description: Total supply of credits in the batch
+        immobilizedSupply:
+          type: string
+          description: Currently immobilized/locked credits
+        retiredSupply:
+          type: string
+          description: Permanently retired credits
+        projectId:
+          type: string
+          description: Registry project identifier
+        vintage:
+          type: integer
+          description: Vintage year of the credits
+        methodology:
+          type: string
+          description: Carbon accounting methodology used
+        projectType:
+          type: string
+          enum:
+            [forestry, renewable_energy, methane_capture, direct_air_capture]
+        registryStandard:
+          type: string
+          enum: [VCS, GS, CDM, CAR]
+        location:
+          type: string
+          description: Geographic location of the project
+        issuer:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Address of the credit issuer
+        issuanceDate:
+          type: integer
+          description: Unix timestamp of issuance
+        expiryDate:
+          type: integer
+          description: Unix timestamp of expiry
+        certificationHash:
+          type: string
+          description: IPFS hash of certification documents
+        registryUrl:
+          type: string
+          description: URL to registry listing
+        isActive:
+          type: boolean
+          description: Whether the batch is currently active
+
+    RetireCarbonCreditsRequest:
+      type: object
+      properties:
+        amount:
+          type: string
+          description: Amount of credits to retire (in kg CO2e)
+        retirementReason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          description: Reason for retirement
+        beneficiary:
+          type: string
+          description: Beneficiary of the retirement
+        privateKey:
+          type: string
+          description: Private key for transaction signing
+      required:
+        - amount
+        - retirementReason
+        - privateKey
+
+    RetireCarbonCreditsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                transactionHash:
+                  type: string
+                  pattern: '^0x[a-fA-F0-9]{64}$'
+                blockNumber:
+                  type: integer
+                tokenId:
+                  type: integer
+                amountRetired:
+                  type: string
+                retirementReason:
+                  type: string
+                beneficiary:
+                  type: string
+                gasUsed:
+                  type: string
+
+    # Weather and IoT Schemas
+    WeatherDataResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/WeatherReading'
+
+    WeatherReading:
+      type: object
+      properties:
+        stationId:
+          type: string
+        location:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        temperature:
+          type: number
+          description: Temperature in Celsius
+        humidity:
+          type: number
+          description: Relative humidity percentage
+        pressure:
+          type: number
+          description: Atmospheric pressure in hPa
+        windSpeed:
+          type: number
+          description: Wind speed in m/s
+        windDirection:
+          type: number
+          description: Wind direction in degrees
+        rainfall:
+          type: number
+          description: Rainfall in mm
+        co2Level:
+          type: number
+          description: CO2 concentration in ppm
+        dataSource:
+          type: string
+          enum: [NOAA, WeatherFlow, Ambient, Davis, Netatmo]
+        confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Data confidence percentage
+
+    WeatherStationsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                stations:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/WeatherStation'
+                pagination:
+                  $ref: '#/components/schemas/Pagination'
+
+    WeatherStation:
+      type: object
+      properties:
+        stationId:
+          type: string
+        name:
+          type: string
+        location:
+          type: string
+        coordinates:
+          type: object
+          properties:
+            latitude:
+              type: number
+            longitude:
+              type: number
+        network:
+          type: string
+          enum: [ambient_weather, weatherflow, davis, netatmo]
+        status:
+          type: string
+          enum: [active, inactive, maintenance]
+        lastUpdate:
+          type: string
+          format: date-time
+        sensors:
+          type: array
+          items:
+            type: string
+        owner:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+
+    RegisterWeatherStationRequest:
+      type: object
+      properties:
+        stationId:
+          type: string
+        name:
+          type: string
+        location:
+          type: string
+        coordinates:
+          type: object
+          properties:
+            latitude:
+              type: number
+            longitude:
+              type: number
+        network:
+          type: string
+          enum: [ambient_weather, weatherflow, davis, netatmo]
+        sensors:
+          type: array
+          items:
+            type: string
+        apiKey:
+          type: string
+          description: Network API key for data access
+      required:
+        - stationId
+        - name
+        - location
+        - coordinates
+        - network
+
+    WeatherStationResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WeatherStation'
+
+    # Compute Schemas
+    ComputeJobsResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                jobs:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ComputeJob'
+                pagination:
+                  $ref: '#/components/schemas/Pagination'
+
+    ComputeJob:
+      type: object
+      properties:
+        jobId:
+          type: string
+        type:
+          type: string
+          enum: [weather_model, ml_training, data_processing, nft_computation]
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        submittedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10
+        estimatedDuration:
+          type: integer
+          description: Estimated duration in seconds
+        computeResources:
+          type: object
+          properties:
+            cpu:
+              type: number
+            memory:
+              type: number
+            gpu:
+              type: boolean
+        inputData:
+          type: object
+        outputData:
+          type: object
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    SubmitComputeJobRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [weather_model, ml_training, data_processing, nft_computation]
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+        inputData:
+          type: object
+        computeResources:
+          type: object
+          properties:
+            cpu:
+              type: number
+              minimum: 0.1
+              maximum: 32
+            memory:
+              type: number
+              minimum: 0.5
+              maximum: 64
+            gpu:
+              type: boolean
+              default: false
+      required:
+        - type
+        - inputData
+
+    ComputeJobResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ComputeJob'
+
+    # Utility Schemas
+    Pagination:
+      type: object
+      properties:
+        currentPage:
+          type: integer
+          minimum: 1
+        totalPages:
+          type: integer
+          minimum: 1
+        totalItems:
+          type: integer
+          minimum: 0
+        itemsPerPage:
+          type: integer
+          minimum: 1
+        hasNextPage:
+          type: boolean
+        hasPreviousPage:
+          type: boolean

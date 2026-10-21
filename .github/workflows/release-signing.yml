@@ -1,0 +1,542 @@
+name: Release Signing
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to sign (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  RUST_VERSION: '1.98.0'
+  RELEASE_NODE_FEATURES: 'full-mining,p2p'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Build release binaries for all platforms. The workflow does not independently
+  # rebuild and compare them, so it makes no reproducibility claim (#2263).
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact_name: wrfcoin-node
+            asset_name: wrfcoin-node-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact_name: wrfcoin-node
+            asset_name: wrfcoin-node-linux-aarch64
+            cross: true
+          # macOS targets moved to build-binaries-macos (workflow_dispatch only — 10x runner cost)
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            artifact_name: wrfcoin-node.exe
+            asset_name: wrfcoin-node-windows-x86_64.exe
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref }}
+
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            VERSION="${{ github.event.inputs.release_tag }}"
+          else
+            VERSION="${{ github.ref_name }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        shell: bash
+        env:
+          RUSTFLAGS: "-C target-cpu=generic"
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.created_at }}
+          CARGO_BUILD_JOBS: "1"
+        # #2151: the command is run from an array and that same array is what
+        # buildinfo/build-command.txt records, so provenance's buildCommand is
+        # the command that ran here, measured, not a literal typed elsewhere.
+        run: |
+          set -euo pipefail
+          build_cmd=(cargo build --release --locked --bin launch_api --target "${{ matrix.target }}" --features "${RELEASE_NODE_FEATURES}")
+          env_prefix="RUSTFLAGS=$(printf '%q' "$RUSTFLAGS")"
+          if [ "${{ matrix.cross }}" == "true" ]; then
+            # Cross-compilation
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            env_prefix="$env_prefix CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=$CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"
+          fi
+          "${build_cmd[@]}"
+          mkdir -p buildinfo
+          printf '%s %s\n' "$env_prefix" "$(printf '%q ' "${build_cmd[@]}" | sed 's/ $//')" > buildinfo/build-command.txt
+          rustc -vV > buildinfo/rustc-vV.txt
+
+      - name: Release artifact starts P2P transport and joins a peer (#3222)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: bash scripts/verify-release-p2p-artifact.sh "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+
+      # #2139: a release binary must not contain the dev endpoints. The scan reads the
+      # route literals RPC_SURFACE.md classifies `(feature: dev-endpoints)` and fails the
+      # build if any is in the binary; a control route must be present so it cannot pass
+      # on the wrong file. Cross-compiled targets are scanned the same way (bytes, not run).
+      - name: Dev endpoints are absent from the release binary (#2139)
+        shell: bash
+        run: |
+          PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+          "$PY" scripts/check_release_endpoints.py --self-test
+          "$PY" scripts/check_release_endpoints.py --build-profiles
+          "$PY" scripts/check_release_endpoints.py --binary "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
+          else
+            cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
+            chmod +x "artifacts/${{ matrix.asset_name }}"
+          fi
+          artifact_sha256=$(sha256sum "artifacts/${{ matrix.asset_name }}" | awk '{print $1}')
+          cat > "artifacts/${{ matrix.asset_name }}.build-manifest.env" <<EOF
+          FORMAT_VERSION=1
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          RUST_TOOLCHAIN=${RUST_VERSION}
+          BUILD_TARGET=${{ matrix.target }}
+          CARGO_PACKAGE=wrfcoin-native-chain
+          CARGO_BIN=launch_api
+          CARGO_FEATURES=${RELEASE_NODE_FEATURES}
+          ARTIFACT_NAME=${{ matrix.asset_name }}
+          ARTIFACT_SHA256=${artifact_sha256}
+          EOF
+          # #2151: measured build-info sidecar (exact command + rustc -vV from
+          # THIS job), refused if the toolchain that ran is not the pin.
+          PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+          "$PY" scripts/write_build_info.py \
+            --out "artifacts/${{ matrix.asset_name }}.buildinfo.json" \
+            --command-file buildinfo/build-command.txt \
+            --rustc-vv-file buildinfo/rustc-vV.txt \
+            --expect-release "${RUST_VERSION}"
+
+      - name: Generate checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          sha512sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha512"
+          sha256sum "${{ matrix.asset_name }}.build-manifest.env" > "${{ matrix.asset_name }}.build-manifest.env.sha256"
+          sha512sum "${{ matrix.asset_name }}.build-manifest.env" > "${{ matrix.asset_name }}.build-manifest.env.sha512"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: artifacts/
+          retention-days: 7
+
+  # Build macOS binaries (10x runner cost — manual dispatch only)
+  build-binaries-macos:
+    name: Build ${{ matrix.target }} (macOS)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            artifact_name: wrfcoin-node
+            asset_name: wrfcoin-node-macos-x86_64
+          - target: aarch64-apple-darwin
+            artifact_name: wrfcoin-node
+            asset_name: wrfcoin-node-macos-aarch64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        shell: bash
+        env:
+          RUSTFLAGS: "-C target-cpu=generic"
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.created_at }}
+          CARGO_BUILD_JOBS: "1"
+        # #2151: run from an array; buildinfo/build-command.txt records the same array.
+        run: |
+          set -euo pipefail
+          build_cmd=(cargo build --release --locked --bin launch_api --target "${{ matrix.target }}" --features "${RELEASE_NODE_FEATURES}")
+          "${build_cmd[@]}"
+          mkdir -p buildinfo
+          printf 'RUSTFLAGS=%q %s\n' "$RUSTFLAGS" "$(printf '%q ' "${build_cmd[@]}" | sed 's/ $//')" > buildinfo/build-command.txt
+          rustc -vV > buildinfo/rustc-vV.txt
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "artifacts/${{ matrix.asset_name }}"
+          chmod +x "artifacts/${{ matrix.asset_name }}"
+          artifact_sha256=$(shasum -a 256 "artifacts/${{ matrix.asset_name }}" | awk '{print $1}')
+          cat > "artifacts/${{ matrix.asset_name }}.build-manifest.env" <<EOF
+          FORMAT_VERSION=1
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          RUST_TOOLCHAIN=${RUST_VERSION}
+          BUILD_TARGET=${{ matrix.target }}
+          CARGO_PACKAGE=wrfcoin-native-chain
+          CARGO_BIN=launch_api
+          CARGO_FEATURES=${RELEASE_NODE_FEATURES}
+          ARTIFACT_NAME=${{ matrix.asset_name }}
+          ARTIFACT_SHA256=${artifact_sha256}
+          EOF
+          # #2151: measured build-info sidecar (exact command + rustc -vV from
+          # THIS job), refused if the toolchain that ran is not the pin.
+          PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
+          "$PY" scripts/write_build_info.py \
+            --out "artifacts/${{ matrix.asset_name }}.buildinfo.json" \
+            --command-file buildinfo/build-command.txt \
+            --rustc-vv-file buildinfo/rustc-vV.txt \
+            --expect-release "${RUST_VERSION}"
+
+      - name: Generate checksums
+        shell: bash
+        working-directory: artifacts
+        run: |
+          shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          shasum -a 512 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha512"
+          shasum -a 256 "${{ matrix.asset_name }}.build-manifest.env" > "${{ matrix.asset_name }}.build-manifest.env.sha256"
+          shasum -a 512 "${{ matrix.asset_name }}.build-manifest.env" > "${{ matrix.asset_name }}.build-manifest.env.sha512"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: artifacts/
+          retention-days: 7
+
+  # Sign all binaries with GPG
+  # #2151, called at the JOB level (jobs.<id>.uses:) — not as a step inside a
+  # job, which is the exact wiring mistake #312 found in an earlier attempt at
+  # this. See release-provenance.yml's own header for the full reasoning.
+  generate-provenance:
+    name: Generate release provenance
+    needs: [build-binaries, build-binaries-macos]
+    if: ${{ !cancelled() && needs.build-binaries.result == 'success' }}
+    uses: ./.github/workflows/release-provenance.yml
+    with:
+      artifacts-path: artifacts
+      artifact-glob: "wrfcoin-node-*"
+
+  sign-binaries:
+    name: Sign Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [build-binaries, build-binaries-macos, generate-provenance]
+    if: ${{ !cancelled() && needs.build-binaries.result == 'success' }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: artifacts
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: Download provenance statements (#2151)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: provenance-statements
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          ls -la artifacts/
+
+      - name: Generate signed SHA256SUMS (#2151)
+        # A separate, single-purpose file in the standard `sha256sum -c` format,
+        # alongside the existing CHECKSUMS.txt (which stays for its sha512
+        # coverage) — #2151's acceptance criterion names this file specifically,
+        # and it is what `sha256sum -c SHA256SUMS` expects without translation.
+        # Covers the provenance statements too: a provenance file with a
+        # tampered digest is exactly as detectable as a tampered binary.
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          rm -f SHA256SUMS
+          for f in wrfcoin-node-* *.provenance.json; do
+            [[ -f "$f" ]] || continue
+            case "$f" in *.sha256|*.sha512|*.sig|*.asc) continue ;; esac
+            sha256sum "$f" >> SHA256SUMS
+          done
+          echo "SHA256SUMS:"
+          cat SHA256SUMS
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpg-connect-agent reloadagent /bye
+
+      - name: Sign all binaries
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          cd artifacts
+
+          for file in wrfcoin-node-*; do
+            if [[ ! "$file" =~ \.(sha256|sha512|sig|asc)$ ]]; then
+              echo "Signing $file..."
+              echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+                --passphrase-fd 0 \
+                --default-key "$GPG_KEY_ID" \
+                --armor --detach-sign "$file"
+            fi
+          done
+
+          echo ""
+          echo "Signed files:"
+          ls -la *.asc 2>/dev/null || echo "No .asc files found"
+
+      - name: Create combined checksum file
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          cd artifacts
+          echo "# WRFCoin Release Checksums" > CHECKSUMS.txt
+          echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> CHECKSUMS.txt
+          echo "" >> CHECKSUMS.txt
+          echo "## SHA256" >> CHECKSUMS.txt
+          cat *.sha256 >> CHECKSUMS.txt
+          echo "" >> CHECKSUMS.txt
+          echo "## SHA512" >> CHECKSUMS.txt
+          cat *.sha512 >> CHECKSUMS.txt
+
+          # Sign the checksums file
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 \
+            --default-key "$GPG_KEY_ID" \
+            --armor --detach-sign CHECKSUMS.txt
+
+      - name: Sign SHA256SUMS (#2151)
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        working-directory: artifacts
+        run: |
+          echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 \
+            --default-key "$GPG_KEY_ID" \
+            --armor --detach-sign SHA256SUMS
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-binaries
+          path: artifacts/
+          retention-days: 30
+
+  # Attach artifacts to release
+  attach-to-release:
+    name: Attach to Release
+    runs-on: ubuntu-latest
+    needs: sign-binaries
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-binaries
+          path: artifacts/
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            artifacts/wrfcoin-node-*
+            artifacts/CHECKSUMS.txt
+            artifacts/CHECKSUMS.txt.asc
+            artifacts/SHA256SUMS
+            artifacts/SHA256SUMS.asc
+            artifacts/*.provenance.json
+          fail_on_unmatched_files: false
+
+  # Verification job
+  verify-signatures:
+    name: Verify Signatures
+    runs-on: ubuntu-latest
+    needs: attach-to-release
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-binaries
+          path: artifacts/
+
+      - name: Import public key
+        run: |
+          # Import WRFCoin signing key from keyserver
+          gpg --keyserver keyserver.ubuntu.com --recv-keys ${{ secrets.GPG_KEY_ID }} || true
+
+          # Or import from repository
+          curl -sSL https://raw.githubusercontent.com/${{ github.repository }}/main/security/SIGNING_KEY.asc | gpg --import || true
+
+      # Driven by the EXPECTED artifact set, not by discovered *.asc files: a
+      # loop over found signatures cannot notice a missing one, so an unsigned
+      # release used to print "All signatures verified successfully!" and exit 0
+      # (#2300). Fixtures for that case are in scripts/test_release_gates.py.
+      - name: Verify all signatures
+        # #2151 tidy-up (cosmetic): this step used to be a plain (non-`|`) YAML
+        # scalar, in which the two trailing `echo` lines folded into one
+        # (`echo "" echo "All signatures verified..."`), printing a stray
+        # `echo`. The verifier itself always ran as its own command, and
+        # Actions runs `bash -e` for a step with no `shell:`, so a failing
+        # verify_release_signatures.sh did fail this step — the gate never
+        # failed open. The `|` block scalar and explicit `set -e` just make
+        # that obvious.
+        run: |
+          set -e
+          bash scripts/verify_release_signatures.sh artifacts
+          echo ""
+          echo "All signatures verified successfully!"
+
+      - name: Verify checksums
+        run: |
+          cd artifacts
+
+          echo "Verifying checksums..."
+          sha256sum -c *.sha256
+          sha512sum -c *.sha512
+
+          echo "All checksums verified!"
+
+      - name: Verify SHA256SUMS (#2151)
+        working-directory: artifacts
+        run: sha256sum -c SHA256SUMS
+
+      - name: Download the JUST-PUBLISHED release assets and verify provenance (#2151)
+        # Deliberately re-downloads from the Release page itself via `gh
+        # release download`, not the internal `signed-binaries` CI artifact
+        # already in this job — "signing that nobody verifies is a no-op"
+        # means verifying what an operator would actually download, which
+        # catches a corruption/mangling introduced by the "Attach to release"
+        # upload step itself that an internal-artifact check cannot see.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir published --skip-existing
+          echo "Published release assets:"
+          ls -la published/
+          found=0
+          for provenance in published/*.provenance.json; do
+            [[ -f "$provenance" ]] || continue
+            artifact="published/$(basename "$provenance" .provenance.json)"
+            [[ -f "$artifact" ]] || { echo "::error::no matching artifact for $provenance"; exit 1; }
+            bash scripts/verify_provenance.sh "$artifact" "$provenance"
+            found=$((found + 1))
+          done
+          if [[ "$found" -eq 0 ]]; then
+            echo "::error::no provenance files found in the published release — #2151's whole point is that every published artifact carries one"
+            exit 1
+          fi
+          echo "verified provenance for $found published artifact(s)"
+
+  release-terminal-skip-guard:
+    name: Release terminal skip guard
+    needs: [build-binaries, generate-provenance, sign-binaries, attach-to-release, verify-signatures]
+    if: always() && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: build-binaries generate-provenance sign-binaries attach-to-release verify-signatures
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py
+
+  dispatch-terminal-skip-guard:
+    name: Manual release terminal skip guard
+    needs: [build-binaries, build-binaries-macos, generate-provenance, sign-binaries]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: build-binaries build-binaries-macos generate-provenance sign-binaries
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py

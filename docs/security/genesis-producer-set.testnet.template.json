@@ -1,0 +1,45 @@
+{
+  "_README": [
+    "TEMPLATE ONLY — #2290 genesis producer set for the N5 two-node testnet cut.",
+    "This file contains NO key material. Every value below is a placeholder that the",
+    "key ceremony (docs/security/PRODUCER_KEY_CEREMONY.md) replaces with real PUBLIC",
+    "artifacts. Private keys NEVER leave the HSM/YubiKey and NEVER appear in any file.",
+    "",
+    "Consumed by native-chain/src/bin/launch_api/genesis_producers.rs, either as",
+    "WRFCOIN_GENESIS_PRODUCER_SET=@/abs/path/to/this-file.json or, preferred for the",
+    "cut, pinned into the TESTNET_GENESIS_PRODUCER_SET literal in that module.",
+    "",
+    "The producer set is folded into state_root. Every node MUST load the byte-identical",
+    "set or the nodes compute different state roots for the same genesis and fork at",
+    "block 1. This is one artifact copied to both nodes, never assembled per-node.",
+    "",
+    "FIELD RULES (enforced at load; see the RED-first tests in genesis_producers.rs):",
+    "  producer_id     stable operator identity, unique, no surrounding whitespace.",
+    "                  Does NOT rotate when the signing key rotates.",
+    "  payout_address  canonical Address: '0x' + 40 LOWERCASE hex. Coinbase target.",
+    "                  NOT PublicKey::to_address() — that returns a 'wrf…' string and",
+    "                  is a DIFFERENT format that will be rejected. Deliberately",
+    "                  decoupled from public_key (§R2) so key rotation never moves",
+    "                  payouts.",
+    "  public_key      block-signing ed25519 PUBLIC key, 64 LOWERCASE hex chars, no",
+    "                  '0x' prefix. Must be a valid ed25519 point. Unique per producer.",
+    "",
+    "OWNER DECISION REQUIRED before the cut: the two producer_id values below are a",
+    "proposal, not a confirmed naming. Confirm them at the ceremony and record them in",
+    "the ceremony log — once genesis is minted these strings are immutable consensus",
+    "state and cannot be renamed without a fresh chain."
+  ],
+  "version": 1,
+  "members": [
+    {
+      "producer_id": "n5-node-a",
+      "payout_address": "0xPLACEHOLDER_REPLACE_WITH_40_LOWERCASE_HEX_A",
+      "public_key": "PLACEHOLDER_REPLACE_WITH_64_LOWERCASE_HEX_SIGNING_PUBKEY_A"
+    },
+    {
+      "producer_id": "producer-standby",
+      "payout_address": "0xPLACEHOLDER_REPLACE_WITH_40_LOWERCASE_HEX_B",
+      "public_key": "PLACEHOLDER_REPLACE_WITH_64_LOWERCASE_HEX_SIGNING_PUBKEY_B"
+    }
+  ]
+}

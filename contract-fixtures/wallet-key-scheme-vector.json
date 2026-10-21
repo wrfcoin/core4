@@ -1,0 +1,9 @@
+{
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "derivation": "slip10-ed25519-master (HMAC-SHA512 key \"ed25519 seed\", IL, no child path)",
+  "bip39_seed_hex_prefix": "5eb00bbddcf069084889a8ab91555681",
+  "ed25519_public_key_hex": "e96b1c6b8769fdb0b34fbecfdf85c33b053cecad9517e1ab88cba614335775c1",
+  "address": "0x3f995ceb27e8177077dbed8b1e4f696af74da492",
+  "legacy_cli_address_for_the_same_key": "Wrfada8e3423e041d247dca60598e6d3d8834161fe5"
+}
