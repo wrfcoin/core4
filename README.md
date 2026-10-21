@@ -69,3 +69,7 @@ and migration options; no package migration or feature activation is implied.
 ## License
 
 Licensed under [Apache-2.0](LICENSE).
+
+---
+
+_Note: issue and pull-request numbers mentioned in this repository refer to a private archive that predates this public repository; they are not links into this repo._
