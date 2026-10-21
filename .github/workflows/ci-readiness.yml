@@ -940,7 +940,7 @@ jobs:
         # default-empty fields would fabricate a red report after the terminal
         # result gate already supplied the authoritative verdict.
         if: ${{ false }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
