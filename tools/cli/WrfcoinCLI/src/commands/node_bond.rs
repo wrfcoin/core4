@@ -32,6 +32,27 @@ pub enum BondSignerRole {
 
 #[derive(Subcommand)]
 pub enum BondCommands {
+    /// Build a dual-signed faucet request; only --submit performs a network write.
+    /// Seed-file nodes may also use infra/testnet/services/faucet/bond-grant-request.js.
+    GrantRequest {
+        #[clap(long)]
+        owner_address: String,
+        /// Node API base URL (GET /network/info and /chain/block/<tip-2>).
+        #[clap(long)]
+        api_url: String,
+        /// Write the public JSON request to a new file; never overwrite.
+        #[clap(long)]
+        out: Option<PathBuf>,
+        /// Backend base URL; POST once to /api/faucet/bond-grant, without retries.
+        #[clap(long)]
+        submit: Option<String>,
+        /// Mode 0600 file containing a 32-byte ed25519 seed as hex; otherwise use the dedicated bond HSM signer.
+        #[clap(long)]
+        key_file: Option<PathBuf>,
+        /// Existing protobuf ed25519 identity; default $WRFCOIN_DATA_DIR/peer_identity.key (./data if unset).
+        #[clap(long)]
+        p2p_key_file: Option<PathBuf>,
+    },
     /// Assemble a keyless Deposit plan, then authorize and submit the approved packet once.
     Deposit(super::node_deposit::DepositArgs),
     /// Read the canonical public owner address/key without signing or an API request.
@@ -200,6 +221,32 @@ fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedS
 }
 
 pub async fn handle(command: &BondCommands) -> Result<Value> {
+    if let BondCommands::GrantRequest { owner_address, api_url, out, submit, key_file, p2p_key_file } = command {
+        use wrfcoin_cli::bond_grant;
+        if let Some(path) = out {
+            ensure!(!path.exists(), "output request already exists; inspect before retry");
+        }
+        let peer = bond_grant::peer_key(&p2p_key_file.clone().unwrap_or_else(bond_grant::default_peer_key_path))?;
+        let signer: std::sync::Arc<dyn BlockSigner> = if let Some(path) = key_file {
+            std::sync::Arc::new(bond_grant::server_key(path)?)
+        } else {
+            // Exactly the dedicated role/PIN resolution used by bond sign --role server.
+            resolve_signer().map_err(|_| anyhow::anyhow!("dedicated Node bond signer unavailable"))?.signer
+        };
+        let client = bond_grant::client()?;
+        let request = bond_grant::prepare(&client, api_url, owner_address, signer.as_ref(), &peer).await?;
+        if let Some(path) = out {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+                .map_err(|_| anyhow::anyhow!("output request file unavailable"))?;
+            file.write_all(&serde_json::to_vec_pretty(&request)?)?;
+            file.sync_all()?;
+        }
+        if let Some(backend) = submit {
+            let answer = bond_grant::submit(&client, backend, &request).await?;
+            return Ok(json!({"request": request, "faucet": answer}));
+        }
+        return Ok(serde_json::to_value(request)?);
+    }
     if let BondCommands::KeyInfo { key_file } = command {
         let key = OperatorKey::load(key_file)?;
         return Ok(
@@ -304,7 +351,7 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         BondCommands::Receipt { receipt_id } => Ok(api
             .get(&format!("/node/receipts/{}", public_id(receipt_id)?), None)
             .await?),
-        BondCommands::Sign { .. } | BondCommands::Deposit(_) | BondCommands::KeyInfo { .. } => {
+        BondCommands::Sign { .. } | BondCommands::Deposit(_) | BondCommands::KeyInfo { .. } | BondCommands::GrantRequest { .. } => {
             unreachable!()
         },
     }

@@ -50,6 +50,10 @@ pub enum NodeCommands {
 }
 
 pub async fn handle_node_command(command: &NodeCommands, ctx: &ExecutionContext) -> Result<Value> {
+    // This explicit-URL builder must not initialize the legacy API client or its retry policy.
+    if let NodeCommands::Bond { action: action @ super::node_bond::BondCommands::GrantRequest { .. } } = command {
+        return super::node_bond::handle(action).await;
+    }
     let client = ApiClient::new(ApiConfig::default())?;
 
     match command {

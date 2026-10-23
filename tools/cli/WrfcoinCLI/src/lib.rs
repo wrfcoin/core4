@@ -15,6 +15,7 @@
 //! mechanisms for maintaining blockchain integrity with fork resolution and difficulty adjustment.
 
 pub mod api;
+pub mod bond_grant;
 pub mod forecast_receipt;
 pub mod config;
 pub mod consensus;
