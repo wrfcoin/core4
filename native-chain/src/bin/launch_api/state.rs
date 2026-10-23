@@ -1,3 +1,5 @@
+#[path = "forecast_quota.rs"]
+pub mod forecast_quota;
 #[path = "snapshot_service.rs"]
 pub mod snapshot_service;
 
@@ -663,6 +665,7 @@ pub struct AppState {
     /// collector cannot flood `POST /transactions/contribution/commit` and
     /// stall block production, while independent contributors keep their own
     /// budgets.
+    pub forecast_quotas: Arc<RwLock<forecast_quota::Quotas>>,
     pub contribution_commit_rate_limit: Arc<RwLock<FxHashMap<String, SlidingWindowCounter>>>,
     pub permissionless_replay_seen: Arc<RwLock<FxHashMap<String, i64>>>,
     pub storage: Arc<RwLock<Storage>>,

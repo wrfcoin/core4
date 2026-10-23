@@ -85,6 +85,7 @@ fn test_state(snapshot_signing_key: Option<PrivateKey>) -> web::Data<state::AppS
         token_store: test_token_store(),
         legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
         storage: Arc::new(RwLock::new(storage)),

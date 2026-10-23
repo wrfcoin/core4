@@ -123,6 +123,7 @@ fn test_state_with_tokens(
         token_store,
         legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
         storage: Arc::new(RwLock::new(storage)),
@@ -1333,4 +1334,29 @@ async fn forecast_edge_tracks_the_consensus_oracle_set_after_rotation() {
         assert_eq!(resp.status(), if keep_oracle { StatusCode::CREATED } else { StatusCode::UNPROCESSABLE_ENTITY });
         assert_eq!(state.mempool.read().await.get_all_transactions().len(), usize::from(keep_oracle));
     }
+}
+
+#[actix_web::test]
+async fn forecast_wallet_quotas_preserve_bodies_and_return_clear_429s() {
+    let state = forecast_state();
+    state.forecast_quotas.write().await.config.limit = 1;
+    let app = test::init_service(test_app(state.clone())).await;
+    let (commit, mut reveal, _) = forecast_route_fixture();
+    reveal["verification_receipt"] = serde_json::Value::Null;
+    for (kind, body) in [("commit", commit), ("reveal", reveal)] {
+        let post = |body: &serde_json::Value| test::TestRequest::post()
+            .uri(&format!("/transactions/forecast/{kind}"))
+            .insert_header(bearer(TEST_FORECASTER_TOKEN)).set_json(body).to_request();
+        assert_eq!(test::call_service(&app, post(&body)).await.status(), StatusCode::CREATED);
+        let mut alias = body.clone();
+        alias["forecaster"] = serde_json::json!(" WRF1FORECAST ");
+        // Changing station cannot acquire a fresh wallet-wide budget.
+        alias["station_id"] = serde_json::json!("another-station");
+        let response = test::call_service(&app, post(&alias)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().get("retry-after").unwrap().to_str().unwrap().parse::<u64>().unwrap() > 0);
+        let error: serde_json::Value = test::read_body_json(response).await;
+        assert!(error.to_string().contains("FORECAST_QUOTA_EXCEEDED"));
+    }
+    assert_eq!(state.mempool.read().await.get_all_transactions().len(), 2);
 }
