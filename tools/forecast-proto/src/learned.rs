@@ -81,6 +81,58 @@ mod tests {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/models/synthetic-placeholder.onnx"))
     }
 
+    /// The observed-data model's parity record: `(window, expected_output, tolerance)`.
+    /// Written by `gpu/train_forecast.py --observations ... --export-onnx`; the tolerance
+    /// is the record's own `rust_parity_tolerance_abs`.
+    fn observed_fixture() -> (Vec<Observation>, Vec<f64>, f64) {
+        let report: serde_json::Value = serde_json::from_str(include_str!("../models/learned-conv1d-v1-export.json")).unwrap();
+        let window = report["input"][0].as_array().unwrap().iter().enumerate().map(|(i, row)| Observation {
+            timestamp: 1_700_000_000 + i as i64 * 3600,
+            values: VARIABLES.iter().enumerate().map(|(j, name)| (name.to_string(), row[j].as_f64().unwrap())).collect(),
+        }).collect();
+        let expected = report["expected_output"][0].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let tolerance = report["rust_parity_tolerance_abs"].as_f64().unwrap();
+        (window, expected, tolerance)
+    }
+
+    fn observed_model_path() -> &'static Path {
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/models/learned-conv1d-v1.onnx"))
+    }
+
+    #[test]
+    fn observed_data_onnx_matches_cpu_export() {
+        // Same contract as the placeholder: raw units in, raw units out, one
+        // CPU prediction from the exporting process reproduced by tract here.
+        let (window, expected, tolerance) = observed_fixture();
+        let (id, values) = select_forecast(MODEL_ID, Some(observed_model_path()), &window, BTreeMap::new());
+        assert_eq!(id, MODEL_ID, "test must execute ONNX, not fallback");
+        assert_eq!(values.len(), 3);
+        for (name, expected) in VARIABLES.iter().zip(expected) {
+            assert!(values[*name].is_finite());
+            assert!((values[*name] - expected).abs() < tolerance, "{name}: {} vs {expected} (tol {tolerance})", values[*name]);
+        }
+    }
+
+    #[test]
+    fn observed_data_onnx_is_level_invariant() {
+        // The graph centres each window on its own mean, so a constant offset
+        // on the pressure input (station pressure vs sea-level pressure) moves
+        // the pressure forecast by exactly that offset and nothing else.
+        let (window, _, tolerance) = observed_fixture();
+        let shifted: Vec<Observation> = window.iter().map(|o| {
+            let mut values = o.values.clone();
+            *values.get_mut("pressure_hpa").unwrap() -= 50.0;
+            Observation { timestamp: o.timestamp, values }
+        }).collect();
+        let base = select_forecast(MODEL_ID, Some(observed_model_path()), &window, BTreeMap::new());
+        let moved = select_forecast(MODEL_ID, Some(observed_model_path()), &shifted, BTreeMap::new());
+        assert_eq!((base.0, moved.0), (MODEL_ID, MODEL_ID));
+        assert!((base.1["pressure_hpa"] - 50.0 - moved.1["pressure_hpa"]).abs() < tolerance);
+        for name in ["temperature_c", "humidity_pct"] {
+            assert!((base.1[name] - moved.1[name]).abs() < tolerance, "{name} must not depend on the pressure level");
+        }
+    }
+
     #[test]
     fn onnx_fixed_window_matches_cpu_export() {
         let (window, expected) = fixture();

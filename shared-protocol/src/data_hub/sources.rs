@@ -137,7 +137,7 @@ impl BaseConnector {
                         "OAuth 2.0" => {
                             // Typically added as a Bearer token
                             req_builder = req_builder
-                                .header("Authorization", format!("Bearer {}", &cred.api_key));
+                                .header("Authorization", format!("Bearer {}", cred.api_key));
                         },
                         "Basic Auth" => {
                             // Username and password
@@ -211,7 +211,7 @@ impl BaseConnector {
                         },
                         "OAuth 2.0" => {
                             req_builder = req_builder
-                                .header("Authorization", format!("Bearer {}", &cred.api_key));
+                                .header("Authorization", format!("Bearer {}", cred.api_key));
                         },
                         "Basic Auth" => {
                             if let Some(username) = cred.parameters.get("username") {
@@ -290,7 +290,7 @@ impl BaseConnector {
                         },
                         "OAuth 2.0" => {
                             req_builder = req_builder
-                                .header("Authorization", format!("Bearer {}", &cred.api_key));
+                                .header("Authorization", format!("Bearer {}", cred.api_key));
                         },
                         "Basic Auth" => {
                             if let Some(username) = cred.parameters.get("username") {

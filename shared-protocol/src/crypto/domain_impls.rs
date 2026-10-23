@@ -352,15 +352,14 @@ impl DomainSeparated for SnapshotSyncPayload {
     const DOMAIN_TAG: &'static [u8] = b"wrfcoin.snapshot_sync_payload.v2";
 
     fn canonical_body(&self) -> Vec<u8> {
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .u64_field(self.height)
             .str_field(&self.state_root_hex)
             .str_field(&self.snapshot_root_hex)
             .u64_field(self.entry_count)
             .str_field(&self.tip_hash_hex)
             .u64_field(self.finalized_height)
-            .finish();
-        body
+            .finish()
     }
 }
 
@@ -372,14 +371,13 @@ impl DomainSeparated for WeatherReading {
     const DOMAIN_TAG: &'static [u8] = b"wrfcoin.weather_observation.v1";
 
     fn canonical_body(&self) -> Vec<u8> {
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .i64_field(self.timestamp_unix)
             .opt_f64_field(self.temperature_c)
             .opt_f64_field(self.pressure_hpa)
             .opt_f64_field(self.humidity_pct)
             .opt_f64_field(self.wind_speed_ms)
-            .finish();
-        body
+            .finish()
     }
 }
 
@@ -413,8 +411,7 @@ impl DomainSeparated for CalibrationAttestationPayload {
         // only if serialization fails, which cannot silently succeed as a
         // different value.
         let encoded = serde_json::to_string(self).unwrap_or_default();
-        let body = BodyBuilder::new().str_field(&encoded).finish();
-        body
+        BodyBuilder::new().str_field(&encoded).finish()
     }
 }
 
@@ -504,15 +501,14 @@ impl DomainSeparated for ComputeReceipt {
     fn canonical_body(&self) -> Vec<u8> {
         // `signature` excluded — a signature cannot cover itself. Mirrors the
         // field set of the legacy `canonical_signing_message`.
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .str_field(&self.task_id)
             .str_field(&self.worker_id)
             .str_field(&self.work_hash)
             .u64_field(self.work_factor)
             .i64_field(self.completed_at)
             .str_field(&self.nonce)
-            .finish();
-        body
+            .finish()
     }
 }
 

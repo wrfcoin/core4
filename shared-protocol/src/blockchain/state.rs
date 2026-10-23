@@ -1861,7 +1861,7 @@ impl State {
     }
     pub fn issuance_committed_supply(&self) -> u128 {
         self.emission_ledger.cached_supply().unwrap_or_else(|| self.checked_total_minted_supply().unwrap_or(u128::MAX))
-            .checked_add(self.outstanding_node_reserves()).unwrap_or(u128::MAX)
+            .saturating_add(self.outstanding_node_reserves())
     }
     pub fn mint_headroom(&self) -> u128 {
         crate::consensus::proof_of_publishing::MAX_SUPPLY.saturating_sub(self.issuance_committed_supply())
@@ -2730,7 +2730,7 @@ impl State {
         }
 
         let mut pending_commits = self.pending_commits.iter().collect::<Vec<_>>();
-        pending_commits.sort_by(|(id_a, _), (id_b, _)| id_a.cmp(id_b));
+        pending_commits.sort_by_key(|(id_a, _)| *id_a);
         push_u64(&mut material, pending_commits.len() as u64);
         for (commit_id, record) in pending_commits {
             push_str(&mut material, commit_id);
@@ -2743,7 +2743,7 @@ impl State {
         }
 
         let mut pending_reveals = self.pending_reveals.iter().collect::<Vec<_>>();
-        pending_reveals.sort_by(|(id_a, _), (id_b, _)| id_a.cmp(id_b));
+        pending_reveals.sort_by_key(|(id_a, _)| *id_a);
         push_u64(&mut material, pending_reveals.len() as u64);
         for (commit_id, reveal) in pending_reveals {
             push_str(&mut material, commit_id);
@@ -2822,7 +2822,7 @@ impl State {
 
         let cal_bindings = self.commit_reveal_state.calibration_cid_bindings();
         let mut cal_entries = cal_bindings.iter().collect::<Vec<_>>();
-        cal_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        cal_entries.sort_by_key(|(a, _)| *a);
         push_u64(&mut material, cal_entries.len() as u64);
         for (cid, station_id) in cal_entries {
             push_str(&mut material, cid);
@@ -2864,7 +2864,7 @@ impl State {
         push_u64(&mut material, self.oracle_quorum as u64);
 
         let mut attestation_entries = self.attestations.iter().collect::<Vec<_>>();
-        attestation_entries.sort_by(|(id_a, _), (id_b, _)| id_a.cmp(id_b));
+        attestation_entries.sort_by_key(|(id_a, _)| *id_a);
         push_u64(&mut material, attestation_entries.len() as u64);
         for (commit_id, set) in attestation_entries {
             push_str(&mut material, commit_id);
@@ -2917,7 +2917,7 @@ impl State {
         // Fee-less worker epoch counts (#835).
         {
             let mut feeless_entries: Vec<_> = self.feeless_worker_epoch_counts.iter().collect();
-            feeless_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            feeless_entries.sort_by_key(|(a, _)| *a);
             push_u64(&mut material, feeless_entries.len() as u64);
             for (key, count) in feeless_entries {
                 push_str(&mut material, key);
@@ -2950,7 +2950,7 @@ impl State {
         }
 
         let mut calibration_entries = self.calibration_attestations.iter().collect::<Vec<_>>();
-        calibration_entries.sort_by(|(station_a, _), (station_b, _)| station_a.cmp(station_b));
+        calibration_entries.sort_by_key(|(station_a, _)| *station_a);
         push_u64(&mut material, calibration_entries.len() as u64);
         for (station_id, record) in calibration_entries {
             push_str(&mut material, station_id);
@@ -2968,7 +2968,7 @@ impl State {
         }
 
         let mut station_entries = self.station_registry.entries().collect::<Vec<_>>();
-        station_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        station_entries.sort_by_key(|(a, _)| *a);
         push_u64(&mut material, station_entries.len() as u64);
         for (station_id, station) in station_entries {
             push_str(&mut material, station_id);
@@ -3315,7 +3315,7 @@ impl State {
         push_str(&mut material, &self.governance.constitution.source_path);
 
         let mut laws = self.governance.law_book.laws.iter().collect::<Vec<_>>();
-        laws.sort_by(|(a, _), (b, _)| a.cmp(b));
+        laws.sort_by_key(|(a, _)| *a);
         push_u64(&mut material, laws.len() as u64);
         for (law_id, law) in laws {
             push_str(&mut material, law_id);
@@ -3338,7 +3338,7 @@ impl State {
         }
 
         let mut proposals = self.governance.proposals.iter().collect::<Vec<_>>();
-        proposals.sort_by(|(id_a, _), (id_b, _)| id_a.cmp(id_b));
+        proposals.sort_by_key(|(id_a, _)| *id_a);
         push_u64(&mut material, proposals.len() as u64);
         for (proposal_id, record) in proposals {
             push_str(&mut material, proposal_id);
@@ -3370,7 +3370,7 @@ impl State {
                 None => push_bool(&mut material, false),
             }
             let mut votes = record.votes_by_voter.iter().collect::<Vec<_>>();
-            votes.sort_by(|(a, _), (b, _)| a.cmp(b));
+            votes.sort_by_key(|(a, _)| *a);
             push_u64(&mut material, votes.len() as u64);
             for (voter, vote_record) in votes {
                 push_str(&mut material, voter);
@@ -3382,7 +3382,7 @@ impl State {
                 .eligible_voting_power_by_voter
                 .iter()
                 .collect::<Vec<_>>();
-            evp.sort_by(|(a, _), (b, _)| a.cmp(b));
+            evp.sort_by_key(|(a, _)| *a);
             push_u64(&mut material, evp.len() as u64);
             for (voter, power) in evp {
                 push_str(&mut material, voter);
@@ -3392,7 +3392,7 @@ impl State {
 
         // --- spatial_scores (#984) ---
         let mut spatial_entries = self.spatial_scores.iter().collect::<Vec<_>>();
-        spatial_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        spatial_entries.sort_by_key(|(a, _)| *a);
         push_u64(&mut material, spatial_entries.len() as u64);
         for (station_id, score) in spatial_entries {
             push_str(&mut material, station_id);
@@ -3415,7 +3415,7 @@ impl State {
 
         // --- mining_pools (#1083) ---
         let mut pool_entries = self.mining_pools.iter().collect::<Vec<_>>();
-        pool_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        pool_entries.sort_by_key(|(a, _)| *a);
         push_u64(&mut material, pool_entries.len() as u64);
         for (pool_id, pool) in pool_entries {
             push_str(&mut material, pool_id);
@@ -5252,6 +5252,9 @@ impl State {
                     proposal.execution_error = None;
                     return Ok(());
                 }
+                // Preserve the zero-vote short circuit: eager multiplication can overflow
+                // before checked_div sees zero, changing consensus failure behavior.
+                #[allow(clippy::manual_checked_ops)]
                 let yes_percent = if total_votes == 0 {
                     0
                 } else {
@@ -5603,7 +5606,7 @@ impl State {
                     _ => None,
                 };
                 if let Some(target) = transfer_target {
-                    if self.account_recovery.get(&target).is_some() {
+                    if self.account_recovery.contains_key(&target) {
                         return Err(StateError::InvalidTransition);
                     }
                 }
@@ -9639,7 +9642,7 @@ fn push_quality_policy_event_band_counters(
 
 fn push_attestation_set(buf: &mut Vec<u8>, set: &AttestationSet) {
     let mut entries = set.by_oracle.iter().collect::<Vec<_>>();
-    entries.sort_by(|(oracle_a, _), (oracle_b, _)| oracle_a.cmp(oracle_b));
+    entries.sort_by_key(|(oracle_a, _)| *oracle_a);
     push_u64(buf, entries.len() as u64);
     for (oracle_id, record) in entries {
         push_str(buf, oracle_id);
