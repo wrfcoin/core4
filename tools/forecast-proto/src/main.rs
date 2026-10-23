@@ -217,7 +217,9 @@ fn read_observations_from_artifacts(dir: &str, station_id: &str) -> Result<Vec<O
                 values.insert(var.to_string(), v);
             }
         }
-        if values.len() == FORECAST_VARIABLES.len() {
+        // A station that reports only some of the forecast variables is still
+        // a station (owner ruling 2026-10-19: score only what it reports).
+        if !values.is_empty() {
             out.push(Observation { timestamp, values });
         }
     }
@@ -274,7 +276,7 @@ fn read_observations(node: &Node, token: &str, station_id: &str) -> Result<Vec<O
                     values.insert(var.to_string(), v);
                 }
             }
-            if values.len() == FORECAST_VARIABLES.len() {
+            if !values.is_empty() {
                 out.push(Observation { timestamp, values });
             }
         }
@@ -282,6 +284,17 @@ fn read_observations(node: &Node, token: &str, station_id: &str) -> Result<Vec<O
     out.sort_by_key(|o| o.timestamp);
     out.dedup_by_key(|o| o.timestamp);
     Ok(out)
+}
+
+/// The forecast variables every observation of the window reports, sorted.
+/// This is what the manifest declares (`output_variables`): the forecaster
+/// forecasts what the station reports, and only that is scored.
+fn declared_variables(window: &[Observation]) -> Vec<String> {
+    FORECAST_VARIABLES
+        .iter()
+        .filter(|var| window.iter().all(|o| o.values.contains_key(**var)))
+        .map(|var| var.to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +352,8 @@ fn digest_hex<T: Serialize>(value: &T) -> String {
 
 #[derive(Debug, Serialize)]
 struct ScoreReport {
+    /// Declared (forecast) variables the truth also reports: the only ones scored.
+    scored_variables: Vec<String>,
     per_variable: std::collections::BTreeMap<String, VariableScore>,
     metrics: ForecastAccuracyMetricsView,
 }
@@ -365,20 +380,34 @@ struct ForecastAccuracyMetricsView {
 ///
 /// Skill per variable is `max(0, 1 − MAE_forecast / MAE_climatology)` where the
 /// climatology reference is the window mean — the cheapest honest reference
-/// that a persistence model does not trivially beat. Aggregate skill is the
-/// mean over variables; MAE/RMSE/bias are aggregated over variables too.
+/// that a persistence model does not trivially beat. Only the variables the
+/// forecast declares AND the truth reports are scored (owner ruling
+/// 2026-10-19, `wrfcoin_forecast_score::scored_variables`); aggregate skill is
+/// the mean over those, and MAE/RMSE/bias are aggregated over them too. A
+/// forecast with nothing scorable is an error: no receipt can be signed.
 fn score(
     forecast: &ForecastOutput,
     truth: &Observation,
     climatology: &std::collections::BTreeMap<String, f64>,
-) -> ScoreReport {
+) -> Result<ScoreReport> {
+    let scored_variables = wrfcoin_forecast_score::scored_variables(
+        forecast.values.keys().map(String::as_str),
+        truth.values.keys().map(String::as_str),
+    );
+    if scored_variables.is_empty() {
+        bail!(
+            "nothing to score: the forecast declares {:?} but the truth reports {:?}",
+            forecast.values.keys().collect::<Vec<_>>(),
+            truth.values.keys().collect::<Vec<_>>()
+        );
+    }
     let mut per_variable = std::collections::BTreeMap::new();
     let mut errs = Vec::new();
     let mut skills = Vec::new();
-    for var in FORECAST_VARIABLES {
-        let f = *forecast.values.get(var).unwrap_or(&0.0);
-        let t = *truth.values.get(var).unwrap_or(&0.0);
-        let c = *climatology.get(var).unwrap_or(&0.0);
+    for var in &scored_variables {
+        let f = forecast.values[var];
+        let t = truth.values[var];
+        let c = *climatology.get(var).unwrap_or(&f);
         let err = f - t;
         let abs_error = err.abs();
         let clim_abs = (c - t).abs();
@@ -405,11 +434,13 @@ fn score(
     let mae = errs.iter().map(|e| e.abs()).sum::<f64>() / n;
     let rmse = (errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt();
     let bias = errs.iter().sum::<f64>() / n;
-    let skill_score = (skills.iter().sum::<f64>() / n).clamp(0.0, 1.0);
-    ScoreReport {
+    let skill_score = wrfcoin_forecast_score::mean_skill(skills.iter().copied())
+        .ok_or_else(|| anyhow!("skill is not finite over {scored_variables:?}"))?;
+    Ok(ScoreReport {
+        scored_variables,
         per_variable,
         metrics: ForecastAccuracyMetricsView { mae, rmse, bias, skill_score },
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -616,13 +647,20 @@ fn run(
         .map(|o| (o.timestamp as f64 - t0) / 3600.0)
         .collect();
     let issued_at = window.last().unwrap().timestamp;
+    // Forecast exactly the variables the station reports throughout the
+    // window; the manifest declares them and the scorer scores only those
+    // the truth also reports (owner ruling 2026-10-19).
+    let declared = declared_variables(window);
+    if declared.is_empty() {
+        bail!(
+            "no forecast variable is reported by every observation in the window for {station_id}"
+        );
+    }
+    println!("[2] declared variables: {declared:?}");
     let mut values = std::collections::BTreeMap::new();
     let mut climatology = std::collections::BTreeMap::new();
-    for var in FORECAST_VARIABLES {
-        let series: Vec<f64> = window
-            .iter()
-            .map(|o| *o.values.get(var).unwrap_or(&0.0))
-            .collect();
+    for var in &declared {
+        let series: Vec<f64> = window.iter().map(|o| o.values[var]).collect();
         climatology.insert(
             var.to_string(),
             series.iter().sum::<f64>() / series.len() as f64,
@@ -654,9 +692,8 @@ fn run(
     )?;
 
     // -- 3. Build the manifest and the commit id ---------------------------
-    let mut input_variables: Vec<String> =
-        FORECAST_VARIABLES.iter().map(|s| s.to_string()).collect();
-    input_variables.sort();
+    // `declared` is already sorted (FORECAST_VARIABLES order) and unique.
+    let input_variables: Vec<String> = declared.clone();
     let output_variables = input_variables.clone();
     let manifest = ForecastArtifactManifest {
         schema_version: 1,
@@ -825,6 +862,7 @@ fn run(
         "model_id": forecast.model_id,
         "horizon_hours": HORIZON_HOURS,
         "observations_read": observations.len(),
+        "scored_variables": report.scored_variables,
         "skill_score": report.metrics.skill_score,
     });
     write_evidence(evidence_dir, "09-run-summary.json", &summary)?;
