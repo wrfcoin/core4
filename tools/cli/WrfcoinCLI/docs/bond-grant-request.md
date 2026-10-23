@@ -34,8 +34,12 @@ No private key bytes are printed or included in the request.
 The JSON request appears in the standard CLI output envelope's `data` field.
 `--out` writes the unwrapped request to a new file, refusing to overwrite an
 existing file. Inspect it before submission. Only `--submit <backend-base-url>`
-performs a POST, to `/api/faucet/bond-grant`. It sends exactly one attempt,
-never follows redirects, and returns the response status and body alongside
+performs network writes: first POST `/api/onboarding/faucet/challenge`, then
+display the backend question on stderr and read the operator answer from stdin.
+The CLI never solves it. It appends `challengeId` and `answer` to the signed
+request and POSTs `/api/faucet/bond-grant`. Each POST has one attempt, without
+retries or redirects. Empty/invalid stdin refuses before the grant POST.
+The command returns the grant response status and body alongside
 the request in the output envelope. A transport error may leave the outcome
 unknown; inspect the faucet audit before manually retrying.
 

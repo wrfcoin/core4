@@ -153,13 +153,42 @@ pub async fn prepare(client: &reqwest::Client, api_url: &str, owner: &str, signe
     request.sign(&chain, &network, signer, peer)?;
     Ok(request)
 }
-/// One explicit write, with redirects disabled and no retry loop, including on non-2xx.
+/// Exactly two explicit POSTs: challenge creation, then grant submission after operator input.
+/// Redirects and retry loops are disabled, including on non-2xx.
 pub async fn submit(client: &reqwest::Client, backend: &str, request: &GrantRequest) -> Result<Value> {
-    let response = client.post(endpoint(backend, "/api/faucet/bond-grant")?).json(request).send().await
+    let challenge_response = client.post(endpoint(backend, "/api/onboarding/faucet/challenge")?)
+        .json(&json!({})).send().await.map_err(|_| anyhow::anyhow!("captcha challenge POST failed"))?;
+    ensure!(challenge_response.status().is_success(), "captcha challenge returned HTTP {}",
+        challenge_response.status().as_u16());
+    let challenge: Value = serde_json::from_slice(&body(challenge_response).await?)
+        .map_err(|_| anyhow::anyhow!("captcha challenge JSON invalid"))?;
+    let challenge_id = field(&challenge, "challengeId")?;
+    let question = field(&challenge, "question")?;
+    let answer = read_captcha_answer(&question)?;
+    let mut payload = serde_json::to_value(request)?;
+    payload["challengeId"] = Value::String(challenge_id);
+    payload["answer"] = Value::String(answer);
+    let response = client.post(endpoint(backend, "/api/faucet/bond-grant")?).json(&payload).send().await
         .map_err(|_| anyhow::anyhow!("faucet POST failed; outcome unknown, inspect before retry"))?;
     let status = response.status().as_u16();
     let bytes = body(response).await?;
     let value = serde_json::from_slice::<Value>(&bytes)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
     Ok(json!({"status": status, "body": value}))
+}
+
+/// Display the backend's question and accept an operator-supplied answer; never solve it.
+pub fn read_captcha_answer(question: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+    ensure!(!question.is_empty() && question.len() <= 512 && !question.chars().any(char::is_control),
+        "captcha question invalid");
+    let mut stderr = std::io::stderr().lock();
+    write!(stderr, "Captcha: {question}\nAnswer: ")?;
+    stderr.flush()?;
+    let mut answer = String::new();
+    let count = std::io::stdin().lock().take(1025).read_line(&mut answer)?;
+    ensure!(count > 0 && answer.len() <= 256, "captcha answer missing or too long");
+    let answer = answer.trim();
+    answer.parse::<i64>().map_err(|_| anyhow::anyhow!("captcha answer must be an integer"))?;
+    Ok(answer.to_string())
 }

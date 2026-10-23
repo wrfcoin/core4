@@ -556,11 +556,36 @@ async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow:
     assert!(peer.public().verify(&[PEER_DOMAIN, message.as_slice()].concat(), &hex::decode(&request.peer_signature)?));
     no_backend_write.assert_async().await;
     drop(no_backend_write);
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let challenge_order = order.clone();
+    let grant_order = order.clone();
+    let no_other_posts = backend.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let challenge = backend.mock("POST", "/api/onboarding/faucet/challenge")
+        .match_body(mockito::Matcher::Json(serde_json::json!({})))
+        .with_header("content-type", "application/json")
+        .with_body_from_request(move |_| {
+            challenge_order.lock().unwrap().push("challenge");
+            br#"{"challengeId":"operator-challenge","question":"What is 2 + 3?"}"#.to_vec()
+        }).expect(1).create_async().await;
+    let mut expected_payload = serde_json::to_value(&request)?;
+    expected_payload["challengeId"] = serde_json::json!("operator-challenge");
+    // Deliberately not the computed solution: the CLI must forward stdin, never solve.
+    expected_payload["answer"] = serde_json::json!("17");
     let post = backend.mock("POST", "/api/faucet/bond-grant")
-        .match_body(mockito::Matcher::Json(serde_json::to_value(&request)?))
-        .with_status(429).with_body("probation pending").expect(1).create_async().await;
-    let submitted = command().args(["--submit", &backend.url(), "--p2p-key-file"])
-        .arg(&peer_file).output()?;
+        .match_body(mockito::Matcher::Json(expected_payload))
+        .with_status(429).with_body_from_request(move |_| {
+            grant_order.lock().unwrap().push("grant");
+            b"probation pending".to_vec()
+        }).expect(1).create_async().await;
+    let mut child = command().args(["--submit", &backend.url(), "--p2p-key-file"])
+        .arg(&peer_file).stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    std::io::Write::write_all(&mut child.stdin.take().expect("piped stdin"), b"17\n")?;
+    let submitted = child.wait_with_output()?;
+    challenge.assert_async().await;
+    no_other_posts.assert_async().await;
+    assert_eq!(*order.lock().unwrap(), vec!["challenge", "grant"]);
+    assert!(String::from_utf8_lossy(&submitted.stderr).contains("What is 2 + 3?"));
     assert!(submitted.status.success(), "{}", String::from_utf8_lossy(&submitted.stderr));
     let answer: serde_json::Value = serde_json::from_slice(&submitted.stdout)?;
     assert_eq!(answer["data"]["faucet"]["status"], 429);
@@ -578,6 +603,8 @@ async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow:
     let refused = command().arg("--out").arg(&out_file).args(["--submit", &backend.url()]).output()?;
     assert!(!refused.status.success());
     post.assert_async().await;
+    challenge.assert_async().await;
+    no_other_posts.assert_async().await;
     info.assert_async().await;
     block.assert_async().await;
     no_node_write.assert_async().await;
