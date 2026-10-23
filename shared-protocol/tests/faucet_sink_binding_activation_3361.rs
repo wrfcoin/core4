@@ -220,7 +220,8 @@ fn the_committed_row_matches_the_trees_genesis_hash_and_the_ruled_wallet() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
     for (file, spelled) in [
         ("p2p/src/config.rs", bound.genesis_hash.to_string()),
-        ("docs/operations/TESTNET_GENESIS.md", format!("0x{}", bound.genesis_hash)),
+        // The public snapshot ships this schedule record; both pins are required.
+        ("docs/deployment/live-feature-schedule/777-testnet.json", bound.genesis_hash.to_string()),
     ] {
         let text = std::fs::read_to_string(format!("{root}/{file}")).unwrap();
         assert!(text.contains(&spelled), "{file} must pin the same genesis hash");

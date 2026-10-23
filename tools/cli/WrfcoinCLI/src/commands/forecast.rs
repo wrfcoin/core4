@@ -23,6 +23,9 @@ pub enum ForecastCommands {
         chain_id: String,
         #[clap(long, default_value = "testnet")]
         network_id: String,
+        /// Build and check the signed commit body, print it, and submit nothing.
+        #[clap(long)]
+        validate_only: bool,
     },
     /// Reveal a forecast with its manifest and optional oracle receipt.
     Reveal {
@@ -35,6 +38,9 @@ pub enum ForecastCommands {
         /// Signed oracle receipt JSON; omit for baseline scoring.
         #[clap(long)]
         receipt_file: Option<PathBuf>,
+        /// Build and check the reveal body, print it, and submit nothing.
+        #[clap(long)]
+        validate_only: bool,
     },
     /// Sign a forecast verification receipt with an oracle-set key (#3149).
     ///
@@ -270,10 +276,14 @@ pub async fn handle_forecast_command(
         signer_key,
         chain_id,
         network_id,
+        validate_only,
     } = command
     {
-        use wrfcoin_cli::forecast_submission::{commit_body, read_signer, submit};
+        use wrfcoin_cli::forecast_submission::{commit_body, read_signer, submit, validated};
         let body = commit_body(input, &read_signer(signer_key)?, chain_id, network_id)?;
+        if *validate_only {
+            return Ok(validated("commit", body));
+        }
         return submit(connection, "commit", body).await;
     }
     if let ForecastCommands::Reveal {
@@ -281,10 +291,14 @@ pub async fn handle_forecast_command(
         connection,
         manifest_file,
         receipt_file,
+        validate_only,
     } = command
     {
-        use wrfcoin_cli::forecast_submission::{reveal_body, submit};
+        use wrfcoin_cli::forecast_submission::{reveal_body, submit, validated};
         let body = reveal_body(input, manifest_file, receipt_file.as_deref())?;
+        if *validate_only {
+            return Ok(validated("reveal", body));
+        }
         return submit(connection, "reveal", body).await;
     }
     if let ForecastCommands::SignReceipt {

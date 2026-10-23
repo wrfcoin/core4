@@ -37,10 +37,10 @@ jobs:
         run: |
           echo "Analyzing Dependabot PR for auto-merge eligibility..."
           echo ""
-          echo "Package Ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}"
-          echo "Dependency Type: ${{ steps.metadata.outputs.dependency-type }}"
-          echo "Update Type: ${{ steps.metadata.outputs.update-type }}"
-          echo "Compatibility Score: ${{ steps.metadata.outputs.compatibility-score }}"
+          echo "Package Ecosystem: $PKG_ECOSYSTEM"
+          echo "Dependency Type: $DEP_TYPE"
+          echo "Update Type: $UPDATE_TYPE"
+          echo "Compatibility Score: $COMPAT_SCORE_IN"
           echo ""
 
           # Default to not auto-mergeable
@@ -48,18 +48,18 @@ jobs:
           MERGE_METHOD="squash"
 
           # Development dependencies: auto-merge patch and minor updates
-          if [ "${{ steps.metadata.outputs.dependency-type }}" = "direct:development" ]; then
-            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ] || \
-               [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-minor" ]; then
+          if [ "$DEP_TYPE" = "direct:development" ]; then
+            if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || \
+               [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
               AUTO_MERGE="true"
               echo "Dev dependency patch/minor update - eligible for auto-merge"
             fi
           fi
 
           # Production dependencies: only auto-merge patches with high compatibility
-          if [ "${{ steps.metadata.outputs.dependency-type }}" = "direct:production" ]; then
-            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ]; then
-              COMPAT_SCORE="${{ steps.metadata.outputs.compatibility-score }}"
+          if [ "$DEP_TYPE" = "direct:production" ]; then
+            if [ "$UPDATE_TYPE" = "version-update:semver-patch" ]; then
+              COMPAT_SCORE="$COMPAT_SCORE_IN"
               if [ -n "$COMPAT_SCORE" ] && [ "$COMPAT_SCORE" -ge 90 ]; then
                 AUTO_MERGE="true"
                 echo "Production patch with high compatibility - eligible for auto-merge"
@@ -70,25 +70,25 @@ jobs:
           fi
 
           # GitHub Actions: auto-merge patch and minor
-          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "github_actions" ]; then
-            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ] || \
-               [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-minor" ]; then
+          if [ "$PKG_ECOSYSTEM" = "github_actions" ]; then
+            if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || \
+               [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
               AUTO_MERGE="true"
               echo "GitHub Actions patch/minor update - eligible for auto-merge"
             fi
           fi
 
           # Docker: auto-merge patch updates only
-          if [ "${{ steps.metadata.outputs.package-ecosystem }}" = "docker" ]; then
-            if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-patch" ]; then
+          if [ "$PKG_ECOSYSTEM" = "docker" ]; then
+            if [ "$UPDATE_TYPE" = "version-update:semver-patch" ]; then
               AUTO_MERGE="true"
               echo "Docker patch update - eligible for auto-merge"
             fi
           fi
 
           # Security updates: always auto-merge (after CI passes)
-          if [ "${{ steps.metadata.outputs.alert-state }}" = "DISMISSED" ] || \
-             [ "${{ steps.metadata.outputs.ghsa-id }}" != "" ]; then
+          if [ "$ALERT_STATE" = "DISMISSED" ] || \
+             [ "$GHSA_ID" != "" ]; then
             AUTO_MERGE="true"
             echo "Security update - eligible for auto-merge"
           fi
@@ -108,7 +108,7 @@ jobs:
             "sha3"
           )
 
-          DEPENDENCY_NAME="${{ steps.metadata.outputs.dependency-names }}"
+          DEPENDENCY_NAME="$DEP_NAMES"
           for pkg in "${CRITICAL_PACKAGES[@]}"; do
             if [[ "$DEPENDENCY_NAME" == *"$pkg"* ]]; then
               AUTO_MERGE="false"
@@ -118,7 +118,7 @@ jobs:
           done
 
           # NEVER auto-merge major updates
-          if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-major" ]; then
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
             AUTO_MERGE="false"
             echo "Major update - requires manual review"
           fi
@@ -131,6 +131,14 @@ jobs:
           else
             echo "::notice::PR requires manual review"
           fi
+        env:
+          PKG_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          DEP_TYPE: ${{ steps.metadata.outputs.dependency-type }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          COMPAT_SCORE_IN: ${{ steps.metadata.outputs.compatibility-score }}
+          ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
+          GHSA_ID: ${{ steps.metadata.outputs.ghsa-id }}
+          DEP_NAMES: ${{ steps.metadata.outputs.dependency-names }}
 
       - name: Wait for CI to pass
         if: steps.eligibility.outputs.auto_merge == 'true'
@@ -146,45 +154,56 @@ jobs:
       - name: Approve Dependabot PR
         if: steps.eligibility.outputs.auto_merge == 'true'
         run: |
-          gh pr review "${{ github.event.pull_request.number }}" --approve --body "Auto-approved by Dependabot auto-merge workflow.
+          gh pr review "$PR_NUMBER" --approve --body "Auto-approved by Dependabot auto-merge workflow.
 
           **Update Details:**
-          - Package: ${{ steps.metadata.outputs.dependency-names }}
-          - Update Type: ${{ steps.metadata.outputs.update-type }}
-          - Ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}
-          - Compatibility: ${{ steps.metadata.outputs.compatibility-score }}%
+          - Package: $DEP_NAMES
+          - Update Type: $UPDATE_TYPE
+          - Ecosystem: $PKG_ECOSYSTEM
+          - Compatibility: $COMPAT_SCORE_IN%
 
           CI checks have passed. Proceeding with auto-merge."
         env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEP_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PKG_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          COMPAT_SCORE_IN: ${{ steps.metadata.outputs.compatibility-score }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge
         if: steps.eligibility.outputs.auto_merge == 'true'
         run: |
-          gh pr merge "${{ github.event.pull_request.number }}" \
+          gh pr merge "$PR_NUMBER" \
             --auto \
-            --${{ steps.eligibility.outputs.merge_method }} \
+            "--$MERGE_METHOD" \
             --delete-branch
         env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_METHOD: ${{ steps.eligibility.outputs.merge_method }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add labels for manual review
         if: steps.eligibility.outputs.auto_merge == 'false'
         run: |
           # Add appropriate labels for manual review
-          if [ "${{ steps.metadata.outputs.update-type }}" = "version-update:semver-major" ]; then
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
             gh api --method POST \
-              "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+              "repos/$REPO/issues/$PR_NUMBER/labels" \
               -f "labels[]=major-update" \
               -f "labels[]=needs-review"
           fi
 
           # Add security label if it's a security update
-          if [ "${{ steps.metadata.outputs.ghsa-id }}" != "" ]; then
+          if [ "$GHSA_ID" != "" ]; then
             gh api --method POST \
-              "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels" \
+              "repos/$REPO/issues/$PR_NUMBER/labels" \
               -f "labels[]=security" \
               -f "labels[]=high-priority"
           fi
         env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GHSA_ID: ${{ steps.metadata.outputs.ghsa-id }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
