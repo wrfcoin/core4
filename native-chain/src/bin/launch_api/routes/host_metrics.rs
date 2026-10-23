@@ -85,6 +85,10 @@ pub struct HostMetricsResponse {
 // Node-local telemetry only; none of this data enters consensus or persisted state.
 const GPU_CACHE_TTL: Duration = Duration::from_secs(20);
 const GPU_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Outer safety net for a whole refresh. It is longer than the per-probe deadline, so
+/// the per-probe timeouts in `probe_gpus` always fire first and a vendor that answered
+/// in time is kept when the other one hangs.
+const GPU_REFRESH_DEADLINE: Duration = Duration::from_millis(1750);
 const GPU_MAX_OUTPUT: usize = 8192;
 const GPU_MAX_DEVICES: usize = 32;
 const NVIDIA_ARGS: [&str; 2] = [
@@ -251,14 +255,19 @@ async fn read_rocm_probe(command: Command) -> Option<Vec<GpuInfo>> {
     read_probe(command, ROCM_MAX_OUTPUT, parse_rocm_output).await
 }
 
-/// Both vendor tools run concurrently under the caller's single deadline, so an absent
-/// tool (spawn fails at once) costs nothing and a mixed host reports both lists.
-async fn probe_gpus<N, A>(nvidia: N, amd: A) -> Option<Vec<GpuInfo>>
+/// Both vendor tools run concurrently, each under its own `deadline`, so an absent tool
+/// (spawn fails at once) costs nothing, a mixed host reports both lists, and a hung tool
+/// contributes nothing without discarding the other vendor's readings. A timed-out probe
+/// is dropped, which kills its child.
+async fn probe_gpus<N, A>(nvidia: N, amd: A, deadline: Duration) -> Option<Vec<GpuInfo>>
 where
     N: Future<Output = Option<Vec<GpuInfo>>>,
     A: Future<Output = Option<Vec<GpuInfo>>>,
 {
-    let (nvidia, amd) = tokio::join!(nvidia, amd);
+    let (nvidia, amd) = tokio::join!(
+        async { tokio::time::timeout(deadline, nvidia).await.ok().flatten() },
+        async { tokio::time::timeout(deadline, amd).await.ok().flatten() },
+    );
     let devices: Vec<GpuInfo> = nvidia.into_iter().chain(amd).flatten().collect();
     if devices.is_empty() || devices.len() > GPU_MAX_DEVICES { None } else { Some(devices) }
 }
@@ -381,8 +390,8 @@ pub async fn get_host_metrics(
         return resp;
     }
 
-    let metrics = add_gpu(collect_host_metrics(), &GPU_CACHE, GPU_PROBE_TIMEOUT,
-        || probe_gpus(read_gpu_probe(nvidia_command()), read_rocm_probe(rocm_command()))).await;
+    let metrics = add_gpu(collect_host_metrics(), &GPU_CACHE, GPU_REFRESH_DEADLINE,
+        || probe_gpus(read_gpu_probe(nvidia_command()), read_rocm_probe(rocm_command()), GPU_PROBE_TIMEOUT)).await;
     HttpResponse::Ok().json(metrics)
 }
 
@@ -417,7 +426,7 @@ mod tests {
         let command = nvidia_command();
         assert_eq!(command.as_std().get_program(), "nvidia-smi");
         assert_eq!(command.as_std().get_args().collect::<Vec<_>>(), NVIDIA_ARGS);
-        assert!(GPU_PROBE_TIMEOUT <= Duration::from_secs(2));
+        assert!(GPU_PROBE_TIMEOUT < GPU_REFRESH_DEADLINE && GPU_REFRESH_DEADLINE <= Duration::from_secs(2));
     }
 
     /// Constructed from rocm_smi.py (ROCm/rocm_smi_lib python_smi_tools, `formatJson`,
@@ -483,21 +492,37 @@ mod tests {
 
     #[actix_web::test]
     async fn either_vendor_alone_or_both_are_reported_and_neither_is_omitted() {
+        let t = GPU_PROBE_TIMEOUT;
         let nvidia = || async { parse_gpu_output(SAMPLE_GPU) };
         let amd = || async { parse_rocm_output(SAMPLE_ROCM.as_bytes()) };
         let none = || async { None };
-        assert_eq!(probe_gpus(nvidia(), none()).await.map(|d| d.len()), Some(2));
-        assert_eq!(probe_gpus(none(), amd()).await.map(|d| d.len()), Some(2));
-        let both = probe_gpus(nvidia(), amd()).await.expect("both");
+        assert_eq!(probe_gpus(nvidia(), none(), t).await.map(|d| d.len()), Some(2));
+        assert_eq!(probe_gpus(none(), amd(), t).await.map(|d| d.len()), Some(2));
+        let both = probe_gpus(nvidia(), amd(), t).await.expect("both");
         assert_eq!(both.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
             ["Example GPU", "Other GPU", "Example Radeon", "0x744c"]);
-        assert!(probe_gpus(none(), none()).await.is_none());
+        assert!(probe_gpus(none(), none(), t).await.is_none());
         let crowd = || async { Some(vec![parse_gpu_output(SAMPLE_GPU).expect("sample")[0].clone(); GPU_MAX_DEVICES]) };
-        assert!(probe_gpus(crowd(), amd()).await.is_none(), "combined device cap");
-        // A hung AMD tool cannot outlive the request deadline: the join is inside it.
+        assert!(probe_gpus(crowd(), amd(), t).await.is_none(), "combined device cap");
+    }
+
+    #[actix_web::test]
+    async fn a_hung_vendor_probe_keeps_the_other_vendors_readings() {
+        let short = Duration::from_millis(20);
+        let nvidia = || async { parse_gpu_output(SAMPLE_GPU) };
+        let amd = || async { parse_rocm_output(SAMPLE_ROCM.as_bytes()) };
+        let hung = || std::future::pending::<Option<Vec<GpuInfo>>>();
+        let started = Instant::now();
+        let kept = probe_gpus(nvidia(), hung(), short).await.expect("NVIDIA survives a hung AMD tool");
+        assert_eq!(kept.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Example GPU", "Other GPU"]);
+        let kept = probe_gpus(hung(), amd(), short).await.expect("AMD survives a hung NVIDIA tool");
+        assert_eq!(kept.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Example Radeon", "0x744c"]);
+        assert!(probe_gpus(hung(), hung(), short).await.is_none(), "both hung: omitted");
+        assert!(started.elapsed() < Duration::from_secs(2), "each call is bounded by the per-probe deadline");
+        // Through the single-flight cache with the production ordering of deadlines.
         let cache = Mutex::new(GpuCache::default());
-        assert!(cached_gpu(&cache, Duration::from_millis(20),
-            || probe_gpus(nvidia(), std::future::pending())).await.is_none());
+        let kept = cached_gpu(&cache, short * 3, || probe_gpus(nvidia(), hung(), short)).await;
+        assert_eq!(kept.map(|d| d.len()), Some(2));
     }
 
     #[actix_web::test]
@@ -590,6 +615,14 @@ mod tests {
         let mut amd_flood = Command::new("/usr/bin/printf");
         amd_flood.arg(" ".repeat(ROCM_MAX_OUTPUT + 1));
         assert!(read_rocm_probe(amd_flood).await.is_none());
+        let mut nvidia = Command::new("/usr/bin/printf");
+        nvidia.arg("GPU, 42, 1, 2, 55\n");
+        let mut hung_amd = Command::new("/usr/bin/sleep");
+        hung_amd.arg("30");
+        let started = Instant::now();
+        let kept = probe_gpus(read_gpu_probe(nvidia), read_rocm_probe(hung_amd), Duration::from_millis(1000)).await;
+        assert_eq!(kept.map(|d| d.len()), Some(1), "a real hung rocm-smi must not discard NVIDIA");
+        assert!(started.elapsed() < Duration::from_secs(2));
         let mut slow = Command::new("/usr/bin/sleep");
         slow.arg("30");
         let started = Instant::now();
