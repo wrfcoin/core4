@@ -641,7 +641,9 @@ async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow:
     Ok(())
 }
 
-#[cfg(unix)]
+// Debug builds only: release builds refuse --key-file before the peer check runs
+// (seed-file signing is debug-only); the release counterpart is below.
+#[cfg(all(unix, debug_assertions))]
 #[tokio::test]
 async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
@@ -683,6 +685,39 @@ async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> any
     }
     info.assert_async().await;
     no_block.assert_async().await;
+    no_post.assert_async().await;
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(debug_assertions)))]
+#[tokio::test]
+async fn release_bond_grant_refuses_key_file_without_network_or_echo() -> anyhow::Result<()> {
+    use libp2p_identity::Keypair;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("grant-release-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir)?;
+    let seed_file = dir.join("server-seed-path-canary.seed");
+    let peer_file = dir.join("peer.key");
+    let seed_hex = hex::encode([43u8; 32]);
+    std::fs::write(&seed_file, &seed_hex)?;
+    std::fs::write(&peer_file, Keypair::ed25519_from_bytes([44u8; 32])?.to_protobuf_encoding()?)?;
+    for path in [&seed_file, &peer_file] { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?; }
+    // The refusal comes before any request: the node must see nothing at all.
+    let mut node = mockito::Server::new_async().await;
+    let no_get = node.mock("GET", mockito::Matcher::Any).expect(0).create_async().await;
+    let no_post = node.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"))
+        .env("HOME", &dir).args(["--output","json","node","bond","grant-request","--owner-address",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","--api-url",&node.url(),"--submit",&node.url(),"--key-file"])
+        .arg(&seed_file).arg("--p2p-key-file").arg(&peer_file).output()?;
+    assert!(!output.status.success());
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(text.contains("seed-file signing is only available in debug builds"), "{text}");
+    for secret in [seed_hex.as_str(), "server-seed-path-canary", seed_file.to_str().expect("utf-8 temp path")] {
+        assert!(!text.contains(secret), "release refusal must not echo the key or its path");
+    }
+    no_get.assert_async().await;
     no_post.assert_async().await;
     std::fs::remove_dir_all(dir)?;
     Ok(())
