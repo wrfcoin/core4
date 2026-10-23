@@ -1,5 +1,5 @@
 //! Scorer-side feature selection; no node recomputes these floating metrics.
-use super::{FORECAST_VARIABLES, ForecastOutput, Observation, ScoreReport};
+use super::{ForecastOutput, Observation, ScoreReport};
 use anyhow::{Result, anyhow, ensure};
 use std::collections::BTreeMap;
 use wrfcoin_forecast_score::{ForecastAccuracyMetrics, Pair, anti_gaming::ReferenceStrategy};
@@ -63,18 +63,20 @@ pub fn score(
     policy: SkillPolicy,
 ) -> Result<ScoreReport> {
     if policy == SkillPolicy::Legacy {
-        return Ok(super::score(forecast, truth, climatology));
+        return super::score(forecast, truth, climatology);
     }
     ensure!(
         previous.timestamp < truth.timestamp,
         "persistence seed must precede truth"
     );
-    let mut report = super::score(forecast, truth, climatology);
+    let mut report = super::score(forecast, truth, climatology)?;
     let mut skills = Vec::new();
     // Never mix pressure, humidity and temperature units in one RMSE. Each
     // variable compares the forecast and last input observation at the SAME
     // truth target. The seed pair is excluded by the ported persistence helper.
-    for variable in FORECAST_VARIABLES {
+    // Only the declared-and-reported variables are scored (same set as legacy).
+    for variable in report.scored_variables.clone() {
+        let variable = variable.as_str();
         let get = |values: &BTreeMap<String, f64>| {
             values
                 .get(variable)
@@ -98,7 +100,8 @@ pub fn score(
             .skill = metrics.skill_score;
         skills.push(metrics.skill_score);
     }
-    report.metrics.skill_score = skills.iter().sum::<f64>() / skills.len() as f64;
+    report.metrics.skill_score = wrfcoin_forecast_score::mean_skill(skills.iter().copied())
+        .ok_or_else(|| anyhow!("nothing to score"))?;
     // Finite variable errors can still overflow the aggregate sum of squares.
     // Refuse before main publishes the commit, rather than emitting null metrics.
     ensure!(
