@@ -9,7 +9,9 @@ fn setting(raw: Option<String>, fallback: u64, max: u64) -> u64 {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            // determinism-ok: node-local HTTP admission config, never a consensus input.
             limit: setting(std::env::var("WRFCOIN_FORECAST_QUOTA_LIMIT").ok(), 30, 1000) as usize,
+            // determinism-ok: node-local HTTP admission window, never a consensus input.
             window_secs: setting(std::env::var("WRFCOIN_FORECAST_QUOTA_WINDOW_SECS").ok(), 60, 86400),
             max_keys: 10_000,
         }

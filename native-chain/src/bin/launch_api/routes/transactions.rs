@@ -811,7 +811,7 @@ async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &st
     let mut response = envelope_error(req, status, code, message);
     if let Refusal::RateLimited(seconds) = error {
         response.headers_mut().insert(actix_web::http::header::RETRY_AFTER,
-            actix_web::http::header::HeaderValue::from_str(&seconds.to_string()).expect("numeric retry delay"));
+            actix_web::http::header::HeaderValue::from_str(&seconds.to_string()).expect("numeric retry delay")); // panic-ok: decimal formatting of a u64 contains only digits and is always a valid HTTP header value.
     }
     Err(response)
 }
