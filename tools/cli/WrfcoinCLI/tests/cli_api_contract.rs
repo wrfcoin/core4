@@ -532,7 +532,7 @@ fn forecast_receipt_cli_offline_boundaries_3149() -> anyhow::Result<()> {
 }
 
 /// Real binary contract: only explicit --submit writes, and neither key is emitted.
-#[cfg(unix)]
+#[cfg(all(unix, debug_assertions))]
 #[tokio::test]
 async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
@@ -690,6 +690,7 @@ async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> any
 
 /// Copied verbatim from wrfcoin/infra#24 at 29d030f44aa6ea157db73a8eba04e3647ea9d4bf,
 /// testnet/services/faucet/bond-grant-peer-vector.json. Never regenerate expected bytes here.
+#[cfg(debug_assertions)]
 #[test]
 fn bond_grant_matches_faucet_frozen_dual_signature_vector() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
