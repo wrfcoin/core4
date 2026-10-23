@@ -13,6 +13,8 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use serde::{Deserialize, Serialize};
 use sysinfo::{Disks, System};
+use std::{future::Future, process::Stdio, sync::LazyLock, time::{Duration, Instant}};
+use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
 
 use crate::helpers::require_role;
 use crate::state::AppState;
@@ -74,6 +76,119 @@ pub struct HostMetricsResponse {
     // ---- Disks ----
     /// Per-mount disk utilisation.
     pub disks: Vec<DiskInfo>,
+
+    /// Optional GPU telemetry, omitted when the tool is absent or a probe fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<Vec<GpuInfo>>,
+}
+
+// Node-local telemetry only; none of this data enters consensus or persisted state.
+const GPU_CACHE_TTL: Duration = Duration::from_secs(20);
+const GPU_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+const GPU_MAX_OUTPUT: usize = 8192;
+const GPU_MAX_DEVICES: usize = 32;
+const NVIDIA_ARGS: [&str; 2] = [
+    "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+    "--format=csv,noheader,nounits",
+];
+
+/// NVIDIA device telemetry; memory values are MiB, matching nvidia-smi.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub utilization_percent: u8,
+    pub memory_used_mb: u64,
+    pub memory_total_mb: u64,
+    pub temperature_c: i16,
+}
+
+#[derive(Default)]
+struct GpuCache {
+    attempted_at: Option<Instant>,
+    value: Option<Vec<GpuInfo>>,
+}
+
+static GPU_CACHE: LazyLock<Mutex<GpuCache>> = LazyLock::new(|| Mutex::new(GpuCache::default()));
+
+fn parse_gpu_output(bytes: &[u8]) -> Option<Vec<GpuInfo>> {
+    if bytes.len() > GPU_MAX_OUTPUT {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut devices = Vec::new();
+    for line in text.trim().lines() {
+        if devices.len() >= GPU_MAX_DEVICES {
+            return None;
+        }
+        let mut fields = line.split(',').map(str::trim);
+        let name = fields.next()?;
+        if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return None;
+        }
+        let utilization_percent = fields.next()?.parse::<u8>().ok()?;
+        let memory_used_mb = fields.next()?.parse::<u64>().ok()?;
+        let memory_total_mb = fields.next()?.parse::<u64>().ok()?;
+        let temperature_c = fields.next()?.parse::<i16>().ok()?;
+        if fields.next().is_some() || utilization_percent > 100
+            || memory_used_mb > memory_total_mb || memory_total_mb == 0
+            || !(-40..=150).contains(&temperature_c)
+        {
+            return None;
+        }
+        devices.push(GpuInfo {
+            name: name.to_owned(), utilization_percent, memory_used_mb,
+            memory_total_mb, temperature_c,
+        });
+    }
+    if devices.is_empty() { None } else { Some(devices) }
+}
+
+fn nvidia_command() -> Command {
+    let mut command = Command::new("nvidia-smi");
+    command.args(NVIDIA_ARGS);
+    command
+}
+
+/// Async pipe I/O, bounded before allocation growth; stderr cannot fill a pipe.
+/// The caller applies the deadline. Dropping this future kills the child, including
+/// on request cancellation, output overflow, and timeout.
+async fn read_gpu_probe(mut command: Command) -> Option<Vec<GpuInfo>> {
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped())
+        .stderr(Stdio::null()).kill_on_drop(true).spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let mut bytes = Vec::new();
+    stdout.take((GPU_MAX_OUTPUT + 1) as u64).read_to_end(&mut bytes).await.ok()?;
+    if bytes.len() > GPU_MAX_OUTPUT || !child.wait().await.ok()?.success() {
+        return None;
+    }
+    parse_gpu_output(&bytes)
+}
+
+/// Serializes refreshes across requests, including failures. Record the attempt
+/// before awaiting so a cancelled request also consumes its cache window.
+async fn cached_gpu<F, Fut>(cache: &Mutex<GpuCache>, deadline: Duration, probe: F) -> Option<Vec<GpuInfo>>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Option<Vec<GpuInfo>>>,
+{
+    let mut cache = cache.lock().await;
+    if cache.attempted_at.is_some_and(|at| at.elapsed() < GPU_CACHE_TTL) {
+        return cache.value.clone();
+    }
+    // determinism-ok: monotonic cache expiry for node-local GPU telemetry, never consensus input.
+    cache.attempted_at = Some(Instant::now());
+    cache.value = None;
+    cache.value = tokio::time::timeout(deadline, probe()).await.ok().flatten();
+    cache.value.clone()
+}
+
+async fn add_gpu<F, Fut>(mut metrics: HostMetricsResponse, cache: &Mutex<GpuCache>, deadline: Duration, probe: F) -> HostMetricsResponse
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Option<Vec<GpuInfo>>>,
+{
+    metrics.gpu = cached_gpu(cache, deadline, probe).await;
+    metrics
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +265,7 @@ fn collect_host_metrics() -> HostMetricsResponse {
         cpu_per_core,
         cpu_usage_avg_percent,
         disks,
+        gpu: None,
     }
 }
 
@@ -166,12 +282,135 @@ pub async fn get_host_metrics(
         return resp;
     }
 
-    HttpResponse::Ok().json(collect_host_metrics())
+    let metrics = add_gpu(collect_host_metrics(), &GPU_CACHE, GPU_PROBE_TIMEOUT,
+        || read_gpu_probe(nvidia_command())).await;
+    HttpResponse::Ok().json(metrics)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SAMPLE_GPU: &[u8] = b"Example GPU, 42, 1024, 8192, 55\nOther GPU, 0, 0, 4096, 28\n";
+
+    #[test]
+    fn gpu_parser_accepts_multiple_devices_and_rejects_invalid_values() {
+        let devices = parse_gpu_output(SAMPLE_GPU).expect("valid sample");
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].utilization_percent, 42);
+        assert_eq!(devices[0].memory_used_mb, 1024);
+        assert_eq!(devices[0].memory_total_mb, 8192);
+        assert_eq!(devices[0].temperature_c, 55);
+        for bad in ["", "garbage", "GPU, 101, 1, 2, 50", "GPU, NaN, 1, 2, 50",
+            "GPU, 1, 3, 2, 50", "GPU, 1, 0, 0, 50", "GPU, 1, -1, 2, 50",
+            "GPU, 1, 1, 2, 999", "GPU, 1, 1, 2, N/A", "GPU, 1, 1, 2, 50, extra",
+            "GPU, 1, 18446744073709551616, 2, 50"]
+        {
+            assert!(parse_gpu_output(bad.as_bytes()).is_none(), "{bad}");
+        }
+        assert!(parse_gpu_output(&[0xff]).is_none());
+        assert!(parse_gpu_output(&vec![b'x'; GPU_MAX_OUTPUT + 1]).is_none());
+        assert!(parse_gpu_output("GPU, 0, 0, 1, 20\n".repeat(GPU_MAX_DEVICES + 1).as_bytes()).is_none());
+    }
+
+    #[test]
+    fn gpu_command_has_only_fixed_arguments() {
+        let command = nvidia_command();
+        assert_eq!(command.as_std().get_program(), "nvidia-smi");
+        assert_eq!(command.as_std().get_args().collect::<Vec<_>>(), NVIDIA_ARGS);
+        assert!(GPU_PROBE_TIMEOUT <= Duration::from_secs(2));
+    }
+
+    #[actix_web::test]
+    async fn gpu_success_is_additive_and_cached_across_concurrent_requests() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cache = Mutex::new(GpuCache::default());
+        let calls = AtomicUsize::new(0);
+        let probe = || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            parse_gpu_output(SAMPLE_GPU)
+        };
+        let (first, second) = tokio::join!(
+            cached_gpu(&cache, GPU_PROBE_TIMEOUT, probe),
+            cached_gpu(&cache, GPU_PROBE_TIMEOUT, probe),
+        );
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let metrics = collect_host_metrics();
+        let before = serde_json::to_value(&metrics).expect("metrics JSON");
+        assert!(before.get("gpu").is_none());
+        let metrics = add_gpu(metrics, &cache, GPU_PROBE_TIMEOUT, probe).await;
+        let mut after = serde_json::to_value(metrics).expect("GPU metrics JSON");
+        assert_eq!(after["gpu"][0]["name"], "Example GPU");
+        after.as_object_mut().expect("object").remove("gpu");
+        assert_eq!(after, before, "all existing fields must remain identical");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        cache.lock().await.attempted_at = Some(Instant::now() - GPU_CACHE_TTL);
+        assert!(cached_gpu(&cache, GPU_PROBE_TIMEOUT, probe).await.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[actix_web::test]
+    async fn gpu_missing_garbage_and_timeout_are_omitted_and_failure_cached() {
+        for failure in 0..3 {
+            let cache = Mutex::new(GpuCache::default());
+            let metrics = add_gpu(collect_host_metrics(), &cache, Duration::from_millis(10), || async {
+                match failure {
+                    0 => read_gpu_probe(Command::new("/nonexistent-wrfcoin-gpu-probe")).await,
+                    1 => parse_gpu_output(b"not GPU CSV"),
+                    _ => std::future::pending().await,
+                }
+            }).await;
+            assert!(serde_json::to_value(metrics).expect("JSON").get("gpu").is_none());
+            assert!(cached_gpu(&cache, GPU_PROBE_TIMEOUT, || async {
+                panic!("failure must be cached, not forked at request rate")
+            }).await.is_none());
+        }
+    }
+
+    #[actix_web::test]
+    async fn gpu_cancelled_refresh_is_also_cached() {
+        use std::sync::Arc;
+        let cache = Arc::new(Mutex::new(GpuCache::default()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let task = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let entered = Arc::clone(&entered);
+            async move {
+                cached_gpu(&cache, GPU_PROBE_TIMEOUT, || async {
+                    entered.notify_one();
+                    std::future::pending().await
+                }).await
+            }
+        });
+        entered.notified().await;
+        task.abort();
+        assert!(task.await.expect_err("cancelled").is_cancelled());
+        assert!(cached_gpu(&cache, GPU_PROBE_TIMEOUT, || async {
+            panic!("cancelled attempt must consume its cache window")
+        }).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[actix_web::test]
+    async fn gpu_subprocess_failures_output_limit_and_timeout_are_safe() {
+        let cache = Mutex::new(GpuCache::default());
+        // Real process boundaries, without PATH mutation, a GPU, or a shell.
+        assert!(read_gpu_probe(Command::new("/usr/bin/false")).await.is_none());
+        let mut success = Command::new("/usr/bin/printf");
+        success.arg("GPU, 42, 1, 2, 55\n");
+        assert!(read_gpu_probe(success).await.is_some());
+        let mut flood = Command::new("/usr/bin/printf");
+        flood.arg("x".repeat(GPU_MAX_OUTPUT + 1));
+        assert!(read_gpu_probe(flood).await.is_none());
+        let mut slow = Command::new("/usr/bin/sleep");
+        slow.arg("30");
+        let started = Instant::now();
+        assert!(cached_gpu(&cache, Duration::from_millis(20), || read_gpu_probe(slow)).await.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
 
     #[test]
     fn response_roundtrips_through_json() -> Result<(), serde_json::Error> {

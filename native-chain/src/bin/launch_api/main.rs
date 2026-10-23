@@ -5689,6 +5689,33 @@ mod tests {
         )
     }
 
+    #[actix_web::test]
+    async fn host_metrics_gpu_keeps_operator_auth_and_existing_fields() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let path = "/node/metrics/host";
+        let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        for field in ["memory_total_mb", "memory_used_mb", "memory_free_mb", "memory_used_percent",
+            "swap_total_mb", "swap_used_mb", "cpu_per_core", "cpu_usage_avg_percent", "disks"]
+        {
+            assert!(body.get(field).is_some(), "existing field {field} must remain");
+        }
+        if let Some(gpu) = body.get("gpu") {
+            assert!(gpu.is_array(), "optional GPU section must not be null or an error");
+        }
+    }
+
     fn test_app(
         state: web::Data<AppState>,
     ) -> actix_web::App<
