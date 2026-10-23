@@ -798,6 +798,24 @@ pub struct ForecastRevealRequest {
     pub provenance: Option<SensorProvenance>,
 }
 
+async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &str, reveal: bool) -> Result<(), HttpResponse> {
+    use crate::state::forecast_quota::Refusal;
+    // determinism-ok: node-local HTTP rate limit clock, never a consensus input.
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    let result = state.forecast_quotas.write().await.charge(wallet, reveal, now);
+    let error = match result { Ok(()) => return Ok(()), Err(error) => error };
+    let (status, code, message) = match error {
+        Refusal::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "FORECAST_QUOTA_EXCEEDED", "Forecast request quota exceeded for this wallet and route"),
+        Refusal::Capacity => (StatusCode::SERVICE_UNAVAILABLE, "FORECAST_QUOTA_CAPACITY", "Forecast rate limiter capacity reached; retry later"),
+    };
+    let mut response = envelope_error(req, status, code, message);
+    if let Refusal::RateLimited(seconds) = error {
+        response.headers_mut().insert(actix_web::http::header::RETRY_AFTER,
+            actix_web::http::header::HeaderValue::from_str(&seconds.to_string()).expect("numeric retry delay")); // panic-ok: decimal formatting of a u64 contains only digits and is always a valid HTTP header value.
+    }
+    Err(response)
+}
+
 pub async fn submit_forecast_commit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -818,6 +836,9 @@ pub async fn submit_forecast_commit(
         Ok(canonical) => canonical,
         Err(resp) => return resp,
     };
+    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, false).await {
+        return response;
+    }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {
         return resp;
     }
@@ -885,6 +906,9 @@ pub async fn submit_forecast_reveal(
         Ok(canonical) => canonical,
         Err(resp) => return resp,
     };
+    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, true).await {
+        return response;
+    }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {
         return resp;
     }
