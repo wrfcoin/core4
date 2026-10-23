@@ -117,6 +117,15 @@ pub fn reveal_body(input: &ForecastInput, manifest_file: &Path,
         "commit_hash": id, "manifest": manifest, "verification_receipt": receipt}))
 }
 
+/// The `--validate-only` result: the body that `submit` would post, and the commit id it
+/// binds, with nothing sent. The same parsing, signing and binding checks have already run
+/// (`commit_body` / `reveal_body` return errors before this is reached), so a forecaster kit
+/// can prove its files are acceptable to this CLI without a node and without a transaction.
+pub fn validated(kind: &str, body: Value) -> Value {
+    json!({"validated": true, "kind": kind, "submitted": false,
+        "commit_id": body["commit_hash"].clone(), "body": body})
+}
+
 pub async fn submit(connection: &ForecastConnection, kind: &str, body: Value) -> Result<Value> {
     let id = body["commit_hash"].clone();
     let response: Value = connection.client()?.post(
