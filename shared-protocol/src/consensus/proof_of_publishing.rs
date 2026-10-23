@@ -4327,7 +4327,7 @@ impl ProofOfPublishing {
                             let quality_score = state
                                 .applied_reveals
                                 .get(&payload.commit_id)
-                                .and_then(|record| record.quality_score.clone());
+                                .and_then(|record| record.quality_score);
                             reveal_scores.insert(payload.commit_id, quality_score);
                         }
                     }
@@ -5152,7 +5152,7 @@ impl ProofOfPublishing {
                                     commit_id: commit_id.clone(),
                                     participant: recipient_address,
                                     quality_band: quality_eval.band,
-                                    quality_score: quality_score.clone(),
+                                    quality_score,
                                     scoring_multiplier: quality_eval.scoring_multiplier,
                                     reward_multiplier: quality_eval.reward_multiplier,
                                     warning_only: quality_eval.warning_only,
@@ -5219,7 +5219,7 @@ impl ProofOfPublishing {
                         commit_id: commit_id.clone(),
                         participant: recipient_address,
                         quality_band: quality_eval.band,
-                        quality_score: quality_score.clone(),
+                        quality_score,
                         scoring_multiplier: quality_eval.scoring_multiplier,
                         reward_multiplier: quality_eval.reward_multiplier,
                         warning_only: quality_eval.warning_only,
@@ -6003,7 +6003,7 @@ impl ProofOfPublishing {
         explicit: Option<&DataQualityScore>,
     ) -> Option<DataQualityScore> {
         if let Some(score) = explicit {
-            return Some(score.clone());
+            return Some(*score);
         }
 
         // NOTE: `extract_metrics` returns a generic String→f64 map parsed from the transaction's
@@ -7621,15 +7621,15 @@ impl ProofOfPublishing {
         // State::apply_block_finalization_checked, the shared finalization
         // sink. Deterministic over the block bytes, so producer, applier and
         // WAL replay agree.
-        if feature_active(ConsensusFeature::SigningV2, block.height) {
-            if !block.has_well_formed_state_root_commitment() {
-                warn!(
-                    "Block at height {} is missing a well-formed post-state-root \
-                     commitment in metadata[\"{}\"], required at signing protocol V2 (#2219)",
-                    block.height, STATE_ROOT_METADATA_KEY
-                );
-                return Ok(false);
-            }
+        if feature_active(ConsensusFeature::SigningV2, block.height)
+            && !block.has_well_formed_state_root_commitment()
+        {
+            warn!(
+                "Block at height {} is missing a well-formed post-state-root \
+                 commitment in metadata[\"{}\"], required at signing protocol V2 (#2219)",
+                block.height, STATE_ROOT_METADATA_KEY
+            );
+            return Ok(false);
         }
 
         // Per-block emission cap on gamification payouts (mobile#215, #2081
@@ -8125,7 +8125,7 @@ impl ProofOfPublishing {
     /// `index` is the transaction's position in the block (coinbase is 0).
     /// `acc` carries the cross-transaction accumulators (fee-less caps) so the
     /// caps are enforced over the whole block exactly as before.
-
+    ///
     /// #2523 genesis-oracle gate: **genesis decides, local configuration may
     /// only agree.**
     ///
@@ -8795,15 +8795,15 @@ impl ProofOfPublishing {
                 | TransactionType::ShieldedDeposit
                 | TransactionType::ShieldedWithdrawal
                 | TransactionType::Transfer
-                | TransactionType::Regular => {
-                    if tx.effective_privacy_level() < self.privacy_policy.min_privacy_level {
-                        return Some(format!(
-                            "transaction below minimum privacy level \
-                             (effective={:?}, required={:?})",
-                            tx.effective_privacy_level(),
-                            self.privacy_policy.min_privacy_level
-                        ));
-                    }
+                | TransactionType::Regular
+                    if tx.effective_privacy_level() < self.privacy_policy.min_privacy_level =>
+                {
+                    return Some(format!(
+                        "transaction below minimum privacy level \
+                         (effective={:?}, required={:?})",
+                        tx.effective_privacy_level(),
+                        self.privacy_policy.min_privacy_level
+                    ));
                 },
                 _ => {}, // Coinbase, governance, staking, data txs exempt
             }

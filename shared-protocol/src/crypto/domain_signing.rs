@@ -541,7 +541,6 @@ pub fn push_length_prefixed(buf: &mut Vec<u8>, field: &[u8]) {
 /// they return an unframed [`DomainSeparated::canonical_body`] and the trait's
 /// provided methods apply the framing. It stays public because the V1 identity
 /// tests and any non-trait caller need one unambiguous framing.
-
 pub fn domain_preimage(tag: &[u8], canonical_body: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(16 + tag.len() + canonical_body.len());
     push_length_prefixed(&mut buf, tag);

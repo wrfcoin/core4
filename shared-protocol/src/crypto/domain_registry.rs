@@ -206,6 +206,7 @@ pub const MIGRATION_TRACKING_ISSUE: u32 = 2226;
 ///     (`wallet-auth-service.ts`): `"WRFCoin wallet login nonce: <nonce>"`;
 ///   - `/api/wallet-auth/nonce/:address` + `/api/wallet-auth/verify`
 ///     (`wallet-auth-routes.js`): `"Wrfcoin Authentication\nWallet: <addr>\nNonce: <nonce>"`.
+///
 /// The mobile app (`api_client.dart`) signs the first; the frontend
 /// (`walletAuthService.ts::loginWithSigner`) **also signs the first** — it
 /// requests the nonce, signs `buildWalletLoginMessage(nonce)` through the

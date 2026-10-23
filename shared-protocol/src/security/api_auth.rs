@@ -248,12 +248,12 @@ impl OriginPolicy {
 
     pub fn host_allowed(&self, host_header: &str) -> bool {
         let name = host_name(host_header);
-        !name.is_empty() && self.allowed_hosts.iter().any(|h| *h == name)
+        !name.is_empty() && self.allowed_hosts.contains(&name)
     }
 
     pub fn origin_allowed(&self, origin: &str) -> bool {
         let norm = normalise_origin(origin);
-        !norm.is_empty() && self.allowed_origins.iter().any(|o| *o == norm)
+        !norm.is_empty() && self.allowed_origins.contains(&norm)
     }
 }
 

@@ -361,7 +361,7 @@ impl CommitRevealState {
 
         self.pending_commits.remove(&payload.commit_id);
         self.replay_keys.insert(reveal_id.clone());
-        let quality_score = weather_point.as_ref().map(|(score, _)| score.clone());
+        let quality_score = weather_point.as_ref().map(|(score, _)| *score);
         let weather_point_recorded = weather_point.is_some();
         if let Some((_, point)) = weather_point {
             self.station_last_weather

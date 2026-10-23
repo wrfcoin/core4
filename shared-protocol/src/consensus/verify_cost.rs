@@ -391,13 +391,12 @@ impl VerifyCost for Transaction {
             // valid ed25519 signature is still charged the ECDSA even though
             // verification short-circuits on ed25519 — over-charging is the
             // fail-expensive side and is intended.
-            TransactionType::Transfer => {
+            TransactionType::Transfer
                 if self
                     .parse_transparent_transfer_payload()
-                    .is_some_and(|payload| payload.passkey_auth.is_some())
-                {
-                    work.ecdsa = work.ecdsa.saturating_add(1);
-                }
+                    .is_some_and(|payload| payload.passkey_auth.is_some()) =>
+            {
+                work.ecdsa = work.ecdsa.saturating_add(1);
             },
             _ => {},
         }

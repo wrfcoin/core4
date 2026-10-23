@@ -190,11 +190,7 @@ impl MeshTopologySnapshot {
                 .iter()
                 .filter(|p| p.link_quality.is_some())
                 .count() as u32;
-            if count > 0 {
-                (total / count) as u8
-            } else {
-                0
-            }
+            total.checked_div(count).unwrap_or(0) as u8
         };
 
         Self {
