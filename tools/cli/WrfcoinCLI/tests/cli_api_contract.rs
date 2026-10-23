@@ -530,3 +530,184 @@ fn forecast_receipt_cli_offline_boundaries_3149() -> anyhow::Result<()> {
     std::fs::remove_dir_all(dir)?;
     Ok(())
 }
+
+/// Real binary contract: only explicit --submit writes, and neither key is emitted.
+#[cfg(unix)]
+#[tokio::test]
+async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow::Result<()> {
+    use libp2p_identity::Keypair;
+    use std::os::unix::fs::PermissionsExt;
+    use wrfcoin_cli::bond_grant::{GrantRequest, PEER_DOMAIN};
+    use wrfcoin_shared_protocol::crypto::signature::{PublicKey, Signature};
+    let dir = std::env::temp_dir().join(format!("grant-contract-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir)?;
+    let server_seed = hex::encode([41u8; 32]);
+    let peer_seed = hex::encode([42u8; 32]);
+    let peer = Keypair::ed25519_from_bytes([42u8; 32])?;
+    let peer_bytes = peer.to_protobuf_encoding()?;
+    let seed_file = dir.join("server.seed");
+    let peer_file = dir.join("peer_identity.key");
+    std::fs::write(&seed_file, &server_seed)?;
+    std::fs::write(&peer_file, &peer_bytes)?;
+    for path in [&seed_file, &peer_file] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let mut node = mockito::Server::new_async().await;
+    let mut backend = mockito::Server::new_async().await;
+    let info = node.mock("GET", "/network/info")
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::json!({"data": {"chain_id":"888", "network_id":"testnet", "chain_height":102,
+            "local_peer_id":peer.public().to_peer_id().to_string()}}).to_string()).expect(2).create_async().await;
+    let block = node.mock("GET", "/chain/block/100")
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::json!({"hash":"ab".repeat(32)}).to_string()).expect(2).create_async().await;
+    let no_node_write = node.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let command = || {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
+        cmd.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-legacy-url")
+            .env("WRFCOIN_DATA_DIR", &dir)
+            .args(["--output", "json", "node", "bond", "grant-request", "--owner-address",
+                "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "--api-url", &node.url(), "--key-file"])
+            .arg(&seed_file);
+        cmd
+    };
+    let no_backend_write = backend.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let out_file = dir.join("request.json");
+    let output = command().arg("--out").arg(&out_file).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let request: GrantRequest = serde_json::from_slice(&std::fs::read(&out_file)?)?;
+    let printed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(printed["data"], serde_json::to_value(&request)?);
+    assert_eq!(request.owner_address, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(request.height, 100);
+    let message = request.message("888", "testnet")?;
+    assert!(PublicKey::from_hex(&request.server_key)?.verify(&message, &Signature::from_hex(&request.signature)?));
+    assert!(peer.public().verify(&[PEER_DOMAIN, message.as_slice()].concat(), &hex::decode(&request.peer_signature)?));
+    no_backend_write.assert_async().await;
+    drop(no_backend_write);
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let challenge_order = order.clone();
+    let grant_order = order.clone();
+    let no_other_posts = backend.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let challenge = backend.mock("POST", "/api/onboarding/faucet/challenge")
+        .match_body(mockito::Matcher::Json(serde_json::json!({})))
+        .with_header("content-type", "application/json")
+        .with_body_from_request(move |_| {
+            challenge_order.lock().unwrap().push("challenge");
+            br#"{"challengeId":"operator-challenge","question":"What is 2 + 3?"}"#.to_vec()
+        }).expect(1).create_async().await;
+    let mut expected_payload = serde_json::to_value(&request)?;
+    expected_payload["challengeId"] = serde_json::json!("operator-challenge");
+    // Deliberately not the computed solution: the CLI must forward stdin, never solve.
+    expected_payload["answer"] = serde_json::json!("17");
+    let post = backend.mock("POST", "/api/faucet/bond-grant")
+        .match_body(mockito::Matcher::Json(expected_payload))
+        .with_status(429).with_body_from_request(move |_| {
+            grant_order.lock().unwrap().push("grant");
+            b"probation pending".to_vec()
+        }).expect(1).create_async().await;
+    let mut child = command().args(["--submit", &backend.url(), "--p2p-key-file"])
+        .arg(&peer_file).stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    std::io::Write::write_all(&mut child.stdin.take().expect("piped stdin"), b"17\n")?;
+    let submitted = child.wait_with_output()?;
+    challenge.assert_async().await;
+    no_other_posts.assert_async().await;
+    assert_eq!(*order.lock().unwrap(), vec!["challenge", "grant"]);
+    assert!(String::from_utf8_lossy(&submitted.stderr).contains("What is 2 + 3?"));
+    assert!(submitted.status.success(), "{}", String::from_utf8_lossy(&submitted.stderr));
+    let answer: serde_json::Value = serde_json::from_slice(&submitted.stdout)?;
+    assert_eq!(answer["data"]["faucet"]["status"], 429);
+    assert_eq!(answer["data"]["faucet"]["body"], "probation pending");
+    post.assert_async().await;
+    for result in [&output, &submitted] {
+        for bytes in [&result.stdout, &result.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            for secret in [&server_seed, &peer_seed, &hex::encode(&peer_bytes)] {
+                assert!(!text.contains(secret), "private key material leaked");
+            }
+        }
+    }
+    // Existing output must refuse before any network request or POST.
+    let refused = command().arg("--out").arg(&out_file).args(["--submit", &backend.url()]).output()?;
+    assert!(!refused.status.success());
+    post.assert_async().await;
+    challenge.assert_async().await;
+    no_other_posts.assert_async().await;
+    info.assert_async().await;
+    block.assert_async().await;
+    no_node_write.assert_async().await;
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> anyhow::Result<()> {
+    use libp2p_identity::Keypair;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("grant-refusal-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir)?;
+    let seed_file = dir.join("server.seed");
+    let peer_file = dir.join("peer.key");
+    let peer = Keypair::ed25519_from_bytes([44u8; 32])?;
+    std::fs::write(&seed_file, hex::encode([43u8; 32]))?;
+    std::fs::write(&peer_file, peer.to_protobuf_encoding()?)?;
+    for path in [&seed_file, &peer_file] { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?; }
+    let mut node = mockito::Server::new_async().await;
+    let info = node.mock("GET", "/network/info").with_header("content-type", "application/json")
+        .with_body(serde_json::json!({"chain_id":"888","network_id":"testnet","chain_height":102,
+            "local_peer_id":Keypair::ed25519_from_bytes([45u8;32])?.public().to_peer_id().to_string()}).to_string())
+        .expect(1).create_async().await;
+    let no_block = node.mock("GET", "/chain/block/100").expect(0).create_async().await;
+    let no_post = node.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+    let command = || {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
+        cmd.env("HOME", &dir).args(["--output","json","node","bond","grant-request","--owner-address",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","--api-url",&node.url(),"--submit",&node.url(),"--key-file"])
+            .arg(&seed_file).arg("--p2p-key-file").arg(&peer_file);
+        cmd
+    };
+    let output = command().output()?;
+    assert!(!output.status.success());
+    let text = format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+    assert!(text.contains("peer identity does not match node"));
+    for path in [&seed_file, &peer_file] {
+        let old = std::fs::read(path)?;
+        std::fs::write(path, "private-key-invalid-canary-do-not-echo")?;
+        let output = command().output()?;
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-key-invalid-canary-do-not-echo"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-key-invalid-canary-do-not-echo"));
+        std::fs::write(path, old)?;
+    }
+    info.assert_async().await;
+    no_block.assert_async().await;
+    no_post.assert_async().await;
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+/// Copied verbatim from wrfcoin/infra#24 at 29d030f44aa6ea157db73a8eba04e3647ea9d4bf,
+/// testnet/services/faucet/bond-grant-peer-vector.json. Never regenerate expected bytes here.
+#[test]
+fn bond_grant_matches_faucet_frozen_dual_signature_vector() -> anyhow::Result<()> {
+    use libp2p_identity::Keypair;
+    use wrfcoin_cli::bond_grant::{GrantRequest, PEER_DOMAIN};
+    use wrfcoin_shared_protocol::crypto::{signature::PrivateKey, signer::EnvKeySigner};
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/bond-grant-peer-vector.json"))?;
+    let field = |key: &str| fixture[key].as_str().expect("fixed fixture string");
+    let mut request: GrantRequest = serde_json::from_value(fixture["request"].clone())?;
+    let message = request.message(field("chainId"), field("networkId"))?;
+    assert_eq!(hex::encode(&message), field("serverMessageHex"));
+    assert_eq!(hex::encode([PEER_DOMAIN, message.as_slice()].concat()), field("peerMessageHex"));
+    let peer = Keypair::from_protobuf_encoding(&hex::decode(field("peerPrivateKeyProtobufHex"))?)?;
+    assert_eq!(peer.public().to_peer_id().to_string(), request.peer_id);
+    assert_eq!(hex::encode(peer.public().try_into_ed25519()?.to_bytes()), field("peerPublicKeyHex"));
+    let server = EnvKeySigner::from_private_key(PrivateKey::from_hex(field("testOnlyServerSeedHex"))?, "public test vector");
+    request.signature.clear();
+    request.peer_signature.clear();
+    request.sign(field("chainId"), field("networkId"), &server, &peer)?;
+    assert_eq!(serde_json::to_value(&request)?, fixture["request"]);
+    Ok(())
+}
