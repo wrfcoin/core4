@@ -1031,6 +1031,7 @@ pub enum ConsensusFeature {
     ///   `owner_nonce` (the same per-station counter owner actions, transfers
     ///   and recovery consume), so the same signed payload cannot apply twice.
     ///   An owner action in between invalidates an in-flight registration.
+    ///
     /// Appended LAST so earlier enum wire ordinals are unchanged. Before
     /// activation a v2 payload is inert and v1 behaves exactly as on main.
     ///
@@ -1573,7 +1574,7 @@ pub fn reresolve_base_feature_schedule_from_block1(
     // #3277 S5: the bootstrap is part of the base wherever the base comes
     // from block 1, so a node that synced the live chain from an empty
     // volume opens the extension gate at the same height as its peers.
-    let block1_hash = block1.hash.clone().unwrap_or_else(|| block1.calculate_hash()).to_hex();
+    let block1_hash = block1.hash.unwrap_or_else(|| block1.calculate_hash()).to_hex();
     let resolved = with_legacy_chain_bootstrap(resolved, &block1_hash)
         .map_err(ActivationScheduleError::Invalid)?;
     Ok(BASE_FROM_BLOCK1.get_or_init(|| resolved))
@@ -2245,7 +2246,7 @@ pub fn install_protocol_from_block1(
     let version = genesis_protocol_version(pairs.clone())?.unwrap_or_default();
     let table = resolve_activation_schedule(pairs.clone(), version)?;
     let features = resolve_feature_schedule(pairs.clone(), &table)?;
-    let block1_hash = block1.hash.clone().unwrap_or_else(|| block1.calculate_hash()).to_hex();
+    let block1_hash = block1.hash.unwrap_or_else(|| block1.calculate_hash()).to_hex();
     let features = with_legacy_chain_bootstrap(features, &block1_hash)?;
     let schedule_raw = pairs
         .iter()

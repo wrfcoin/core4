@@ -337,7 +337,7 @@ pub fn apply(
 
             let total = account.successes_this_epoch + account.failures_this_epoch;
             if total >= limits.min_samples_before_throttle {
-                let failure_percent = u32::from(account.failures_this_epoch)
+                let failure_percent = account.failures_this_epoch
                     .saturating_mul(100)
                     / total.max(1);
                 if failure_percent >= u32::from(limits.failure_rate_threshold_percent) {

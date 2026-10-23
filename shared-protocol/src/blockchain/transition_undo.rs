@@ -383,7 +383,7 @@ impl CompletenessGuard {
     pub(super) fn capture(state: &State, transition: &StateTransition) -> Self {
         Self {
             bytes: state.state_root_material(),
-            root: state.state_root.clone(),
+            root: state.state_root,
             variant: transition_name(transition),
         }
     }

@@ -74,12 +74,14 @@ use std::collections::BTreeMap;
 pub const NODE_BOND_UNITS: u64 = NODE_BOND_WRF * crate::common::constants::WRF_UNITS_PER_COIN;
 pub const MAX_NODE_BOND_LIFECYCLE_TXS_PER_BLOCK: usize = 16;
 pub const MAX_RETAINED_NODE_EPOCHS: usize =
-    ((TESTNET_CHALLENGE_BLOCKS + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS + NODE_EPOCH_BLOCKS - 1)
-        / NODE_EPOCH_BLOCKS
-        + 1) as usize;
+    ((TESTNET_CHALLENGE_BLOCKS + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS)
+        .div_ceil(NODE_EPOCH_BLOCKS) + 1) as usize;
 
 /// Frozen history covers the chain's challenge and withdrawal buffer, plus
 /// its current epoch. The legacy constant above remains the testnet wire pin.
+// Keep the consensus retention arithmetic and authority reads unchanged: div_ceil
+// would remove the existing numerator-overflow boundary for recorded timing values.
+#[allow(clippy::manual_div_ceil)]
 pub fn max_retained_node_epochs(genesis_chain_id: Option<&str>) -> usize {
     ((super::node_share_contracts::node_challenge_blocks(genesis_chain_id)
         + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS + node_epoch_blocks() - 1)
