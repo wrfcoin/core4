@@ -228,7 +228,15 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         }
         let peer = bond_grant::peer_key(&p2p_key_file.clone().unwrap_or_else(bond_grant::default_peer_key_path))?;
         let signer: std::sync::Arc<dyn BlockSigner> = if let Some(path) = key_file {
-            std::sync::Arc::new(bond_grant::server_key(path)?)
+            #[cfg(debug_assertions)]
+            {
+                std::sync::Arc::new(bond_grant::server_key(path)?)
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                let _ = path;
+                anyhow::bail!("seed-file signing is only available in debug builds; release builds sign with the HSM via WRFCOIN_HSM_*");
+            }
         } else {
             // Exactly the dedicated role/PIN resolution used by bond sign --role server.
             resolve_signer().map_err(|_| anyhow::anyhow!("dedicated Node bond signer unavailable"))?.signer
