@@ -20,6 +20,7 @@ pub mod blockchain;
 pub mod categorical;
 pub mod continuous;
 pub mod probabilistic;
+pub mod variables;
 
 // Re-export blockchain types at crate root (consensus-critical).
 pub use blockchain::{
@@ -32,6 +33,7 @@ pub use blockchain::{
 pub use anti_gaming::{ReferenceStrategy, persistence_rmse};
 pub use categorical::{CategoricalScores, categorical_scores, csi, far, pod};
 pub use continuous::{bias, mae, rmse};
+pub use variables::{mean_skill, scored_variables};
 pub use probabilistic::{
     brier_score, brier_score_checked, crps, crps_checked, crps_normalized, crps_normalized_checked,
 };
