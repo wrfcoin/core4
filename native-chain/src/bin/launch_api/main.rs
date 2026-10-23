@@ -14419,6 +14419,36 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn node_resources_weather_acceptance_is_nullable_and_state_backed() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let request = || test::TestRequest::get().uri("/node/resources").to_request();
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body.get("weather_last_accepted_block_unix"), Some(&serde_json::Value::Null));
+        assert_eq!(body.get("weather_last_accepted_block_age_secs"), Some(&serde_json::Value::Null));
+        for field in ["chain_status", "chain_last_block_age_secs", "chain_block_interval_secs",
+            "uptime_secs", "blocks_in_memory", "account_count", "nft_count", "pending_transactions"]
+        {
+            assert!(body.get(field).is_some(), "retain {field}");
+        }
+        let newest = chrono::Utc::now().timestamp() - 120;
+        {
+            let mut chain = state.blockchain.write().await;
+            chain.state.station_weather_accepted_block_unix.insert("older".into(), newest - 3600);
+            chain.state.station_weather_accepted_block_unix.insert("newer".into(), newest);
+        }
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["weather_last_accepted_block_unix"], newest);
+        let upper = chrono::Utc::now().timestamp().saturating_sub(newest);
+        let age = body["weather_last_accepted_block_age_secs"].as_i64().expect("age");
+        assert!((120..=upper).contains(&age));
+    }
+
+    #[actix_web::test]
     async fn node_resources_returns_system_metrics() {
         let state = test_state(None);
         let app = test::init_service(test_app(state.clone())).await;
