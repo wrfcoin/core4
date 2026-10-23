@@ -120,6 +120,35 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
         assert!(rendered.to_string().contains("accepted-tx"));
         mock.assert_async().await;
     }
+    // `--validate-only` runs the same parsing, signing and binding checks, prints
+    // the body and the commit id, and sends nothing. Count every POST during
+    // this phase explicitly, including requests with unexpected headers.
+    let no_post = server.mock("POST", mockito::Matcher::Any)
+        .expect(0).create_async().await;
+    for kind in ["commit", "reveal"] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
+        command.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-url").args(["--output", "json", "forecast", kind,
+            "--validate-only", "--node-url", &server.url(), "--token", "validate-only-bearer-canary",
+            "--forecaster", "wrf1forecast", "--station-id", "station-forecast",
+            "--nonce", "reveal-nonce", "--timestamp", "1700000000", "--data-file"])
+            .arg(&input.data_file);
+        if kind == "commit" {
+            command.arg("--signer-key").arg(&key_path)
+                .args(["--chain-id", &signing_chain_id(), "--network-id", &signing_network_id()]);
+        } else {
+            command.arg("--manifest-file").arg(&manifest_path).arg("--receipt-file").arg(&receipt_path);
+        }
+        let output = command.output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let rendered: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let text = rendered.to_string();
+        assert!(text.contains(&id), "validate-only output must carry the commit id: {text}");
+        assert!(text.contains("\"validated\":true") && text.contains("\"submitted\":false"), "{text}");
+        assert!(!text.contains("accepted-tx"), "validate-only must not reach the node");
+        assert!(!text.contains("validate-only-bearer-canary"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("validate-only-bearer-canary"));
+    }
+    no_post.assert_async().await;
     assert!(reveal_body(&input, &manifest_path, Some(&dir.join("missing"))).is_err());
     std::fs::write(&receipt_path, "invalid JSON")?;
     assert!(reveal_body(&input, &manifest_path, Some(&receipt_path)).is_err());
