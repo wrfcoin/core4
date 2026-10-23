@@ -4,8 +4,7 @@ WRFCoin Core is the Rust node and protocol implementation for a test network tha
 
 ## Public testnet
 
-Public launch target: **Thursday, 2026-10-22, around 19:00 UTC**, subject to the
-[go/no-go checklist](docs/security/TESTNET_GO_NO_GO.md).
+The public testnet opened on **2026-10-22**.
 
 This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets.
 
@@ -15,6 +14,29 @@ Read the [reset-and-expectations disclaimer](docs/TESTNET_DISCLAIMER.md) before 
 [Quickstart](https://github.com/wrfcoin/docs/blob/main/testnet/quickstart.md) ·
 [Testnet support](https://github.com/wrfcoin/testnet-support) ·
 [Security policy](SECURITY.md)
+
+## Try it
+
+1. Open the [WRFCoin website](https://wrfcoin.com) to watch the chain: block height, the weather map and the block explorer.
+2. Follow the [quickstart](https://github.com/wrfcoin/docs/blob/main/testnet/quickstart.md) to set up a wallet and claim testnet WRF from the faucet.
+3. Read the [facts page](https://github.com/wrfcoin/docs/blob/main/testnet/facts.md) for what the testnet does and does not offer.
+4. To run a sync node, follow the [node join guide](https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md).
+5. Ask for help or report bugs at [testnet-support](https://github.com/wrfcoin/testnet-support); report vulnerabilities privately through the [security policy](SECURITY.md).
+
+
+
+## Where to start
+
+| If you want to read… | Go to | What it is |
+| --- | --- | --- |
+| The node and its HTTP API | [`native-chain/`](native-chain/) | Node runtime and HTTP API |
+| Shared types and validation | [`shared-protocol/`](shared-protocol/) | Shared protocol types, validation and state transitions |
+| Networking | [`p2p/`](p2p/) | Peer networking |
+| Consensus | [`consensus-engines/`](consensus-engines/) | Consensus engine implementations; the public testnet uses Proof-of-Publication |
+| Command-line tools | [`tools/cli/WrfcoinCLI/`](tools/cli/WrfcoinCLI/) | Command-line interface for WRFCoin |
+| Forecast scoring | [`forecast-score/`](forecast-score/) | Forecast scoring types and algorithms, used by the node through shared-protocol |
+| Documentation | [`docs/`](docs/) | Protocol, security and design documentation |
+| Integration tests | [`tests/integration/`](tests/integration/) | Tests of interactions between platform components |
 
 ## What works today
 
