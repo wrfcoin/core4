@@ -58,6 +58,10 @@ All code references are to public `core4` main `bde93b2`. "PoP" is
   owner selected it on 2026-10-19 per `GENESIS_888.md`).
 - That is a budget of about **1,168,000 WRF/year**, not a promise that every slice is minted.
 - If fully minted, it would reach the 21M cap in about 18 years.
+- Both figures assume one block per 600 s. The reward is paid **per block**, so realised issuance
+  scales with the actual production cadence, which this ADR did not measure. The companion
+  block-speed record (`2026-10-23-3566-block-speed-record.md`) asks for that measurement before
+  any ruling.
 
 **Block time.** `BLOCK_TIME_PROGRESSION` (`constants.rs:73-83`) is a fixed-height schedule:
 4 h → 2 h → 1 h → 10 min → 2 min → 30 s → 15 s → 5 s → 1 s. It is coupled to emission
