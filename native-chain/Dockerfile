@@ -9,7 +9,7 @@ ARG VERSION=dev
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
-FROM rust:1.98.0-slim AS builder
+FROM rust:1.98.0-slim-bookworm AS builder
 
 ARG COMMIT_SHA
 ARG BUILD_DATE
