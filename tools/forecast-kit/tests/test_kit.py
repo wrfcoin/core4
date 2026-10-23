@@ -39,8 +39,8 @@ class CanonicalForms(unittest.TestCase):
     def test_persistence_trend_matches_producer_maths(self):
         # y = 10 + 1*t over 24 h: slope 1, damping 0.5, horizon 6 -> last + 3
         series = [10.0 + t for t in range(24)]
-        self.assertAlmostEqual(kit.persistence_trend(series), 33.0 + 3.0, places=9)
-        self.assertAlmostEqual(kit.persistence_trend([5.0, 5.0, 5.0]), 5.0, places=9)
+        self.assertAlmostEqual(kit.persistence_trend(series, [i * 3600 for i in range(24)]), 33.0 + 3.0, places=9)
+        self.assertAlmostEqual(kit.persistence_trend([5.0, 5.0, 5.0], [0, 3600, 7200]), 5.0, places=9)
 
 
 class PrepareFlow(unittest.TestCase):
@@ -81,7 +81,7 @@ class PrepareFlow(unittest.TestCase):
             self.assertIn("--receipt-file", reveal_sh)
             receipt["commit_id"] = "0" * 64
             json.dump(receipt, open(rpath, "w"))
-            rc = kit.main(["prepare-reveal", "--dir", out, "--receipt", rpath, "--cli", "/opt/wrfcoin"])
+            rc = kit.main(["prepare-reveal", "--dir", out, "--receipt", rpath, "--allow-early", "--cli", "/opt/wrfcoin"])
             self.assertEqual(rc, 1)
 
     def test_predict_falls_back_when_humidity_is_missing(self):
@@ -175,3 +175,92 @@ class HttpSafety(unittest.TestCase):
                 kit.http_get_json("http://example.invalid/read", "KIT_TEST_BEARER")
         self.assertEqual(str(raised.exception), "GET request failed: HTTP 403")
         self.assertNotIn(bearer, str(raised.exception))
+
+
+class ReviewRegressions(unittest.TestCase):
+    def test_gapped_prediction_uses_real_hour_offsets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = 1700002800  # exact UTC hour
+            rows = {base: {"temperature_c": 10.0}, base + 23 * 3600: {"temperature_c": 33.0}}
+            kit.save_store(kit.store_path(tmp, "gapped"), rows)
+            out = os.path.join(tmp, "prediction")
+            with mock.patch.object(kit.time, "time", return_value=base + 30 * 3600):
+                self.assertEqual(kit.main(["predict", "--observations", tmp, "--station", "gapped", "--out", out]), 0)
+            with open(os.path.join(out, "forecast.json")) as fh:
+                forecast = json.load(fh)
+            self.assertEqual(forecast["values"]["temperature_c"], 36.0)
+
+    def test_default_window_excludes_open_hour_but_at_can_override(self):
+        current_hour = 500000
+        hourly = {h: {"temperature_c": float(h)} for h in range(current_hour - 25, current_hour + 1)}
+        with mock.patch.object(kit.time, "time", return_value=current_hour * 3600 + 3599):
+            rows, end, _ = kit.build_window(hourly)
+            self.assertEqual(end, current_hour - 1)
+            self.assertEqual(rows[-1]["timestamp"], (current_hour - 1) * 3600)
+            _, explicit_end, _ = kit.build_window(hourly, current_hour)
+            self.assertEqual(explicit_end, current_hour)
+
+    def test_reveal_refuses_edited_data_even_with_allow_early_and_old_cli_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            forecast = {"model_id": "persistence-trend/v1", "issued_at": 1700000000, "valid_at": 9999999999,
+                        "horizon_hours": 6, "station_id": "station", "values": {"temperature_c": 12.0}}
+            fpath, wpath = os.path.join(tmp, "f.json"), os.path.join(tmp, "w.json")
+            with open(fpath, "w") as fh: json.dump(forecast, fh)
+            with open(wpath, "w") as fh: json.dump([], fh)
+            out = os.path.join(tmp, "prepared")
+            kit.main(["prepare-commit", "--forecast", fpath, "--window", wpath, "--forecaster", "0xabc", "--out", out])
+            record_path = os.path.join(out, "commit.json")
+            with open(record_path) as fh: record = json.load(fh)
+            original_record = open(record_path).read()
+            cli_output = os.path.join(tmp, "cli.json")
+            with open(cli_output, "w") as fh: json.dump({"data": {"commit_id": record["commit_id"]}}, fh)
+            forecast["values"]["temperature_c"] = 99.0
+            with open(record["files"]["data"], "w") as fh: json.dump(forecast, fh)
+            error = io.StringIO()
+            with mock.patch("sys.stderr", error):
+                rc = kit.main(["prepare-reveal", "--dir", out, "--allow-early", "--cli-output", cli_output])
+            self.assertEqual(rc, 1)
+            self.assertIn("data.json", error.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(out, "reveal.sh")))
+            self.assertEqual(open(record_path).read(), original_record)
+
+    def test_backfill_shortfall_is_explicit_with_actual_count_and_span(self):
+        docs = [
+            {"chain_height": 10000},
+            {"data": {"blocks": [{"timestamp": "2026-10-23T00:00:00+00:00"},
+                                  {"timestamp": "2026-10-22T00:00:00+00:00"}]}},
+            {"items": [{"observed_at": 1700000000, "values": {"temperature_c": 10}},
+                       {"observed_at": 1700003600, "values": {"temperature_c": 11}}], "has_more": False},
+        ]
+        error = io.StringIO()
+        with mock.patch.object(kit, "http_get_json", side_effect=docs), mock.patch("sys.stderr", error):
+            rows = kit.fetch_node("http://example.invalid", "station", 240, "TEST_READER", 0, 5)
+        self.assertEqual(len(rows), 2)
+        self.assertIn("WARNING", error.getvalue())
+        self.assertIn("240", error.getvalue())
+        self.assertIn("2 readings", error.getvalue())
+        self.assertIn("1.0 h", error.getvalue())
+
+    def test_prediction_timing_starts_at_last_closed_hour_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current_hour = 500000
+            rows = {h * 3600: {"temperature_c": 10.0} for h in range(current_hour - 24, current_hour)}
+            rows[current_hour * 3600] = {"temperature_c": 999.0}
+            kit.save_store(kit.store_path(tmp, "closed"), rows)
+            out = os.path.join(tmp, "prediction")
+            with mock.patch.object(kit.time, "time", return_value=current_hour * 3600 + 3599):
+                self.assertEqual(kit.main(["predict", "--observations", tmp, "--station", "closed", "--out", out]), 0)
+            with open(os.path.join(out, "forecast.json")) as fh: forecast = json.load(fh)
+            self.assertEqual(forecast["values"]["temperature_c"], 10.0)
+            self.assertEqual(forecast["issued_at"], current_hour * 3600)
+            self.assertEqual(forecast["valid_at"], (current_hour + 6) * 3600)
+
+    def test_backfill_complete_span_does_not_warn(self):
+        docs = [{"chain_height": 100}, {},
+                {"items": [{"observed_at": ts, "values": {"temperature_c": 10}}
+                           for ts in [1700000000, 1700000000 + 240 * 3600]], "has_more": False}]
+        error = io.StringIO()
+        with mock.patch.object(kit, "http_get_json", side_effect=docs), mock.patch("sys.stderr", error):
+            self.assertEqual(len(kit.fetch_node("http://example.invalid", "station", 240, "READER", 0, 5)), 2)
+        self.assertIn("240.0 h", error.getvalue())
+        self.assertNotIn("WARNING", error.getvalue())

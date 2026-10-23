@@ -35,6 +35,10 @@ python $KIT fetch-observations --station PWS-EXAMPLE-STATION --source node --nod
 python $KIT fetch-observations --station DLH --source csv --csv ./observations/DLH.csv --out ./obs
 ```
 
+The node backfill reports the actual reading count and timestamp span against `--hours`.
+If the cadence estimate or request cap yields less history, it saves the partial data and
+prints an explicit `WARNING: history shortfall`; that is not full requested coverage.
+
 The store is `./obs/<station>.jsonl`, one `{"observed_at", "values"}` per reading, deduplicated
 by time. Public aliases (`st_…`) and on-chain `station_id`s differ: the commit must carry the
 **on-chain `station_id`**; the public route is keyed by alias. The node's unauthenticated
@@ -51,7 +55,10 @@ python $KIT predict --observations ./obs --station PWS-EXAMPLE-STATION \
 ```
 
 Builds the 24 h window of hourly means ending at the newest full hour (`--at` to pick another),
-runs the ONNX graph on the CPU, and writes `forecast.json`:
+excludes the still-open current UTC hour by default, runs the ONNX graph on the CPU,
+and writes `forecast.json`. `issued_at` is the closing boundary of the last input hour;
+`valid_at` is six hours after that boundary. The persistence fallback fits real timestamp
+offsets, preserving gaps rather than treating sparse readings as consecutive hours:
 
 ```json
 {"model_id": "learned-conv1d/v1", "issued_at": 1792382400, "valid_at": 1792404000,
@@ -113,9 +120,11 @@ python $KIT prepare-reveal --dir ./fc/prepared [--receipt ./receipt.json] \
 ```
 
 `prepare-reveal` refuses (exit 1) before `valid_at` unless `--allow-early`, checks that the
-manifest is unchanged, and — if a signed `ForecastVerificationReceipt` from the oracle is given —
+current `data.json` still hashes to the recorded commit id using its nonce, station and
+timestamp, checks that the manifest is unchanged, and — if a signed `ForecastVerificationReceipt` from the oracle is given —
 that it binds this `commit_id` and `manifest_digest`, carries a nonce and a signature, and has a
-`skill_score` in `[0, 1]`. Without a receipt the reveal is valid and **scores at the baseline
+`skill_score` in `[0, 1]`. Integrity failures return before writing the reveal script or
+updating the commit record; `--allow-early` waives timing only. Without a receipt the reveal is valid and **scores at the baseline
 0.1** (consensus `BASELINE_FORECAST_SKILL`); a receipt only exists once an oracle signs one
 (#3149, `wrfcoin forecast sign-receipt` in PR #3150). The owner submits `reveal.sh`'s line
 without `--validate-only`, then reads the credit back with `status` and in wallet history (#3520).

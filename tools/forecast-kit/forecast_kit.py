@@ -178,13 +178,11 @@ def fetch_node(node_base: str, station_id: str, hours: int, bearer_env: str, sle
     """Node `GET /transactions/contributions/<station_id>/observations` (Reader role).
 
     Scans blocks upward from `after` in pages of at most 100 reveals / 64 heights;
-    the cursor is (`next_after`, `next_offset`). Stops when `hours` of history are
-    covered from the newest reading, when the chain tip is reached, or at
-    `max_requests`. The bearer comes from `bearer_env` and is never printed.
+    the cursor is (`next_after`, `next_offset`). Stops at the chain tip or
+    `max_requests`; explicitly warns when the actual span falls short of `hours`. The bearer comes from `bearer_env` and is never printed.
     """
     base = f"{node_base.rstrip('/')}/transactions/contributions/{urllib.parse.quote(station_id)}/observations"
     after, offset, out, requests_made = 0, 0, [], 0
-    newest = None
     # Walk from the tip backwards is not offered by the route, so estimate a start
     # height from the tip and the block cadence, then refine by walking forward.
     info = http_get_json(f"{node_base.rstrip('/')}/network/info")
@@ -210,12 +208,18 @@ def fetch_node(node_base: str, station_id: str, hours: int, bearer_env: str, sle
             if values:
                 ts = int(item["observed_at"])
                 out.append((ts, values))
-                newest = ts if newest is None else max(newest, ts)
         after, offset = int(data.get("next_after", after)), int(data.get("next_offset", 0))
         if not data.get("has_more", False):
             break
         time.sleep(sleep_s)
-    print(f"node history: {len(out)} readings in {requests_made} requests (tip {tip})", file=sys.stderr)
+    timestamps = [ts for ts, _ in out]
+    span_h = (max(timestamps) - min(timestamps)) / 3600 if timestamps else 0.0
+    print(f"node history: {len(out)} readings spanning {span_h:.1f} h in {requests_made} requests "
+          f"(requested {hours} h, tip {tip})", file=sys.stderr)
+    if span_h < hours:
+        print(f"WARNING: history shortfall: requested {hours} h, fetched {len(out)} readings spanning "
+              f"{span_h:.1f} h. The cadence estimate or request cap may under-cover history; "
+              "this is a partial backfill, not the requested coverage.", file=sys.stderr)
     return out
 
 
@@ -275,7 +279,7 @@ def build_window(hourly: dict[int, dict], end_hour: int | None = None):
     """Return (window_rows, end_hour, missing) for the 24 h ending at `end_hour` (inclusive)."""
     if not hourly:
         raise SystemExit("no observations in the store; run fetch-observations first")
-    end_hour = max(hourly) if end_hour is None else end_hour
+    end_hour = min(max(hourly), int(time.time()) // 3600 - 1) if end_hour is None else end_hour
     rows, missing = [], []
     for h in range(end_hour - WINDOW_HOURS + 1, end_hour + 1):
         values = hourly.get(h)
@@ -290,13 +294,15 @@ def build_window(hourly: dict[int, dict], end_hour: int | None = None):
     return rows, end_hour, missing
 
 
-def persistence_trend(series: list[float], horizon_hours: float = HORIZON_HOURS) -> float:
+def persistence_trend(series: list[float], timestamps: list[int], horizon_hours: float = HORIZON_HOURS) -> float:
     """`persistence-trend/v1` (tools/forecast-proto `forecast_variable`): last value plus the
     damped OLS slope over the window, hours since the first sample as the abscissa."""
     n = len(series)
+    if not n or len(timestamps) != n:
+        raise ValueError("trend requires one timestamp per reading")
     if n < 2:
         return series[-1]
-    hours = list(range(n))
+    hours = [(ts - timestamps[0]) / 3600 for ts in timestamps]
     mean_t = sum(hours) / n
     mean_y = sum(series) / n
     den = sum((t - mean_t) ** 2 for t in hours)
@@ -337,7 +343,7 @@ def cmd_predict(args) -> int:
     if args.at:
         end_hour = int(dt.datetime.fromisoformat(args.at.replace("Z", "+00:00")).timestamp() // 3600)
     window, end_hour, missing = build_window(hourly, end_hour)
-    issued_at = (end_hour + 1) * 3600 - 3600  # the last input hour, on the hour
+    issued_at = (end_hour + 1) * 3600  # closing boundary of the last input hour
     model_id, values, note = MODEL_PERSISTENCE, {}, ""
     needed = model_variables(args.model) if args.model and os.path.exists(args.model) else list(VARIABLES)
     complete = all(r is not None and all(v in r["values"] for v in needed) for r in window)
@@ -359,9 +365,10 @@ def cmd_predict(args) -> int:
         if len(present) < 2:
             raise SystemExit("fewer than 2 hourly readings in the window; cannot forecast")
         for var in VARIABLES:
-            series = [r["values"][var] for r in present if var in r["values"]]
-            if len(series) >= 2:
-                values[var] = persistence_trend(series)
+            samples = [r for r in present if var in r["values"]]
+            if len(samples) >= 2:
+                values[var] = persistence_trend([r["values"][var] for r in samples],
+                                                [r["timestamp"] for r in samples])
     if not values:
         raise SystemExit("no variable could be forecast")
     forecast = {
@@ -461,6 +468,10 @@ def cmd_prepare_reveal(args) -> int:
         manifest = json.load(fh)
     now = int(time.time())
     problems = []
+    with open(record["files"]["data"]) as fh:
+        data = json.load(fh)
+    if compute_commit_id(data, record["nonce"], record["station_id"], record["timestamp"]) != record["commit_id"]:
+        problems.append("data.json changed since prepare-commit (commit id mismatch)")
     if now < record["valid_at"] and not args.allow_early:
         problems.append(f"target time {iso(record['valid_at'])} not reached yet (now {iso(now)}); "
                         "reveal after it, or pass --allow-early for a baseline-scored reveal")
@@ -489,6 +500,8 @@ def cmd_prepare_reveal(args) -> int:
             problems.append(f"CLI commit_id {cli_id} differs from the kit's {record['commit_id']}")
     for p in problems:
         print(f"problem: {p}", file=sys.stderr)
+    if problems:
+        return 1
     cli = shlex.quote(args.cli)
     common = (f"--forecaster {shlex.quote(record['forecaster'])} --station-id {shlex.quote(record['station_id'])} "
               f"--nonce {shlex.quote(record['nonce'])} --timestamp {record['timestamp']} "
@@ -513,7 +526,7 @@ set -eu
     print(f"prepared reveal for commit {record['commit_id']} ({status}); "
           f"{'receipt attached' if receipt else 'no receipt: baseline scoring'}; "
           f"{os.path.join(args.dir, 'reveal.sh')} validates only (nothing submitted)")
-    return 1 if problems and not args.allow_early else 0
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +651,7 @@ def main(argv=None) -> int:
     p.add_argument("--observations", required=True, help="store directory from fetch-observations")
     p.add_argument("--station", required=True, help="station as stored (and as the commit's station_id)")
     p.add_argument("--model", help="ONNX model path (learned-conv1d/v1); omit for persistence-trend/v1")
-    p.add_argument("--at", help="end of the input window (ISO-8601 UTC); default: newest hour in the store")
+    p.add_argument("--at", help="end of the input window (ISO-8601 UTC); default: newest closed UTC hour in the store")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_predict)
 
