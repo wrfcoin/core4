@@ -9896,7 +9896,7 @@ mod tests {
         let (ed_sk, ed_pk_hex) = keypair(0x3400_01);
         let ed_from = format!(
             "0x{}",
-            hex::encode(Address::from_public_key(&PublicKey::from_private_key(&ed_sk)).0)
+            hex::encode(Address::from_public_key(&PublicKey::from_private_key(&ed_sk)).0) // secret-leak-ok: formats the public address of a seeded test key, never the key itself.
         );
         let ed_body = |nonce: u64| {
             json!({
@@ -9914,7 +9914,7 @@ mod tests {
         let submit = |body: serde_json::Value| {
             test::TestRequest::post()
                 .uri("/transactions/submit")
-                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}")))
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
                 .set_json(body)
                 .to_request()
         };
