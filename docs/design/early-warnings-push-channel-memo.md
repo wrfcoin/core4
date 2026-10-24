@@ -1,6 +1,7 @@
 # Early-warnings push channel: decision memo
 
-Status: **Accepted (owner, 2026-10-24).** Design input only. This memo picks nothing and authorizes no
+Status: **Accepted (owner, 2026-10-24).** Transport P (no push yet; decide with data) was chosen by the owner
+on 2026-10-24. The memo itself still picks nothing, and it authorizes no
 implementation, provisioning, credential, account or release change.
 
 Refs (private backlog, summarised here because the links are not public):
@@ -149,7 +150,7 @@ Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open qu
 answer this document itself recommends, quoted with its line. Where the document makes no
 recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
-The memo states no recommendation for any of its questions (line 3: "This memo picks nothing"), so
+The memo states no recommendation for any of its questions (line 3 originally: "This memo picks nothing"), so
 every question was left for the owner and is answered below. Its own rule for the interim stays in force
 (line 143: "Until the owner answers, #271 Option A stands"): alerts are delivered while the app is open,
 and no remote push code ships. The owner's answers keep it that way: transport P means no push yet.
