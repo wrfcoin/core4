@@ -2523,8 +2523,9 @@ impl TransparentTransferPayload {
     }
 
     /// Authorization for mempool admission, which has no height (#2169): the
-    /// ed25519 rule OR, on a chain whose genesis schedules
-    /// `passkey_p256_auth` at all, a valid passkey authorization. The exact
+    /// ed25519 rule OR, on a chain that schedules `passkey_p256_auth` at all
+    /// (genesis/bootstrap base OR an applied governance schedule extension,
+    /// via `passkey_auth_scheduled`), a valid passkey authorization. The exact
     /// activation height is enforced downstream by the producer self-screen,
     /// block validation and state apply; on a chain that never schedules the
     /// feature this is exactly `verify_authorization`.

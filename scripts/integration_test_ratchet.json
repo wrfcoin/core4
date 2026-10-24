@@ -764,6 +764,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "passkey_extension_admission_3400"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "passkey_webauthn_2169"
     },
     {

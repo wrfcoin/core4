@@ -1670,6 +1670,29 @@ pub fn feature_active(feature: ConsensusFeature, height: u64) -> bool {
     }
 }
 
+/// Whether `feature` is scheduled at ANY height on this node — the
+/// height-free question mempool admission asks. Answers from the same source
+/// as [`feature_active`]: the base schedule (genesis ∪ bootstrap) when it
+/// names the feature, otherwise the applied schedule-extension overlay. So a
+/// feature activated by a governance extension (not genesis) counts as
+/// scheduled once the extension is applied, exactly when `feature_active`
+/// can first answer `true` for it.
+///
+/// Policy only: no block-validity or state-transition rule reads this.
+pub fn feature_scheduled(feature: ConsensusFeature) -> bool {
+    match feature {
+        ConsensusFeature::SigningV2 => protocol_version_at(u64::MAX) >= SigningProtocolVersion::V2,
+        other => {
+            try_feature_schedule().is_some_and(|base| base.activation_height(other.name()).is_some())
+                || EXTENSION_OVERLAY
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|(n, _)| n == other.name())
+        },
+    }
+}
+
 /// Why a genesis activation schedule was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActivationScheduleError {
