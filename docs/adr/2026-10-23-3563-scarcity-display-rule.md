@@ -1,6 +1,6 @@
 # ADR: one scarcity rule — the app shows what the chain pays
 
-Status: **Proposed — not ratified.** An options document for the owner. It records no decision
+Status: **Accepted (owner, 2026-10-24).** An options document for the owner. It records no decision
 and changes no reward, display or API.
 
 Date: 2026-10-23.
@@ -105,3 +105,33 @@ on-chain registry, and the unreachable 2.0 "desert" bucket must be removed or ma
 4. **Human impact and network demand:** retire (D1), build (D2/D3) or defer (D4)?
 5. Should the **"desert" (no-station) case** have a distinct, higher bonus? Today it cannot arise
    for a paying station, because a paying station is itself counted in its cell.
+
+## Decision (accepted 2026-10-24)
+
+Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
+answer this document itself recommends, quoted with its line. Where the document makes no
+recommendation, the answer is **UNANSWERED — owner**: none was invented.
+
+This ADR is an options document and recommends none of its options, so every question is UNANSWERED
+— owner. Nothing here changes what pays on chain: an answer that changes the paid rule (A2, A3, B1,
+D2, D3) is policy only, and implementation requires a separate consensus PR + owner deploy.
+
+1. *Display source: A1 (expose the paid ≈ 2° rule), A2 (pay on the 0.1° grid) or A3 (one middle
+   grid)?* **UNANSWERED — owner.** Relevant text (not a recommendation): line 88: "(A1 with B2 and
+   C1) can ship without consensus work". Stated as a consequence, not a recommendation.
+2. *`ScarcityPolicy`: wire into payout (B1), task prioritisation only (B2) or remove (B3)?*
+   **UNANSWERED — owner.** See the note on question 1.
+3. *The `geo-grid` 1.0/1.5/2.5 table: delete (C1) or keep labelled (C2)?* **UNANSWERED — owner.**
+   See the note on question 1.
+4. *Human impact and network demand: retire (D1), build (D2/D3) or defer (D4)?* **UNANSWERED —
+   owner.**
+5. *Should the no-station "desert" case get a distinct, higher bonus?* **UNANSWERED — owner.**
+
+Stated in every option, so accepted as written (no owner choice involved):
+
+- line 39: "**Honesty:** a user must never be shown a multiplier the chain does not pay." (display
+  rule).
+- line 59: "In every option the display must read the **same station source** the chain counts"
+  (display rule).
+- line 60: "the unreachable 2.0 "desert" bucket must be removed or made real" (display rule).
+- line 95: "**Acceptance test (any option):**" (acceptance test).

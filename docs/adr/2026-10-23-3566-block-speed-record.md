@@ -1,7 +1,7 @@
 # ADR: block speed — governed vote or a SUPERSEDED fixed schedule
 
-Status: **Proposed — not ratified.** A decision record for the owner. It records no decision and
-changes no schedule, emission or governance surface.
+Status: **Accepted (owner, 2026-10-24).** A decision record for the owner. It changes no schedule,
+emission or governance surface; see "Decision" at the end.
 
 Date: 2026-10-23.
 
@@ -73,3 +73,28 @@ Without both, block speed becomes a back door to changing issuance.
    above, or is a coupled change acceptable when governed?
 4. Before ruling: measure the testnet's realised block cadence and realised issuance. Who runs that
    measurement, and should the ruling wait for it?
+
+## Decision (accepted 2026-10-24)
+
+Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
+answer this document itself recommends, quoted with its line. Where the document makes no
+recommendation, the answer is **UNANSWERED — owner**: none was invented.
+
+Nothing here changes the block-time schedule or what pays on chain. Answers are policy only; any
+change to the schedule or to issuance requires a separate consensus PR + owner deploy.
+
+1. *SUPERSEDED (B-S), vote (B-V), hold-only (B-H) or time-based (B-T)?* **UNANSWERED — owner.**
+2. *If not B-S: keep the paper's limits (dwell one week to one year, 72-hour cooldown, automatic
+   step after a year), or others?* **UNANSWERED — owner.** Depends on question 1.
+3. *Should block-speed changes be forbidden from changing issuance?* **Decision: yes. A block-speed
+   change must not change issuance, so any option other than B-S first records each tier change in
+   state and makes per-block rewards proportional to block time; implementation requires a separate
+   consensus PR + owner deploy.** Recommended by the document: line 58: "Any option in which the
+   tier at a height is not known from a constant table must:"; line 65: "Without both, block speed
+   becomes a back door to changing issuance.".
+4a. *Should the ruling wait for a measurement of realised cadence and issuance?* **Yes: measure
+    realised cadence and issuance from chain data before ruling on block speed or emission.**
+    Recommended by the document: line 40: "**Unverified risk to measure before any ruling.**"; line
+    44: "realised issuance should be measured from chain data before the owner rules on block
+    speed".
+4b. *Who runs that measurement?* **UNANSWERED — owner.**
