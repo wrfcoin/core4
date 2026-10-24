@@ -1,7 +1,8 @@
 # ADR: tokenomics reconciliation with the 2018 white paper
 
-Status: **Accepted (owner, 2026-10-24).** This is an options document for the owner. It records **no
-decision**, and it authorizes no change to constants, genesis, emission, shares, burns or
+Status: **Accepted (owner, 2026-10-24).** Owner answers recorded 2026-10-24. Economics NOT ratified:
+ratification waits for the sinks verification design (#3562/#3577); implementation feature-gated on
+the live testnet. This document authorizes no change to constants, genesis, emission, shares, burns or
 deployment. Every economics change it describes is consensus-breaking and needs separate review.
 
 Date: 2026-10-23.
