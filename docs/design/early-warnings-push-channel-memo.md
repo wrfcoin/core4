@@ -147,21 +147,21 @@ remote push code ships.
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
 The memo states no recommendation for any of its questions (line 3: "This memo picks nothing"), so
-every question is UNANSWERED — owner. Its own rule for the interim stays in force (line 143: "Until
-the owner answers, #271 Option A stands"): alerts are delivered while the app is open, and no remote
-push code ships.
+every question was left for the owner and is answered below. Its own rule for the interim stays in force
+(line 143: "Until the owner answers, #271 Option A stands"): alerts are delivered while the app is open,
+and no remote push code ships. The owner's answers keep it that way: transport P means no push yet.
 
-1. *Transport: F, U, H or P?* **UNANSWERED — owner.** The comparison and decision tables weigh the
+1. *Transport: F, U, H or P?* **Decision (owner, 2026-10-24): P — no push yet; decide with data. Alerts are delivered while the app is open, and SMS is the timely channel. No remote push code ships.** The comparison and decision tables weigh the
    options without choosing one.
-2. *Platforms: Android only for the first slice, or Android and iOS?* **UNANSWERED — owner.**
+2. *Platforms: Android only for the first slice, or Android and iOS?* **Decision (owner, 2026-10-24): Android only first, when push comes.**
 3. *If U or H: run a public push server on project infrastructure, or consider a third-party ntfy
-   instance?* **UNANSWERED — owner.** Depends on question 1.
+   instance?* **Decision (owner, 2026-10-24): Self-host on project infrastructure, if U or H is chosen later.** Depends on question 1.
 4. *If F or H: who holds the Firebase project and sender credential, and who rotates it?*
-   **UNANSWERED — owner.** Depends on question 1.
+   **Decision (owner, 2026-10-24): N/A for now (transport P); no Firebase credential is created. Revisit if F or H is chosen later.** Depends on question 1.
 5. *Order: should in-app push wait until the SMS path (A2) and alert engine (A1) have measured a
-   false-alarm rate?* **UNANSWERED — owner.** Relevant text (not a recommendation): line 141: "as
+   false-alarm rate?* **Decision (owner, 2026-10-24): Yes: measure the SMS path (A2) and alert-engine (A1) false-alarm rate first, before any in-app push.** Relevant text (not a recommendation): line 141: "as
    the epic's risk section suggests". The memo relays the epic's suggestion inside the question; it
    does not recommend it itself.
