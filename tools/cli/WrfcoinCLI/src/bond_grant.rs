@@ -4,7 +4,9 @@ use libp2p_identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{io::Read, path::{Path, PathBuf}, time::Duration};
-use wrfcoin_shared_protocol::crypto::{signature::PrivateKey, signer::{BlockSigner, EnvKeySigner}};
+use wrfcoin_shared_protocol::crypto::signer::BlockSigner;
+#[cfg(debug_assertions)]
+use wrfcoin_shared_protocol::crypto::{signature::PrivateKey, signer::EnvKeySigner};
 use zeroize::Zeroizing;
 
 pub const DOMAIN: &[u8] = b"wrfcoin_faucet_bond_grant_v1";
@@ -76,6 +78,8 @@ fn key_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         Ok(bytes)
     }
 }
+/// Debug builds only: release builds sign with the dedicated bond HSM signer.
+#[cfg(debug_assertions)]
 pub fn server_key(path: &Path) -> Result<EnvKeySigner> {
     let bytes = key_bytes(path)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("server seed format refused"))?;

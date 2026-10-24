@@ -578,8 +578,9 @@ impl Mempool {
         // embedded in its payload (see `verify_transparent_transfer_authorization`),
         // not its per-input signatures — which never bind to `from`.
         //
-        // #2169: on a chain whose genesis schedules `passkey_p256_auth`, a
-        // WebAuthn P-256 passkey assertion bound to `from` is also admitted;
+        // #2169: on a chain that schedules `passkey_p256_auth` (in genesis or
+        // through an applied governance schedule extension), a WebAuthn P-256
+        // passkey assertion bound to `from` is also admitted;
         // the exact activation height is enforced by the producer self-screen,
         // block validation and state apply, which know their height.
         if tx.has_transparent_transfer_payload()

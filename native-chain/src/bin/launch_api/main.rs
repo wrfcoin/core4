@@ -5689,6 +5689,33 @@ mod tests {
         )
     }
 
+    #[actix_web::test]
+    async fn host_metrics_gpu_keeps_operator_auth_and_existing_fields() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let path = "/node/metrics/host";
+        let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        for field in ["memory_total_mb", "memory_used_mb", "memory_free_mb", "memory_used_percent",
+            "swap_total_mb", "swap_used_mb", "cpu_per_core", "cpu_usage_avg_percent", "disks"]
+        {
+            assert!(body.get(field).is_some(), "existing field {field} must remain");
+        }
+        if let Some(gpu) = body.get("gpu") {
+            assert!(gpu.is_array(), "optional GPU section must not be null or an error");
+        }
+    }
+
     fn test_app(
         state: web::Data<AppState>,
     ) -> actix_web::App<
@@ -9818,6 +9845,110 @@ mod tests {
         assert_eq!(retry_after, LEGACY_SUBMIT_RETRY_AFTER_SECS.to_string());
         let limited_body: serde_json::Value = test::read_body_json(limited).await;
         assert_error_envelope(&limited_body);
+    }
+
+    /// #2169 on chain 888: `passkey_p256_auth` is scheduled by an applied
+    /// governance extension (h3400), not genesis. `/transactions/submit`
+    /// refuses a passkey transfer while the feature is not active at tip+1,
+    /// accepts it (through mempool admission) once it is, and leaves the
+    /// ed25519 path unchanged on both sides of the height.
+    #[actix_web::test]
+    async fn transactions_submit_accepts_passkey_transfer_only_once_active_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_accepts_passkey_transfer_only_once_active_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x3400340034003400340034003400340034003400",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 3_400;
+        let _env = crate::helpers::test_env::lock();
+        refresh_feature_schedule_extensions(vec![(
+            ConsensusFeature::PasskeyP256Auth.name().to_string(),
+            H,
+        )]);
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x3333333333333333333333333333333333333333";
+        let amount = 42u64;
+
+        let auth = SoftwareAuthenticator::new(&[0x34; 32], "wallet.wrfcoin.test");
+        let passkey_from = auth.account().to_hex();
+        let passkey_body = |nonce: u64, signed_amount: u64| {
+            json!({
+                "from": passkey_from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "passkey_auth": auth.authorize_transfer(to, signed_amount, nonce),
+            })
+        };
+        let (ed_sk, ed_pk_hex) = keypair(0x3400_01);
+        let ed_from = format!(
+            "0x{}",
+            hex::encode(Address::from_public_key(&PublicKey::from_private_key(&ed_sk)).0) // secret-leak-ok: formats the public address of a seeded test key, never the key itself.
+        );
+        let ed_body = |nonce: u64| {
+            json!({
+                "from": ed_from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "auth_pubkey": ed_pk_hex,
+                "auth_signature": ed_sk
+                    .sign(&transparent_transfer_authorization_message(&ed_from, to, amount, nonce))
+                    .to_string(),
+            })
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+
+        // Tip = H-2: the next block (H-1) is below activation.
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(passkey_body(0, amount))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&body);
+        assert_eq!(body["error"]["code"], "FEATURE_NOT_ACTIVE", "{body}");
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enqueued before activation");
+
+        // ed25519 is accepted below activation exactly as before.
+        let resp = test::call_service(&app, submit(ed_body(0))).await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // Tip = H-1: the next block (H) is at activation.
+        state.blockchain.write().await.height = H - 1;
+        // A passkey assertion over a different amount is refused.
+        let resp = test::call_service(&app, submit(passkey_body(0, amount + 1))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["error"]["code"], "AUTHORIZATION_INVALID", "{body}");
+
+        // The valid passkey transfer is accepted and admitted to the mempool.
+        let resp = test::call_service(&app, submit(passkey_body(0, amount))).await;
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_success_envelope(&body);
+        assert_eq!(state.mempool.read().await.size(), 2, "ed25519 + passkey transfers pending");
+
+        refresh_feature_schedule_extensions(Vec::new());
     }
 
     #[actix_web::test]
@@ -14416,6 +14547,36 @@ mod tests {
             .get("avg_block_time_secs")
             .expect("response must include avg_block_time_secs");
         assert!(avg.is_number(), "avg_block_time_secs must be a number");
+    }
+
+    #[actix_web::test]
+    async fn node_resources_weather_acceptance_is_nullable_and_state_backed() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let request = || test::TestRequest::get().uri("/node/resources").to_request();
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body.get("weather_last_accepted_block_unix"), Some(&serde_json::Value::Null));
+        assert_eq!(body.get("weather_last_accepted_block_age_secs"), Some(&serde_json::Value::Null));
+        for field in ["chain_status", "chain_last_block_age_secs", "chain_block_interval_secs",
+            "uptime_secs", "blocks_in_memory", "account_count", "nft_count", "pending_transactions"]
+        {
+            assert!(body.get(field).is_some(), "retain {field}");
+        }
+        let newest = chrono::Utc::now().timestamp() - 120;
+        {
+            let mut chain = state.blockchain.write().await;
+            chain.state.station_weather_accepted_block_unix.insert("older".into(), newest - 3600);
+            chain.state.station_weather_accepted_block_unix.insert("newer".into(), newest);
+        }
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["weather_last_accepted_block_unix"], newest);
+        let upper = chrono::Utc::now().timestamp().saturating_sub(newest);
+        let age = body["weather_last_accepted_block_age_secs"].as_i64().expect("age");
+        assert!((120..=upper).contains(&age));
     }
 
     #[actix_web::test]

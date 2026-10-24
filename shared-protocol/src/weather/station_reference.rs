@@ -47,7 +47,11 @@
 //!   the reveal's `pressure_kind` is `"station"` and the value recomputes
 //!   with [`altimeter_setting_hpa`] from the raw `pressure_hpa` and the
 //!   station's **registered** elevation within
-//!   [`SEA_LEVEL_PRESSURE_TOLERANCE_HPA`]. A `"relative"` `pressure_hpa` is
+//!   [`SEA_LEVEL_PRESSURE_TOLERANCE_HPA`], and only when that registered
+//!   elevation lies inside the band [`DEM_BAND_BELOW_M`] /
+//!   [`DEM_BAND_ABOVE_M`] around a trusted DEM ground elevation for the
+//!   station (#3299): otherwise a false elevation would launder a constant
+//!   barometer bias into a Verified claim. A `"relative"` `pressure_hpa` is
 //!   already sea-level and is never reduced again: it pairs raw. For a
 //!   station WITH a registered elevation, anything else (no claim, no known
 //!   kind, a claim that does not recompute) gets no raw pressure residual
@@ -153,6 +157,29 @@ pub const SEA_LEVEL_PRESSURE_KEY: &str = "pressure_sea_level_hpa";
 /// is far below this; an elevation wrong by more than ~8 m is not.
 // determinism-ok: attester-side tolerance constant (exactly representable); consensus stores the signed confidence
 pub const SEA_LEVEL_PRESSURE_TOLERANCE_HPA: f64 = 1.0;
+
+/// How far a registered elevation may sit BELOW the station's DEM ground
+/// elevation and still be trusted for the sea-level recompute (#3299 owner
+/// ruling, 2026-10-24). Honest negative offsets exist: the reference
+/// station's barometer-confirmed 227.7 m is 20.2 m below its USGS 3DEP DEM
+/// value (247.9 m).
+// determinism-ok: attester-side band constant (exactly representable); consensus stores the signed confidence
+pub const DEM_BAND_BELOW_M: f64 = 50.0;
+
+/// How far a registered elevation may sit ABOVE the DEM ground elevation
+/// (#3299): the asymmetry allows for sensor height above ground.
+// determinism-ok: attester-side band constant (exactly representable); consensus stores the signed confidence
+pub const DEM_BAND_ABOVE_M: f64 = 60.0;
+
+/// Whether `registered_m` is inside `[dem_m − DEM_BAND_BELOW_M, dem_m +
+/// DEM_BAND_ABOVE_M]`, edges included (#3299). Non-finite input is outside.
+// determinism-ok: attester-side #3299 band check; consensus stores the signed confidence, never these values
+pub fn elevation_within_dem_band(registered_m: f64, dem_m: f64) -> bool {
+    registered_m.is_finite()
+        && dem_m.is_finite()
+        && registered_m >= dem_m - DEM_BAND_BELOW_M
+        && registered_m <= dem_m + DEM_BAND_ABOVE_M
+}
 
 /// The NWS altimeter setting (hPa) for a station pressure `station_hpa`
 /// (hPa) measured at `elevation_m` metres:
@@ -278,6 +305,14 @@ pub enum SeaLevelPressureOutcome {
     /// The station has no registered elevation, so the claim cannot be
     /// recomputed and is not trusted.
     NoElevation,
+    /// The station has a registered elevation but the attester holds no
+    /// trusted DEM ground elevation for it (#3299), so the elevation cannot
+    /// be bounded and the claim is not trusted.
+    NoDemElevation,
+    /// The registered elevation is outside the DEM band (#3299): the
+    /// recompute would trust an elevation the terrain contradicts.
+    // determinism-ok: attester-side audit values, never consensus-executed
+    ElevationOutsideDemBand { registered_m: f64, dem_m: f64 },
     /// The raw pressure and elevation do not reduce (non-finite input).
     Unreducible,
     /// The claim recomputes within tolerance; the sea-level value is paired.
@@ -307,6 +342,18 @@ impl SeaLevelPressureOutcome {
             Self::NoElevation => Some(
                 "sea-level pressure not checked: station has no registered elevation".to_string(),
             ),
+            Self::NoDemElevation => Some(
+                "sea-level pressure not checked: no trusted DEM ground elevation for the station \
+                 (#3299)"
+                    .to_string(),
+            ),
+            Self::ElevationOutsideDemBand { registered_m, dem_m } => Some(format!(
+                "sea-level pressure not trusted: registered elevation {registered_m:.1} m is outside \
+                 the DEM band {:.1}..{:.1} m (DEM ground {dem_m:.1} m, -{DEM_BAND_BELOW_M}/+\
+                 {DEM_BAND_ABOVE_M} m, #3299)",
+                dem_m - DEM_BAND_BELOW_M,
+                dem_m + DEM_BAND_ABOVE_M
+            )),
             Self::Unreducible => Some(
                 "sea-level pressure not checked: pressure_hpa/elevation do not reduce".to_string(),
             ),
@@ -384,6 +431,8 @@ impl SeaLevelPressureDecision {
             | SeaLevelPressureOutcome::NoPressureKind
             | SeaLevelPressureOutcome::NoRawPressure
             | SeaLevelPressureOutcome::Unreducible
+            | SeaLevelPressureOutcome::NoDemElevation
+            | SeaLevelPressureOutcome::ElevationOutsideDemBand { .. }
             | SeaLevelPressureOutcome::Mismatch { .. } => {
                 if elevation_registered {
                     PressurePairing::Skipped
@@ -426,8 +475,10 @@ impl SeaLevelPressureDecision {
 /// (outcome [`SeaLevelPressureOutcome::Inactive`]): the pre-activation
 /// pairing, byte-for-byte. When active, the pressure variable pairs the
 /// claim's sea-level value with the reference only if the claim declares
-/// `pressure_kind: "station"` and the value recomputes from the reading's raw
-/// `pressure_hpa` and the station's registered `elevation_m` within
+/// `pressure_kind: "station"`, the station's registered `elevation_m` lies in
+/// the band around the attester's trusted `dem_ground_m` (#3299,
+/// [`elevation_within_dem_band`]), and the value recomputes from the
+/// reading's raw `pressure_hpa` and that elevation within
 /// [`SEA_LEVEL_PRESSURE_TOLERANCE_HPA`]. A `relative` claim is never
 /// reduced again: `pressure_hpa` is already sea-level and is paired raw.
 /// Otherwise, for a station with a registered elevation, pressure is
@@ -440,6 +491,8 @@ pub fn pair_station_reference_sea_level(
     claim: SeaLevelPressureClaim,
     // determinism-ok: attester-side #3285 recompute input; consensus stores the signed confidence, never this value
     elevation_m: Option<f64>,
+    // determinism-ok: attester-side #3299 band input (trusted DEM ground elevation); consensus stores the signed confidence, never this value
+    dem_ground_m: Option<f64>,
     sea_level_active: bool,
     reading_timestamp: i64,
     references: &[StationReferenceObservation],
@@ -458,7 +511,7 @@ pub fn pair_station_reference_sea_level(
     // determinism-ok: attester-side #3285 presence check on the registered elevation; consensus stores the signed confidence, never this value
     let elevation_registered = elevation_m.is_some_and(f64::is_finite);
     let mut decision = SeaLevelPressureDecision::decide(
-        sea_level_pressure_outcome(reading.pressure_hpa, claim, elevation_m),
+        sea_level_pressure_outcome(reading.pressure_hpa, claim, elevation_m, dem_ground_m),
         elevation_registered,
     );
     if decision.pairing == PressurePairing::Skipped && reading.pressure_hpa.is_some() {
@@ -504,6 +557,8 @@ fn sea_level_pressure_outcome(
     claim: SeaLevelPressureClaim,
     // determinism-ok: attester-side #3285 recompute input; consensus stores the signed confidence, never this value
     elevation_m: Option<f64>,
+    // determinism-ok: attester-side #3299 band input; consensus stores the signed confidence, never this value
+    dem_ground_m: Option<f64>,
 ) -> SeaLevelPressureOutcome {
     let Some(claimed_hpa) = claim.sea_level_hpa.filter(|v| v.is_finite()) else {
         return SeaLevelPressureOutcome::NotClaimed;
@@ -526,6 +581,12 @@ fn sea_level_pressure_outcome(
     let Some(elevation_m) = elevation_m.filter(|v| v.is_finite()) else {
         return SeaLevelPressureOutcome::NoElevation;
     };
+    let Some(dem_m) = dem_ground_m.filter(|v| v.is_finite()) else {
+        return SeaLevelPressureOutcome::NoDemElevation;
+    };
+    if !elevation_within_dem_band(elevation_m, dem_m) {
+        return SeaLevelPressureOutcome::ElevationOutsideDemBand { registered_m: elevation_m, dem_m };
+    }
     let Some(expected_hpa) = altimeter_setting_hpa(raw_hpa, elevation_m) else {
         return SeaLevelPressureOutcome::Unreducible;
     };
@@ -712,6 +773,9 @@ mod tests {
     /// with the other variables agreeing.
     const JON_RAW_HPA: f64 = 1001.2;
     const JON_ELEVATION_M: f64 = 227.7;
+    /// USGS 3DEP DEM ground elevation at the reference station's site: its
+    /// true elevation is 20.2 m below it (#3299).
+    const JON_DEM_M: f64 = 247.9;
     const KDLH_ALTIMETER_HPA: f64 = 1027.8;
 
     fn jon_reading() -> WeatherObservation {
@@ -805,7 +869,7 @@ mod tests {
         claim: SeaLevelPressureClaim,
         elevation: Option<f64>,
     ) -> (Option<ReferenceComparison>, SeaLevelPressureDecision) {
-        pair_station_reference_sea_level(reading, claim, elevation, true, NOW, &kdlh(), 1_800)
+        pair_station_reference_sea_level(reading, claim, elevation, Some(JON_DEM_M), true, NOW, &kdlh(), 1_800)
     }
 
     fn has_pressure(comparison: &Option<ReferenceComparison>) -> bool {
@@ -832,19 +896,24 @@ mod tests {
             (SeaLevelPressureClaim::default(), None),
             (SeaLevelPressureClaim::default(), Some(JON_ELEVATION_M)),
         ] {
-            let (comparison, decision) = pair_station_reference_sea_level(
-                &jon_reading(),
-                claim,
-                elevation,
-                false,
-                NOW,
-                &kdlh(),
-                1_800,
-            );
-            assert_eq!(comparison, today);
-            assert_eq!(decision.outcome, SeaLevelPressureOutcome::Inactive);
-            assert_eq!(decision.pairing, PressurePairing::Raw);
-            assert_eq!(decision.audit_reason(), None);
+            // #3299: whatever DEM the attester holds (none, in band, or one
+            // that puts the registered elevation far out of band).
+            for dem in [None, Some(JON_DEM_M), Some(JON_DEM_M + 500.0)] {
+                let (comparison, decision) = pair_station_reference_sea_level(
+                    &jon_reading(),
+                    claim,
+                    elevation,
+                    dem,
+                    false,
+                    NOW,
+                    &kdlh(),
+                    1_800,
+                );
+                assert_eq!(comparison, today);
+                assert_eq!(decision.outcome, SeaLevelPressureOutcome::Inactive);
+                assert_eq!(decision.pairing, PressurePairing::Raw);
+                assert_eq!(decision.audit_reason(), None);
+            }
         }
         // Today Jon is a pressure Outlier and so tiers Degraded (#3285 body).
         let today = today.unwrap();
@@ -912,6 +981,7 @@ mod tests {
             &jon_reading(),
             SeaLevelPressureClaim::default(),
             Some(JON_ELEVATION_M),
+            Some(JON_DEM_M),
             true,
             NOW,
             &no_ref_pressure,
@@ -1133,6 +1203,7 @@ mod tests {
                 &good,
                 SeaLevelPressureClaim::default(),
                 Some(JON_ELEVATION_M),
+                Some(JON_DEM_M),
                 false,
                 NOW,
                 &kdlh(),
@@ -1192,5 +1263,91 @@ mod tests {
         let back = great_circle_km(&at(46.84, -92.18), 41.95, -77.10);
         assert_eq!(there.to_bits(), back.to_bits());
         assert_eq!(there.to_bits(), great_circle_km(&a_high, 46.84, -92.18).to_bits());
+    }
+
+    /// #3299 owner ruling: the band is DEM −50 m / +60 m, edges included.
+    /// The reference station's honest 227.7 m (20.2 m below the DEM) is inside.
+    #[test]
+    fn dem_band_edges_are_minus_50_and_plus_60_3299() {
+        assert!(elevation_within_dem_band(JON_DEM_M - DEM_BAND_BELOW_M, JON_DEM_M));
+        assert!(elevation_within_dem_band(JON_DEM_M + DEM_BAND_ABOVE_M, JON_DEM_M));
+        assert!(!elevation_within_dem_band(JON_DEM_M - DEM_BAND_BELOW_M - 0.1, JON_DEM_M));
+        assert!(!elevation_within_dem_band(JON_DEM_M + DEM_BAND_ABOVE_M + 0.1, JON_DEM_M));
+        assert!(elevation_within_dem_band(JON_ELEVATION_M, JON_DEM_M));
+        assert!(!elevation_within_dem_band(f64::NAN, JON_DEM_M));
+        assert!(!elevation_within_dem_band(JON_ELEVATION_M, f64::INFINITY));
+    }
+
+    /// Active pairing at and just past each band edge: an honest claim at an
+    /// in-band elevation is Verified; one 0.1 m past the edge is not trusted
+    /// and, with a published pressure the reference can check, Unverified.
+    #[test]
+    fn active_pairing_respects_the_dem_band_edges_3299() {
+        for (elevation, inside) in [
+            (JON_DEM_M - DEM_BAND_BELOW_M, true),
+            (JON_DEM_M + DEM_BAND_ABOVE_M, true),
+            (JON_DEM_M - DEM_BAND_BELOW_M - 0.1, false),
+            (JON_DEM_M + DEM_BAND_ABOVE_M + 0.1, false),
+        ] {
+            let claim = altimeter_setting_hpa(JON_RAW_HPA, elevation).unwrap();
+            let (_, decision) = run(&jon_reading(), station(claim), Some(elevation));
+            if inside {
+                assert!(matches!(decision.outcome, SeaLevelPressureOutcome::Verified { .. }), "{elevation}: {decision:?}");
+                assert_eq!(decision.pairing, PressurePairing::SeaLevel);
+            } else {
+                assert!(
+                    matches!(decision.outcome, SeaLevelPressureOutcome::ElevationOutsideDemBand { .. }),
+                    "{elevation}: {decision:?}"
+                );
+                assert_eq!(decision.pairing, PressurePairing::Unverified);
+                assert!(decision.audit_reason().unwrap().contains("outside the DEM band"));
+            }
+        }
+    }
+
+    /// No trusted DEM for a station WITH a registered elevation: the claim is
+    /// not trusted (fail closed). A relative claim never uses the elevation,
+    /// and a station with no registered elevation pairs raw, as before.
+    #[test]
+    fn missing_dem_fails_closed_only_where_the_elevation_is_used_3299() {
+        let (_, decision) = pair_station_reference_sea_level(
+            &jon_reading(),
+            station(jon_claim()),
+            Some(JON_ELEVATION_M),
+            None,
+            true,
+            NOW,
+            &kdlh(),
+            1_800,
+        );
+        assert_eq!(decision.outcome, SeaLevelPressureOutcome::NoDemElevation);
+        assert_eq!(decision.pairing, PressurePairing::Unverified);
+
+        let mut relative_station = jon_reading();
+        relative_station.pressure_hpa = Some(1020.1);
+        let (_, decision) = pair_station_reference_sea_level(
+            &relative_station,
+            relative(1020.1),
+            Some(242.5),
+            None,
+            true,
+            NOW,
+            &kdlh(),
+            1_800,
+        );
+        assert_eq!(decision.outcome, SeaLevelPressureOutcome::RelativeRaw);
+
+        let (_, decision) = pair_station_reference_sea_level(
+            &jon_reading(),
+            station(jon_claim()),
+            None,
+            None,
+            true,
+            NOW,
+            &kdlh(),
+            1_800,
+        );
+        assert_eq!(decision.outcome, SeaLevelPressureOutcome::NoElevation);
+        assert_eq!(decision.pairing, PressurePairing::Raw);
     }
 }

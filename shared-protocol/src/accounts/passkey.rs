@@ -63,7 +63,7 @@
 //! normalisation, so this rejects no legitimate user).
 
 use crate::common::types::Address;
-use crate::crypto::chain_binding::{ConsensusFeature, feature_active, try_feature_schedule};
+use crate::crypto::chain_binding::{ConsensusFeature, feature_active, feature_scheduled};
 use crate::crypto::domain_signing::{signing_chain_id, signing_network_id};
 use crate::crypto::hash::hash_bytes;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -572,16 +572,16 @@ pub fn passkey_auth_active(height: u64) -> bool {
 /// Whether this chain schedules [`ConsensusFeature::PasskeyP256Auth`] at all.
 ///
 /// The mempool has no notion of height; it admits a passkey-authorised
-/// transfer only on a chain whose genesis schedules the feature, and leaves
-/// the exact-height gate to the producer self-screen, block validation and
-/// state apply (all height-aware). On a chain that never schedules it, this
-/// is `false` and admission behaves exactly as before #2169.
+/// transfer only on a chain that schedules the feature — in its genesis /
+/// bootstrap base schedule OR through an applied governance schedule
+/// extension (the same source of truth as [`passkey_auth_active`]) — and
+/// leaves the exact-height gate to the producer self-screen, block validation
+/// and state apply (all height-aware). On a chain that never schedules it,
+/// this is `false` and admission behaves exactly as before #2169.
+///
+/// Policy only (mempool/API): no block-validity or state-apply rule reads it.
 pub fn passkey_auth_scheduled() -> bool {
-    try_feature_schedule().is_some_and(|schedule| {
-        schedule
-            .activation_height(ConsensusFeature::PasskeyP256Auth.name())
-            .is_some()
-    })
+    feature_scheduled(ConsensusFeature::PasskeyP256Auth)
 }
 
 /// [`crate::accounts::abstraction::SignatureVerifier`] over WebAuthn: the

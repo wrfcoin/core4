@@ -271,3 +271,10 @@ jobs:
         run: |
           python3 scripts/cargo_test_nonvacuous.py --min-executed 95 --min-summaries 6 -- \
             test --locked -p wrfcoin_cli
+
+      # STEP 3 — RELEASE BUILD. Tests run in debug, where EnvKeySigner exists;
+      # release builds compile it out (shared-protocol signer.rs). core4#23
+      # imported it unconditionally and broke `cargo build --release` while
+      # every debug-profile gate stayed green.
+      - name: Release build — wrfcoin_cli compiles without debug-only signers
+        run: cargo check --locked --release -p wrfcoin_cli
