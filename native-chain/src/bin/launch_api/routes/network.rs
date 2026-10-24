@@ -523,6 +523,13 @@ fn resource_chain_status(age_secs: Option<i64>) -> &'static str {
     }
 }
 
+/// Newest recorded accepting-block time across stations, not observation time.
+/// None means metadata unavailable (including chains before the recording feature).
+fn resource_weather_freshness(timestamps: impl Iterator<Item = i64>, now: i64) -> (Option<i64>, Option<i64>) {
+    let last = timestamps.max();
+    (last, last.map(|at| now.saturating_sub(at).max(0)))
+}
+
 /// GET /node/resources — return process resources and chain production freshness.
 pub async fn get_node_resources(state: web::Data<AppState>) -> impl Responder {
     let uptime_secs = NODE_PROCESS_START.get_or_init(Instant::now).elapsed().as_secs();
@@ -540,6 +547,11 @@ pub async fn get_node_resources(state: web::Data<AppState>) -> impl Responder {
             .max(0)
     });
     let chain_status = resource_chain_status(chain_last_block_age_secs);
+    // Recording is feature-gated: null means unavailable metadata, not no weather.
+    // determinism-ok: response-only weather acceptance age; never persisted or used by consensus.
+    let now = chrono::Utc::now().timestamp();
+    let (weather_last_accepted_block_unix, weather_last_accepted_block_age_secs) =
+        resource_weather_freshness(blockchain.state.station_weather_accepted_block_unix.values().copied(), now);
     drop(blockchain);
 
     let mempool = state.mempool.read().await;
@@ -549,6 +561,8 @@ pub async fn get_node_resources(state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok().json(json!({
         "chain_last_block_age_secs": chain_last_block_age_secs,
         "chain_status": chain_status,
+        "weather_last_accepted_block_unix": weather_last_accepted_block_unix,
+        "weather_last_accepted_block_age_secs": weather_last_accepted_block_age_secs,
         "chain_block_interval_secs": RESOURCE_CHAIN_BLOCK_INTERVAL_SECS,
         "uptime_secs": uptime_secs,
         "blocks_in_memory": blocks_in_memory,
@@ -819,5 +833,24 @@ mod resource_chain_status_tests {
         assert_eq!(resource_chain_status(Some(232)), "stalled");
         assert_eq!(resource_chain_status(Some(i64::MAX)), "stalled");
         assert_eq!(resource_chain_status(None), "stalled");
+    }
+}
+
+#[cfg(test)]
+mod resource_weather_tests {
+    use super::resource_weather_freshness;
+
+    #[test]
+    fn resource_weather_reports_missing_newest_and_stale_acceptance_times() {
+        assert_eq!(resource_weather_freshness([].into_iter(), 1000), (None, None));
+        assert_eq!(resource_weather_freshness([100, 900, 400].into_iter(), 1000), (Some(900), Some(100)));
+        assert_eq!(resource_weather_freshness([100].into_iter(), 1000), (Some(100), Some(900)));
+    }
+
+    #[test]
+    fn resource_weather_clamps_future_timestamps_and_saturates_age() {
+        assert_eq!(resource_weather_freshness([1001].into_iter(), 1000), (Some(1001), Some(0)));
+        assert_eq!(resource_weather_freshness([i64::MIN].into_iter(), i64::MAX),
+            (Some(i64::MIN), Some(i64::MAX)));
     }
 }

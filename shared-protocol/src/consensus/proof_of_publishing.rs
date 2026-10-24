@@ -408,11 +408,17 @@ pub const ECONOMIC_SAFETY_RAILS_ACTIVATION_HEIGHT: u64 = 0;
 /// value must exceed the live chain tip at the moment upgraded binaries are
 /// running on every node.**
 ///
-/// Owner set 11_000 on 2026-08-06, when the measured live tip was **1582** on
-/// node container (`wrfcoin-testnet-node`). That leaves 9_418 blocks ≈ **6.5 days** — the
-/// window in which this PR must merge AND every node must be rebuilt and
-/// redeployed. A node still running a pre-activation binary when the chain
-/// reaches 11_000 computes different rewards and forks.
+/// History: owner set 11_000 on 2026-08-06 for the original testnet (chain 777),
+/// when its measured tip was **1582**.
+///
+/// **Owner ruling 2026-10-23: 3_000 for chain 888** (the public testnet, new genesis
+/// 2026-10-22), measured at about h1076 with about 77 s per block. Every 888 node must
+/// run a binary carrying this value before 888 reaches 3_000; a node still running an
+/// older binary (11_000) at that height computes different rewards and forks.
+///
+/// This constant is chain-agnostic: on a chain that already passed h3_000 under the
+/// 11_000 rule (chain 777), blocks 3_000..11_000 no longer replay byte-identically
+/// with this binary.
 ///
 /// **Do not derive that window from `BLOCK_TIME_PROGRESSION`.** The table's
 /// `(1_000, 7_200)` band is the consensus *target* for this height range, and on
@@ -427,7 +433,7 @@ pub const ECONOMIC_SAFETY_RAILS_ACTIVATION_HEIGHT: u64 = 0;
 /// ```
 ///
 /// (Use your authorized operator access path; reachability is installation-specific.)
-pub const STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT: u64 = 11_000;
+pub const STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT: u64 = 3_000;
 
 /// Height at which contribution scoring accepts the rich, mixed-type Ambient
 /// weather payload used by the production collectors (#2768).
@@ -3621,7 +3627,7 @@ impl ProofOfPublishing {
             } else {
                 // Existing testnet history contains pre-fence real reveals.
                 // Co-activate selection with rich Ambient rewards so upgraded
-                // nodes can still reproduce every pre-11,000 block exactly.
+                // nodes can still reproduce every pre-activation block exactly.
                 0
             };
 
@@ -3674,7 +3680,7 @@ impl ProofOfPublishing {
             skipped_mempool_tx_ids.len().to_string(),
         );
         // Keep pre-activation block bytes unchanged. Unknown metadata is still
-        // hash-bearing, so writing a zero before height 11,000 would make an
+        // hash-bearing, so writing a zero before the activation height would make an
         // upgraded producer build a different block from the legacy binary
         // even though the fence itself is intentionally inactive.
         if next_height >= RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT {
@@ -9819,6 +9825,25 @@ mod tests {
         );
     }
 
+    /// Owner ruling 2026-10-23: the gate is h3_000 (chain 888). Pinned by literal on
+    /// purpose, so a later edit to the constant is a visible, reviewed change.
+    #[test]
+    fn station_ownership_and_rich_ambient_gate_is_3000() {
+        assert_eq!(STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT, 3_000);
+        assert_eq!(RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT, STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT);
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let (_, reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal,
+            "station-gate-3000",
+            "contribution",
+            1_700_500_050,
+            rich_ambient_payload_2768(),
+            "gate-3000",
+        );
+        assert_eq!(pop.score_data_collection(&reveal, 2_999), 0, "h2999 keeps the legacy rule");
+        assert_eq!(pop.score_data_collection(&reveal, 3_000), 3 * SCORE_PRECISION, "h3000 activates");
+    }
+
     #[test]
     fn malformed_present_scoring_metric_fails_closed_after_activation_2768() {
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
@@ -14406,7 +14431,7 @@ mod tests {
             receipt,
             tag,
         );
-        // Below `STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT` (11_000) the
+        // Below `STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT` the
         // payee is resolved from the reveal itself, not the station registry.
         reveal_tx.sender_address = owner;
         reveal_tx.set_id();
