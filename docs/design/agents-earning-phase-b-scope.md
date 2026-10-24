@@ -160,14 +160,13 @@ B-6 storage keepers: independent track
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
 Accepting this scope authorizes no implementation, payout rule or deployment by itself; each slice
-still lands through its own PR. Answers below that the document does not recommend are UNANSWERED —
-owner.
+still lands through its own PR. Answers below that the document does not recommend are the owner's, recorded as `Decision (owner, 2026-10-24)`.
 
 1. *Payout path: who operates the receipt signer, against which truth source, and must key binding
-   (B-1) activate before receipts?* **UNANSWERED — owner.** Relevant text (not a recommendation):
+   (B-1) activate before receipts?* **Decision (owner, 2026-10-24): Oracle operators sign receipts. The forecaster key binding (#3290, B-1) must land first, before receipts activate.** Relevant text (not a recommendation):
    line 56: "| Ratify first | Truth source; who operates the signer;". Listed as items to ratify; no
    recommendation.
 2. *Ensembles: may a group wallet commit an ensemble as its own forecast, and which attribution rule
@@ -181,9 +180,9 @@ owner.
    ineligible?* **Adopted: such a forecast is ineligible.** Recommended by the document: line 83:
    "Forecasts committed after another member's reveal for the same cell and lead are ineligible.".
 4. *Reward pool: same contribution slice for ensembles and individuals, or a cap per cell and lead?*
-   **UNANSWERED — owner.**
+   **Decision (owner, 2026-10-24): Cap per cell and lead time (not the same contribution slice for ensembles and individuals). Implementation requires a separate consensus PR + owner deploy.**
 5. *Track-record linkage: (a) none, (b) admission only, (c) bounties or (d) multiplier?*
-   **UNANSWERED — owner.** Relevant text (not a recommendation): line 95: "Simplest and least
+   **Decision (owner, 2026-10-24): (c) Bounties.** Relevant text (not a recommendation): line 95: "Simplest and least
    gameable". Stated as a property of option (a), not a recommendation.
 6. *Reports: no written report paid before the work-unit primitive and a verifier pool exist; first
    type is the observation-quality report?* **Confirmed: no written report is paid before the
@@ -192,7 +191,7 @@ owner.
    all before verifiers exist (default: no)"; line 105: "A daily regional **observation-quality
    report**"; line 138: "Paying for written reports before the reproducible-job primitive and
    verifiers exist.".
-7. *Storage keepers: in this phase or a separate storage track?* **UNANSWERED — owner.** Relevant
+7. *Storage keepers: in this phase or a separate storage track?* **Decision (owner, 2026-10-24): In this phase (B-6 is included in Phase B, not a separate storage track).** Relevant
    text (not a recommendation): line 111: "### B-6. Storage keepers (lower priority for this
    phase)"; line 129: "B-6 storage keepers: independent track". The heading and the orientation-only
    graph point in different directions.
