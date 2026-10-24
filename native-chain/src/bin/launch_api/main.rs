@@ -5689,6 +5689,33 @@ mod tests {
         )
     }
 
+    #[actix_web::test]
+    async fn host_metrics_gpu_keeps_operator_auth_and_existing_fields() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let path = "/node/metrics/host";
+        let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        for field in ["memory_total_mb", "memory_used_mb", "memory_free_mb", "memory_used_percent",
+            "swap_total_mb", "swap_used_mb", "cpu_per_core", "cpu_usage_avg_percent", "disks"]
+        {
+            assert!(body.get(field).is_some(), "existing field {field} must remain");
+        }
+        if let Some(gpu) = body.get("gpu") {
+            assert!(gpu.is_array(), "optional GPU section must not be null or an error");
+        }
+    }
+
     fn test_app(
         state: web::Data<AppState>,
     ) -> actix_web::App<
@@ -14416,6 +14443,36 @@ mod tests {
             .get("avg_block_time_secs")
             .expect("response must include avg_block_time_secs");
         assert!(avg.is_number(), "avg_block_time_secs must be a number");
+    }
+
+    #[actix_web::test]
+    async fn node_resources_weather_acceptance_is_nullable_and_state_backed() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let request = || test::TestRequest::get().uri("/node/resources").to_request();
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body.get("weather_last_accepted_block_unix"), Some(&serde_json::Value::Null));
+        assert_eq!(body.get("weather_last_accepted_block_age_secs"), Some(&serde_json::Value::Null));
+        for field in ["chain_status", "chain_last_block_age_secs", "chain_block_interval_secs",
+            "uptime_secs", "blocks_in_memory", "account_count", "nft_count", "pending_transactions"]
+        {
+            assert!(body.get(field).is_some(), "retain {field}");
+        }
+        let newest = chrono::Utc::now().timestamp() - 120;
+        {
+            let mut chain = state.blockchain.write().await;
+            chain.state.station_weather_accepted_block_unix.insert("older".into(), newest - 3600);
+            chain.state.station_weather_accepted_block_unix.insert("newer".into(), newest);
+        }
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["weather_last_accepted_block_unix"], newest);
+        let upper = chrono::Utc::now().timestamp().saturating_sub(newest);
+        let age = body["weather_last_accepted_block_age_secs"].as_i64().expect("age");
+        assert!((120..=upper).contains(&age));
     }
 
     #[actix_web::test]
