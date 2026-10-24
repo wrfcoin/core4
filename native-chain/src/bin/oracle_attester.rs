@@ -2504,9 +2504,9 @@ mod tests {
     #[test]
     fn honest_elevation_and_band_edges_through_the_tier_fold_3299() {
         use wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier;
-        let jon = laundered_eval(0.0, 227.7);
-        assert!(matches!(jon.sea_level.outcome, SeaLevelPressureOutcome::Verified { .. }), "{:?}", jon.sea_level);
-        assert_eq!(jon.verdict.tier, ReadingQualityTier::Good);
+        let honest = laundered_eval(0.0, 227.7);
+        assert!(matches!(honest.sea_level.outcome, SeaLevelPressureOutcome::Verified { .. }), "{:?}", honest.sea_level);
+        assert_eq!(honest.verdict.tier, ReadingQualityTier::Good);
 
         // An honest barometer at the edge elevation: the raw station pressure
         // that elevation implies for the same sea-level value, so only the

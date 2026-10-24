@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     /// #3299 owner ruling: the band is DEM −50 m / +60 m, edges included.
-    /// Jon's honest 227.7 m (20.2 m below the DEM) is inside.
+    /// The reference station's honest 227.7 m (20.2 m below the DEM) is inside.
     #[test]
     fn dem_band_edges_are_minus_50_and_plus_60_3299() {
         assert!(elevation_within_dem_band(JON_DEM_M - DEM_BAND_BELOW_M, JON_DEM_M));
@@ -1323,10 +1323,10 @@ mod tests {
         assert_eq!(decision.outcome, SeaLevelPressureOutcome::NoDemElevation);
         assert_eq!(decision.pairing, PressurePairing::Unverified);
 
-        let mut steven = jon_reading();
-        steven.pressure_hpa = Some(1020.1);
+        let mut relative_station = jon_reading();
+        relative_station.pressure_hpa = Some(1020.1);
         let (_, decision) = pair_station_reference_sea_level(
-            &steven,
+            &relative_station,
             relative(1020.1),
             Some(242.5),
             None,
