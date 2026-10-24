@@ -1,6 +1,6 @@
 # ADR: tokenomics reconciliation with the 2018 white paper
 
-Status: **Proposed — not ratified.** This is an options document for the owner. It records **no
+Status: **Accepted (owner, 2026-10-24).** This is an options document for the owner. It records **no
 decision**, and it authorizes no change to constants, genesis, emission, shares, burns or
 deployment. Every economics change it describes is consensus-breaking and needs separate review.
 
@@ -263,3 +263,43 @@ paper" is a valid answer to every one.
    height, or by a new testnet genesis)?
 8. **Who signs off,** and should the ruling wait for the sinks verification design (`#3562`,
    `#3577`) so the slice size is set with a verified claim path in hand?
+
+## Decision (accepted 2026-10-24)
+
+Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
+answer this document itself recommends, quoted with its line. Where the document makes no
+recommendation, the answer is **UNANSWERED — owner**: none was invented.
+
+This ADR is accepted as the reconciliation record. It recommends no option (line 140: "**None is
+recommended.**"), so every economics question is UNANSWERED — owner. Nothing here changes what pays
+on chain: any ruling on these items is policy only, and implementation requires a separate consensus
+PR + owner deploy. Line 249 ("Keep as implemented, recorded as a deliberate departure from the
+paper") is offered as a valid answer to every question, not as a recommendation.
+
+1. *Max supply: 21M (keep), 100M (paper) or another figure?* **UNANSWERED — owner.**
+2. *Emission curve: decaying ⅔ per ~4 years, flat, or decaying with a perpetual tail?* **UNANSWERED
+   — owner.** Relevant text (not a recommendation): line 63: "asks for that measurement before". The
+   doc defers to the block-speed record's cadence measurement before any ruling.
+3. *Allocations: none, emission-funded pools (O3-c), or the paper's allocations (legal counsel
+   first)?* **UNANSWERED — owner.**
+4. *Scheduled or fee burns: none, monthly schedule, or burn of a defined protocol inflow?*
+   **UNANSWERED — owner.**
+5. *Stale-wallet rule: none, burn or reclaim-to-sinks; what counts as activity, after how long?*
+   **UNANSWERED — owner.**
+6. *15% slice: which of O6-a…e, and how large a sink slice at launch?* **UNANSWERED — owner.**
+   Whatever the slice, the doc already requires that an unclaimed sink slice mints zero (see "Stated
+   in every option" below).
+7. *Where to apply: mainnet genesis only, or also the live testnet (feature-gated or new genesis)?*
+   **UNANSWERED — owner.** Relevant text (not a recommendation): line 212: "That is the cheapest
+   moment"; line 222: "The simpler alternative for the testnet is to rehearse the ratified
+   economics". These lines compare costs; they are not labelled a recommendation.
+8. *Who signs off, and should the ruling wait for the sinks verification design (#3562, #3577)?*
+   **UNANSWERED — owner.**
+
+Stated in every option, so accepted as written (no owner choice involved):
+
+- line 195: "**an unclaimed sink slice must mint zero**" (policy only; implementation requires a
+  separate consensus PR + owner deploy).
+- line 196: "No sink money should exist until verified outcomes claim it" (policy only;
+  implementation requires a separate consensus PR + owner deploy).
+- line 198: "marketed as carbon offsets without counsel" (communications rule).
