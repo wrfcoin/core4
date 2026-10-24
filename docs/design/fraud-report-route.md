@@ -249,7 +249,7 @@ wrfcoin node fraud report --claim <file> [--claim <file>]
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
 Ratifying the design authorizes no deployment by itself: per §9, implementation lands in separate
 PR(s) behind the default-off switch, and deployment waits for the node-share payout hold.
@@ -265,11 +265,11 @@ PR(s) behind the default-off switch, and deployment waits for the node-share pay
    `ApiRole::Operator`"; line 46: "A reporter without an Operator token must ask an operator to
    relay". The permissionless path is not part of the proposal, and the draft did not verify it
    (line 235: "handling of this transaction type was not verified for this draft").
-3. *Mempool provability: should the pool itself run `responsible()`?* **UNANSWERED — owner.**
+3. *Mempool provability: should the pool itself run `responsible()`?* **Decision (owner, 2026-10-24): No: the pool does not run `responsible()`; provability stays advisory at the edge only.**
    Relevant text (not a recommendation): line 237: "consensus-adjacent and needs its own review";
    line 227: "Optional, separately ratified".
 4. *Dedicated domain tag `wrfcoin.node_fraud_report_authorization.v1`: later feature-gated V2, or
-   keep the purpose-label separation?* **UNANSWERED — owner.** Relevant text (not a recommendation):
+   keep the purpose-label separation?* **Decision (owner, 2026-10-24): No: keep the purpose-label separation on the existing V1 encoding; no dedicated V2 domain tag.** Relevant text (not a recommendation):
    line 88: "follow later or never (Q4)". The route ships on the existing V1 encoding either way.
 5. *Producer ordering: prefer reports with the earliest deadline when more than 8 are pending?*
    **Yes: producer-side ordering by earliest `deadline_height` (listed under "Proposed addition").
@@ -277,7 +277,7 @@ PR(s) behind the default-off switch, and deployment waits for the node-share pay
    document: line 133: "| Vector | Existing control | Proposed addition |"; line 138: "producer-side
    ordering by earliest `deadline_height` (Q5)".
 6. *Reporter incentive: is "no reward" intended, or should a bounty be designed separately?*
-   **UNANSWERED — owner.** Relevant text (not a recommendation): line 243: "(it avoids incentives to
+   **Decision (owner, 2026-10-24): No reward. "No reward" is intended; no bounty is designed.** Relevant text (not a recommendation): line 243: "(it avoids incentives to
    manufacture disputes)". The rationale is offered inside the question, not as a recommendation.
 7. *Rate-limit numbers and deployment order after the payout hold?* **30 requests/min per Operator
    token, to be tuned. Deploy only after the payout hold lifts: one operator node first, then all.**
