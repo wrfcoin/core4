@@ -268,33 +268,32 @@ paper" is a valid answer to every one.
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
 This ADR is accepted as the reconciliation record. It recommends no option (line 140: "**None is
-recommended.**"), so every economics question is UNANSWERED — owner. Nothing here changes what pays
+recommended.**"), so every economics question was left for the owner and is answered below. Nothing here changes what pays
 on chain: any ruling on these items is policy only, and implementation requires a separate consensus
 PR + owner deploy. Line 249 ("Keep as implemented, recorded as a deliberate departure from the
 paper") is offered as a valid answer to every question, not as a recommendation.
 
-1. *Max supply: 21M (keep), 100M (paper) or another figure?* **UNANSWERED — owner.**
-2. *Emission curve: decaying ⅔ per ~4 years, flat, or decaying with a perpetual tail?* **UNANSWERED
-   — owner.** Relevant text (not a recommendation): line 63: "asks for that measurement before". The
+1. *Max supply: 21M (keep), 100M (paper) or another figure?* **Decision (owner, 2026-10-24): Keep 21M.**
+2. *Emission curve: decaying ⅔ per ~4 years, flat, or decaying with a perpetual tail?* **Decision (owner, 2026-10-24): Decay with a perpetual tail. Follow-up decision needed: a 21M cap and a perpetual tail must be reconciled (tail funded by burned/recycled supply, or asymptotic to the cap). Cadence measurement (see the block-speed record) precedes any numbers.** Relevant text (not a recommendation): line 63: "asks for that measurement before". The
    doc defers to the block-speed record's cadence measurement before any ruling.
 3. *Allocations: none, emission-funded pools (O3-c), or the paper's allocations (legal counsel
-   first)?* **UNANSWERED — owner.**
+   first)?* **Decision (owner, 2026-10-24): O3-c: emission-funded pools (no premine).**
 4. *Scheduled or fee burns: none, monthly schedule, or burn of a defined protocol inflow?*
-   **UNANSWERED — owner.**
+   **Decision (owner, 2026-10-24): Burn a defined protocol inflow.**
 5. *Stale-wallet rule: none, burn or reclaim-to-sinks; what counts as activity, after how long?*
-   **UNANSWERED — owner.**
-6. *15% slice: which of O6-a…e, and how large a sink slice at launch?* **UNANSWERED — owner.**
+   **Decision (owner, 2026-10-24): Burn, after long inactivity. Follow-up decision needed: the definition of activity and the inactivity period are still to be set.**
+6. *15% slice: which of O6-a…e, and how large a sink slice at launch?* **Decision (owner, 2026-10-24): O6-e: a small sink slice now (e.g. 65/15/10/5/5), grown by governance. An unclaimed sink slice still mints zero.**
    Whatever the slice, the doc already requires that an unclaimed sink slice mints zero (see "Stated
    in every option" below).
 7. *Where to apply: mainnet genesis only, or also the live testnet (feature-gated or new genesis)?*
-   **UNANSWERED — owner.** Relevant text (not a recommendation): line 212: "That is the cheapest
+   **Decision (owner, 2026-10-24): Also the live testnet, feature-gated.** Relevant text (not a recommendation): line 212: "That is the cheapest
    moment"; line 222: "The simpler alternative for the testnet is to rehearse the ratified
    economics". These lines compare costs; they are not labelled a recommendation.
 8. *Who signs off, and should the ruling wait for the sinks verification design (#3562, #3577)?*
-   **UNANSWERED — owner.**
+   **Decision (owner, 2026-10-24): The owner ratifies, after the sinks verification design (#3562, #3577) is in hand; ratification waits for that design. Implementation is feature-gated on the live testnet.**
 
 Stated in every option, so accepted as written (no owner choice involved):
 
