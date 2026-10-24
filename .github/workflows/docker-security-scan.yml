@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload Trivy scan results to GitHub Security tab
         if: steps.build.outcome == 'success' && hashFiles(format('trivy-results-{0}.sarif', hashFiles(matrix.dockerfile))) != ''
-        uses: github/codeql-action/upload-sarif@v4.38.3
+        uses: github/codeql-action/upload-sarif@v4.39.0
         with:
           sarif_file: 'trivy-results-${{ hashFiles(matrix.dockerfile) }}.sarif'
           category: 'trivy-${{ hashFiles(matrix.dockerfile) }}'
@@ -206,7 +206,7 @@ jobs:
 
       - name: Upload config scan results
         if: always() && hashFiles('trivy-config-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4.38.3
+        uses: github/codeql-action/upload-sarif@v4.39.0
         with:
           sarif_file: 'trivy-config-results.sarif'
           category: 'trivy-config'
