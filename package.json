@@ -290,7 +290,7 @@
     "lru-cache": "11.1.0",
     "lucide-react": "0.511.0",
     "memoizee": "0.4.17",
-    "multer": "^2.2.0",
+    "multer": "^2.5.0",
     "node-vault": "^0.10.10",
     "otplib": "^12.0.1",
     "pbkdf2": "^3.1.3",
