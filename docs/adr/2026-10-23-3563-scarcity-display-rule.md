@@ -110,22 +110,21 @@ on-chain registry, and the unreachable 2.0 "desert" bucket must be removed or ma
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
-This ADR is an options document and recommends none of its options, so every question is UNANSWERED
-— owner. Nothing here changes what pays on chain: an answer that changes the paid rule (A2, A3, B1,
+This ADR is an options document and recommends none of its options, so every question was left for the
+owner and is answered below. Nothing here changes what pays on chain: an answer that changes the paid rule (A2, A3, B1,
 D2, D3) is policy only, and implementation requires a separate consensus PR + owner deploy.
 
 1. *Display source: A1 (expose the paid ≈ 2° rule), A2 (pay on the 0.1° grid) or A3 (one middle
-   grid)?* **UNANSWERED — owner.** Relevant text (not a recommendation): line 88: "(A1 with B2 and
+   grid)?* **Decision (owner, 2026-10-24): A1: show the paid ~2° rule (no consensus change).** Relevant text (not a recommendation): line 88: "(A1 with B2 and
    C1) can ship without consensus work". Stated as a consequence, not a recommendation.
 2. *`ScarcityPolicy`: wire into payout (B1), task prioritisation only (B2) or remove (B3)?*
-   **UNANSWERED — owner.** See the note on question 1.
-3. *The `geo-grid` 1.0/1.5/2.5 table: delete (C1) or keep labelled (C2)?* **UNANSWERED — owner.**
+   **Decision (owner, 2026-10-24): B2: task prioritisation only (no consensus change).** See the note on question 1.
+3. *The `geo-grid` 1.0/1.5/2.5 table: delete (C1) or keep labelled (C2)?* **Decision (owner, 2026-10-24): C1: delete the table.**
    See the note on question 1.
-4. *Human impact and network demand: retire (D1), build (D2/D3) or defer (D4)?* **UNANSWERED —
-   owner.**
-5. *Should the no-station "desert" case get a distinct, higher bonus?* **UNANSWERED — owner.**
+4. *Human impact and network demand: retire (D1), build (D2/D3) or defer (D4)?* **Decision (owner, 2026-10-24): D4: defer.**
+5. *Should the no-station "desert" case get a distinct, higher bonus?* **Decision (owner, 2026-10-24): Yes: design a higher tier for no-station deserts (design to follow). Follow-up decision needed: the tier's size and trigger. Implementation requires a separate consensus PR + owner deploy.**
 
 Stated in every option, so accepted as written (no owner choice involved):
 

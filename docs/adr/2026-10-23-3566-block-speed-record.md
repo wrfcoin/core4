@@ -78,14 +78,14 @@ Without both, block speed becomes a back door to changing issuance.
 
 Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
 answer this document itself recommends, quoted with its line. Where the document makes no
-recommendation, the answer is **UNANSWERED — owner**: none was invented.
+recommendation, the question was left open for the owner and is answered below as `Decision (owner, 2026-10-24)`: none was invented.
 
 Nothing here changes the block-time schedule or what pays on chain. Answers are policy only; any
 change to the schedule or to issuance requires a separate consensus PR + owner deploy.
 
-1. *SUPERSEDED (B-S), vote (B-V), hold-only (B-H) or time-based (B-T)?* **UNANSWERED — owner.**
+1. *SUPERSEDED (B-S), vote (B-V), hold-only (B-H) or time-based (B-T)?* **Decision (owner, 2026-10-24): B-V: governance vote. Each tier change is recorded in state and is issuance-neutral, per the locked answer to question 3. Implementation requires a separate consensus PR + owner deploy.**
 2. *If not B-S: keep the paper's limits (dwell one week to one year, 72-hour cooldown, automatic
-   step after a year), or others?* **UNANSWERED — owner.** Depends on question 1.
+   step after a year), or others?* **Decision (owner, 2026-10-24): Set different limits later, after the cadence measurement. Follow-up decision needed: the limits, set once the measurement is in.** Depends on question 1.
 3. *Should block-speed changes be forbidden from changing issuance?* **Decision: yes. A block-speed
    change must not change issuance, so any option other than B-S first records each tier change in
    state and makes per-block rewards proportional to block time; implementation requires a separate
@@ -97,4 +97,4 @@ change to the schedule or to issuance requires a separate consensus PR + owner d
     Recommended by the document: line 40: "**Unverified risk to measure before any ruling.**"; line
     44: "realised issuance should be measured from chain data before the owner rules on block
     speed".
-4b. *Who runs that measurement?* **UNANSWERED — owner.**
+4b. *Who runs that measurement?* **Decision (owner, 2026-10-24): A LEAD lane runs it, as a read-only report from chain data.**
