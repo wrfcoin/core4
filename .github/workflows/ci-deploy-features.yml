@@ -481,6 +481,33 @@ jobs:
             3240 -- --nocapture 2>&1 | tee "$test_log"
           test "$(grep -Ec '^test .*_3240 \.\.\. ok$' "$test_log")" -eq 12
 
+      # #3299: the DEM band on the trusted station elevation for sea-level
+      # pairing: the three laundering probe rows, the honest reference station
+      # and the band edges through the tier fold, the fail-closed missing-DEM
+      # case, the DEM table's location binding and startup sha256 line, and the
+      # shadow preview. Exactly six; counted because Cargo exits 0 when a filter
+      # matches nothing.
+      - name: Execute sea-level DEM band tests (#3299)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            3299 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_3299 \.\.\. ok$' "$test_log")" -eq 6
+
+      # #3285: the attester's sea-level pressure pairing (verified, relative,
+      # unverified, no elevation, inactive-is-today) that the #3299 band sits
+      # on. Exactly eight, counted for the same reason.
+      - name: Execute sea-level pressure pairing tests (#3285)
+        run: |
+          set -o pipefail
+          test_log="$(mktemp)"
+          trap 'rm -f "$test_log"' EXIT
+          cargo test --locked -p wrfcoin-native-chain --bin oracle_attester --features attester \
+            3285 -- --nocapture 2>&1 | tee "$test_log"
+          test "$(grep -Ec '^test .*_3285 \.\.\. ok$' "$test_log")" -eq 8
+
       # #3240 end to end: the production /transactions/oracle/pending handler
       # over a real station registry feeding the production attester cycle,
       # with a mock api.weather.gov: the route surface (station_location
