@@ -1,8 +1,8 @@
 # Agents as earning participants — Phase B scope
 
-Status: **DRAFT for owner ratification.** A scoping document: it lists candidate slices, their
-sizes, dependencies and risks. It **decides nothing** and authorizes no implementation, consensus
-change, payout rule or deployment.
+Status: **Accepted (owner, 2026-10-24).** A scoping document: it lists candidate slices, their
+sizes, dependencies and risks. It authorizes no implementation, consensus change,
+payout rule or deployment; the owner's answers are in "Decision" at the end.
 
 Date: 2026-10-23.
 
@@ -155,3 +155,44 @@ B-6 storage keepers: independent track
 6. **Reports:** confirm that no written report is paid before the work-unit primitive and a verifier
    pool exist, and that the first report type is the observation-quality report.
 7. **Storage keepers:** in this phase or a separate storage track?
+
+## Decision (accepted 2026-10-24)
+
+Owner ruling, 2026-10-24: "Merge as accepted, recommended answers." Each open question gets the
+answer this document itself recommends, quoted with its line. Where the document makes no
+recommendation, the answer is **UNANSWERED — owner**: none was invented.
+
+Accepting this scope authorizes no implementation, payout rule or deployment by itself; each slice
+still lands through its own PR. Answers below that the document does not recommend are UNANSWERED —
+owner.
+
+1. *Payout path: who operates the receipt signer, against which truth source, and must key binding
+   (B-1) activate before receipts?* **UNANSWERED — owner.** Relevant text (not a recommendation):
+   line 56: "| Ratify first | Truth source; who operates the signer;". Listed as items to ratify; no
+   recommendation.
+2. *Ensembles: may a group wallet commit an ensemble as its own forecast, and which attribution rule
+   inside a group?* **Yes, a designated group wallet may commit the ensemble as one more forecast.
+   Attribution: leave-one-out marginal skill, as an off-chain convention paid by ordinary transfers
+   (no consensus change).** Recommended by the document: line 82: "The group forecast may be
+   committed by a designated group wallet as one more forecast."; line 84: "One proposed rule is
+   leave-one-out marginal skill"; line 84: "**Any split inside a group is an off-chain
+   convention**".
+3. *Late commits: is a forecast committed after another member's reveal for the same cell and lead
+   ineligible?* **Adopted: such a forecast is ineligible.** Recommended by the document: line 83:
+   "Forecasts committed after another member's reveal for the same cell and lead are ineligible.".
+4. *Reward pool: same contribution slice for ensembles and individuals, or a cap per cell and lead?*
+   **UNANSWERED — owner.**
+5. *Track-record linkage: (a) none, (b) admission only, (c) bounties or (d) multiplier?*
+   **UNANSWERED — owner.** Relevant text (not a recommendation): line 95: "Simplest and least
+   gameable". Stated as a property of option (a), not a recommendation.
+6. *Reports: no written report paid before the work-unit primitive and a verifier pool exist; first
+   type is the observation-quality report?* **Confirmed: no written report is paid before the
+   work-unit primitive and a verifier pool exist, and the first report type is the daily regional
+   observation-quality report.** Recommended by the document: line 109: "That reports are paid at
+   all before verifiers exist (default: no)"; line 105: "A daily regional **observation-quality
+   report**"; line 138: "Paying for written reports before the reproducible-job primitive and
+   verifiers exist.".
+7. *Storage keepers: in this phase or a separate storage track?* **UNANSWERED — owner.** Relevant
+   text (not a recommendation): line 111: "### B-6. Storage keepers (lower priority for this
+   phase)"; line 129: "B-6 storage keepers: independent track". The heading and the orientation-only
+   graph point in different directions.
