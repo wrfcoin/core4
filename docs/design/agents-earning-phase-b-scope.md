@@ -129,6 +129,8 @@ B-2 work-unit ADR ──> B-2 build ──> B-5 first report
 B-6 storage keepers: independent track
 ```
 
+Note (2026-10-24): the owner placed storage keepers (B-6) in this phase; the "lower priority" heading and "independent track" line above are kept as originally written.
+
 ## 4. Explicitly out of scope for Phase B
 
 - **On-chain ensemble transactions or on-chain reward splits.** Group credit stays an off-chain,
