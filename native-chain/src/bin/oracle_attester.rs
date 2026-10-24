@@ -343,6 +343,9 @@ impl ReferenceLocation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DemTable {
     by_station: HashMap<String, DemEntry>,
+    /// sha256 of the file bytes as loaded; `None` when no file is configured.
+    /// Logged at startup so two attesters on different tables are visible.
+    sha256_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -376,6 +379,7 @@ impl DemTable {
             // determinism-ok: as above
             dem_ground_elevation_m: f64,
         }
+        use sha2::{Digest, Sha256};
         let file: File = serde_json::from_str(body).context("DEM table is not valid JSON")?;
         if file.version != 1 {
             bail!("DEM table version {} is not supported (expected 1)", file.version);
@@ -397,7 +401,19 @@ impl DemTable {
                 bail!("DEM table: station {} appears twice", row.station_id);
             }
         }
-        Ok(Self { by_station })
+        Ok(Self { by_station, sha256_hex: Some(hex::encode(Sha256::digest(body.as_bytes()))) })
+    }
+
+    /// The startup line: the file's sha256 and entry count, nothing else (no
+    /// station ids, no locations), so operators can compare attesters.
+    fn startup_line(&self) -> String {
+        match &self.sha256_hex {
+            Some(sha) => format!("[attester] #3299 DEM table sha256={sha} entries={}", self.len()),
+            None => "[attester] #3299 DEM table: none configured (WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE \
+                     unset): while reference_sea_level_pressure is active, a station-kind sea-level \
+                     claim from a station with a registered elevation is not trusted"
+                .to_string(),
+        }
     }
 
     fn from_env() -> Result<Self> {
@@ -2009,6 +2025,7 @@ fn sea_level_preview(
         bounded: BTreeMap<String, usize>,
         outcomes: BTreeMap<String, usize>,
         changed: usize,
+        good_to_unverified: usize,
     }
     let mut rows: BTreeMap<String, Row> = BTreeMap::new();
     let mut lines = String::new();
@@ -2052,6 +2069,12 @@ fn sea_level_preview(
         if bounded.tier_label() != unbounded.tier_label() {
             row.changed += 1;
         }
+        if unbounded.verdict.tier == wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier::Good
+            && unbounded.tier_label() != "PHYSICS-ONLY"
+            && bounded.sea_level.pairing == PressurePairing::Unverified
+        {
+            row.good_to_unverified += 1;
+        }
         if args.per_reading {
             let _ = writeln!(
                 lines,
@@ -2092,6 +2115,16 @@ fn sea_level_preview(
             counts(&row.outcomes)
         );
     }
+    // The scheduling gate (README): NoDemElevation=0 for every station with a
+    // registered elevation, and every GoodToUnverified flip explained.
+    let total = |f: &dyn Fn(&Row) -> usize| rows.values().map(f).sum::<usize>();
+    let _ = writeln!(
+        out,
+        "summary: NoDemElevation={} ElevationOutsideDemBand={} GoodToUnverified={}",
+        total(&|r| r.outcomes.get("NoDemElevation").copied().unwrap_or(0)),
+        total(&|r| r.outcomes.get("ElevationOutsideDemBand").copied().unwrap_or(0)),
+        total(&|r| r.good_to_unverified)
+    );
     out.push_str(&lines);
     out
 }
@@ -2171,16 +2204,9 @@ async fn main() -> Result<()> {
     }
 
     if config.dem_table.len() == 0 {
-        log::warn!(
-            "[attester] no WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE entries: while \
-             reference_sea_level_pressure is active, a station-kind sea-level claim from a \
-             station with a registered elevation is not trusted (#3299)"
-        );
+        log::warn!("{}", config.dem_table.startup_line());
     } else {
-        log::info!(
-            "[attester] #3299 DEM band: {} station(s) from WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE",
-            config.dem_table.len()
-        );
+        log::info!("{}", config.dem_table.startup_line());
     }
 
     let client = build_attester_http_client()?;
@@ -2598,6 +2624,23 @@ mod tests {
         assert!(DemTable::parse(&DEM_FILE.replace(r#""source""#, r#""typo""#)).is_err());
     }
 
+    /// #3299: the startup line carries the table's sha256 and entry count and
+    /// nothing else, so attesters on different tables are told apart.
+    #[test]
+    fn dem_table_startup_line_logs_sha256_and_count_only_3299() {
+        use sha2::{Digest, Sha256};
+        let table = DemTable::parse(DEM_FILE).unwrap();
+        let sha = hex::encode(Sha256::digest(DEM_FILE.as_bytes()));
+        assert_eq!(table.startup_line(), format!("[attester] #3299 DEM table sha256={sha} entries=1"));
+        let other = DemTable::parse(&DEM_FILE.replace("247.9", "248.0")).unwrap();
+        assert_ne!(other.startup_line(), table.startup_line());
+        assert_eq!(DemTable::parse(DEM_FILE).unwrap().startup_line(), table.startup_line());
+        for leak in ["PWS-", "46.8", "92.1", "247.9"] {
+            assert!(!table.startup_line().contains(leak), "{leak}");
+        }
+        assert!(DemTable::default().startup_line().contains("none configured"));
+    }
+
     /// #3299 shadow preview: per station, live (sea-level off) vs #3285
     /// unbounded vs #3285+#3299; an honest and a laundering station side by
     /// side, and nothing but text comes out.
@@ -2650,6 +2693,15 @@ mod tests {
         assert_eq!(line("PWS-EXAMPLE-WS5000"), "PWS-EXAMPLE-WS5000 1 degraded:1 | good:1 | good:1 | 0 | Verified:1");
         assert_eq!(line("PWS-LAUNDER"), "PWS-LAUNDER 1 degraded:1 | good:1 | degraded:1 | 1 | ElevationOutsideDemBand:1");
         assert!(report.contains("outside the DEM band"), "{report}");
+        assert!(
+            report.contains("summary: NoDemElevation=0 ElevationOutsideDemBand=1 GoodToUnverified=1\n"),
+            "{report}"
+        );
+        let no_dem = sea_level_preview(&args, &MechanicalPolicy::default(), &readings, &kdlh, &DemTable::default());
+        assert!(
+            no_dem.contains("summary: NoDemElevation=2 ElevationOutsideDemBand=0 GoodToUnverified=2\n"),
+            "{no_dem}"
+        );
         assert!(parse_preview_args(&["--readings".into(), "r.json".into()]).is_err());
     }
 

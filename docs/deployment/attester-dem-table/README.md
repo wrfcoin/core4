@@ -79,7 +79,13 @@ Output:
 ```
 station readings live(sea-level off) | 3285 unbounded | 3285+3299 bounded | changed | outcomes(bounded)
 <station_id> 288 degraded:288 | good:288 | good:288 | 0 | Verified:288
+summary: NoDemElevation=0 ElevationOutsideDemBand=0 GoodToUnverified=0
 ```
+
+The `summary` line counts, over all stations in the bounded mode:
+- **`NoDemElevation`**: readings from a station with a registered elevation but no usable table entry;
+- **`ElevationOutsideDemBand`**: readings whose registered elevation is outside the band;
+- **`GoodToUnverified`**: readings that tiered Good under the unbounded rule and are Unverified under the bound.
 
 `changed` counts the readings whose tier differs between modes 2 and 3. An honest station should show `0`.
 
@@ -87,12 +93,24 @@ For any station whose bounded tier is worse than the unbounded one, check:
 - its `OUT` / `DEM_UNAVAILABLE` line from step 1;
 - the `ElevationOutsideDemBand` / `NoDemElevation` outcomes in the preview.
 
+### Scheduling gate
+
+The owner lifts `SCHEDULING_HELD` for `reference_sea_level_pressure`, in a separate release PR, **only when** a preview over live data shows both of these:
+- **`NoDemElevation=0`** for every registered station. Every station with a registered elevation is in the table, so no honest station is failed closed just for being missing.
+- **No unexpected `GoodToUnverified` flips.** Every flip is a station you have looked at and expect to lose its sea-level trust (an `OUT` line in step 1). A flip for an honest station means its elevation or the table needs fixing first.
+
 ## 3. Enable on the attesters
 
 Set `WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE=/path/to/dem-elevations.json` on **every** attester, so they all hold the same
 bytes, and restart them.
 
-At startup the attester logs how many stations it loaded. An unreadable or malformed file refuses to start.
+At startup the attester logs one line with the table's sha256 and entry count, and nothing else:
+
+```
+[attester] #3299 DEM table sha256=<hex> entries=<n>
+```
+
+Compare that line across attesters: every one must show the same hash. An unreadable or malformed file refuses to start.
 
 An entry is used only while the station's served coarse location matches the one in the file. After a station moves,
 rebuild the table.
