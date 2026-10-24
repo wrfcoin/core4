@@ -1,7 +1,7 @@
 # ADR: one scarcity rule — the app shows what the chain pays
 
-Status: **Accepted (owner, 2026-10-24).** An options document for the owner. It records no decision
-and changes no reward, display or API.
+Status: **Accepted (owner, 2026-10-24).** An options document; the owner's answers were recorded on
+2026-10-24 (see "Decision"). It changes no reward, display or API.
 
 Date: 2026-10-23.
 
