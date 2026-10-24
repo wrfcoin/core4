@@ -61,6 +61,13 @@ pub struct LegacyTransactionSubmitRequest {
     /// parsed from this string); clients must sign with the same nonce.
     #[serde(default)]
     pub nonce: Option<String>,
+    /// WebAuthn P-256 passkey authorization of the transfer, in the shape
+    /// `TransparentTransferPayload::verify_passkey_authorization` checks
+    /// (credential bound to `from`, assertion over the from|to|amount|nonce
+    /// transfer challenge). Used only when `auth_pubkey`/`auth_signature` are
+    /// absent, and only once `passkey_p256_auth` is active at tip+1 (#2169).
+    #[serde(default)]
+    pub passkey_auth: Option<wrfcoin_shared_protocol::accounts::passkey::PasskeyAuthorization>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -220,58 +227,108 @@ pub async fn submit_transaction_compat(
         // #1727: a transparent transfer debits `from` with no per-input
         // signature, so it must carry a verifiable `from`-bound authorization.
         // The server cannot sign for the user, so the client must supply it.
-        let (auth_pubkey, auth_signature) =
-            match (body.auth_pubkey.as_deref(), body.auth_signature.as_deref()) {
-                (Some(pk), Some(sig)) if !pk.trim().is_empty() && !sig.trim().is_empty() => {
-                    (pk.trim().to_string(), sig.trim().to_string())
-                },
-                _ => {
-                    // #3258 review R1: a failed authorization is charged to
-                    // the caller's budget (see the AUTHORIZATION_INVALID arm).
+        let ed25519_auth = match (body.auth_pubkey.as_deref(), body.auth_signature.as_deref()) {
+            (Some(pk), Some(sig)) if !pk.trim().is_empty() && !sig.trim().is_empty() => {
+                Some((pk.trim().to_string(), sig.trim().to_string()))
+            },
+            _ => None,
+        };
+        let payload = match (ed25519_auth, body.passkey_auth.clone()) {
+            (Some((auth_pubkey, auth_signature)), _) => {
+                let payload = build_transparent_opt_out_payload(
+                    from,
+                    to,
+                    amount,
+                    body.transparent_opt_out_reason.as_deref(),
+                    Some(auth_pubkey),
+                    Some(auth_signature),
+                );
+                // Fail fast on a bad/forged authorization rather than enqueueing a tx
+                // the mempool would reject. Bind authorization to the required caller
+                // nonce so a captured request cannot be replayed on the legacy lane.
+                if !payload.verify_authorization(nonce_u64) {
+                    // #3258 review R1: every failed authorization — each one costs an
+                    // ed25519 verification and an address derivation — is charged to
+                    // the legacy submit rate limit, so forged attempts cannot be
+                    // driven without bound. The limiter is keyed by the caller's
+                    // bearer token, never by `from`, so this spends only the caller's
+                    // own budget. Authenticated requests are charged to a separate
+                    // per-`from` budget after the replay check below, so a replay
+                    // costs no budget (#1846) and one relayed user's failures never
+                    // starve another user's sends on a shared token (#3337).
                     if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
                         return resp;
                     }
                     return envelope_error(
                         &req,
                         StatusCode::BAD_REQUEST,
-                        "VALIDATION_ERROR",
-                        "transparent transfers require auth_pubkey and auth_signature \
-                         (ed25519 over from|to|amount|nonce) from the from-account key",
+                        "AUTHORIZATION_INVALID",
+                        "auth_signature does not verify for auth_pubkey over from|to|amount|nonce, \
+                         or auth_pubkey does not derive to from",
                     );
-                },
-            };
-        let payload = build_transparent_opt_out_payload(
-            from,
-            to,
-            amount,
-            body.transparent_opt_out_reason.as_deref(),
-            Some(auth_pubkey),
-            Some(auth_signature),
-        );
-        // Fail fast on a bad/forged authorization rather than enqueueing a tx
-        // the mempool would reject. Bind authorization to the required caller
-        // nonce so a captured request cannot be replayed on the legacy lane.
-        if !payload.verify_authorization(nonce_u64) {
-            // #3258 review R1: every failed authorization — each one costs an
-            // ed25519 verification and an address derivation — is charged to
-            // the legacy submit rate limit, so forged attempts cannot be
-            // driven without bound. The limiter is keyed by the caller's
-            // bearer token, never by `from`, so this spends only the caller's
-            // own budget. Authenticated requests are charged to a separate
-            // per-`from` budget after the replay check below, so a replay
-            // costs no budget (#1846) and one relayed user's failures never
-            // starve another user's sends on a shared token (#3337).
-            if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
-                return resp;
-            }
-            return envelope_error(
-                &req,
-                StatusCode::BAD_REQUEST,
-                "AUTHORIZATION_INVALID",
-                "auth_signature does not verify for auth_pubkey over from|to|amount|nonce, \
-                 or auth_pubkey does not derive to from",
-            );
-        }
+                }
+                payload
+            },
+            (None, Some(passkey_auth)) => {
+                // #2169: a passkey transfer is accepted only once
+                // `passkey_p256_auth` is active at the height it would be mined
+                // at (tip+1), so this node never enqueues a passkey transfer
+                // that the producer self-screen and block validation would
+                // still refuse. Refused before replay/rate-limit state changes,
+                // like an unavailable feature (#3235).
+                let next_height = state.blockchain.read().await.height.saturating_add(1);
+                if !wrfcoin_shared_protocol::accounts::passkey::passkey_auth_active(next_height) {
+                    return envelope_error(
+                        &req,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "FEATURE_NOT_ACTIVE",
+                        format!(
+                            "passkey_p256_auth is not active at the next block height \
+                             {next_height}; use auth_pubkey/auth_signature (ed25519)"
+                        ),
+                    );
+                }
+                let mut payload = build_transparent_opt_out_payload(
+                    from,
+                    to,
+                    amount,
+                    body.transparent_opt_out_reason.as_deref(),
+                    None,
+                    None,
+                );
+                payload.passkey_auth = Some(passkey_auth);
+                if !payload.verify_passkey_authorization(nonce_u64) {
+                    // Charged like a failed ed25519 authorization (#3258 R1):
+                    // each attempt costs a P-256 verification.
+                    if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                        return resp;
+                    }
+                    return envelope_error(
+                        &req,
+                        StatusCode::BAD_REQUEST,
+                        "AUTHORIZATION_INVALID",
+                        "passkey_auth does not verify over from|to|amount|nonce, \
+                         or its credential does not derive to from",
+                    );
+                }
+                payload
+            },
+            (None, None) => {
+                // #3258 review R1: a failed authorization is charged to
+                // the caller's budget (see the AUTHORIZATION_INVALID arm).
+                if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                    return resp;
+                }
+                return envelope_error(
+                    &req,
+                    StatusCode::BAD_REQUEST,
+                    "VALIDATION_ERROR",
+                    "transparent transfers require auth_pubkey and auth_signature \
+                     (ed25519 over from|to|amount|nonce) from the from-account key, \
+                     or passkey_auth once passkey_p256_auth is active",
+                );
+            },
+        };
         (
             TransactionType::Transfer,
             serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
