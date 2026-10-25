@@ -1336,35 +1336,21 @@ mod tests {
         );
     }
 
-    /// core4#3299: the genesis schedule refuses a held feature (alone or among
-    /// others) before anything is written, with the same reason as the signed
-    /// extension; an unheld schedule is unchanged.
+    /// core4#3299 follow-up: with the hold lifted the genesis schedule accepts
+    /// `reference_sea_level_pressure`, alone or among others.
     #[test]
-    fn genesis_activate_refuses_a_held_feature_3299() {
-        for activate in [
-            vec!["reference_sea_level_pressure@25000".to_string()],
-            vec!["v1@0".to_string(), "reference_sea_level_pressure@25000".to_string()],
-        ] {
-            let err = build_activation_schedule(&activate).unwrap_err().to_string();
-            assert!(err.contains("scheduling of `reference_sea_level_pressure` is held"), "{err}");
-            assert!(err.contains("core4#3299"), "{err}");
-        }
-        let dir = temp_test_dir("genesis-held");
-        write_text_file(&dir.join("a.pub"), &deterministic_pubkey(1), false).expect("write pub");
-        let output = dir.join("genesis.json");
-        assert!(handle_genesis(
-            &dir,
-            Some(1),
-            "testnet",
-            &output,
-            Some(1_711_152_000),
-            &["reference_sea_level_pressure@25000".to_string()],
-        )
-        .is_err());
-        assert!(!output.exists(), "refused before writing");
+    fn genesis_activate_accepts_sea_level_pressure_with_hold_lifted_3299() {
         assert_eq!(
-            build_activation_schedule(&["reward_gross_outlier_guard@25000".to_string()]).unwrap(),
-            Some("25000:reward_gross_outlier_guard".to_string())
+            build_activation_schedule(&["reference_sea_level_pressure@25000".to_string()]).unwrap(),
+            Some("25000:reference_sea_level_pressure".to_string())
+        );
+        assert_eq!(
+            build_activation_schedule(&[
+                "v1@0".to_string(),
+                "reference_sea_level_pressure@25000".to_string()
+            ])
+            .unwrap(),
+            Some("0:v1,25000:reference_sea_level_pressure".to_string())
         );
     }
 

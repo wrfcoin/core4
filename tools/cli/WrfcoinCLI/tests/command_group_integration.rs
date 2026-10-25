@@ -1361,11 +1361,11 @@ async fn why_output_does_not_contain_sensitive_values() {
 #[path = "support/station_owner_signature_3383.rs"]
 mod station_owner_signature_3383;
 
-/// core4#3299 review: `setup genesis --activate` emits a feature schedule too,
-/// so the CLI's scheduling hold covers it: the real binary refuses a held
-/// feature before writing any artifact, and an unheld schedule still writes.
+/// core4#3299 follow-up: `setup genesis --activate` shares the signed
+/// extension's scheduling gate. With the `reference_sea_level_pressure` hold
+/// lifted the real binary writes it, and an unheld schedule still writes.
 #[test]
-fn setup_genesis_refuses_a_held_feature_before_writing_3299() {
+fn setup_genesis_activates_sea_level_pressure_with_hold_lifted_3299() {
     let home = temp_home("genesis-held-3299");
     let keys = home.join("validator-keys");
     fs::create_dir_all(&keys).expect("create key dir");
@@ -1375,22 +1375,24 @@ fn setup_genesis_refuses_a_held_feature_before_writing_3299() {
     fs::write(keys.join("validator-1.pub"), public_hex).expect("write pub");
     let keys_arg = keys.to_str().expect("utf-8 path");
 
-    let held = home.join("held-genesis.json");
+    let lifted = home.join("sea-level-genesis.json");
     let (code, stdout, stderr) = run_wrfcoin_exit(
         &[
             "setup", "genesis", "--validator-keys", keys_arg,
-            "--output", held.to_str().expect("utf-8 path"),
+            "--output", lifted.to_str().expect("utf-8 path"),
             "--genesis-timestamp", "1711152000",
             "--activate", "v1@0", "--activate", "reference_sea_level_pressure@25000",
         ],
         &home,
         None,
     );
-    let said = format!("{stdout}\n{stderr}");
-    assert_ne!(code, 0, "a held feature must be refused: {said}");
-    assert!(said.contains("scheduling of `reference_sea_level_pressure` is held"), "{said}");
-    assert!(said.contains("core4#3299"), "{said}");
-    assert!(!held.exists(), "nothing may be written for a refused schedule");
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let written: Value =
+        serde_json::from_str(&fs::read_to_string(&lifted).expect("genesis written")).expect("json");
+    assert_eq!(
+        written["protocol_activation_schedule"],
+        Value::String("0:v1,25000:reference_sea_level_pressure".to_string())
+    );
 
     // Positive control: an unheld schedulable feature still writes its schedule.
     let unheld = home.join("unheld-genesis.json");

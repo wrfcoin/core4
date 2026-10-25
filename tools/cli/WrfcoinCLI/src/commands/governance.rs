@@ -518,15 +518,11 @@ fn handle_faucet_pop_with_bindings(
 /// and `verify_feature_schedule_extension` are unchanged, so a chain still
 /// accepts a valid extension signed elsewhere.
 ///
-/// `reference_sea_level_pressure` pairs a station's pressure claim against its
-/// registered elevation. Until core4#3299 bounds that elevation to the DEM band
-/// and binds the pressure kind, and a shadow preview has run, a false elevation
-/// launders a barometer bias into a Good tier. Only the release PR named in
-/// core4#3299 removes this entry.
-pub(crate) const SCHEDULING_HELD: &[(&str, &str)] = &[(
-    "reference_sea_level_pressure",
-    "core4#3299: elevation/pressure-kind trust and the shadow preview are not done",
-)];
+/// The table is empty: core4#3299's elevation bound (DEM -50/+60 m, core4#38)
+/// is the trust condition the owner ruled sufficient for
+/// `reference_sea_level_pressure`, so the hold on it is lifted. The mechanism
+/// stays for any future tool hold.
+pub(crate) const SCHEDULING_HELD: &[(&str, &str)] = &[];
 
 /// Refuse (`refusing to <action>: scheduling of `<name>` is held (<why>)`)
 /// when any of `features` is in `held`. Shared by every schedule-emitting path.
@@ -1098,22 +1094,6 @@ mod tests {
         let err = sign(&[("faucet_sink_binding_r2", 25_000)], None);
         assert!(err.contains("has no faucet-binding row in this binary"), "{err}");
 
-        // core4#3299: a schedulable feature whose scheduling is held.
-        let err = sign(&[("reference_sea_level_pressure", 25_000)], None);
-        assert!(
-            err.contains("scheduling of `reference_sea_level_pressure` is held"),
-            "{err}"
-        );
-        assert!(err.contains("core4#3299"), "{err}");
-        let err = sign(
-            &[
-                ("reference_sea_level_pressure", 25_000),
-                ("verify_unit_pricing", 25_000),
-            ],
-            None,
-        );
-        assert!(err.contains("is held"), "held entry among others: {err}");
-
         // A version-step extension is well-formed but not signable yet.
         let step_path = dir.join("step.json");
         let mut step: FeatureScheduleExtension =
@@ -1137,10 +1117,10 @@ mod tests {
         assert!(err.contains("S11"), "{err}");
     }
 
-    /// core4#3299: the hold names exactly the held features. A schedule
-    /// without one still signs, and the consensus gates never see the list.
+    /// core4#3299: a schedule of unheld features still signs, and the
+    /// consensus gates never see the list.
     #[test]
-    fn schedule_extension_hold_refuses_only_held_features_3299() {
+    fn schedule_extension_unheld_feature_signs_3299() {
         let dir = temp_dir("sched-ext-hold");
         let (key, _) = write_key(&dir, 14);
         handle_schedule_extension(&ScheduleExtensionCommands::Sign {
@@ -1152,17 +1132,46 @@ mod tests {
         })
         .expect("an unheld schedulable feature still signs");
         assert!(
-            SCHEDULING_HELD
-                .iter()
-                .any(|(name, _)| *name == "reference_sea_level_pressure")
-        );
-        assert!(
             wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::parse(
                 "reference_sea_level_pressure"
             )
             .is_some_and(|feature| feature.schedulable(None)),
-            "the hold exists because consensus would accept it"
+            "consensus accepts it"
         );
+    }
+
+    /// core4#3299 follow-up: the owner ruled the elevation bound (DEM -50/+60 m,
+    /// core4#38) is the trust condition, so the CLI no longer holds
+    /// `reference_sea_level_pressure`: it signs, alone or among others, and the
+    /// hold table is empty. The mechanism still refuses whatever a table names.
+    #[test]
+    fn schedule_extension_sea_level_pressure_signs_with_hold_lifted_3299() {
+        let dir = temp_dir("sched-ext-sea-level");
+        let (key, _) = write_key(&dir, 15);
+        for (i, features) in [
+            vec![("reference_sea_level_pressure", 25_000)],
+            vec![("reference_sea_level_pressure", 25_000), ("verify_unit_pricing", 25_000)],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let out = dir.join(format!("out-{i}.json"));
+            handle_schedule_extension(&ScheduleExtensionCommands::Sign {
+                extension: write_extension(&dir, &features),
+                governance_key: key.clone(),
+                out: out.clone(),
+                carrying_height: None,
+                faucet_pop: None,
+            })
+            .expect("reference_sea_level_pressure signs once the hold is lifted");
+            assert!(out.exists());
+        }
+        assert!(SCHEDULING_HELD.is_empty(), "no feature is held by this tool");
+        let held = [("reference_sea_level_pressure", "test hold")];
+        let err = check_held_feature_names(["reference_sea_level_pressure"], &held, "sign")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("scheduling of `reference_sea_level_pressure` is held (test hold)"), "{err}");
     }
 
     #[test]
