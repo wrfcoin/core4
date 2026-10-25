@@ -59,7 +59,7 @@ both until H.
 message   = "wrfcoin_passkey_transfer_auth_v1"
           ‖ u32le(len chain_id) ‖ chain_id ‖ u32le(len network_id) ‖ network_id
           ‖ u32le(len from) ‖ from ‖ u32le(len to) ‖ to ‖ u64le(amount) ‖ u64le(nonce)
-challenge = blake3(message)                       # 32 bytes → navigator.credentials.get
+challenge = sha3_256(message)                     # 32 bytes → navigator.credentials.get
 ```
 
 Same framing as the ed25519 message, under a different tag, so neither signature is a valid
@@ -81,8 +81,8 @@ In order, cheapest first, one typed refusal each (`PasskeyError`):
 
 ## Address derivation
 
-`blake3("wrfcoin.passkey_address.v1" ‖ rp_id_hash ‖ 0x04 ‖ X ‖ Y)[..20]`. Folding the tag means no
-ed25519 key (address `blake3(key)[..20]`) can derive a passkey address; folding the RP ID hash means
+`sha3_256("wrfcoin.passkey_address.v1" ‖ rp_id_hash ‖ 0x04 ‖ X ‖ Y)[..20]`. Folding the tag means no
+ed25519 key (address `sha3_256(key)[..20]`) can derive a passkey address; folding the RP ID hash means
 one key under two relying parties is two accounts. `from` must equal this address for the
 credential the payload names — the same `from`-binding the ed25519 rule enforces (#1727).
 

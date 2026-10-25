@@ -443,7 +443,7 @@ fn the_authorization_message_bytes_are_pinned() {
         PASSKEY_TRANSFER_AUTH_DOMAIN,
         TRANSPARENT_TRANSFER_AUTH_DOMAIN
     );
-    // The challenge is the blake3 of the message: 32 bytes, deterministic.
+    // The challenge is the SHA3-256 of the message: 32 bytes, deterministic.
     assert_eq!(
         passkey_transfer_challenge(&message),
         passkey_transfer_challenge(&message)
