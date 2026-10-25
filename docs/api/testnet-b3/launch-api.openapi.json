@@ -1105,6 +1105,39 @@
         }
       }
     },
+    "/network/scarcity": {
+      "get": {
+        "operationId": "get_network_scarcity",
+        "description": "Read-only view of the paid data-scarcity rule. Requires a Reader-or-higher bearer. Invalid lat/lon returns 422.",
+        "x-handler": "scarcity::get_scarcity",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Optional latitude; supply together with lon to resolve one point."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Optional longitude; supply together with lat to resolve one point."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
     "/network/signing-keys/register": {
       "post": {
         "operationId": "post_network_signing_keys_register",

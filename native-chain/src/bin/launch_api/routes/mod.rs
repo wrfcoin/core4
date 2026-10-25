@@ -24,6 +24,7 @@ pub mod privacy;
 pub mod quality;
 pub mod query_cost;
 pub mod rewards;
+pub mod scarcity;
 pub mod schedule_extension;
 pub mod signing_keys;
 pub mod snapshot;
@@ -63,6 +64,7 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .route("/readyz", web::get().to(chain::readyz))
         .route("/network/audit-log", web::get().to(network::get_network_audit_log))
         .route("/network/info", web::get().to(network::get_network_info))
+        .route("/network/scarcity", web::get().to(scarcity::get_scarcity))
         // #3095: unauthenticated read, like /network/info — the notice it
         // returns is governance-signed, so a caller verifies the artifact
         // rather than trusting this node's answer.

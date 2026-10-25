@@ -134,3 +134,17 @@ Stated in every option, so accepted as written (no owner choice involved):
   (display rule).
 - line 60: "the unreachable 2.0 "desert" bucket must be removed or made real" (display rule).
 - line 95: "**Acceptance test (any option):**" (acceptance test).
+
+## Implementation (A1, B2, C1)
+
+- **A1:** `GET /network/scarcity[?lat=&lon=]` (Reader role) in `launch_api/routes/scarcity.rs` returns
+  the paid rule (`grid_km` 222, threshold 3, ×1.5, activation height), every occupied ≈2° cell with its
+  count and multiplier, and, with `lat`/`lon`, the value paid at that point. It calls
+  `desert_multiplier` against `state.station_counts`, the same function and map the payout reads, under one
+  read lock. It writes nothing. Multipliers are integer percent (150 = ×1.5), the unit
+  `desert_multiplier` returns.
+- **B2:** `ScarcityPolicy` is unchanged and remains task-prioritisation only.
+- **C1:** `ScarcityRegion::reward_multiplier` (1.0 / 1.5 / 2.5) is deleted; it had no caller outside its
+  own test.
+- **Not built:** the higher no-station "desert" tier (question 5) and the human-impact and
+  network-demand terms (D4).
