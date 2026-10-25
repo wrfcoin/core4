@@ -347,10 +347,10 @@ pub fn verify_webauthn(
 
 /// Derive the account address a passkey credential controls.
 ///
-/// `blake3(PASSKEY_ADDRESS_DOMAIN || rp_id_hash || 0x04 || X || Y)[..20]`.
+/// `sha3_256(PASSKEY_ADDRESS_DOMAIN || rp_id_hash || 0x04 || X || Y)[..20]`.
 /// Folding the RP ID hash means the same P-256 key registered under two relying
 /// parties controls two accounts, and folding the domain tag means no ed25519
-/// key (whose address is `blake3(key)[..20]`) can derive a passkey address.
+/// key (whose address is `sha3_256(key)[..20]`) can derive a passkey address.
 pub fn passkey_address_from_parts(
     rp_id_hash: &[u8; RP_ID_HASH_LEN],
     public_key_p256: &[u8; RAW_XY_LEN],
@@ -416,7 +416,7 @@ pub fn passkey_transfer_authorization_message_with_domain(
     buf
 }
 
-/// The WebAuthn challenge for a transfer: `blake3(message)`. A 32-byte
+/// The WebAuthn challenge for a transfer: `sha3_256(message)`. A 32-byte
 /// challenge is what a client passes to `navigator.credentials.get`.
 pub fn passkey_transfer_challenge(message: &[u8]) -> [u8; 32] {
     *hash_bytes(message).as_bytes()
