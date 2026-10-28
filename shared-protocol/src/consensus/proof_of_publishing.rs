@@ -26338,7 +26338,9 @@ mod device_submission_limit_3565 {
     /// A commit or reveal tx of `tx_type` whose payload declares `declared`.
     fn typed_3565(station: &str, nonce: &str, tx_type: TransactionType, declared: &str) -> Transaction {
         let mut tx = reveal(station, nonce, TransactionType::ContributionReveal);
-        let mut payload = tx.parse_reveal_payload().unwrap();
+        // Decode the JSON directly: `parse_reveal_payload` memoizes, and this tx's
+        // data is rewritten below, so a cached parse would go stale.
+        let mut payload: RevealPayload = serde_json::from_str(tx.data.as_ref().unwrap()).unwrap();
         payload.contribution_type = declared.to_string();
         payload.commit_id = Transaction::compute_commit_id(&payload.data, nonce, station, payload.timestamp, declared);
         tx.data = Some(match tx_type {
