@@ -70,7 +70,7 @@ pub fn extract_transitions(
             // authorization emits no transition so a forged payload injected
             // via P2P cannot register a commit in state.
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
-                if tx.verify_commit_authorization() {
+                if tx.verify_commit_authorization_at_height(block_height) {
                     if let Some(payload) = tx.parse_commit_payload() {
                         let transition = StateTransition::RegisterCommit {
                             payload,
