@@ -8196,7 +8196,10 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&storage_path);
         let applier_storage = Arc::new(RwLock::new(
-            Storage::open(&storage_path, DEFAULT_CHECKPOINT_INTERVAL)
+            // A checkpoint interval no fixture height reaches, so the block's
+            // transitions stay in the WAL rather than being folded into a
+            // checkpoint (h3000 is a multiple of the default 100).
+            Storage::open(&storage_path, u64::MAX)
                 .expect("applier storage opens"),
         ));
         let mut applier_genesis = Blockchain::default();
@@ -8332,8 +8335,10 @@ mod tests {
             .expect("schedule"),
         );
 
-        let two = mine_attested_reward_block_with_reveals(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        // Owner-signed commits: from activation a commit must be authorized by
+        // the station's registered owner key (#3565 pre-activation fix (a)).
+        let two = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
@@ -8348,8 +8353,8 @@ mod tests {
         assert!(fresh_age <= 600, "fixture: the fresh reading is inside full pay ({fresh_age}s)");
         assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
 
-        let late = mine_attested_reward_block_with_reveals(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        let late = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[],
         )
         .await;
         assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
