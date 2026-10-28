@@ -2368,6 +2368,12 @@ pub const SP_DEVICE_SUBMISSION_LIMIT: &str = "SP_DEVICE_SUBMISSION_LIMIT";
 /// (`ConsensusFeature::DeviceSubmissionLimit`).
 pub const SP_DEVICE_COMMIT_NOT_OWNER: &str = "SP_DEVICE_COMMIT_NOT_OWNER";
 
+/// #3565 review B1: refusal code for a commit or reveal whose payload
+/// `contribution_type` disagrees with its tx type (a contribution tx declaring
+/// `"forecast"`, or a forecast tx not declaring it) while
+/// `ConsensusFeature::DeviceSubmissionLimit` is active.
+pub const SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH: &str = "SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH";
+
 /// #3565 late-data curve: an observation at most this old at its including
 /// block is paid in full.
 pub const LATE_DATA_FULL_PAY_SECONDS: i64 = 600;
@@ -9029,6 +9035,33 @@ impl ProofOfPublishing {
                             ));
                         }
                     }
+                }
+            }
+        }
+
+        // #3565 review B1: the payload's `contribution_type` is submitter-chosen,
+        // and the `State` owner binding exempts `"forecast"` (forecast commits
+        // are #3290's surface). Without this check a `ContributionCommit` typed
+        // `"forecast"` bypassed the owner binding, and its reveal took the
+        // station's slot. From activation the declared type must match the tx
+        // type: contribution txs may not say `"forecast"`, forecast txs must.
+        if feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height) {
+            let declared_forecast = match tx.tx_type {
+                TransactionType::ContributionCommit | TransactionType::ForecastCommit => tx
+                    .parse_commit_payload()
+                    .map(|payload| payload.contribution_type == "forecast"),
+                TransactionType::ContributionReveal | TransactionType::ForecastReveal => tx
+                    .parse_reveal_payload()
+                    .map(|payload| payload.contribution_type == "forecast"),
+                _ => None,
+            };
+            if let Some(declared_forecast) = declared_forecast {
+                let forecast_tx = matches!(
+                    tx.tx_type,
+                    TransactionType::ForecastCommit | TransactionType::ForecastReveal
+                );
+                if declared_forecast != forecast_tx {
+                    return Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.into());
                 }
             }
         }
@@ -26302,6 +26335,80 @@ mod device_submission_limit_3565 {
         assert_eq!(mempool.size(), 3);
     }
 
+    /// A commit or reveal tx of `tx_type` whose payload declares `declared`.
+    fn typed_3565(station: &str, nonce: &str, tx_type: TransactionType, declared: &str) -> Transaction {
+        let mut tx = reveal(station, nonce, TransactionType::ContributionReveal);
+        let mut payload = tx.parse_reveal_payload().unwrap();
+        payload.contribution_type = declared.to_string();
+        payload.commit_id = Transaction::compute_commit_id(&payload.data, nonce, station, payload.timestamp, declared);
+        tx.data = Some(match tx_type {
+            TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
+                serde_json::to_string(&crate::blockchain::transaction::CommitPayload {
+                    commit_id: payload.commit_id.clone(),
+                    station_id: station.to_string(),
+                    timestamp: payload.timestamp,
+                    contribution_type: declared.to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                })
+                .unwrap()
+            },
+            _ => serde_json::to_string(&payload).unwrap(),
+        });
+        tx.tx_type = tx_type;
+        tx.set_id();
+        tx
+    }
+
+    /// #3565 review B1: from activation a commit/reveal's declared
+    /// `contribution_type` must match its tx type, so a `ContributionCommit`
+    /// typed `"forecast"` can no longer skip the owner binding and its reveal
+    /// can no longer take a station's slot. Gate off: nothing is refused.
+    #[test]
+    fn contribution_type_must_match_the_tx_type_3565() {
+        const CHILD: &str = "WRFCOIN_3565_TYPE_UNIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::proof_of_publishing::device_submission_limit_3565::contribution_type_must_match_the_tx_type_3565", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        const H: u64 = 3;
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let txs = [
+            typed_3565("ws-a", "c1", TransactionType::ContributionCommit, "forecast"),
+            typed_3565("ws-a", "r1", TransactionType::ContributionReveal, "forecast"),
+            typed_3565("ws-b", "f1", TransactionType::ForecastReveal, "contribution"),
+            typed_3565("ws-c", "f2", TransactionType::ForecastCommit, "contribution"),
+            typed_3565("ws-d", "ok1", TransactionType::ContributionCommit, "contribution"),
+            typed_3565("ws-d", "ok2", TransactionType::ForecastCommit, "forecast"),
+            typed_3565("ws-e", "ok3", TransactionType::ForecastReveal, "forecast"),
+        ];
+        assert_eq!(refusals(&pop, H, &txs), vec![None; 7], "gate OFF control: unchanged");
+
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+        );
+        assert_eq!(refusals(&pop, H - 1, &txs), vec![None; 7], "below activation: unchanged");
+        let mismatch = Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.to_string());
+        assert_eq!(
+            refusals(&pop, H, &txs),
+            vec![mismatch.clone(), mismatch.clone(), mismatch.clone(), mismatch.clone(), None, None, None],
+        );
+
+        // The reviewer's probe: a forecast-typed ContributionReveal no longer takes
+        // the station's slot from the owner's normal reveal.
+        let probe = [
+            typed_3565("ws-a", "p1", TransactionType::ContributionReveal, "forecast"),
+            reveal("ws-a", "p2", TransactionType::ContributionReveal),
+        ];
+        assert_eq!(refusals(&pop, H, &probe), vec![mismatch, None]);
+        let mut block = Block::new(1, Hash::default(), vec![txs[0].clone()], 1, 2);
+        block.height = H;
+        assert!(!pop.verify_block_transactions_fused(&block, 1).unwrap(), "verify_block refuses the mismatched commit");
+    }
+
     /// #3565 nit (e): the device check runs LAST in `classify_block_transaction`,
     /// so a reveal another check refuses (here: outside the submission window)
     /// never occupies its station's slot and a valid sibling still passes.
@@ -26403,6 +26510,9 @@ mod device_submission_limit_3565 {
         assert!(apply(&mut state, unsigned, H).is_err(), "no key: refused");
         assert!(apply(&mut state, commit("ws-owned", &owner, "ok", "contribution"), H).is_ok(), "owner key: applies");
         assert!(apply(&mut state, commit("ws-unregistered", &other, "u", "contribution"), H).is_ok(), "unregistered station: unchanged");
+        // A `"forecast"` payload is exempt HERE; the shared classifier refuses it
+        // on a ContributionCommit (contribution_type_must_match_the_tx_type_3565
+        // and the end-to-end device_limit_refuses_a_forecast_typed_contribution_commit_3565).
         assert!(apply(&mut state, commit("ws-owned", &other, "f", "forecast"), H).is_ok(), "forecast commits: untouched here");
     }
 }

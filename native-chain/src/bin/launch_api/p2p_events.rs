@@ -8338,7 +8338,7 @@ mod tests {
         // Owner-signed commits: from activation a commit must be authorized by
         // the station's registered owner key (#3565 pre-activation fix (a)).
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
@@ -8354,7 +8354,7 @@ mod tests {
         assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
 
         let late = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
         )
         .await;
         assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
@@ -8452,7 +8452,7 @@ mod tests {
         );
 
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
         )
         .await;
         assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "owner-signed commits are mined");
@@ -8464,7 +8464,7 @@ mod tests {
         assert_producer_applier_wal_root_parity_3565(&two, "defer-two").await;
 
         let not_owner = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, false, &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, false, &[], &[],
         )
         .await;
         assert_eq!(
@@ -8499,7 +8499,7 @@ mod tests {
         );
         let base = RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1;
         let scenario = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), base, None, 2, 5, true, &[0],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), base, None, 2, 5, true, &[0], &[],
         )
         .await;
         assert_eq!(scenario.block_1.height, RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT, "fixture: the #2777 fence is active");
@@ -8508,6 +8508,49 @@ mod tests {
         assert_eq!(mined[0].1, "nonce-attest-1", "it is the attested (second) reveal");
         assert_eq!(pending_reveal_nonces_3565(&scenario).await, vec!["nonce-attest".to_string()], "the quorum-held first reveal stays pending");
         assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "quorum-held", base).await;
+    }
+
+    /// #3565 review B1, end to end through the real producer, gate ON. An
+    /// attacker stages a `ContributionCommit` + `ContributionReveal` for the
+    /// victim's registered station whose payloads say `contribution_type:
+    /// "forecast"`, signed by a NON-owner key, beside the owner's normal pair.
+    /// The forecast-typed contribution commit must not be mined (before the fix
+    /// the `State` forecast exemption let it apply), and the owner's reveal is
+    /// the one that takes the station's slot. Roots agree on every leg.
+    #[tokio::test]
+    async fn device_limit_refuses_a_forecast_typed_contribution_commit_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_limit_refuses_a_forecast_typed_contribution_commit_3565",
+            "WRFCOIN_3565_TYPE_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+                .expect("schedule"),
+        );
+        let scenario = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[0],
+        )
+        .await;
+        let forecast_typed_commits = scenario
+            .block_1
+            .transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionCommit)
+            .filter_map(|tx| tx.parse_commit_payload())
+            .filter(|payload| payload.contribution_type == "forecast")
+            .count();
+        assert_eq!(forecast_typed_commits, 0, "B1: a forecast-typed ContributionCommit is refused");
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionCommit), 1, "the owner's commit is mined");
+        let mined = reveal_ids_3565(&scenario.block_1);
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].1, "nonce-attest-1", "the owner's reveal takes the slot");
+        assert_producer_applier_wal_root_parity_3565(&scenario, "forecast-typed").await;
     }
 
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block
@@ -10199,6 +10242,7 @@ mod tests {
             reveal_age_secs,
             false,
             &[],
+            &[],
         )
         .await
     }
@@ -10208,7 +10252,11 @@ mod tests {
     /// owner binding); `false` keeps the historical fixed owner `0x77…`.
     /// `unattested` lists reveal groups that get NO oracle attestations (they
     /// lack quorum and are held back by the #2777 fence at or above its
-    /// activation height). `(false, &[])` is the historical fixture, byte for byte.
+    /// activation height). `forecast_typed_groups` (#3565 review B1) turns those
+    /// groups into an attacker's: a `ContributionCommit`/`ContributionReveal`
+    /// whose payload says `contribution_type: "forecast"`, signed by a key that
+    /// is NOT the station owner. `(false, &[], &[])` is the historical fixture,
+    /// byte for byte.
     #[allow(clippy::too_many_arguments)]
     async fn mine_attested_reward_block_with_options(
         quality: f64,
@@ -10220,6 +10268,7 @@ mod tests {
         reveal_age_secs: i64,
         owner_signs_commit: bool,
         unattested: &[usize],
+        forecast_typed_groups: &[usize],
     ) -> AttestedRewardScenario {
         use wrfcoin_native_chain::blockchain::state::StateTransition;
         use wrfcoin_native_chain::blockchain::transaction::{
@@ -10326,6 +10375,8 @@ mod tests {
         for index in 0..reveal_count {
             let sfx = if index == 0 { String::new() } else { format!("-{index}") };
             let nonce = format!("nonce-attest{sfx}");
+            let attacker = forecast_typed_groups.contains(&index);
+            let contribution_type = if attacker { "forecast" } else { contribution_type };
             let commit_id = Transaction::compute_commit_id(
                 &metrics,
                 &nonce,
@@ -10346,7 +10397,7 @@ mod tests {
             // the mempool. Sign the authorization exactly as the collector/backend
             // do (the auth key is not bound to the reward recipient — the reward
             // follows the reveal sender — so a dedicated fixture key is fine).
-            commit_payload.sign_authorization(&oracle_identity(903).0);
+            commit_payload.sign_authorization(&oracle_identity(if attacker { 904 } else { 903 }).0);
             let reveal_payload = RevealPayload {
                 commit_id: commit_id.clone(),
                 station_id: station_id.to_string(),

@@ -4597,7 +4597,11 @@ impl State {
                 // `auth_pubkey` already signs (station_id, commit_id, type); this
                 // binds that key to `owner_address` with the #2742 rule. An
                 // unregistered station has no owner to bind and is unchanged.
-                // Forecast commits are #3290's surface and are untouched here.
+                // Forecast commits are #3290's surface and are untouched here. The
+                // exemption keys on the payload string, so it is sound only
+                // because, from the same activation, the shared classifier refuses
+                // a `ContributionCommit` that declares `"forecast"` (and a
+                // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
                 if payload.contribution_type != "forecast"
                     && crate::crypto::chain_binding::feature_active(
                         crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
