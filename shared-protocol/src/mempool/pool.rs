@@ -627,6 +627,29 @@ impl Mempool {
         }
 
         let protocol_replay_key = self.validate_launch_payload_and_replay_key(&tx, signing_keys)?;
+        // #3290: once the forecaster key binding is in force at the candidate
+        // inclusion height (the block after the canonical tip), refuse a
+        // forecast commit whose sender is not the address of its
+        // authorization key, whether it came from the route or from gossip.
+        // With no height, require the binding whenever the feature is
+        // scheduled at all: a bound commit is valid under both rules, so this
+        // only ever refuses commits that would be invalid from activation.
+        // Block validity is `verify_commit_authorization_at_height` in the
+        // shared block classifier; this is the admission mirror of it.
+        if tx.tx_type == TransactionType::ForecastCommit {
+            use crate::crypto::chain_binding::{ConsensusFeature, feature_active, feature_scheduled};
+            let binding_required = match current_height {
+                Some(height) => {
+                    feature_active(ConsensusFeature::ForecasterKeyBinding, height.saturating_add(1))
+                },
+                None => feature_scheduled(ConsensusFeature::ForecasterKeyBinding),
+            };
+            if binding_required && !tx.forecast_commit_key_bound() {
+                return Err(anyhow!(
+                    "SP_FORECASTER_KEY_UNBOUND: forecast commit sender must be the address of its auth_pubkey (#3290)"
+                ));
+            }
+        }
         if let Some(key) = &protocol_replay_key {
             if self.protocol_replay_keys.contains(key) {
                 return Err(anyhow!("Launch protocol replay detected"));
