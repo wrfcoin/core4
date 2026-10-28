@@ -4,8 +4,7 @@ Refs wrfcoin/core4-archive#3570 and wrfcoin/core4-archive#3568.
 Ownership design: https://github.com/wrfcoin/core4/pull/51.
 
 This is a non-earning preview. No bridge reward path is added. A later
-consensus-visible payout multiplier requires a new non-schedulable
-`ConsensusFeature`, owner ratification, gate-off state-root parity and
+consensus-visible payout multiplier requires a new `ConsensusFeature` proposed to be labelled non-schedulable, owner ratification, gate-off state-root parity and
 producer/applier/WAL parity. Fixture ownership is never live source verification.
 
 ## Proposed preview computation
@@ -37,13 +36,15 @@ No bond amount, reward promise, or payout activation is implied.
 
 The authoritative rule remains
 `shared-protocol/src/consensus/data_desert.rs::desert_multiplier` and the paid
-`GET /network/scarcity` response (public core4#46). Its denominator is **100**,
+`GET /network/scarcity` response (wrfcoin/core4#46), including its
+`desert_bonus_percent` field and approximately 2-degree paid cell. Its
+denominator is **100**,
 although the Rust field is named `desert_bonus_bps`: 100 is neutral and 150 is
 1.5 times. Do not reinterpret it as denominator 10,000 or reproduce station
 counts / geographic bucketing in the backend. A missing or stale chain snapshot
 means no preview, not a locally invented scarcity fallback.
 
-The backend preview accepts the already-resolved chain value and does not
+The proposed backend preview would accept the already-resolved chain value and does not
 calculate geography or counts. The data supplier must pin cell/window/chain
 snapshot identity for both native and bridge tiers. No such supplier is wired
 into payout here.
