@@ -2363,6 +2363,17 @@ pub const MAX_COMBINED_MULTIPLIER_BPS: u128 = 20_000;
 /// one block (`ConsensusFeature::DeviceSubmissionLimit`).
 pub const SP_DEVICE_SUBMISSION_LIMIT: &str = "SP_DEVICE_SUBMISSION_LIMIT";
 
+/// #3565 (a): refusal code for a contribution commit to a registered station
+/// that its registered owner key did not authorize
+/// (`ConsensusFeature::DeviceSubmissionLimit`).
+pub const SP_DEVICE_COMMIT_NOT_OWNER: &str = "SP_DEVICE_COMMIT_NOT_OWNER";
+
+/// #3565 review B1: refusal code for a commit or reveal whose payload
+/// `contribution_type` disagrees with its tx type (a contribution tx declaring
+/// `"forecast"`, or a forecast tx not declaring it) while
+/// `ConsensusFeature::DeviceSubmissionLimit` is active.
+pub const SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH: &str = "SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH";
+
 /// #3565 late-data curve: an observation at most this old at its including
 /// block is paid in full.
 pub const LATE_DATA_FULL_PAY_SECONDS: i64 = 600;
@@ -2381,6 +2392,21 @@ pub const LATE_DATA_FLOOR_BPS: u128 = 5_000;
 /// at [`LATE_DATA_FLOOR_SECONDS`], and stays at the floor after that. A
 /// negative age (a reading stamped after its block, inside the forward-skew
 /// allowance) is paid in full. Integer arithmetic only.
+///
+/// # What this can and cannot see (review item (d))
+///
+/// The observation time is the submitter's own `timestamp`. It is committed
+/// inside the commit hash (`compute_commit_id`), so it cannot be changed after
+/// the commit; it is monotone per station and bounded forward by the weather
+/// skew allowance. So the curve cannot be gamed by back-dating, and a reveal
+/// cannot re-stamp its committed reading. It CAN be gamed by stamping an old
+/// reading as fresh at commit time. No chain-anchored age closes that:
+/// the chain only knows when the commit and reveal were included, and the
+/// reveal window (3 blocks at today's targets) already bounds commit-to-reveal
+/// delay, so an inclusion-height age would measure the window, not the data.
+/// Detecting a mis-stamped reading needs a device-side signed clock
+/// (`sensor-attestation`), out of scope here. This curve therefore pays less
+/// for data that is honestly reported late; it is not an anti-fraud control.
 pub fn late_data_multiplier_bps(age_seconds: i64) -> u128 {
     if age_seconds <= LATE_DATA_FULL_PAY_SECONDS {
         return 10_000;
@@ -3625,6 +3651,14 @@ impl ProofOfPublishing {
                     continue;
                 }
                 if let Some(reason) = self.classify_block_transaction(&ctx, &tx, i, &mut acc) {
+                    // #3565: a second reveal for one station is not invalid, only
+                    // early. It passed every other check (the device check runs
+                    // last), so keep it through the #2777 quorum fence below and
+                    // let `defer_extra_device_reveals` hold it for a later block.
+                    if reason == SP_DEVICE_SUBMISSION_LIMIT {
+                        screened.push(tx);
+                        continue;
+                    }
                     debug!(
                         "Producer self-screen (#1730) dropping tx at index {i} (type {:?}): {reason}",
                         tx.tx_type
@@ -3667,6 +3701,22 @@ impl ProofOfPublishing {
                 // nodes can still reproduce every pre-activation block exactly.
                 0
             };
+
+        // #3565: one reveal per station per block, chosen AFTER the #2777 fence,
+        // so a first reveal held back for lack of quorum does not take its
+        // sibling down with it. Extra reveals are removed from the candidate but
+        // NOT added to `skipped_mempool_tx_ids`: they stay pending for a later
+        // block. Unscheduled this is a no-op.
+        let deferred_device_reveal_count = if feature_active(ConsensusFeature::DeviceSubmissionLimit, next_height) {
+            Self::defer_extra_device_reveals(&mut transactions)
+        } else {
+            0
+        };
+        if deferred_device_reveal_count > 0 {
+            info!(
+                "#3565: deferred {deferred_device_reveal_count} extra same-station reveal(s) to a later block at height {next_height}"
+            );
+        }
 
         // Calculate the publishing score for this block after stale/invalid entries have been
         // removed so the metadata matches the final candidate block.
@@ -7383,6 +7433,26 @@ impl ProofOfPublishing {
     /// mempool so a later distinct approval can make the whole group eligible in
     /// one block.  Invalid transactions remain the responsibility of
     /// `prune_invalid_launch_transactions` and are still evicted there.
+    /// #3565: keep the first `ContributionReveal` per station in candidate
+    /// order and remove the rest from the candidate block. Returns how many were
+    /// deferred. The removed reveals are not evicted from the mempool, so the
+    /// next block can carry one of them; `classify_block_transaction` still
+    /// refuses a block that carries two.
+    fn defer_extra_device_reveals(transactions: &mut Vec<Transaction>) -> usize {
+        let mut seen: FxHashSet<String> = FxHashSet::default();
+        let before = transactions.len();
+        transactions.retain(|tx| {
+            if tx.tx_type != TransactionType::ContributionReveal {
+                return true;
+            }
+            match tx.parse_reveal_payload() {
+                Some(payload) => seen.insert(payload.station_id),
+                None => true,
+            }
+        });
+        before - transactions.len()
+    }
+
     fn defer_real_contribution_groups_without_quorum(
         &self,
         state: &State,
@@ -8566,20 +8636,6 @@ impl ProofOfPublishing {
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Some(crate::security::slash_evidence::dispatch_refusal(ctx.height).to_string());
         }
-        // #3565: one accepted observation per registered device per block. The
-        // device identity is the reveal's `station_id` (the registered station,
-        // bound to its owner). The first reveal in block order is kept; a later
-        // one for the same station makes the block invalid, and the producer
-        // self-screen drops it, so producer and `verify_block` agree.
-        if tx.tx_type == TransactionType::ContributionReveal
-            && feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height)
-        {
-            if let Some(payload) = tx.parse_reveal_payload() {
-                if !acc.device_reveal_stations.insert(payload.station_id) {
-                    return Some(SP_DEVICE_SUBMISSION_LIMIT.into());
-                }
-            }
-        }
         if tx.tx_type == TransactionType::GovernanceProposal {
             return Some(format!(
                 "disabled tx type {} (rejected pending from-bound proposer authorization, #2024)",
@@ -8979,6 +9035,51 @@ impl ProofOfPublishing {
                             ));
                         }
                     }
+                }
+            }
+        }
+
+        // #3565 review B1: the payload's `contribution_type` is submitter-chosen,
+        // and the `State` owner binding exempts `"forecast"` (forecast commits
+        // are #3290's surface). Without this check a `ContributionCommit` typed
+        // `"forecast"` bypassed the owner binding, and its reveal took the
+        // station's slot. From activation the declared type must match the tx
+        // type: contribution txs may not say `"forecast"`, forecast txs must.
+        if feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height) {
+            let declared_forecast = match tx.tx_type {
+                TransactionType::ContributionCommit | TransactionType::ForecastCommit => tx
+                    .parse_commit_payload()
+                    .map(|payload| payload.contribution_type == "forecast"),
+                TransactionType::ContributionReveal | TransactionType::ForecastReveal => tx
+                    .parse_reveal_payload()
+                    .map(|payload| payload.contribution_type == "forecast"),
+                _ => None,
+            };
+            if let Some(declared_forecast) = declared_forecast {
+                let forecast_tx = matches!(
+                    tx.tx_type,
+                    TransactionType::ForecastCommit | TransactionType::ForecastReveal
+                );
+                if declared_forecast != forecast_tx {
+                    return Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.into());
+                }
+            }
+        }
+
+        // #3565: one accepted observation per registered device per block. The
+        // device identity is the reveal's `station_id` (the registered station;
+        // from activation its commits must be signed by the registered owner key,
+        // `State` RegisterCommit). Checked LAST, after every other per-reveal
+        // check, so a reveal another check refuses never occupies its station's
+        // slot. The first reveal in block order is kept; a later one for the
+        // same station makes the block invalid. The producer does not drop the
+        // later one: it defers it to a later block (`defer_extra_device_reveals`).
+        if tx.tx_type == TransactionType::ContributionReveal
+            && feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height)
+        {
+            if let Some(payload) = tx.parse_reveal_payload() {
+                if !acc.device_reveal_stations.insert(payload.station_id) {
+                    return Some(SP_DEVICE_SUBMISSION_LIMIT.into());
                 }
             }
         }
@@ -26227,21 +26328,200 @@ mod device_submission_limit_3565 {
         full.transactions.remove(2);
         assert!(pop.verify_block_transactions_fused(&full, 1).unwrap(), "one reveal per station passes");
 
-        // Mempool admission: refused while the station has a pending reveal.
+        // Mempool admission (#3565 pre-activation fix): NO per-station rule. A
+        // second pending reveal for ws-a is admitted while the feature is active,
+        // so a junk reveal can never lock the owner's reveal out, and the producer
+        // can defer the extra one to a later block.
         let mut mempool = Mempool::new(&crate::config::settings::Config::default());
-        mempool.add_transaction_with_signing_keys_at_height(block[0].clone(), None, Some(H - 1)).expect("first reveal admitted");
-        mempool.add_transaction_with_signing_keys_at_height(block[1].clone(), None, Some(H - 1)).expect("another station admitted");
-        let err = mempool
-            .add_transaction_with_signing_keys_at_height(block[2].clone(), None, Some(H - 1))
-            .expect_err("second pending reveal for ws-a refused");
-        assert!(err.to_string().contains(SP_DEVICE_SUBMISSION_LIMIT), "{err}");
-        // Below activation (next block H - 1) and for legacy callers: unchanged.
-        let mut early = Mempool::new(&crate::config::settings::Config::default());
-        early.add_transaction_with_signing_keys_at_height(block[0].clone(), None, Some(H - 2)).unwrap();
-        early.add_transaction_with_signing_keys_at_height(block[2].clone(), None, Some(H - 2)).expect("inactive next block: admitted");
-        let mut legacy = Mempool::new(&crate::config::settings::Config::default());
-        legacy.add_transaction(block[0].clone()).unwrap();
-        legacy.add_transaction(block[2].clone()).expect("no height: legacy behaviour");
+        for tx in &block[..3] {
+            mempool
+                .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(H - 1))
+                .expect("admitted: the mempool has no per-station rule");
+        }
+        assert_eq!(mempool.size(), 3);
+    }
+
+    /// A commit or reveal tx of `tx_type` whose payload declares `declared`.
+    fn typed_3565(station: &str, nonce: &str, tx_type: TransactionType, declared: &str) -> Transaction {
+        let mut tx = reveal(station, nonce, TransactionType::ContributionReveal);
+        // Decode the JSON directly: `parse_reveal_payload` memoizes, and this tx's
+        // data is rewritten below, so a cached parse would go stale.
+        let mut payload: RevealPayload = serde_json::from_str(tx.data.as_ref().unwrap()).unwrap();
+        payload.contribution_type = declared.to_string();
+        payload.commit_id = Transaction::compute_commit_id(&payload.data, nonce, station, payload.timestamp, declared);
+        tx.data = Some(match tx_type {
+            TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
+                serde_json::to_string(&crate::blockchain::transaction::CommitPayload {
+                    commit_id: payload.commit_id.clone(),
+                    station_id: station.to_string(),
+                    timestamp: payload.timestamp,
+                    contribution_type: declared.to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                })
+                .unwrap()
+            },
+            _ => serde_json::to_string(&payload).unwrap(),
+        });
+        tx.tx_type = tx_type;
+        tx.set_id();
+        tx
+    }
+
+    /// #3565 review B1: from activation a commit/reveal's declared
+    /// `contribution_type` must match its tx type, so a `ContributionCommit`
+    /// typed `"forecast"` can no longer skip the owner binding and its reveal
+    /// can no longer take a station's slot. Gate off: nothing is refused.
+    #[test]
+    fn contribution_type_must_match_the_tx_type_3565() {
+        const CHILD: &str = "WRFCOIN_3565_TYPE_UNIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::proof_of_publishing::device_submission_limit_3565::contribution_type_must_match_the_tx_type_3565", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        const H: u64 = 3;
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let txs = [
+            typed_3565("ws-a", "c1", TransactionType::ContributionCommit, "forecast"),
+            typed_3565("ws-a", "r1", TransactionType::ContributionReveal, "forecast"),
+            typed_3565("ws-b", "f1", TransactionType::ForecastReveal, "contribution"),
+            typed_3565("ws-c", "f2", TransactionType::ForecastCommit, "contribution"),
+            typed_3565("ws-d", "ok1", TransactionType::ContributionCommit, "contribution"),
+            typed_3565("ws-d", "ok2", TransactionType::ForecastCommit, "forecast"),
+            typed_3565("ws-e", "ok3", TransactionType::ForecastReveal, "forecast"),
+        ];
+        assert_eq!(refusals(&pop, H, &txs), vec![None; 7], "gate OFF control: unchanged");
+
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+        );
+        assert_eq!(refusals(&pop, H - 1, &txs), vec![None; 7], "below activation: unchanged");
+        let mismatch = Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.to_string());
+        assert_eq!(
+            refusals(&pop, H, &txs),
+            vec![mismatch.clone(), mismatch.clone(), mismatch.clone(), mismatch.clone(), None, None, None],
+        );
+
+        // The reviewer's probe: a forecast-typed ContributionReveal no longer takes
+        // the station's slot from the owner's normal reveal.
+        let probe = [
+            typed_3565("ws-a", "p1", TransactionType::ContributionReveal, "forecast"),
+            reveal("ws-a", "p2", TransactionType::ContributionReveal),
+        ];
+        assert_eq!(refusals(&pop, H, &probe), vec![mismatch, None]);
+        let mut block = Block::new(1, Hash::default(), vec![txs[0].clone()], 1, 2);
+        block.height = H;
+        assert!(!pop.verify_block_transactions_fused(&block, 1).unwrap(), "verify_block refuses the mismatched commit");
+    }
+
+    /// #3565 nit (e): the device check runs LAST in `classify_block_transaction`,
+    /// so a reveal another check refuses (here: outside the submission window)
+    /// never occupies its station's slot and a valid sibling still passes.
+    #[test]
+    fn a_refused_reveal_does_not_occupy_its_station_slot_3565() {
+        const CHILD: &str = "WRFCOIN_3565_ORDER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::proof_of_publishing::device_submission_limit_3565::a_refused_reveal_does_not_occupy_its_station_slot_3565", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        const H: u64 = 3;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+        );
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let mut stale = reveal("ws-a", "n1", TransactionType::ContributionReveal);
+        stale.timestamp = chrono::Utc::now() - chrono::Duration::hours(6);
+        stale.set_id();
+        let fresh = reveal("ws-a", "n2", TransactionType::ContributionReveal);
+        let verdicts = refusals(&pop, H, &[stale, fresh]);
+        assert!(
+            verdicts[0].as_deref().is_some_and(|r| r.contains("submission window")),
+            "fixture: the first reveal is refused by another check: {verdicts:?}"
+        );
+        assert_eq!(verdicts[1], None, "the valid sibling is not refused as a second reveal");
+    }
+
+    /// #3565 (a): from activation a contribution commit for a REGISTERED station
+    /// applies only when its `auth_pubkey` is the station's registered owner key.
+    /// Unregistered stations, forecast commits and pre-activation heights are
+    /// unchanged.
+    #[test]
+    fn contribution_commits_are_bound_to_the_station_owner_key_3565() {
+        const CHILD: &str = "WRFCOIN_3565_OWNER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::proof_of_publishing::device_submission_limit_3565::contribution_commits_are_bound_to_the_station_owner_key_3565", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        use crate::blockchain::state::{State, StateTransition};
+        use crate::blockchain::transaction::CommitPayload;
+        use crate::crypto::signature::{PrivateKey, PublicKey};
+        use crate::station_registry::{ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation};
+        const H: u64 = 3;
+        let owner = PrivateKey::from_bytes(&[0x51; 32]).unwrap();
+        let other = PrivateKey::from_bytes(&[0x52; 32]).unwrap();
+        let commit = |station: &str, key: &PrivateKey, n: &str, kind: &str| {
+            let mut payload = CommitPayload {
+                commit_id: format!("commit-{station}-{n}"),
+                station_id: station.to_string(),
+                timestamp: 1_000,
+                contribution_type: kind.to_string(),
+                auth_pubkey: None,
+                auth_signature: None,
+            };
+            payload.sign_authorization(key);
+            payload
+        };
+        let fresh_state = || {
+            let mut state = State::new();
+            state
+                .register_weather_station(WeatherStation {
+                    station_id: "ws-owned".into(),
+                    owner_address: PublicKey::from_private_key(&owner).to_address(),
+                    location: StationLocation { latitude: 10.0, longitude: 20.0, elevation_meters: Some(100.0) },
+                    hardware_model: "fixture".into(),
+                    calibration_date: None,
+                    is_active: true,
+                    reputation_score: 50,
+                    data_quality_tier: DataQualityTier::Gold,
+                    provenance_class: ContributionProvenanceClass::Real,
+                    ring_public_key: None,
+                })
+                .unwrap();
+            state
+        };
+        let apply = |state: &mut State, payload: CommitPayload, height: u64| {
+            state.apply_transition(StateTransition::RegisterCommit { payload, block_height: height })
+        };
+
+        // Unscheduled (gate OFF control): any key may commit, as on main.
+        let mut state = fresh_state();
+        assert!(apply(&mut state, commit("ws-owned", &other, "off", "contribution"), H).is_ok(), "gate OFF: unchanged");
+
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+        );
+        let mut state = fresh_state();
+        assert!(apply(&mut state, commit("ws-owned", &other, "pre", "contribution"), H - 1).is_ok(), "below activation: unchanged");
+        let err = apply(&mut state, commit("ws-owned", &other, "x", "contribution"), H).expect_err("non-owner key refused");
+        assert!(err.to_string().contains(SP_DEVICE_COMMIT_NOT_OWNER), "{err}");
+        let mut unsigned = commit("ws-owned", &owner, "u", "contribution");
+        unsigned.auth_pubkey = None;
+        assert!(apply(&mut state, unsigned, H).is_err(), "no key: refused");
+        assert!(apply(&mut state, commit("ws-owned", &owner, "ok", "contribution"), H).is_ok(), "owner key: applies");
+        assert!(apply(&mut state, commit("ws-unregistered", &other, "u", "contribution"), H).is_ok(), "unregistered station: unchanged");
+        // A `"forecast"` payload is exempt HERE; the shared classifier refuses it
+        // on a ContributionCommit (contribution_type_must_match_the_tx_type_3565
+        // and the end-to-end device_limit_refuses_a_forecast_typed_contribution_commit_3565).
+        assert!(apply(&mut state, commit("ws-owned", &other, "f", "forecast"), H).is_ok(), "forecast commits: untouched here");
     }
 }
 
