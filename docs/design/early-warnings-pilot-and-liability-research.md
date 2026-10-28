@@ -16,14 +16,16 @@ names, exact station coordinates or unsubstantiated scarcity maps.
 
 | Candidate | Official warning source | Research rationale and missing evidence |
 |---|---|---|
-| Northern/eastern Kenya | [Kenya Meteorological Department warnings](https://meteo.go.ke/weather-warnings/) | First research candidate: the source publishes heavy-rain and strong-wind advisories with issue times. Confirm local station gaps and community needs before choosing a county/cell. |
-| Southern Malawi | [DCCMS weather services](https://www.metmalawi.gov.mw/Services/weather/) | Alternate candidate for rain/wind studies. DCCMS identifies weather warnings among its public services. Local station coverage, warning archive and outcome labels still needed. |
-| Southeastern Madagascar | [Météo Madagascar vigilance](https://www.meteomadagascar.mg/vigilance/) and [cyclone information](https://www.meteomadagascar.mg/cyclone/) | Alternate candidate; vigilance covers rain, wind, waves and floods, with a separate cyclone system. French template tests are not Malagasy-language validation or permission to relay cyclone alerts. |
+| Northern/eastern Kenya | [Kenya Meteorological Department warnings](https://meteo.go.ke/weather-warnings/) | First research candidate: the cited page shows heavy-rainfall advisories with issue times. Confirm local station gaps and community needs before choosing a county/cell. |
+| Southern Malawi | [DCCMS candidate source — unverified](https://www.metmalawi.gov.mw/Services/weather/) | Alternate research candidate. TLS validation failed during the 2026-10-28 accuracy review; this page is not relied on as verified evidence of warning services. A working official source, local station coverage, warning archive and outcome labels are still needed. |
+| Southeastern Madagascar | [Météo Madagascar vigilance](https://www.meteomadagascar.mg/vigilance/) and [cyclone information](https://www.meteomadagascar.mg/cyclone/) | Alternate candidate; the cited vigilance page shows rain/flood content, with cyclone information on the separate linked page. French template tests are not Malagasy-language validation or permission to relay cyclone alerts. |
 
 Recommendation: begin a Kenya **offline data feasibility study**, conditional on
 owner selection and access to matched histories. Do not choose a public pilot cell
-from this desk research alone. The research thresholds borrowed from HKO/NWS in
-backend are not Kenyan, Malawian or Malagasy warning criteria.
+from this desk research alone. The HKO/NWS research thresholds are proposed in
+[open backend#26](https://github.com/wrfcoin/backend/pull/26), in
+`docs/alerts/thresholds.md`; they are not on backend main and are not Kenyan,
+Malawian or Malagasy warning criteria.
 
 ## Official relay, provenance and terms
 
@@ -35,15 +37,17 @@ public website exposes a stable API or grants redistribution rights.
 | Source | Before ingest or relay | Current disposition |
 |---|---|---|
 | KMD | Confirm authoritative CAP/feed endpoint, archive completeness, polygon/geocode mapping, cancellations and updates; obtain applicable licence/attribution and redistribution terms. | Public warning page located; machine feed and reuse permission unverified. |
-| DCCMS | Ask the official service to identify current alert/archive feeds, geographic coverage and language; review terms and fallback procedure. | Public service description located; feed and reuse permission unverified. |
+| DCCMS | Ask the official service to identify current alert/archive feeds, geographic coverage and language; review terms and fallback procedure. | Candidate page unverified: TLS validation failed in the 2026-10-28 accuracy review. Do not disable certificate checks; verify a working official source before relying on it. Feed and reuse permission also unverified. |
 | Météo Madagascar | Confirm vigilance plus cyclone feed coverage, issue/expiry semantics and official Malagasy/French text; review translation and redistribution terms. | Public pages located; feed and reuse permission unverified. |
 
 Never scrape a failed or incomplete response into an empty 'no warning' set. Keep
 source ID, URL, timestamps, coverage and provenance; fail closed when completeness
 cannot be established. Map all intersected cells conservatively. An overlapping
 national warning suppresses the independent event and remains the authoritative
-pointer. Do not paraphrase an official instruction into contrary advice. Backend
-`docs/alerts/official-precedence-policy.md` maps implemented rules to tests.
+pointer. Do not paraphrase an official instruction into contrary advice. The policy
+and test mapping in `docs/alerts/official-precedence-policy.md` are proposed in
+[open backend#26](https://github.com/wrfcoin/backend/pull/26), not present on
+backend main.
 
 ## Candidate partner brief: Climate Centre and national societies
 
@@ -100,9 +104,12 @@ cannot establish informed consent by themselves. Keep official attribution intac
 never claim guaranteed safety, guaranteed warning delivery or official affiliation.
 
 Kenya counsel should assess the [ODPC consent guidance](https://www.odpc.go.ke/wp-content/uploads/2024/02/ODPC-Guidance-Notes-on-Consent.pdf)
-and [regulator guidance index](https://www.odpc.go.ke/guidelines-2/) against the actual
-phone-hash, location, consent and retention design. These sources identify a review
-starting point; this document makes no determination that the design complies.
+against the proposed phone-hash, location, consent and retention design in
+[open backend#26](https://github.com/wrfcoin/backend/pull/26). The consent PDF
+provides a review starting point; this document makes no determination that the
+design complies. The [regulator guidance index](https://www.odpc.go.ke/guidelines-2/)
+is **unverified**: it did not respond during the 2026-10-28 accuracy review and is
+not relied on here.
 For Malawi and Madagascar, qualified local counsel must identify the applicable
 privacy, telecom, emergency-warning and cross-border processing rules; no local
 legal review was performed. Phone hashes remain potentially linkable identifiers.
