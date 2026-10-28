@@ -1,0 +1,122 @@
+# Python kit tests: tools/forecast-kit and tools/report-kit (epic #3604).
+#
+# Before this workflow no hosted job ran either kit's unittest suite, so a PR
+# touching only those paths had no REAL-GREEN evidence at all.
+#
+# ALWAYS REPORTS, so it can be made a required check later. There is deliberately
+# no `paths:` filter on the triggers: a filtered workflow reports NOTHING on a PR
+# outside its paths, and a required check that never reports blocks the PR. The
+# path selection happens inside the job instead. When none of the selected paths
+# changed, the job still runs (nonzero steps) and says so in its log and summary.
+#
+# NONVACUOUS: every kit whose tests directory exists must run more than zero
+# tests. When the scorer binary's source exists (forecast-score-batch, #55),
+# the job builds it and then requires ZERO skipped tests, so the scorer's
+# end-to-end tests cannot pass by skipping.
+#
+# Cost: one ubuntu job per PR. ~30 s when no kit path changed. A few minutes when
+# the scorer binary is built.
+name: python-kit-tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Data cap (infra#1113): a new push to a PR cancels that PR's superseded run;
+# every other event gets a group unique to its run id.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: '1.98.0'
+
+jobs:
+  python-kit-tests:
+    name: python kit tests (forecast-kit, report-kit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Select kit paths
+        id: select
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "event $EVENT: running every kit suite"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          printf 'changed paths:\n%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq '^(tools/forecast-kit/|tools/report-kit/|forecast-score/|\.github/workflows/python-kit-tests\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: No kit path changed (reported, not skipped)
+        if: steps.select.outputs.run != 'true'
+        run: |
+          echo "No change under tools/forecast-kit/, tools/report-kit/, forecast-score/ or this workflow; no kit suite is relevant to this PR."
+          echo "python-kit-tests: no kit path changed in this PR" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.select.outputs.run == 'true' && hashFiles('forecast-score/src/bin/forecast_score_batch.rs') != ''
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Build forecast-score-batch (scorer end-to-end tests need it)
+        id: scorer
+        if: steps.select.outputs.run == 'true' && hashFiles('forecast-score/src/bin/forecast_score_batch.rs') != ''
+        run: |
+          set -euo pipefail
+          cargo build --locked -p wrfcoin-forecast-score --bin forecast-score-batch
+          echo "bin=$PWD/target/debug/forecast-score-batch" >> "$GITHUB_OUTPUT"
+
+      - name: Run kit unittest suites (nonzero test count required)
+        if: steps.select.outputs.run == 'true'
+        shell: bash
+        env:
+          FORECAST_SCORER_BIN: ${{ steps.scorer.outputs.bin }}
+        run: |
+          set -euo pipefail
+          total=0
+          for kit in tools/forecast-kit tools/report-kit; do
+            if [ ! -d "$kit/tests" ]; then
+              echo "$kit: no tests directory on this tree"
+              continue
+            fi
+            log="$RUNNER_TEMP/$(basename "$kit").log"
+            python3 -m unittest discover -s "$kit/tests" -v > "$log" 2>&1 || { cat "$log"; echo "::error::$kit unittest suite failed"; exit 1; }
+            cat "$log"
+            ran="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$log" | tail -1)"
+            skipped="$(sed -nE 's/.*skipped=([0-9]+).*/\1/p' "$log" | tail -1)"
+            ran="${ran:-0}"; skipped="${skipped:-0}"
+            if [ "$ran" -le 0 ]; then
+              echo "::error::$kit ran 0 tests: a suite that runs nothing is not evidence"
+              exit 1
+            fi
+            if [ -n "${FORECAST_SCORER_BIN:-}" ] && [ "$skipped" -ne 0 ]; then
+              echo "::error::$kit skipped $skipped test(s) although forecast-score-batch was built"
+              exit 1
+            fi
+            echo "$kit: ran $ran, skipped $skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+            total=$((total + ran))
+          done
+          if [ "$total" -le 0 ]; then
+            echo "::error::no kit tests ran at all"
+            exit 1
+          fi
+          echo "python-kit-tests: $total test(s) ran" >> "$GITHUB_STEP_SUMMARY"

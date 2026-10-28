@@ -456,3 +456,9 @@ Two details worth keeping:
   not. Prefer the latter.
 - The 6 `disabled_manually` registrations are exactly the 6 core4 rows of
   `docs/ci/parked-workflows.txt` — accounted for, not drift.
+
+## `python-kit-tests.yml` — 2026-10-28 (Refs wrfcoin/core4-archive#3604)
+
+| Trigger | Runner | Why |
+|---|---|---|
+| `pull_request` (no paths filter), `push` to `main`, `workflow_dispatch` | `ubuntu-latest` | Runs the `tools/forecast-kit` and `tools/report-kit` unittest suites, which no hosted job ran before. Path selection happens inside the job, so the check always reports and can be required. A PR touching none of `tools/forecast-kit/`, `tools/report-kit/`, `forecast-score/` or the workflow passes in one cheap step that says so. Every present kit must run more than zero tests. When `forecast-score-batch` exists it is built, and zero skipped tests are required. No schedule. |
