@@ -5,9 +5,9 @@ element the owner adopts gets its own story.
 
 Date: 2026-10-28.
 
-Refs: `wrfcoin/core4-archive#3567`, epic `wrfcoin/core4-archive#3560`. Related: `#3565` (one
-submission per device per block and the late-data penalty, the paper's addendum intent), `#3566`
-(block speed), core4#2793 (production BFT finality). Code references are to public `core4` main
+Refs: `wrfcoin/core4-archive#3567`, epic `wrfcoin/core4-archive#3560`. Related: `wrfcoin/core4-archive#3565` (one
+submission per device per block and the late-data penalty, the paper's addendum intent), `wrfcoin/core4-archive#3566`
+(block speed), `wrfcoin/core4-archive#2793` (production BFT finality). Code references are to public `core4` main
 `cc7f4d4`.
 
 ## 1. The two shapes
@@ -31,7 +31,7 @@ submission per device per block and the late-data penalty, the paper's addendum 
   `MultidomainRewardPolicy` (soil, ocean and hydrology toggles and weights, `state.rs:458`), inside
   the single contribution slice.
 - **One state root and one finality path.** `MAX_REORG_DEPTH = 100` (`blockchain/chain.rs:47`).
-  BFT finality is still open in core4#2793.
+  BFT finality is still open in `wrfcoin/core4-archive#2793`.
 - **No sub-chain code.** A grep for hashquilt or sub-chain finds nothing. The closest building
   blocks are the layer-2 rollup types (`layer2/rollup.rs`, `L1BatchReceipt` at :171), which commit
   a batch root to the base chain, and the `da` crate (data-availability sampling).
@@ -50,11 +50,11 @@ submission per device per block and the late-data penalty, the paper's addendum 
 
 | Item | Sub-chains | Domain tags |
 |---|---|---|
-| New code | Per-chain block production, finality, fork choice, cross-chain header commitments in the financial chain, cross-chain reward settlement, P2P topics per chain, sync per chain. **21+ points** by the gap analysis, realistically several epics | None |
-| Consensus risk | High. A second fork-choice and finality surface while BFT finality (core4#2793) is not yet production-grade on the one chain | — |
+| New code | Per-chain block production, finality, fork choice, cross-chain header commitments in the financial chain, cross-chain reward settlement, P2P topics per chain, sync per chain. sized at **21+ points** in the issue itself (`wrfcoin/core4-archive#3567`), realistically several epics | None |
+| Consensus risk | High. A second fork-choice and finality surface while BFT finality (`wrfcoin/core4-archive#2793`) is not yet production-grade on the one chain | — |
 | Migration of the live testnet | A new genesis or a long gated transition. Every state-root, WAL and snapshot path is per chain | — |
 | Operator load | One node set per stream, or one node running many chains | One node set |
-| Emission | A cross-chain partition must stay `≤ E(t)` across chains. The single `EmissionPartitionLedger` (PoP:996 rules) would have to become a cross-chain ledger | Unchanged |
+| Emission | A cross-chain partition must stay `≤ E(t)` across chains. The single `EmissionPartitionLedger` (PoP:1009; its no-borrowing rules at PoP:996-997) would have to become a cross-chain ledger | Unchanged |
 
 ## 4. Recommendation per element
 
@@ -62,12 +62,12 @@ submission per device per block and the late-data penalty, the paper's addendum 
 |---|---|---|
 | **Sub-chains (§4.2)** | **Supersede.** Keep the single chain with domain tags. Record this as a deliberate departure | Each benefit except per-stream consensus is reachable with tags, gates and weights. Per-stream consensus has no current customer. The cost lands on finality, which is the release blocker. Revisit when one stream measurably needs its own engine or its own throughput |
 | **Historical blocks (§4.3)** | **Adapt.** Treat a back-filled archive as a domain (`domain = "historical"`) whose records are sealed by a signed import receipt (an archive source, a range and a content hash) and pinned in storage (`storage-providers`). Do not create a chain | It gives provenance and permanence without a second consensus. Pay through bounties rather than emission, since nobody observed the data on WRFCoin |
-| **Addendum blocks (§4.4)** | **Adapt.** Late data goes into the normal chain in a later block and is paid less by the `#3565` late-data curve. Flags against false submitters are the existing quality-slashing and fraud-report paths | `#3565` is that adaptation in code (core4 PR for `device_submission_limit`). A separate sub-block structure would only duplicate it |
+| **Addendum blocks (§4.4)** | **Adapt.** Late data goes into the normal chain in a later block and is paid less by a late-data curve (planned, `wrfcoin/core4-archive#3565`). Flags against false submitters are the existing quality-slashing and fraud-report paths | That adaptation is planned under `wrfcoin/core4-archive#3565` (a gated one-observation-per-device rule plus a late-data pay curve). It is not on main yet, and its PR will be linked here once open. A separate sub-block structure would only duplicate it |
 | **Per-stream throttle (§5.1)** | **Adapt.** Use domain weights (`MultidomainRewardPolicy`) to throttle a new stream's share | Already the mechanism |
 
 ## 5. Interaction with finality and emission
 
-- Finality (core4#2793) is defined for one chain. Sub-chains would need either their own finality
+- Finality (`wrfcoin/core4-archive#2793`) is defined for one chain. Sub-chains would need either their own finality
   or a commitment rule ("a sub-chain head is final once the financial-chain block that commits it is
   final"). The second is the rollup pattern `layer2/rollup.rs` already models. It is the path to
   take **if** a stream ever needs its own chain.
@@ -81,6 +81,6 @@ submission per device per block and the late-data penalty, the paper's addendum 
 2. **Historical blocks:** adapt as a `historical` domain with signed import receipts and pinned
    storage, paid by bounties? *Recommended: yes. File it as its own story when an archive partner
    is named.*
-3. **Addendum blocks:** adapt as late data in later blocks with the `#3565` curve? *Recommended:
+3. **Addendum blocks:** adapt as late data in later blocks with the planned `wrfcoin/core4-archive#3565` curve? *Recommended:
    yes.*
 4. **Throttle:** domain weights instead of 1/12 per chain? *Recommended: yes.*
