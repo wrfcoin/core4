@@ -20,10 +20,26 @@ See [APRS-IS connection specification](https://www.aprs-is.net/Connecting.aspx)
 (read 2026-10-28). This is a security inference from the documented login model,
 not a claim that APRS-IS authenticates physical hardware.
 
-**Owner decision required:** approve an independently authenticated control
-channel for CWOP/APRS, or retain it as an unverified, non-earning reference feed.
-The proposed status-field challenge alone must not transition an APRS claim to
-verified. Changing that requirement is outside this lane's authority.
+**Owner ruling, relayed by LEAD 2026-10-28:** US CWOP/APRS uses
+LICENCE-EMAIL proof: send a one-time, single-use, expiring, wallet-bound code to
+the licensee email listed in the public amateur licence database (for example
+FCC ULS), then accept the entered code. The destination is lookup-derived,
+never claimant-supplied. Bind the challenge to the licence-record digest as well
+as wallet/source/callsign; a changed address invalidates an outstanding code.
+Use only an `EmailSender` interface implemented by `DryRunEmailSender`, and a
+`LicenceLookup` interface implemented by recorded fixtures. No live ULS or SMTP
+calls. Non-US and missing/currently invalid licence records remain reference-only.
+APRS status/passcode alone never verifies, even with a fresh echoed nonce.
+
+Limits: stale or reassigned licence email can reach the wrong person; this proof
+is US-centric and proves access to the listed licence mailbox, not physical
+possession of every transmitter using that callsign. Do not equate mailbox
+proof with a device key. No production lookup, real mail delivery, or source
+verification is claimed by fixture tests. Every fixture claim remains isolated
+and non-earning. Production lookup freshness, licence coverage, disputed mailbox
+recovery, and cross-network physical identity remain activation prerequisites.
+The previous reference-only-for-all-APRS direction is superseded only by this
+bounded fixture licence-email path; the rest of story 1 proceeds.
 
 ## Proof adapters
 
@@ -33,7 +49,8 @@ verified. Changing that requirement is outside this lane's authority.
 | WeatherLink v2 | Read-only account authorization and station UUID in its owned inventory | Public station lookup |
 | Netatmo | Read-only weather grant and module ID in the authorized account's owned modules | Public weather map |
 | WU / WOW | Fresh nonce independently read from an account-controlled field; establish who can write it first | Copied public feed or claimant screenshot |
-| CWOP/APRS | Additional authenticated control channel, pending owner decision | Callsign, passcode, status/comment packet |
+| CWOP/APRS (US) | Code sent to recorded public licence email, fixture-only tonight | Callsign, passcode, status/comment packet |
+| CWOP/APRS (non-US) | None yet; reference-only | Any public packet or claimed mailbox |
 
 Vendor inventory access must distinguish account-owned devices from shared or
 public devices. A readable device is not necessarily owned. Adapter fixtures
@@ -144,5 +161,6 @@ inventory refusal; restart persistence; exact and rolling-window duplicates;
 late native precedence; and reversible migration round-trip on disposable data.
 
 This note does not claim backend implementation or source verification complete.
-The public APRS proof-channel decision blocks that source. Global identity
-evidence must be supplied by authenticated adapters before a claim can verify.
+The US licence-email ruling permits fixture implementation; non-US remains
+reference-only. Global identity evidence must come from authenticated adapters,
+and fixture proof must never be treated as live ownership verification.
