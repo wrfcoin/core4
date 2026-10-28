@@ -75,6 +75,8 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "stake_submission_nonce",
     "slash_evidence_reports",
     "node_share_settlement",
+    "forecaster_key_binding",
+    "device_submission_limit",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -299,7 +301,9 @@ mod tests {
                 "station_registration_nonce",
                 "stake_submission_nonce",
                 "slash_evidence_reports",
-                "node_share_settlement"
+                "node_share_settlement",
+                "forecaster_key_binding",
+                "device_submission_limit"
             ]
         );
     }

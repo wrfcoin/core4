@@ -2203,6 +2203,9 @@ struct BlockTxValidationAccumulators {
     /// that order. Requiring agreement is what makes the outcome
     /// order-independent — see `classify_block_transaction` §0e.
     oracle_registration_target: Option<(Vec<String>, usize)>,
+    /// #3565: stations whose `ContributionReveal` this block already carries.
+    /// Only written while `ConsensusFeature::DeviceSubmissionLimit` is active.
+    device_reveal_stations: FxHashSet<String>,
 }
 
 /// Environment variable that overrides the genesis-time `MIN_COMPUTE_WORK_FACTOR`
@@ -2355,6 +2358,40 @@ pub const MAX_BLOCK_EMISSION: u128 = 4 * INITIAL_BLOCK_REWARD as u128; // 3_200 
 /// Maximum combined reward multiplier (2.0x in basis-point representation).
 /// After composing desert and hyper-local multipliers, the net factor vs base_reward <= 2.0x.
 pub const MAX_COMBINED_MULTIPLIER_BPS: u128 = 20_000;
+
+/// #3565: refusal code for a second `ContributionReveal` from one station in
+/// one block (`ConsensusFeature::DeviceSubmissionLimit`).
+pub const SP_DEVICE_SUBMISSION_LIMIT: &str = "SP_DEVICE_SUBMISSION_LIMIT";
+
+/// #3565 late-data curve: an observation at most this old at its including
+/// block is paid in full.
+pub const LATE_DATA_FULL_PAY_SECONDS: i64 = 600;
+/// #3565 late-data curve: from this age on, pay stays at the floor.
+pub const LATE_DATA_FLOOR_SECONDS: i64 = 3_600;
+/// #3565 late-data curve: the floor, in basis points of the reward.
+pub const LATE_DATA_FLOOR_BPS: u128 = 5_000;
+
+/// Late-data pay multiplier in basis points (#3565, white paper §4.6: data off
+/// the block's timestamp is paid less).
+///
+/// `age_seconds` is the including block's HEADER timestamp minus the reveal's
+/// committed `timestamp`, so both inputs are chain data and every node computes
+/// the same value. The curve is flat at 10_000 up to
+/// [`LATE_DATA_FULL_PAY_SECONDS`], falls linearly to [`LATE_DATA_FLOOR_BPS`]
+/// at [`LATE_DATA_FLOOR_SECONDS`], and stays at the floor after that. A
+/// negative age (a reading stamped after its block, inside the forward-skew
+/// allowance) is paid in full. Integer arithmetic only.
+pub fn late_data_multiplier_bps(age_seconds: i64) -> u128 {
+    if age_seconds <= LATE_DATA_FULL_PAY_SECONDS {
+        return 10_000;
+    }
+    if age_seconds >= LATE_DATA_FLOOR_SECONDS {
+        return LATE_DATA_FLOOR_BPS;
+    }
+    let span = (LATE_DATA_FLOOR_SECONDS - LATE_DATA_FULL_PAY_SECONDS) as u128;
+    let over = (age_seconds - LATE_DATA_FULL_PAY_SECONDS) as u128;
+    10_000 - (10_000 - LATE_DATA_FLOOR_BPS) * over / span
+}
 
 /// Compute the target block time for a given block height based on the
 /// network maturity progression table. Returns seconds.
@@ -5104,6 +5141,15 @@ impl ProofOfPublishing {
                 quality_trust_reward,
                 capability_bps,
             );
+            // #3565: late data is paid less. Gated; unscheduled this is the
+            // unchanged amount, byte for byte. Applied last so it scales the
+            // already-capped reward and can only lower it.
+            let reward = if feature_active(ConsensusFeature::DeviceSubmissionLimit, block.height) {
+                let age_seconds = block.timestamp.timestamp().saturating_sub(reveal_payload.timestamp);
+                reward * late_data_multiplier_bps(age_seconds) / 10_000
+            } else {
+                reward
+            };
 
             // Preserve the existing safety boundary: reward planning may be
             // recorded before quorum so it can settle later, but reputation,
@@ -8505,8 +8551,34 @@ impl ProofOfPublishing {
             })();
             if valid.is_none() { return Some("SP_NODE_BOND_AUTHORIZATION".into()); }
         }
+        // #3290: from the forecaster key binding's activation, a forecast
+        // commit that is not authorized by the key of the forecaster it names
+        // invalidates the block. Inactive, a block carrying such a commit is
+        // accepted exactly as before (extraction leaves an unauthorized commit
+        // inert). Producer self-screen and sync verifier share this function,
+        // so the producer drops what a peer would reject.
+        if tx.tx_type == TransactionType::ForecastCommit
+            && feature_active(ConsensusFeature::ForecasterKeyBinding, ctx.height)
+            && !tx.verify_commit_authorization_at_height(ctx.height)
+        {
+            return Some("SP_FORECASTER_KEY_UNBOUND".into());
+        }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Some(crate::security::slash_evidence::dispatch_refusal(ctx.height).to_string());
+        }
+        // #3565: one accepted observation per registered device per block. The
+        // device identity is the reveal's `station_id` (the registered station,
+        // bound to its owner). The first reveal in block order is kept; a later
+        // one for the same station makes the block invalid, and the producer
+        // self-screen drops it, so producer and `verify_block` agree.
+        if tx.tx_type == TransactionType::ContributionReveal
+            && feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height)
+        {
+            if let Some(payload) = tx.parse_reveal_payload() {
+                if !acc.device_reveal_stations.insert(payload.station_id) {
+                    return Some(SP_DEVICE_SUBMISSION_LIMIT.into());
+                }
+            }
         }
         if tx.tx_type == TransactionType::GovernanceProposal {
             return Some(format!(
@@ -26012,6 +26084,158 @@ pub fn transaction(
             if i < MAX_NODE_BOND_LIFECYCLE_TXS_PER_BLOCK { assert!(refusal.is_none()); }
             else { assert_eq!(refusal.as_deref(), Some("SP_NODE_BOND_BLOCK_CAP")); }
         }
+    }
+}
+
+#[cfg(test)]
+mod device_submission_limit_3565 {
+    //! #3565: one accepted `ContributionReveal` per station per block, and the
+    //! late-data pay curve. The schedule is process-global, so the gated test
+    //! re-executes itself in a child process.
+    use super::*;
+    use crate::blockchain::transaction::{RevealPayload, TransactionInput, TransactionOutput};
+    use crate::crypto::chain_binding::{FeatureSchedule, install_feature_schedule};
+
+    fn reveal(station: &str, nonce: &str, tx_type: TransactionType) -> Transaction {
+        let data = serde_json::json!({"quality": 1.0, "volume": 1.0, "uniqueness": 1.0});
+        let timestamp = chrono::Utc::now().timestamp();
+        let contribution_type = if tx_type == TransactionType::ForecastReveal { "forecast" } else { "contribution" };
+        let payload = RevealPayload {
+            commit_id: Transaction::compute_commit_id(&data, nonce, station, timestamp, contribution_type),
+            station_id: station.to_string(),
+            timestamp,
+            contribution_type: contribution_type.to_string(),
+            data,
+            nonce: nonce.to_string(),
+            data_cid: None,
+            data_hash: None,
+            storage_provider: None,
+            provenance: None,
+            manifest: None,
+            verification_receipt: None,
+            compute_receipt: None,
+            quality_tier: None,
+        };
+        let mut tx = Transaction::new(
+            vec![TransactionInput {
+                txid: crate::crypto::hash::hash_bytes(format!("in-{station}-{nonce}").as_bytes()),
+                vout: 0,
+                signature: None,
+                public_key: None,
+                coinbase_data: None,
+            }],
+            vec![TransactionOutput {
+                amount: 1,
+                address: format!("0x{}", hex::encode([0x77u8; 20])),
+                script: "OP_TRUE".into(),
+                nft_data: None,
+            }],
+        );
+        tx.tx_type = tx_type;
+        tx.fee = 1;
+        tx.data = Some(serde_json::to_string(&payload).unwrap());
+        tx.set_id();
+        tx
+    }
+
+    fn refusals(pop: &ProofOfPublishing, height: u64, txs: &[Transaction]) -> Vec<Option<String>> {
+        let empty = FxHashSet::default();
+        let ctx = BlockTxValidationCtx {
+            height,
+            block_time: chrono::Utc::now().timestamp() as u64,
+            check_quality: false,
+            check_privacy: false,
+            check_compute_fee: false,
+            check_disclosure: false,
+            check_tx_signatures: false,
+            low_quality_quorum_commit_ids: &empty,
+            selective_disclosure_verifier_keys: &[],
+        };
+        let mut acc = BlockTxValidationAccumulators::default();
+        txs.iter().enumerate().map(|(i, tx)| pop.classify_block_transaction(&ctx, tx, i + 1, &mut acc)).collect()
+    }
+
+    #[test]
+    fn late_data_curve_is_pinned_3565() {
+        assert_eq!(late_data_multiplier_bps(-120), 10_000, "future-stamped inside the skew allowance");
+        assert_eq!(late_data_multiplier_bps(0), 10_000);
+        assert_eq!(late_data_multiplier_bps(LATE_DATA_FULL_PAY_SECONDS), 10_000);
+        assert_eq!(late_data_multiplier_bps(LATE_DATA_FULL_PAY_SECONDS + 1), 9_999);
+        assert_eq!(late_data_multiplier_bps(2_100), 7_500, "midpoint of the slope");
+        assert_eq!(late_data_multiplier_bps(LATE_DATA_FLOOR_SECONDS - 1), 5_002, "the reduction floors, so pay rounds up");
+        assert_eq!(late_data_multiplier_bps(LATE_DATA_FLOOR_SECONDS), LATE_DATA_FLOOR_BPS);
+        assert_eq!(late_data_multiplier_bps(i64::MAX), LATE_DATA_FLOOR_BPS);
+        let mut previous = 10_000;
+        for age in (0..5_000).step_by(7) {
+            let m = late_data_multiplier_bps(age);
+            assert!(m <= previous && m >= LATE_DATA_FLOOR_BPS, "monotone, floored ({age}s)");
+            previous = m;
+        }
+    }
+
+    #[test]
+    fn feature_is_registered_last_and_not_schedulable_3565() {
+        let f = ConsensusFeature::DeviceSubmissionLimit;
+        assert_eq!(f.name(), "device_submission_limit");
+        assert_eq!(ConsensusFeature::parse("device_submission_limit"), Some(f));
+        assert_eq!(ConsensusFeature::ALL.last(), Some(&f), "appended at the END");
+        assert_eq!(crate::crypto::protocol_support::KNOWN_FEATURES.last(), Some(&"device_submission_limit"));
+        assert_eq!(bincode::serialize(&f).unwrap(), 23u32.to_le_bytes(), "ordinal after forecaster_key_binding");
+        assert!(!f.schedulable(None), "activation is an owner decision");
+        assert!(f.has_behaviour());
+    }
+
+    #[test]
+    fn second_reveal_from_one_station_is_refused_only_while_active_3565() {
+        const CHILD: &str = "WRFCOIN_3565_CLASSIFY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::proof_of_publishing::device_submission_limit_3565::second_reveal_from_one_station_is_refused_only_while_active_3565", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        const H: u64 = 3;
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let block = [
+            reveal("ws-a", "n1", TransactionType::ContributionReveal),
+            reveal("ws-b", "n1", TransactionType::ContributionReveal),
+            reveal("ws-a", "n2", TransactionType::ContributionReveal),
+            reveal("ws-a", "n3", TransactionType::ForecastReveal),
+        ];
+        // Unscheduled: nothing is refused, as on main.
+        assert_eq!(refusals(&pop, H, &block), vec![None; 4], "gate OFF control");
+
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+        );
+        assert_eq!(refusals(&pop, H - 1, &block), vec![None; 4], "below activation: unchanged");
+        assert_eq!(
+            refusals(&pop, H, &block),
+            vec![None, None, Some(SP_DEVICE_SUBMISSION_LIMIT.to_string()), None],
+            "from activation: the second same-station reveal is refused; another station and a forecast reveal are not"
+        );
+        let mut full = Block::new(1, Hash::default(), block.to_vec(), 1, 2);
+        full.height = H;
+        assert!(!pop.verify_block_transactions_fused(&full, 1).unwrap(), "verify_block refuses the block");
+        full.transactions.remove(2);
+        assert!(pop.verify_block_transactions_fused(&full, 1).unwrap(), "one reveal per station passes");
+
+        // Mempool admission: refused while the station has a pending reveal.
+        let mut mempool = Mempool::new(&crate::config::settings::Config::default());
+        mempool.add_transaction_with_signing_keys_at_height(block[0].clone(), None, Some(H - 1)).expect("first reveal admitted");
+        mempool.add_transaction_with_signing_keys_at_height(block[1].clone(), None, Some(H - 1)).expect("another station admitted");
+        let err = mempool
+            .add_transaction_with_signing_keys_at_height(block[2].clone(), None, Some(H - 1))
+            .expect_err("second pending reveal for ws-a refused");
+        assert!(err.to_string().contains(SP_DEVICE_SUBMISSION_LIMIT), "{err}");
+        // Below activation (next block H - 1) and for legacy callers: unchanged.
+        let mut early = Mempool::new(&crate::config::settings::Config::default());
+        early.add_transaction_with_signing_keys_at_height(block[0].clone(), None, Some(H - 2)).unwrap();
+        early.add_transaction_with_signing_keys_at_height(block[2].clone(), None, Some(H - 2)).expect("inactive next block: admitted");
+        let mut legacy = Mempool::new(&crate::config::settings::Config::default());
+        legacy.add_transaction(block[0].clone()).unwrap();
+        legacy.add_transaction(block[2].clone()).expect("no height: legacy behaviour");
     }
 }
 

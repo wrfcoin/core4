@@ -452,9 +452,44 @@ impl Mempool {
             ));
         }
 
+        // #3565: one pending observation per registered device. While
+        // `DeviceSubmissionLimit` is active for the next block, a second
+        // `ContributionReveal` for a station that already has one pending is
+        // refused; the first must be mined before the next is admitted. A block
+        // carrying two is invalid (`classify_block_transaction`), so this keeps
+        // the mempool from holding a reveal no block may include beside its
+        // sibling. Legacy callers with no height keep their behaviour.
+        if tx.tx_type == TransactionType::ContributionReveal
+            && current_height.is_some_and(|height| {
+                crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
+                    height.saturating_add(1),
+                )
+            })
+        {
+            if let Some(payload) = tx.parse_reveal_payload() {
+                // Admission is node policy, never block content or state.
+                // determinism-ok: `any` over the pending set is order-independent
+                let already_pending = self.transactions.values().any(|pending| {
+                    pending.tx_type == TransactionType::ContributionReveal
+                        && pending
+                            .parse_reveal_payload()
+                            .is_some_and(|other| other.station_id == payload.station_id)
+                });
+                if already_pending {
+                    return Err(anyhow!(
+                        "{}: station {} already has a pending observation",
+                        crate::consensus::proof_of_publishing::SP_DEVICE_SUBMISSION_LIMIT,
+                        payload.station_id
+                    ));
+                }
+            }
+        }
+
         let tx_size = self.check_transaction_admission_cost(&tx)?;
 
-        // This type-only slice cannot stage or apply evidence reports yet.
+        // Admission checks authorization only. Provability (`responsible()`), the challenge deadline and duplicates
+        // are enforced by `node_fraud::apply`; the operator route runs them as an advisory dry-run at the edge.
         if tx.tx_type == TransactionType::NodeFraudReport {
             let height = current_height.ok_or_else(|| anyhow!("SP_NODE_FRAUD_HEIGHT_REQUIRED"))?;
             if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, height) { return Err(anyhow!("SP_NODE_FRAUD_INACTIVE")); }
@@ -627,6 +662,29 @@ impl Mempool {
         }
 
         let protocol_replay_key = self.validate_launch_payload_and_replay_key(&tx, signing_keys)?;
+        // #3290: once the forecaster key binding is in force at the candidate
+        // inclusion height (the block after the canonical tip), refuse a
+        // forecast commit whose sender is not the address of its
+        // authorization key, whether it came from the route or from gossip.
+        // With no height, require the binding whenever the feature is
+        // scheduled at all: a bound commit is valid under both rules, so this
+        // only ever refuses commits that would be invalid from activation.
+        // Block validity is `verify_commit_authorization_at_height` in the
+        // shared block classifier; this is the admission mirror of it.
+        if tx.tx_type == TransactionType::ForecastCommit {
+            use crate::crypto::chain_binding::{ConsensusFeature, feature_active, feature_scheduled};
+            let binding_required = match current_height {
+                Some(height) => {
+                    feature_active(ConsensusFeature::ForecasterKeyBinding, height.saturating_add(1))
+                },
+                None => feature_scheduled(ConsensusFeature::ForecasterKeyBinding),
+            };
+            if binding_required && !tx.forecast_commit_key_bound() {
+                return Err(anyhow!(
+                    "SP_FORECASTER_KEY_UNBOUND: forecast commit sender must be the address of its auth_pubkey (#3290)"
+                ));
+            }
+        }
         if let Some(key) = &protocol_replay_key {
             if self.protocol_replay_keys.contains(key) {
                 return Err(anyhow!("Launch protocol replay detected"));

@@ -3653,6 +3653,53 @@ impl Transaction {
         }
     }
 
+    /// #3290: whether this `ForecastCommit` names the forecaster its
+    /// authorization key controls.
+    ///
+    /// The forecaster is the 20-byte address derived from `auth_pubkey`
+    /// (`Address::from_public_key`). The transaction's `sender_address` and
+    /// EVERY output address must parse to exactly those bytes: a display or
+    /// case variant parses to the same bytes, a label that is not an address
+    /// (or names someone else) does not. Signature validity is NOT checked
+    /// here; [`Self::verify_commit_authorization_at_height`] composes both.
+    /// Returns `false` for every other transaction type.
+    pub fn forecast_commit_key_bound(&self) -> bool {
+        if self.tx_type != TransactionType::ForecastCommit {
+            return false;
+        }
+        let Some(payload) = self.parse_commit_payload() else {
+            return false;
+        };
+        let Some(Ok(public_key)) = payload.auth_pubkey.as_deref().map(PublicKey::from_hex) else {
+            return false;
+        };
+        let forecaster = Address::from_public_key(&public_key);
+        self.sender_address == forecaster
+            && !self.outputs.is_empty()
+            && self
+                .outputs
+                .iter()
+                .all(|output| output.address.parse::<Address>().is_ok_and(|a| a == forecaster))
+    }
+
+    /// Height-aware commit authorization: [`Self::verify_commit_authorization`],
+    /// plus, for a `ForecastCommit` once
+    /// `ConsensusFeature::ForecasterKeyBinding` is active at `height`, the
+    /// #3290 key binding ([`Self::forecast_commit_key_bound`]).
+    ///
+    /// The ONE check mempool admission, the shared producer/sync block
+    /// classifier and transition extraction ask, so the three cannot disagree.
+    /// With the feature inactive this is `verify_commit_authorization` exactly.
+    pub fn verify_commit_authorization_at_height(&self, height: u64) -> bool {
+        self.verify_commit_authorization()
+            && (self.tx_type != TransactionType::ForecastCommit
+                || !crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::ForecasterKeyBinding,
+                    height,
+                )
+                || self.forecast_commit_key_bound())
+    }
+
     /// Verify the embedded `account`-bound authorization on a `Stake`/`Unstake`
     /// transaction (#1763). Returns `false` for non-stake types, transactions
     /// without a stake-authorization payload, or any payload whose authorization
