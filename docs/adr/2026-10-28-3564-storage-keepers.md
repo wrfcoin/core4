@@ -20,7 +20,7 @@ failure, and carry reputation. What exists today:
 | Piece | Where | State |
 |---|---|---|
 | Keeper attestation types | `keeper-proof/src/lib.rs`: `StorageAttestation` (signed, domain `wrfcoin.storage_attestation.v1`), `RetrievalProof` (unsigned), `KeeperRecord`, `PinProof`, `HealthMonitor` | Types only. Nothing on chain reads them. |
-| Bonded service + receipts (r20.9) | `shared-protocol/src/consensus/node_service_receipt.rs:42-58` (`NodeServiceReceipt`, consumer-signed, `NodeService::{SnapshotJoin, SyncRange}`), `node_share_contracts.rs:20-26,213-219` (`NODE_BOND_WRF = 250`, `NODE_EPOCH_BLOCKS = 1 024`, challenge windows, `BondedServiceClaim`), `node_receipt_registry.rs`, `node_bond_registry.rs`, `node_fraud.rs` | Live for snapshot serving, behind `node_share_settlement`. This is the model to generalise. |
+| Bonded service + receipts (r20.9) | `shared-protocol/src/consensus/node_service_receipt.rs:41-60` (`NodeServiceReceipt`, consumer-signed, `NodeService::{SnapshotJoin, SyncRange}`), `node_share_contracts.rs:20-26,213-219` (`NODE_BOND_WRF = 250`, `NODE_EPOCH_BLOCKS = 1 024`, challenge windows, `BondedServiceClaim`), `node_receipt_registry.rs`, `node_bond_registry.rs`, `node_fraud.rs` | Live for snapshot serving, behind `node_share_settlement`. This is the model to generalise. |
 | Real storage clients | `storage-providers` (public): `ipfs`, `filecoin`, `arweave` providers; `data-tiering` (`dedup_registry.rs` with per-replica `update_verification`, `retention_scheduler.rs`); `storage-common` (`chunking.rs` 16 KiB–1 MiB chunk heuristics, `integrity.rs` whole-object hashing) | Real and tested, but orphaned: infra's storage service packages backend's mocked `storage_networks_server.js` (infra#943/#944, storage-providers#65). |
 | Chunk-level commitment | — | **Missing.** Integrity today is a whole-object hash, so a challenger can only ask for the whole object. |
 
@@ -33,8 +33,9 @@ failure, and carry reputation. What exists today:
 3. **Reuse the bonded-service machinery**: bond, epoch, challenge window, fraud path and receipt
    batches, instead of a parallel economy.
 4. **Cheap to verify**: a challenge costs one chunk and a log-size proof, not a whole archive.
-5. **No real-money credentials.** Filecoin and Arweave wallets are not provisioned (storage-providers#65
-   Phase 0). Keepers on testnet hold data on IPFS or local disk.
+5. **No real-money credentials assumed.** Whether funded Filecoin and Arweave wallets exist is unverified:
+   storage-providers#65 Phase 0 is only a check, and it has not been run. The design therefore needs
+   none. Keepers on testnet hold data on IPFS or local disk.
 
 ## 1. What a keeper stores, and the commitment it is audited against
 
@@ -53,7 +54,7 @@ merkle_root     SHA3-256 binary Merkle root over the chunk hashes, domain-separa
 
 The commitment, not the CID, is what audits verify against. A CID alone cannot verify a single chunk
 without the whole DAG. Recording commitments on chain (who may, and at what cost) is a later
-consensus slice (§5). The off-chain challenger in this story takes them as input.
+consensus slice (§5). The off-chain challenger takes them as input.
 
 ## 2. Keepers are bonded servers
 
@@ -66,8 +67,14 @@ keeping needs its own bond, or a larger one, is Q2.
 
 Per keeper, per epoch:
 
-1. **Seed.** The hash of the first block after the epoch's registration cutoff. The keeper cannot
-   predict it when it registers what it holds.
+1. **Seed.** One block hash is not enough: the producer of that block can grind it, retrying until the
+   seed lands on chunks a colluding keeper holds. The seed is therefore a hash over the hashes of
+   `SEED_SPAN_BLOCKS` (proposed 8) **consecutive blocks that all come after** the keeper's holdings for
+   the epoch are committed (`combine_seed` in the companion code PR). To steer it, an attacker must
+   produce every block in the span. The keeper cannot predict the seed when it commits its holdings,
+   and nobody can choose it afterwards. A commit-reveal beacon from bonded parties is the stronger
+   alternative if the producer set is small enough for one party to produce eight blocks in a row
+   (Q7).
 2. **Challenge.** `k` audits (proposed `k = 4`) are drawn deterministically from
    `H(seed ‖ keeper ‖ i)`. Each picks one of the keeper's registered objects and then one chunk
    index in it. Anyone can recompute the challenge from public data, so no auditor can single a
@@ -90,12 +97,12 @@ path, not straight to slashing** (§4).
 ## 4. Pay, forfeit and slash (the bonded-service model)
 
 *Not activated by this ADR.* The emission split is untouched. The tokenomics ADR (`wrfcoin/core4#27`)
-is unratified, and a keeper share is Q1.
+is merged and accepted, but its economics are not ratified, and a keeper share is Q1.
 
 - **Epoch share.** A keeper earns its epoch share for keeping only if **every** audit drawn for it
   that epoch has a pass receipt. One failed or missing audit **forfeits the whole epoch share**.
-  That is the design this story was briefed with, and it is not yet an owner ruling (Q5). It is the
-  bonded-service rule: service unproven → unpaid.
+  This proposal is not yet an owner ruling (Q5). It is the bonded-service rule: service unproven →
+  unpaid.
 - **Fraud and slashing.** A keeper with a fail receipt may answer within the challenge window by
   publishing the chunk and path itself. Verifying that clears the keeper and marks the receipt false,
   and the challenger forfeits. An unanswered fail stands. The bond is slashed only after **repeated**
@@ -109,11 +116,16 @@ is unratified, and a keeper share is Q1.
 
 ## 5. Path to consensus (each a separate, gated, owner-approved slice)
 
-1. **This story (off-chain, flag-off):** `ArchiveCommitment` construction, deterministic challenge
-   derivation, chunk-and-path verification and signed `RetrievalAuditReceipt`s in `keeper-proof`,
-   behind a default-off `retrieval-audit` cargo feature (companion code PR). No transaction, no state.
-2. **Commitment registry:** a transaction that records `ArchiveCommitment`s, behind a new unscheduled
-   `ConsensusFeature`, with gate-off parity.
+1. **Off-chain, flag-off (companion code PR core4#65):** `ArchiveCommitment` construction, the
+   multi-block seed, deterministic challenge derivation, chunk-and-path verification and signed
+   `RetrievalAuditReceipt`s in `keeper-proof`, behind a default-off `retrieval-audit` cargo feature. No
+   transaction, no state. At this step an audit is **not replayable on chain**: nothing records the
+   commitments or the holdings, so a receipt can be rechecked only by someone given the commitment
+   off chain.
+2. **Commitment registry:** a transaction that records `ArchiveCommitment`s and each keeper's
+   per-epoch holdings, behind a new unscheduled `ConsensusFeature`, with gate-off parity. **From this
+   step an audit becomes replayable on chain:** the commitment, the holdings and the seed blocks are
+   all chain data, so any node can rederive every challenge and recheck every pass receipt.
 3. **Keeper registration and audit receipts in settlement:** extend `node_receipt_registry` claims
    with audit receipts, and the settlement rule with the forfeit-on-fail check. Behind a feature, with
    producer / applier / WAL parity.
@@ -122,18 +134,18 @@ is unratified, and a keeper share is Q1.
    already-deployed IPFS daemons instead of backend's mock. Steps 2–4 do not depend on it, and a
    keeper on local disk audits the same way.
 
-## 6. Reconciling with core4#1488 (Keeper in ComputeReceipt)
+## 6. Reconciling with wrfcoin/core4-archive#1488 (Keeper in ComputeReceipt)
 
-core4#1488 records keeper participation inside compute receipts. This ADR keeps keeping and computing
+wrfcoin/core4-archive#1488 records keeper participation inside compute receipts. This ADR keeps keeping and computing
 separate: an audit receipt proves custody of bytes, and a compute receipt proves work. A job that
 reads an archived object can cite the object's `ArchiveCommitment` and the keeper's latest pass
-receipt as input provenance, which is the link #1488 wants, without making the compute receipt the
+receipt as input provenance, which is the link wrfcoin/core4-archive#1488 wants, without making the compute receipt the
 audit.
 
 ## Open questions for the owner (each with a recommended answer)
 
 1. **How are keepers paid?** *Recommended: a fee-funded pool first (uploaders pay per committed
-   byte-epoch), with no emission share until the tokenomics ADR is ratified.* Emission for keeping
+   byte-epoch), with no emission share until the tokenomics economics are ratified.* Emission for keeping
    is a tokenomics decision.
 2. **Bond.** *Recommended: reuse the node bond (250 test WRF) and the same lifecycle. A wallet that
    both serves snapshots and keeps archives posts one bond.* A separate bond can come later if
@@ -149,3 +161,6 @@ audit.
 6. **Which objects are archived first?** *Recommended: the block ranges that B-2 report work units
    read, so a verifier can always fetch a unit's inputs.* That makes "inputs remain retrievable" an
    audited property.
+7. **Seed source.** *Recommended: the 8-block span now, and a commit-reveal beacon among bonded parties
+   if the producer set is ever small enough for one party to produce eight consecutive blocks.* The
+   span costs nothing to compute and is the same for every node.
