@@ -96,7 +96,7 @@ pub(crate) fn secret_file(path: &Path, cap: usize) -> Result<Zeroizing<Vec<u8>>>
     Ok(Zeroizing::new(bounded_read(path, cap)?))
 }
 
-fn load_key(path: Option<&Path>, mnemonic_stdin: bool) -> Result<OperatorKey> {
+pub(crate) fn load_key(path: Option<&Path>, mnemonic_stdin: bool) -> Result<OperatorKey> {
     ensure!(
         // secret-leak-ok: boolean key-source selection only; the error contains no input value.
         path.is_some() ^ mnemonic_stdin,

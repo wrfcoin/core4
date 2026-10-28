@@ -3916,6 +3916,8 @@ mod tests {
     mod node_settlement_slice4;
     #[path = "node_fraud_slice5.rs"]
     mod node_fraud_slice5;
+    #[path = "node_fraud_route.rs"]
+    mod node_fraud_route;
 
     #[cfg(unix)]
     #[path = "payout_signer_3499.rs"]
