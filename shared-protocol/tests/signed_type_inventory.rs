@@ -369,6 +369,10 @@ const UNREGISTERED: &[(&str, &str)] = &[
         "signature envelope over the registered NodeServiceReceipt domain-separated body",
     ),
     (
+        "SignedRetrievalAuditReceipt",
+        "signature envelope over the registered RetrievalAuditReceipt domain-separated body (keeper-proof, feature retrieval-audit)",
+    ),
+    (
         "SignedSnapshotSyncPayload",
         "wrapper over the registered SnapshotSyncPayload",
     ),
@@ -1101,6 +1105,10 @@ const SIGNED_VIA_ENVELOPE: &[(&str, &str)] = &[
     (
         "NodeServiceReceipt",
         "signed by SignedNodeServiceReceipt.signature over the registered domain-separated body",
+    ),
+    (
+        "RetrievalAuditReceipt",
+        "signed by SignedRetrievalAuditReceipt.signature over the registered domain-separated body",
     ),
     (
         "NodeServiceTicket",
