@@ -17,8 +17,8 @@ use wrfcoin_native_chain::blockchain::block::Block;
 use wrfcoin_native_chain::blockchain::chain::{Blockchain, configured_max_in_memory_blocks};
 use wrfcoin_native_chain::storage::{SNAPSHOT_INGEST_REQUIRES_FRESH_NODE, Storage, StorageError};
 use wrfcoin_shared_protocol::blockchain::chain_snapshot::{
-    ChainWindowError, export_block_entries, split_snapshot_entries, verify_chain_window,
-    window_floor,
+    ChainWindowError, block_entry_key, export_block_entries, split_snapshot_entries,
+    verify_chain_window, window_floor,
 };
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::MEDIAN_TIME_PAST_WINDOW;
 use wrfcoin_shared_protocol::consensus::node_service_receipt::{
@@ -26,11 +26,13 @@ use wrfcoin_shared_protocol::consensus::node_service_receipt::{
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{protocol_version_at, ChainIdentity};
 use wrfcoin_native_chain::blockchain::snapshot_sync::{
-    SignedSnapshotSyncPayload, SnapshotEntry, SnapshotInclusionProof, SnapshotSyncPayload,
+    SignedSnapshotSyncPayload, SnapshotEntry, SnapshotInclusionProof, SnapshotRootBuilder,
+    SnapshotSyncPayload,
     build_inclusion_proof, build_snapshot_sync_payload, build_state_snapshot,
     sign_snapshot_sync_payload_with_signer, verify_inclusion_proof,
 };
 use wrfcoin_native_chain::blockchain::state::State;
+use wrfcoin_shared_protocol::blockchain::state_snapshot::encode_snapshot_value;
 use wrfcoin_native_chain::crypto::hash::hash_bytes;
 use wrfcoin_native_chain::security::api_auth::ApiRole;
 
@@ -462,6 +464,104 @@ pub(crate) fn current_snapshot_for_tests(
     Ok((current_snapshot(blockchain, storage)?.payload(), current_snapshot_entries(blockchain, storage)?))
 }
 
+/// #3551: one full snapshot build at a time, process-wide, plus the summary of
+/// the last tip it was computed for.
+///
+/// Every route that materialises the whole state (summary, entries, export,
+/// proof, sync payload, sync-payload verify) takes this lock first, so N
+/// concurrent Reader requests cost the peak of ONE build, not N. The summary
+/// is a pure function of the tip, so it is computed at most once per tip.
+pub(crate) struct SnapshotBuildSlot {
+    summary: Option<(u64, String, SnapshotSummaryResponse)>,
+}
+
+pub(crate) fn snapshot_build_slot() -> &'static tokio::sync::Mutex<SnapshotBuildSlot> {
+    static SLOT: OnceLock<tokio::sync::Mutex<SnapshotBuildSlot>> = OnceLock::new();
+    SLOT.get_or_init(|| tokio::sync::Mutex::new(SnapshotBuildSlot { summary: None }))
+}
+
+/// #3551: archived blocks the summary reads per storage call.
+const SUMMARY_ARCHIVE_CHUNK: u64 = 64;
+
+/// #3551: visit, in order, the blocks [`snapshot_chain_blocks`] returns, holding
+/// at most one archive chunk at a time instead of cloning the whole window.
+/// Same blocks, same order, same errors (a block below the in-memory window
+/// comes from the archive; one at or above it must be in memory).
+fn for_each_snapshot_chain_block(
+    blockchain: &Blockchain,
+    storage: &Storage,
+    mut visit: impl FnMut(&Block) -> Result<(), String>,
+) -> Result<(), String> {
+    let height = blockchain.height;
+    if height == 0 {
+        return Ok(());
+    }
+    let floor = window_floor(height, snapshot_block_window(&blockchain.state, height));
+    let lowest_in_memory = blockchain.blocks().keys().next().copied().unwrap_or(u64::MAX);
+    let archive_top = height.min(lowest_in_memory.saturating_sub(1));
+    let mut chunk = std::collections::BTreeMap::new();
+    for h in std::iter::once(1).chain(floor..=height) {
+        if let Some(block) = blockchain.block_at_height(h) {
+            visit(block)?;
+            continue;
+        }
+        if h < lowest_in_memory && !chunk.contains_key(&h) {
+            // Genesis is read alone, as `snapshot_chain_blocks` does.
+            let end = if h == 1 { 1 } else { h.saturating_add(SUMMARY_ARCHIVE_CHUNK - 1).min(archive_top) };
+            chunk = storage
+                .load_blocks_range(h, end)
+                .map_err(|e| format!("archive read {h}..={end} failed: {e}"))?
+                .into_iter()
+                .map(|block| (block.height, block))
+                .collect();
+        }
+        let block = chunk
+            .get(&h)
+            .ok_or_else(|| format!("block {h} is in neither the window nor the archive"))?;
+        visit(block)?;
+    }
+    Ok(())
+}
+
+/// #3551: what `GET /state/snapshot` reports, without building the
+/// `StateSnapshot`. The recomputed state root's canonical material is hashed
+/// and freed first; then each state entry and each window block is encoded,
+/// pushed into a [`SnapshotRootBuilder`] (which keeps only key + leaf hash) and
+/// dropped. Peak is the state entries plus one archive chunk, not the old
+/// entries + blocks + encoded blocks + per-entry `SnapshotEntry` + cloned
+/// Merkle layers. Identical to the fields of [`current_snapshot`] by test.
+pub(crate) fn snapshot_summary(
+    blockchain: &Blockchain,
+    storage: &Storage,
+) -> Result<SnapshotSummaryResponse, String> {
+    let state_root_hex = recomputed_state_root_hex(&blockchain.state);
+    let stored_root_hex = hex::encode(blockchain.state.state_root.0);
+    if stored_root_hex != state_root_hex {
+        log::error!(
+            "snapshot summary at height {}: stored state_root {stored_root_hex} is stale; \
+             reporting the recomputed root {state_root_hex} (#3288)",
+            blockchain.height
+        );
+    }
+    let mut builder = SnapshotRootBuilder::new();
+    for (key, value) in build_snapshot_entries(&blockchain.state)? {
+        builder.push(key, &value);
+    }
+    for_each_snapshot_chain_block(blockchain, storage, |block| {
+        let value = encode_snapshot_value(block)
+            .map_err(|e| format!("block {} is not encodable: {e}", block.height))?;
+        builder.push(block_entry_key(block.height), &value);
+        Ok(())
+    })?;
+    let (snapshot_root_hex, entry_count) = builder.finish();
+    Ok(SnapshotSummaryResponse {
+        height: blockchain.height,
+        state_root_hex,
+        snapshot_root_hex,
+        entry_count,
+    })
+}
+
 fn current_snapshot(blockchain: &Blockchain, storage: &Storage) -> Result<CurrentSnapshot, String> {
     // #3288 review: sign the root the exported state really has. Ingest now
     // requires the applied state's recomputed root to equal the signed one, so
@@ -510,29 +610,35 @@ pub async fn get_state_snapshot(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: single flight, and served from the per-tip cache when it can be.
+    let mut slot = snapshot_build_slot().lock().await;
     let blockchain = state.blockchain.read().await;
-    let current = {
+    let tip = blockchain.tip.to_hex();
+    if let Some((height, cached_tip, summary)) = slot.summary.as_ref() {
+        if *height == blockchain.height && *cached_tip == tip {
+            return HttpResponse::Ok().json(summary);
+        }
+    }
+    let summary = {
         let storage = state.storage.read().await;
-        current_snapshot(&blockchain, &storage)
+        snapshot_summary(&blockchain, &storage)
     };
-    let current = match current {
-        Ok(current) => current,
+    match summary {
+        Ok(summary) => {
+            let response = HttpResponse::Ok().json(&summary);
+            slot.summary = Some((blockchain.height, tip, summary));
+            response
+        },
         Err(e) => {
             log::error!("snapshot export failed: {e} (#3288)");
-            return envelope_error(
+            envelope_error(
                 &req,
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "SNAPSHOT_EXPORT_FAILED",
                 "this node could not encode its state as a snapshot",
-            );
+            )
         },
-    };
-    HttpResponse::Ok().json(SnapshotSummaryResponse {
-        height: current.snapshot.height,
-        state_root_hex: current.state_root_hex,
-        snapshot_root_hex: current.snapshot.snapshot_root_hex,
-        entry_count: current.snapshot.entries.len(),
-    })
+    }
 }
 
 pub async fn get_state_snapshot_entries(
@@ -543,6 +649,8 @@ pub async fn get_state_snapshot_entries(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
 
@@ -596,6 +704,8 @@ pub async fn get_state_snapshot_export(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).clamp(1, MAX_SNAPSHOT_PAGE_SIZE);
 
@@ -728,6 +838,8 @@ pub async fn get_state_snapshot_proof(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let key_hex = path.into_inner();
     let key = match hex::decode(key_hex.trim()) {
         Ok(value) => value,
@@ -810,6 +922,8 @@ pub async fn get_snapshot_sync_payload(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let blockchain = state.blockchain.read().await;
     let current = match snapshot_export_cut(&state, &blockchain).await {
         Ok(current) => current,
@@ -872,6 +986,8 @@ pub async fn verify_snapshot_sync_payload(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let signed_payload = &request.signed_payload;
     if let Err(resp) = validate_timestamp(&req, signed_payload.timestamp, "timestamp") {
         return resp;
@@ -1988,6 +2104,15 @@ pub(crate) mod snapshot_test_support {
         let tip = chain.last().and_then(|b| b.hash).expect("hashed").to_hex();
         (build_snapshot_sync_payload(&snapshot, tip, 0), entries, chain)
     }
+
+    pub(crate) fn assert_summary_matches_export_3551(blockchain: &Blockchain, storage: &Storage) {
+        let current = current_snapshot(blockchain, storage).expect("export");
+        let summary = snapshot_summary(blockchain, storage).expect("summary");
+        assert_eq!(summary.height, current.snapshot.height);
+        assert_eq!(summary.state_root_hex, current.state_root_hex);
+        assert_eq!(summary.snapshot_root_hex, current.snapshot.snapshot_root_hex);
+        assert_eq!(summary.entry_count, current.snapshot.entries.len());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2323,6 +2448,39 @@ mod snapshot_state_root_3288_tests {
             .expect("install refreshes the effective schedule (#3277 F2)");
         assert!(assign < refresh, "refresh from the INSTALLED state, after the swap");
     }
+
+    /// #3551: the streamed summary reports the recomputed root, as the
+    /// export signs it, when the stored root is stale.
+    #[test]
+    fn snapshot_summary_reports_the_recomputed_root_3551() {
+        let mut blockchain = Blockchain::default();
+        blockchain.state = live_shaped_source();
+        let storage_dir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&storage_dir.path().join("db"), 100).expect("storage");
+        blockchain = super::snapshot_test_support::with_chain_committing_to_its_state(blockchain, 3);
+        blockchain.state.spent_oracle_nonces.insert("stale-marker".into());
+        super::snapshot_test_support::assert_summary_matches_export_3551(&blockchain, &storage);
+    }
+
+    /// #3551: every route that materialises the whole state takes the
+    /// process-wide build slot before it reads the chain.
+    #[test]
+    fn whole_state_routes_take_the_build_slot_3551() {
+        let source = include_str!("snapshot.rs");
+        for handler in [
+            "pub async fn get_state_snapshot(",
+            "pub async fn get_state_snapshot_entries(",
+            "pub async fn get_state_snapshot_export(",
+            "pub async fn get_state_snapshot_proof(",
+            "pub async fn get_snapshot_sync_payload(",
+            "pub async fn verify_snapshot_sync_payload(",
+        ] {
+            let body = fn_body(source, handler, "\n}\n");
+            let slot = body.find("snapshot_build_slot().lock().await").unwrap_or_else(|| panic!("{handler} takes no build slot"));
+            let chain = body.find("state.blockchain.read().await").unwrap_or(usize::MAX);
+            assert!(slot < chain, "{handler} reads the chain before taking the build slot");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2650,4 +2808,64 @@ mod snapshot_tip_3288_3b_tests {
             assert_eq!(got.hash, want.hash);
         }
     }
+
+    /// #3551: the streamed summary reports exactly what the full export
+    /// builds: an empty chain and a window whose
+    /// genesis and evicted blocks (57..=90, more than one archive chunk away
+    /// from genesis) come from the archive.
+    #[tokio::test]
+    async fn snapshot_summary_matches_the_full_export_3551() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut storage = Storage::open(&dir.path().join("db"), 1_000).expect("storage");
+        super::snapshot_test_support::assert_summary_matches_export_3551(&Blockchain::default(), &storage);
+
+
+        let source = funded_state();
+        let root = recomputed_state_root_hex(&source);
+        let chain = chain_committing_to(&root, 120);
+        for block in &chain {
+            storage.persist_block(block.clone(), Vec::new(), None).await.expect("persist");
+        }
+        let tip = chain.last().unwrap().hash.unwrap();
+        let in_memory_above = |floor: u64| {
+            Blockchain::from_persisted(
+                120,
+                tip,
+                source.clone(),
+                chain.iter().filter(|b| b.height > floor).map(|b| (b.height, b.clone())).collect(),
+                120,
+                0,
+            )
+        };
+        super::snapshot_test_support::assert_summary_matches_export_3551(&in_memory_above(90), &storage);
+        super::snapshot_test_support::assert_summary_matches_export_3551(&in_memory_above(0), &storage);
+        super::snapshot_test_support::assert_summary_matches_export_3551(&in_memory_above(119), &storage);
+    }
+
+    /// #3551: a block missing from both memory and the archive fails the
+    /// summary as it fails the export.
+    #[tokio::test]
+    async fn snapshot_summary_fails_where_the_export_fails_3551() {
+        let source = funded_state();
+        let root = recomputed_state_root_hex(&source);
+        let chain = chain_committing_to(&root, 120);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut storage = Storage::open(&dir.path().join("db"), 1_000).expect("storage");
+        for block in chain.iter().filter(|b| b.height != 70) {
+            storage.persist_block(block.clone(), Vec::new(), None).await.expect("persist");
+        }
+        let blockchain = Blockchain::from_persisted(
+            120,
+            chain.last().unwrap().hash.unwrap(),
+            source,
+            chain.iter().filter(|b| b.height > 90).map(|b| (b.height, b.clone())).collect(),
+            120,
+            0,
+        );
+        let export = current_snapshot(&blockchain, &storage).map(|_| ());
+        let summary = snapshot_summary(&blockchain, &storage).map(|_| ());
+        assert!(export.is_err(), "precondition: the export refuses a hole");
+        assert_eq!(summary, export);
+    }
+
 }
