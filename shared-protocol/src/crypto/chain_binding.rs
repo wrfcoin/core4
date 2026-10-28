@@ -1086,6 +1086,17 @@ pub enum ConsensusFeature {
     /// UNSCHEDULED and NOT live-schedulable: it appears in no genesis, default
     /// schedule or cut pin, and activation is a separate, owner-approved step.
     ForecasterKeyBinding,
+    /// #3565 (white paper §4.6 / §9.2): one accepted `ContributionReveal` per
+    /// registered station (the chain's device identity) per block, plus a
+    /// late-data pay reduction keyed on the observation's age at its
+    /// including block (`late_data_multiplier_bps`). Both read only chain data:
+    /// the reveal's committed `timestamp` and the block HEADER timestamp,
+    /// never a node clock. A second reveal for the same station in one block is
+    /// refused by `classify_block_transaction` (so the producer self-screen and
+    /// `verify_block` agree) and at mempool admission. NOT schedulable by a
+    /// live extension in this slice; activation is a separate owner decision.
+    /// Unscheduled, every path is byte-identical to before.
+    DeviceSubmissionLimit,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1125,6 +1136,7 @@ impl ConsensusFeature {
         Self::SlashEvidenceReports,
         Self::NodeShareSettlement,
         Self::ForecasterKeyBinding,
+        Self::DeviceSubmissionLimit,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1153,6 +1165,7 @@ impl ConsensusFeature {
             Self::SlashEvidenceReports => "slash_evidence_reports",
             Self::NodeShareSettlement => "node_share_settlement",
             Self::ForecasterKeyBinding => "forecaster_key_binding",
+            Self::DeviceSubmissionLimit => "device_submission_limit",
         }
     }
 
@@ -1205,7 +1218,9 @@ impl ConsensusFeature {
             | Self::SlashEvidenceReports
             // #3290: behaviour is wired and tested, but turning it on is a
             // separate, owner-approved release step.
-            | Self::ForecasterKeyBinding => false,
+            | Self::ForecasterKeyBinding
+            // #3565: behaviour is wired, but activation is an owner decision.
+            | Self::DeviceSubmissionLimit => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1235,6 +1250,8 @@ impl ConsensusFeature {
             // #3290: admission, block classification and extraction all
             // enforce the binding once active.
             Self::ForecasterKeyBinding => true,
+            // #3565: refusal + late-data reduction are implemented and gated.
+            Self::DeviceSubmissionLimit => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2797,6 +2814,7 @@ mod tests {
             ConsensusFeature::FaucetSinkBinding,
             ConsensusFeature::ScheduleExtension,
             ConsensusFeature::StakeSubmissionNonce,
+            ConsensusFeature::DeviceSubmissionLimit,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
