@@ -273,8 +273,8 @@ pub async fn submit(
             &state.tx_gossip_backpressure_streak,
         );
     }
-    // At most the two accused deployments of one report: bounded, built without collect.
-    let mut ids = Vec::with_capacity(responsible.len());
+    // At most the two accused deployments of one report: bounded, built without collect or with_capacity.
+    let mut ids: Vec<String> = Vec::new();
     for id in &responsible {
         ids.push(hex::encode(id));
     }
