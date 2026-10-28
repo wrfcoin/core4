@@ -382,10 +382,24 @@ pub fn extract_transitions(
             block_timestamp,
         )
     };
+    // #3591: the producer begins the node-service block before its launch
+    // batch, so from `streak_replay_node_service` the replay does too.
+    let replay_node_service_begin = wrfcoin_shared_protocol::crypto::chain_binding::feature_active(
+        wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::StreakReplayNodeService,
+        block_height,
+    )
+    .then(|| {
+        transitions
+            .iter()
+            .find(|t| matches!(t, StateTransition::BeginNodeServiceBlock { .. }))
+            .cloned()
+    })
+    .flatten();
     let low_quality_streak_transitions = derive_low_quality_streak_transitions(
         state,
         block,
         &governance_transitions,
+        replay_node_service_begin.as_ref(),
         &launch_transitions,
     );
     transitions.extend(governance_transitions);
@@ -509,11 +523,18 @@ fn derive_low_quality_streak_transitions(
     state: &State,
     block: &Block,
     governance_transitions: &[StateTransition],
+    // #3591: `Some` only under `streak_replay_node_service`; `None` replays
+    // exactly the pre-#3591 sequence.
+    node_service_begin: Option<&StateTransition>,
     launch_transitions: &[StateTransition],
 ) -> Vec<StateTransition> {
     let mut replay_state = state.clone();
 
-    for transition in governance_transitions.iter().chain(launch_transitions.iter()) {
+    for transition in governance_transitions
+        .iter()
+        .chain(node_service_begin)
+        .chain(launch_transitions.iter())
+    {
         // #2032: this replay clone exists only to derive streak/attestation
         // views (below); its `state_root` is never read, so skip the
         // O(state_size) per-transition root recompute that `apply_transition`
