@@ -38,6 +38,8 @@ pub enum AuditError {
     EmptyObject,
     #[error("keeper holds no archived object to audit")]
     NothingHeld,
+    #[error("archive commitment {0} has no chunks")]
+    EmptyCommitment(String),
 }
 
 fn h(parts: &[&[u8]]) -> [u8; 32] {
@@ -138,7 +140,7 @@ pub fn respond(data: &[u8], chunk_size: u32, chunk_index: u64) -> Option<AuditRe
 
 /// One audit: which object a keeper must answer for, and which chunk of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuditChallenge {
+pub struct AuditChallenge { // secret-leak-ok: `seed` is a hash of public block hashes (chain data every node holds), not key material
     pub epoch: u64,
     pub seed: [u8; 32],
     pub keeper_id: String,
@@ -158,9 +160,16 @@ pub const SEED_SPAN_BLOCKS: usize = 8;
 const SEED_TAG: &[u8] = b"wrfcoin.retrieval_audit.seed.v1";
 
 /// The audit seed: a hash over the hashes of `SEED_SPAN_BLOCKS` consecutive blocks that all come
-/// AFTER the keeper's holdings were committed. A single block hash could be ground by that block's
-/// producer; to steer this seed a producer would have to control every block in the span. `None`
-/// unless exactly `SEED_SPAN_BLOCKS` hashes are given, in height order.
+/// AFTER the keeper's holdings were committed. `None` unless exactly `SEED_SPAN_BLOCKS` hashes are
+/// given, in height order.
+///
+/// LIMIT: the span does not stop grinding by the producer of the LAST block. That producer sees the
+/// earlier hashes, can build many variants of its own block (ordering, timestamp, or withholding),
+/// and so can pick among many candidate seeds. A keeper colluding with it escapes the audit in
+/// roughly every epoch where it produces that block, so the escape rate is bounded by about
+/// `p + (1 - p) * f^k` (`p` = the colluder's share of blocks, `f` = fraction of chunks the keeper
+/// still holds, `k` = audits per epoch), not by `f^k`. An unbiasable beacon (commit-reveal among bonded
+/// parties, or a VRF/VDF output) removes `p`; see the ADR's seed section.
 pub fn combine_seed(block_hashes_in_height_order: &[[u8; 32]]) -> Option<[u8; 32]> {
     if block_hashes_in_height_order.len() != SEED_SPAN_BLOCKS {
         return None;
@@ -185,6 +194,10 @@ pub fn derive_challenges(
     held.dedup_by(|a, b| a.dataset_cid == b.dataset_cid && a.merkle_root == b.merkle_root);
     if held.is_empty() {
         return Err(AuditError::NothingHeld);
+    }
+    // A deserialized commitment can claim zero chunks; `draw` would divide by it.
+    if let Some(empty) = held.iter().find(|c| c.chunk_count == 0) {
+        return Err(AuditError::EmptyCommitment(empty.dataset_cid.clone()));
     }
     Ok((0..count)
         .map(|ordinal| {
@@ -441,6 +454,17 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_chunk_commitment_is_refused_not_a_panic() {
+        let mut forged = ArchiveCommitment::build("cid-z", &object(100, 1), 64).unwrap();
+        forged.chunk_count = 0; // only reachable through deserialization
+        let ok = ArchiveCommitment::build("cid-ok", &object(100, 2), 64).unwrap();
+        assert_eq!(
+            derive_challenges([3; 32], 1, "k", &[ok, forged], 4),
+            Err(AuditError::EmptyCommitment("cid-z".to_string()))
+        );
+    }
+
+    #[test]
     fn a_keeper_missing_half_the_object_is_caught() {
         let data = object(64 * 64, 5);
         let c = ArchiveCommitment::build("cid-h", &data, 64).unwrap();
@@ -463,15 +487,15 @@ mod tests {
     fn seed_needs_the_whole_span_and_every_block_moves_it() {
         let span: Vec<[u8; 32]> = (0..SEED_SPAN_BLOCKS as u8).map(|i| [i; 32]).collect();
         let seed = combine_seed(&span).unwrap();
-        assert_eq!(combine_seed(&span[1..]), None);
+        assert_eq!(combine_seed(&span[1..]), None); // secret-leak-ok: the audit seed is a hash of public block hashes, not key material
         for i in 0..SEED_SPAN_BLOCKS {
             let mut other = span.clone();
             other[i][0] ^= 1;
-            assert_ne!(combine_seed(&other).unwrap(), seed, "block {i} must influence the seed");
+            assert_ne!(combine_seed(&other).unwrap(), seed, "block {i} must influence the seed"); // secret-leak-ok: the audit seed is a hash of public block hashes, not key material
         }
         let mut reordered = span.clone();
         reordered.swap(0, 1);
-        assert_ne!(combine_seed(&reordered).unwrap(), seed);
+        assert_ne!(combine_seed(&reordered).unwrap(), seed); // secret-leak-ok: the audit seed is a hash of public block hashes, not key material
     }
 
     #[test]
