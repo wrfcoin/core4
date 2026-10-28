@@ -8505,6 +8505,18 @@ impl ProofOfPublishing {
             })();
             if valid.is_none() { return Some("SP_NODE_BOND_AUTHORIZATION".into()); }
         }
+        // #3290: from the forecaster key binding's activation, a forecast
+        // commit that is not authorized by the key of the forecaster it names
+        // invalidates the block. Inactive, a block carrying such a commit is
+        // accepted exactly as before (extraction leaves an unauthorized commit
+        // inert). Producer self-screen and sync verifier share this function,
+        // so the producer drops what a peer would reject.
+        if tx.tx_type == TransactionType::ForecastCommit
+            && feature_active(ConsensusFeature::ForecasterKeyBinding, ctx.height)
+            && !tx.verify_commit_authorization_at_height(ctx.height)
+        {
+            return Some("SP_FORECASTER_KEY_UNBOUND".into());
+        }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Some(crate::security::slash_evidence::dispatch_refusal(ctx.height).to_string());
         }
