@@ -15,6 +15,14 @@ pub fn cell_for_station(lat: f64, lon: f64) -> GeoCell {
     )
 }
 
+/// Empty-cell tier trigger (`ConsensusFeature::DesertEmptyCellTier`): a cell count at most this
+/// pays the tier. The count includes the paid station itself, so `1` means "no OTHER active
+/// registered station in the cell"; `0` is what a not-yet-registered first station sees.
+pub const EMPTY_CELL_TIER_MAX_STATIONS: u32 = 1;
+/// Empty-cell tier multiplier in percent (175 = ×1.75), below the 2.0× combined ceiling
+/// (`MAX_COMBINED_MULTIPLIER_BPS`) so quality and trust still move the reward.
+pub const EMPTY_CELL_TIER_BONUS_PERCENT: u32 = 175;
+
 /// Block-height-activated policy governing data desert reward bonuses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataDesertPolicy {
@@ -59,6 +67,15 @@ pub fn desert_multiplier(
 
     let cell = cell_for_station(station_lat, station_lon);
     let count = station_counts.get(&cell).copied().unwrap_or(0);
+    // Gated; unscheduled this branch is never taken and the rule below is unchanged.
+    if count <= EMPTY_CELL_TIER_MAX_STATIONS
+        && crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::DesertEmptyCellTier,
+            current_height,
+        )
+    {
+        return EMPTY_CELL_TIER_BONUS_PERCENT.max(policy.desert_bonus_bps.max(100));
+    }
     if count < policy.min_station_density {
         policy.desert_bonus_bps.max(100)
     } else {
@@ -114,6 +131,49 @@ mod tests {
         let a = cell_for_station(51.3, -0.1);
         let b = cell_for_station(51.9, -0.5);
         assert_eq!(a, b);
+    }
+
+    /// `desert_empty_cell_tier` scheduled at height 10 in an isolated child (the schedule is
+    /// process-global). From activation a cell count of 0 or 1 pays the tier, 2 keeps the desert
+    /// bonus, 3 pays the baseline; below activation every count is paid as on main. The data
+    /// desert policy's own activation height still gates everything.
+    #[test]
+    fn empty_cell_tier_pays_only_a_lone_station_and_only_while_active() {
+        const CHILD: &str = "WRFCOIN_EMPTY_CELL_TIER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "consensus::data_desert::tests::empty_cell_tier_pays_only_a_lone_station_and_only_while_active", "--nocapture"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        use crate::crypto::chain_binding::{ConsensusFeature, FeatureSchedule, install_feature_schedule};
+        let policy = DataDesertPolicy::default();
+        let at = |n: u32, height: u64, policy: &DataDesertPolicy| {
+            let mut counts = BTreeMap::new();
+            if n > 0 {
+                counts.insert(cell_for_station(51.3, -0.1), n);
+            }
+            desert_multiplier(51.3, -0.1, &counts, policy, height)
+        };
+        // Unscheduled: unchanged at every height.
+        assert_eq!([at(0, 20, &policy), at(1, 20, &policy), at(2, 20, &policy), at(3, 20, &policy)], [150, 150, 150, 100]);
+
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DesertEmptyCellTier.name().into(), 10)]).unwrap(),
+        );
+        assert_eq!([at(0, 9, &policy), at(1, 9, &policy), at(2, 9, &policy), at(3, 9, &policy)], [150, 150, 150, 100], "below activation");
+        assert_eq!(
+            [at(0, 10, &policy), at(1, 10, &policy), at(2, 10, &policy), at(3, 10, &policy)],
+            [EMPTY_CELL_TIER_BONUS_PERCENT, EMPTY_CELL_TIER_BONUS_PERCENT, 150, 100],
+            "from activation"
+        );
+        let late_policy = DataDesertPolicy { activation_height: 1_000, ..DataDesertPolicy::default() };
+        assert_eq!(at(1, 999, &late_policy), 100, "the desert policy's own activation still gates the tier");
+        let stronger = DataDesertPolicy { desert_bonus_bps: 190, ..DataDesertPolicy::default() };
+        assert_eq!(at(1, 10, &stronger), 190, "the tier never pays less than the ordinary desert bonus");
     }
 
     #[test]
