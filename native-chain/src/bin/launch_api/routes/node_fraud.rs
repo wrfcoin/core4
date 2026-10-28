@@ -273,11 +273,16 @@ pub async fn submit(
             &state.tx_gossip_backpressure_streak,
         );
     }
+    // At most the two accused deployments of one report: bounded, built without collect.
+    let mut ids = Vec::with_capacity(responsible.len());
+    for id in &responsible {
+        ids.push(hex::encode(id));
+    }
     HttpResponse::Accepted().json(serde_json::json!({
         "tx_id": id,
         "admitted": true,
         "included": false,
-        "responsible": responsible.iter().map(hex::encode).collect::<Vec<_>>(),
+        "responsible": ids,
         "deadline_height": deadline,
     }))
 }
