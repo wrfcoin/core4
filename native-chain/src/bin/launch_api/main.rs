@@ -15922,6 +15922,49 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// #3551 review: state also changes off-block (a bridge audit event at
+    /// the current height, height-0 configuration writers), so the summary
+    /// route must reflect a write that moved neither height nor tip.
+    #[actix_web::test]
+    async fn snapshot_summary_follows_an_off_block_state_write_3551() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let get_summary = || {
+            test::TestRequest::get()
+                .uri("/state/snapshot")
+                .insert_header(("Authorization", format!("Bearer {TEST_READER_TOKEN}"))) // secret-leak-ok: test; TEST_READER_TOKEN is a fixed #[cfg(test)] fixture string
+                .to_request()
+        };
+        let before: SnapshotSummaryResponse =
+            test::read_body_json(test::call_service(&app, get_summary()).await).await;
+        let (height, tip) = {
+            let mut blockchain = state.blockchain.write().await;
+            let (height, tip) = (blockchain.height, blockchain.tip);
+            blockchain
+                .apply_state_transition(StateTransition::ApplyReward {
+                    address: "0x3551355135513551355135513551355135513551".parse::<Address>().expect("address"),
+                    amount: Balance(3551),
+                    reason: "off-block write".to_string(),
+                })
+                .expect("off-block write");
+            assert_eq!((blockchain.height, blockchain.tip), (height, tip), "precondition: no new block");
+            (height, tip)
+        };
+        let after: SnapshotSummaryResponse =
+            test::read_body_json(test::call_service(&app, get_summary()).await).await;
+        let expected = {
+            let blockchain = state.blockchain.read().await;
+            assert_eq!((blockchain.height, blockchain.tip), (height, tip));
+            let storage = state.storage.read().await;
+            crate::routes::snapshot::current_snapshot_summary_for_tests(&blockchain, &storage).expect("export")
+        };
+        assert_ne!(after.state_root_hex, before.state_root_hex, "precondition: the write moved the root");
+        assert_eq!(after.height, expected.height);
+        assert_eq!(after.state_root_hex, expected.state_root_hex);
+        assert_eq!(after.snapshot_root_hex, expected.snapshot_root_hex);
+        assert_eq!(after.entry_count, expected.entry_count);
+    }
+
     #[actix_web::test]
     async fn snapshot_entries_requires_reader_auth() {
         let state = test_state(None);

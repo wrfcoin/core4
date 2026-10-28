@@ -464,20 +464,31 @@ pub(crate) fn current_snapshot_for_tests(
     Ok((current_snapshot(blockchain, storage)?.payload(), current_snapshot_entries(blockchain, storage)?))
 }
 
-/// #3551: one full snapshot build at a time, process-wide, plus the summary of
-/// the last tip it was computed for.
+/// #3551: one full snapshot build at a time, process-wide.
 ///
 /// Every route that materialises the whole state (summary, entries, export,
 /// proof, sync payload, sync-payload verify) takes this lock first, so N
-/// concurrent Reader requests cost the peak of ONE build, not N. The summary
-/// is a pure function of the tip, so it is computed at most once per tip.
-pub(crate) struct SnapshotBuildSlot {
-    summary: Option<(u64, String, SnapshotSummaryResponse)>,
+/// concurrent Reader requests cost the peak of ONE build, not N. Nothing is
+/// cached: state also changes off-block (bridge audit events, height-0
+/// configuration writers), so neither height nor tip identifies it.
+pub(crate) fn snapshot_build_slot() -> &'static tokio::sync::Mutex<()> {
+    static SLOT: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    SLOT.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-pub(crate) fn snapshot_build_slot() -> &'static tokio::sync::Mutex<SnapshotBuildSlot> {
-    static SLOT: OnceLock<tokio::sync::Mutex<SnapshotBuildSlot>> = OnceLock::new();
-    SLOT.get_or_init(|| tokio::sync::Mutex::new(SnapshotBuildSlot { summary: None }))
+/// Test access: the four summary fields as the full export computes them.
+#[cfg(test)]
+pub(crate) fn current_snapshot_summary_for_tests(
+    blockchain: &Blockchain,
+    storage: &Storage,
+) -> Result<SnapshotSummaryResponse, String> {
+    let current = current_snapshot(blockchain, storage)?;
+    Ok(SnapshotSummaryResponse {
+        height: current.snapshot.height,
+        state_root_hex: current.state_root_hex,
+        snapshot_root_hex: current.snapshot.snapshot_root_hex,
+        entry_count: current.snapshot.entries.len(),
+    })
 }
 
 /// #3551: archived blocks the summary reads per storage call.
@@ -610,25 +621,15 @@ pub async fn get_state_snapshot(
     if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
         return resp;
     }
-    // #3551: single flight, and served from the per-tip cache when it can be.
-    let mut slot = snapshot_build_slot().lock().await;
+    // #3551: single flight, and the streamed summary instead of a full build.
+    let _snapshot_build = snapshot_build_slot().lock().await;
     let blockchain = state.blockchain.read().await;
-    let tip = blockchain.tip.to_hex();
-    if let Some((height, cached_tip, summary)) = slot.summary.as_ref() {
-        if *height == blockchain.height && *cached_tip == tip {
-            return HttpResponse::Ok().json(summary);
-        }
-    }
     let summary = {
         let storage = state.storage.read().await;
         snapshot_summary(&blockchain, &storage)
     };
     match summary {
-        Ok(summary) => {
-            let response = HttpResponse::Ok().json(&summary);
-            slot.summary = Some((blockchain.height, tip, summary));
-            response
-        },
+        Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             log::error!("snapshot export failed: {e} (#3288)");
             envelope_error(
@@ -2460,6 +2461,16 @@ mod snapshot_state_root_3288_tests {
         blockchain = super::snapshot_test_support::with_chain_committing_to_its_state(blockchain, 3);
         blockchain.state.spent_oracle_nonces.insert("stale-marker".into());
         super::snapshot_test_support::assert_summary_matches_export_3551(&blockchain, &storage);
+    }
+
+    /// #3551: `GET /state/snapshot` reports the streamed summary; a return to
+    /// building the full snapshot there would keep every other test green.
+    #[test]
+    fn summary_route_uses_the_streamed_summary_3551() {
+        let body = fn_body(include_str!("snapshot.rs"), "pub async fn get_state_snapshot(", "\n}\n");
+        assert!(body.contains("snapshot_summary(&blockchain, &storage)"), "the route calls snapshot_summary");
+        assert!(!body.contains("current_snapshot("), "the route must not build the full snapshot");
+        assert!(!body.contains("build_state_snapshot("), "the route must not build the full snapshot");
     }
 
     /// #3551: every route that materialises the whole state takes the
