@@ -971,6 +971,15 @@
       }
     },
     {
+      "package": "wrfcoin-shared-protocol",
+      "target": "snapshot_summary_alloc_3551",
+      "review": {
+        "source_pr": 75,
+        "owning_issue": 3551,
+        "covers": "/state/snapshot summary root streamed: same root and count as the full build, peak allocation bounded below the block window, with a held-window RED control."
+      }
+    },
+    {
       "package": "wrfcoin-native-chain",
       "target": "slash_evidence_gate_off_parity_3398",
       "review": {
