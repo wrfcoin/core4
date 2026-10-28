@@ -674,6 +674,10 @@ const CANONICAL_DEFERRED: &[(SignedObjectKind, &str)] = &[
         "CrossCrate (#2249): lives in keeper-proof",
     ),
     (
+        SignedObjectKind::RetrievalAuditReceipt,
+        "CrossCrate (#2249): lives in keeper-proof (feature retrieval-audit)",
+    ),
+    (
         SignedObjectKind::OraclePacket,
         "CrossCrate (#2249): lives in oracle-packet",
     ),
