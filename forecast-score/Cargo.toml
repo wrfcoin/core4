@@ -5,6 +5,11 @@ edition = "2021"
 description = "Forecast scoring types and algorithms for WRFCoin ecosystem tooling"
 license = "MIT OR Apache-2.0"
 
+# Off-chain scorer job entry point (tools/forecast-kit/scorer_job.py, epic #3604 A1).
+[[bin]]
+name = "forecast-score-batch"
+path = "src/bin/forecast_score_batch.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
