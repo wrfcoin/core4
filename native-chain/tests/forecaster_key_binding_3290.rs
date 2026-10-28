@@ -268,7 +268,10 @@ fn binding_predicate_matches_the_issue_probe() {
 fn feature_is_registered_but_unscheduled_and_not_live_schedulable() {
     let feature = ConsensusFeature::ForecasterKeyBinding;
     assert_eq!(ConsensusFeature::parse(FEATURE), Some(feature));
-    assert_eq!(ConsensusFeature::ALL.last(), Some(&feature), "appended LAST");
+    // Appended after every earlier feature; #3565's DeviceSubmissionLimit was appended after it.
+    let all = ConsensusFeature::ALL;
+    assert_eq!(all.iter().position(|f| *f == feature), Some(all.len() - 2), "second to last");
+    assert_eq!(all.last(), Some(&ConsensusFeature::DeviceSubmissionLimit), "#3565 is appended LAST");
     assert!(
         wrfcoin_shared_protocol::crypto::protocol_support::KNOWN_FEATURES.contains(&FEATURE)
     );
