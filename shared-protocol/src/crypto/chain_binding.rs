@@ -1070,6 +1070,22 @@ pub enum ConsensusFeature {
     /// #2848 slice 1: contracts only. No state, emission, transaction or replay
     /// behaviour; refuse genesis and live scheduling until all slices land.
     NodeShareSettlement,
+    /// #3290: protocol-level forecaster key binding. From its activation a
+    /// `ForecastCommit` is valid only when its sender and every output name
+    /// the 20-byte address derived from the commit's `auth_pubkey`
+    /// (`Transaction::forecast_commit_key_bound`). Before activation a forecast
+    /// commit's authorization proves possession of SOME key, and any key can
+    /// name any forecaster; that is the byte-identical behaviour while this is
+    /// inactive. Enforced through one height-aware check
+    /// (`Transaction::verify_commit_authorization_at_height`) at mempool
+    /// admission, in the shared producer/sync block classifier (an unbound
+    /// commit invalidates the block) and in transition extraction.
+    /// Contribution commits are untouched at every height.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED and NOT live-schedulable: it appears in no genesis, default
+    /// schedule or cut pin, and activation is a separate, owner-approved step.
+    ForecasterKeyBinding,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1108,6 +1124,7 @@ impl ConsensusFeature {
         Self::StakeSubmissionNonce,
         Self::SlashEvidenceReports,
         Self::NodeShareSettlement,
+        Self::ForecasterKeyBinding,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1135,6 +1152,7 @@ impl ConsensusFeature {
             Self::StakeSubmissionNonce => "stake_submission_nonce",
             Self::SlashEvidenceReports => "slash_evidence_reports",
             Self::NodeShareSettlement => "node_share_settlement",
+            Self::ForecasterKeyBinding => "forecaster_key_binding",
         }
     }
 
@@ -1184,7 +1202,10 @@ impl ConsensusFeature {
             // change decides when governance may schedule it (B4, owner-gated).
             | Self::StakeSubmissionNonce
             // Refusal behaviour exists, but evidence apply is not implemented.
-            | Self::SlashEvidenceReports => false,
+            | Self::SlashEvidenceReports
+            // #3290: behaviour is wired and tested, but turning it on is a
+            // separate, owner-approved release step.
+            | Self::ForecasterKeyBinding => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1211,6 +1232,9 @@ impl ConsensusFeature {
             Self::SlashEvidenceReports => true,
             Self::StakeSubmissionNonce => false,
             Self::NodeShareSettlement => true,
+            // #3290: admission, block classification and extraction all
+            // enforce the binding once active.
+            Self::ForecasterKeyBinding => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
