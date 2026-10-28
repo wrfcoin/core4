@@ -26279,8 +26279,14 @@ mod device_submission_limit_3565 {
         let f = ConsensusFeature::DeviceSubmissionLimit;
         assert_eq!(f.name(), "device_submission_limit");
         assert_eq!(ConsensusFeature::parse("device_submission_limit"), Some(f));
-        assert_eq!(ConsensusFeature::ALL.last(), Some(&f), "appended at the END");
-        assert_eq!(crate::crypto::protocol_support::KNOWN_FEATURES.last(), Some(&"device_submission_limit"));
+        // Appended right after forecaster_key_binding; later features append
+        // after it, so the wire ordinal below stays fixed.
+        let all = ConsensusFeature::ALL;
+        let at = all.iter().position(|x| *x == f).unwrap();
+        assert_eq!(all[at - 1], ConsensusFeature::ForecasterKeyBinding, "appended after forecaster_key_binding");
+        let known = crate::crypto::protocol_support::KNOWN_FEATURES;
+        let k = known.iter().position(|x| *x == "device_submission_limit").unwrap();
+        assert_eq!(known[k - 1], "forecaster_key_binding");
         assert_eq!(bincode::serialize(&f).unwrap(), 23u32.to_le_bytes(), "ordinal after forecaster_key_binding");
         assert!(!f.schedulable(None), "activation is an owner decision");
         assert!(f.has_behaviour());

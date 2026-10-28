@@ -77,6 +77,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "node_share_settlement",
     "forecaster_key_binding",
     "device_submission_limit",
+    "streak_replay_node_service",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -303,7 +304,8 @@ mod tests {
                 "slash_evidence_reports",
                 "node_share_settlement",
                 "forecaster_key_binding",
-                "device_submission_limit"
+                "device_submission_limit",
+                "streak_replay_node_service"
             ]
         );
     }

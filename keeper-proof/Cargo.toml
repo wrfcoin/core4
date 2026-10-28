@@ -13,5 +13,10 @@ wrf-primitives.workspace = true
 wrfcoin-dataset-manifest = { path = "../dataset-manifest" }
 wrfcoin-shared-protocol = { path = "../shared-protocol" }
 
+[features]
+# Off-chain retrieval audits for storage keepers (#3564). Default off: nothing
+# on chain reads these types; see docs/adr/2026-10-28-3564-storage-keepers.md.
+retrieval-audit = []
+
 [dev-dependencies]
 rand.workspace = true

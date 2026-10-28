@@ -1,5 +1,8 @@
 //! Keeper storage attestation, retrieval proof, and health monitoring types.
 
+#[cfg(feature = "retrieval-audit")]
+pub mod audit;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;

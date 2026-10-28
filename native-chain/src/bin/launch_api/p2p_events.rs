@@ -7024,6 +7024,369 @@ mod tests {
         assert_eq!(ingest_gossiped_transaction_at_height(&mut invalid, forged, &keys, Some(f::A)), GossipIngest::Rejected, "canonical height cannot authorize forged gossip");
     }
 
+    /// #3591: a block carrying a node-bond Deposit AND a low-quality attested
+    /// ContributionReveal. Feature off, the extractor's streak replay derives no
+    /// streak transitions for it (today's behaviour). Feature on, the replay
+    /// begins the node-service block first, the Deposit block derives the same
+    /// streak transitions as an identical block without the Deposit, and
+    /// producer, P2P applier, independent extraction and persisted WAL replay
+    /// agree.
+    ///
+    /// Each mode runs in its own child process: the feature schedule is
+    /// process-wide.
+    #[test]
+    fn streak_replay_node_service_3591() {
+        const CHILD: &str = "WRFCOIN_STREAK_REPLAY_3591_CHILD";
+        const NAME: &str = "p2p_events::tests::streak_replay_node_service_3591";
+        let Some(mode) = std::env::var_os(CHILD) else {
+            for mode in ["off", "on"] {
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, mode)
+                    .env("WRFCOIN_CHAIN_ID", "777")
+                    .env("WRFCOIN_NETWORK_ID", "testnet")
+                    .output()
+                    .expect("isolated #3591 child");
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && stdout.contains("1 passed"),
+                    "#3591 child ({mode}) failed:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let feature_on = mode == "on";
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                use node_bond_parity_fixture as f;
+                use wrfcoin_shared_protocol::crypto::chain_binding::{
+                    ConsensusFeature, feature_active, refresh_feature_schedule_extensions,
+                };
+                let _schedule = f::state(); // installs the synthetic node-share schedule
+                if feature_on {
+                    refresh_feature_schedule_extensions(vec![(
+                        "streak_replay_node_service".to_string(),
+                        f::A,
+                    )]);
+                }
+                assert_eq!(
+                    feature_active(ConsensusFeature::StreakReplayNodeService, f::A + 1),
+                    feature_on
+                );
+                let with_deposit = mine_low_quality_block_3591(true, feature_on).await;
+                let without_deposit = mine_low_quality_block_3591(false, feature_on).await;
+                let streaks = |t: &[StateTransition3591]| -> Vec<(String, Option<u32>)> {
+                    t.iter()
+                        .filter_map(|t| match t {
+                            StateTransition3591::SetLowQualityStreak { address, streak } => {
+                                Some((address.to_string(), *streak))
+                            },
+                            _ => None,
+                        })
+                        .collect()
+                };
+                // The control block (no node-service tx) derives the streak in both modes.
+                assert!(
+                    !streaks(&without_deposit.extracted).is_empty(),
+                    "control: a low-quality attested reveal derives a streak transition"
+                );
+                assert!(without_deposit.applier_agrees, "control: producer and applier agree");
+                assert_eq!(
+                    without_deposit.producer_streak,
+                    Some(1),
+                    "control: the producer counted one low-quality reveal"
+                );
+                if feature_on {
+                    assert_eq!(with_deposit.producer_streak, Some(1), "gate on: producer streak");
+                    assert_eq!(
+                        streaks(&with_deposit.extracted),
+                        streaks(&without_deposit.extracted),
+                        "gate on: the Deposit block derives the same streak transitions"
+                    );
+                    assert!(with_deposit.applier_agrees, "gate on: producer and applier agree");
+                    assert!(with_deposit.extractor_agrees, "gate on: extractor root agrees");
+                    assert!(with_deposit.wal_agrees, "gate on: WAL replay root agrees");
+                } else {
+                    assert!(
+                        streaks(&with_deposit.extracted).is_empty(),
+                        "gate off: today's replay derives nothing on a node-service block"
+                    );
+                }
+            });
+    }
+
+    use wrfcoin_native_chain::blockchain::state::StateTransition as StateTransition3591;
+
+    struct LowQualityBlock3591 {
+        extracted: Vec<StateTransition3591>,
+        producer_streak: Option<u32>,
+        applier_agrees: bool,
+        extractor_agrees: bool,
+        wal_agrees: bool,
+    }
+
+    /// Producer at `A`, then block `A + 1` with a low-quality (0.20) attested
+    /// reveal, optionally plus a signed node-bond Deposit.
+    async fn mine_low_quality_block_3591(with_deposit: bool, feature_on: bool) -> LowQualityBlock3591 {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let (o1_sk, o1_id) = oracle(901);
+        let (o2_sk, o2_id) = oracle(902);
+        let recipient = Address([0x77; 20]);
+        let station_id = "station-3591";
+
+        let mut initial = f::state();
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        if feature_on {
+            // Scheduled the way an applied #3277 extension schedules it: the
+            // node refreshes the process overlay from these state entries on
+            // every applied block, so a test-only overlay would be wiped.
+            initial.feature_schedule_extensions[0].entries.push(
+                wrfcoin_shared_protocol::governance::schedule_extension::ScheduleEntry::new(
+                    "streak_replay_node_service",
+                    f::A,
+                ),
+            );
+        }
+        initial
+            .apply_transition(StateTransition3591::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        initial.create_account(recipient, Balance::new(0));
+        initial
+            .register_weather_station(WeatherStation {
+                station_id: station_id.to_string(),
+                owner_address: recipient.to_string(),
+                location: StationLocation {
+                    latitude: 10.5,
+                    longitude: 20.5,
+                    elevation_meters: Some(220.0),
+                },
+                hardware_model: "parity-fixture".to_string(),
+                calibration_date: None,
+                is_active: true,
+                reputation_score: 50,
+                data_quality_tier: DataQualityTier::Gold,
+                provenance_class: ContributionProvenanceClass::Real,
+                ring_public_key: None,
+            })
+            .unwrap();
+        initial.recalculate_state_root();
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, f::A - 1, 3591);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("streak-3591.redb"), 10_000).unwrap(),
+        ));
+        store.write().await.force_checkpoint(&initial, f::A - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+
+        let mut out = LowQualityBlock3591 {
+            extracted: Vec::new(),
+            producer_streak: None,
+            applier_agrees: false,
+            extractor_agrees: false,
+            wal_agrees: false,
+        };
+        for height in [f::A, f::A + 1] {
+            if height == f::A + 1 {
+                let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+                let metrics = serde_json::json!({"quality": 0.20, "volume": 1.0, "uniqueness": 1.0});
+                let nonce = "nonce-3591".to_string();
+                let commit_id = Transaction::compute_commit_id(
+                    &metrics, &nonce, station_id, timestamp, "contribution",
+                );
+                let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+                let mut commit_payload = CommitPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                };
+                commit_payload.sign_authorization(&oracle(903).0);
+                let reveal_payload = RevealPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    data: metrics,
+                    nonce,
+                    data_cid: None,
+                    data_hash: None,
+                    storage_provider: None,
+                    provenance: None,
+                    manifest: None,
+                    verification_receipt: None,
+                    compute_receipt: None,
+                    quality_tier: None,
+                };
+                let mk = |tx_type: TransactionType, tag: &str, data: String| {
+                    let mut tx = Transaction::new(
+                        vec![TransactionInput {
+                            txid: hash_string(&format!("in-3591-{tag}")),
+                            vout: 0,
+                            signature: None,
+                            public_key: None,
+                            coinbase_data: None,
+                        }],
+                        vec![TransactionOutput {
+                            amount: 1,
+                            address: format!("0x{}", hex::encode(recipient.0)),
+                            script: "OP_TRUE".to_string(),
+                            nft_data: None,
+                        }],
+                    );
+                    tx.tx_type = tx_type;
+                    tx.timestamp = tx_ts;
+                    tx.data = Some(data);
+                    tx.set_id();
+                    tx
+                };
+                let commit_tx = mk(
+                    TransactionType::ContributionCommit,
+                    "commit",
+                    serde_json::to_string(&commit_payload).unwrap(),
+                );
+                let mut reveal_tx = mk(
+                    TransactionType::ContributionReveal,
+                    "reveal",
+                    serde_json::to_string(&reveal_payload).unwrap(),
+                );
+                reveal_tx.sender_address = recipient;
+                reveal_tx.fee = 1;
+                reveal_tx.set_id();
+                let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                    let mut payload = OracleAttestationPayload {
+                        commit_id: commit_id.clone(),
+                        oracle_id: oracle_id.to_string(),
+                        approved: true,
+                        signature: None,
+                        confidence: Some(1.0),
+                        timestamp,
+                        nonce: Some(format!("nonce-3591-{tag}")),
+                    };
+                    payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                    mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap())
+                };
+                let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+                for id in [&o1_id, &o2_id] {
+                    keys.ensure_legacy_identity_key(
+                        id,
+                        wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle,
+                        0,
+                    )
+                    .unwrap();
+                }
+                let mut mp = mempool.write().await;
+                for tx in [
+                    commit_tx,
+                    reveal_tx,
+                    attestation(&o1_sk, &o1_id, "att1"),
+                    attestation(&o2_sk, &o2_id, "att2"),
+                ] {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                if with_deposit {
+                    let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                    mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                        .expect("signed Deposit admitted");
+                }
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(
+                    Arc::clone(&producer),
+                    Arc::clone(&mempool),
+                    &test_address_string(0x61),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            if height == f::A + 1 {
+                let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+                assert_eq!(count(TransactionType::ContributionReveal), 1, "low-quality reveal mined");
+                assert_eq!(count(TransactionType::NodeBondLifecycle), usize::from(with_deposit), "Deposit mined");
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(
+                wire,
+                P2pBlockSource::HistoricalSync,
+                &applier,
+                &store,
+                &peer_consensus,
+                None,
+                &mut fork,
+                &mut orphan,
+            )
+            .await;
+            let p = producer.read().await;
+            let a = applier.read().await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state
+                .apply_transitions_batch_at_height(height, inputs.clone())
+                .unwrap();
+            extracted_state.apply_block_finalization_checked(&block).unwrap();
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let wal_ok = if rows.is_empty() {
+                false
+            } else {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let applier_ok = a.height == height && a.state.state_root == p.state.state_root;
+            if height == f::A {
+                assert!(applier_ok && wal_ok, "the empty activation block agrees everywhere");
+                assert_eq!(extracted_state.state_root, p.state.state_root);
+            } else {
+                out = LowQualityBlock3591 {
+                    extracted: inputs,
+                    producer_streak: p.state.low_quality_streaks.get(&recipient).copied(),
+                    applier_agrees: applier_ok,
+                    extractor_agrees: extracted_state.state_root == p.state.state_root,
+                    wal_agrees: wal_ok,
+                };
+            }
+        }
+        out
+    }
+
     /// Cross the durable None -> Some checkpoint marker, a real signed bond
     /// deposit, next-epoch frozen eligibility and signed exit through mining,
     /// actual P2P apply, independent extraction and persisted WAL replay.

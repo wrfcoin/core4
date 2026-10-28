@@ -1101,6 +1101,17 @@ pub enum ConsensusFeature {
     /// separate owner decision.
     /// Unscheduled, every path is byte-identical to before.
     DeviceSubmissionLimit,
+    /// #3591: the low-quality-streak replay (`derive_low_quality_streak_transitions`
+    /// in the transition extractor) applies the block's `BeginNodeServiceBlock`
+    /// between the governance and launch transitions, the order the producer
+    /// applies them (`apply_launch_state_transitions_on_state` begins the node
+    /// service block before the launch batch). This changes derived streak
+    /// transitions, and so `state_root`, on some blocks; hence the gate.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED and NOT live-schedulable; inactive, the replay is byte for
+    /// byte the pre-#3591 one.
+    StreakReplayNodeService,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1141,6 +1152,7 @@ impl ConsensusFeature {
         Self::NodeShareSettlement,
         Self::ForecasterKeyBinding,
         Self::DeviceSubmissionLimit,
+        Self::StreakReplayNodeService,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1170,6 +1182,7 @@ impl ConsensusFeature {
             Self::NodeShareSettlement => "node_share_settlement",
             Self::ForecasterKeyBinding => "forecaster_key_binding",
             Self::DeviceSubmissionLimit => "device_submission_limit",
+            Self::StreakReplayNodeService => "streak_replay_node_service",
         }
     }
 
@@ -1224,7 +1237,9 @@ impl ConsensusFeature {
             // separate, owner-approved release step.
             | Self::ForecasterKeyBinding
             // #3565: behaviour is wired, but activation is an owner decision.
-            | Self::DeviceSubmissionLimit => false,
+            | Self::DeviceSubmissionLimit
+            // #3591: wired and tested; scheduling is a separate owner step.
+            | Self::StreakReplayNodeService => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1256,6 +1271,8 @@ impl ConsensusFeature {
             Self::ForecasterKeyBinding => true,
             // #3565: refusal + late-data reduction are implemented and gated.
             Self::DeviceSubmissionLimit => true,
+            // #3591: the extractor's streak replay reads it.
+            Self::StreakReplayNodeService => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2819,6 +2836,7 @@ mod tests {
             ConsensusFeature::ScheduleExtension,
             ConsensusFeature::StakeSubmissionNonce,
             ConsensusFeature::DeviceSubmissionLimit,
+            ConsensusFeature::StreakReplayNodeService,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
