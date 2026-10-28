@@ -1112,6 +1112,18 @@ pub enum ConsensusFeature {
     /// UNSCHEDULED and NOT live-schedulable; inactive, the replay is byte for
     /// byte the pre-#3591 one.
     StreakReplayNodeService,
+    /// #3336: station-registration coordinates are fixed-point integers
+    /// (`latitude_e7`, `longitude_e7`, `elevation_mm`) in the governance
+    /// preimage (`wrfcoin_station_registration_auth_fixed_v{1,2}`) and in the
+    /// stored station record, instead of f64 bits recovered by serde_json's
+    /// non-correctly-rounded float parse. From activation a registration
+    /// without a complete, in-range fixed-point set yields no transition.
+    /// Registrations in blocks below activation verify and apply exactly as
+    /// before (`Transaction::station_registration_step`).
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED and NOT live-schedulable; activation is an owner decision.
+    StationCoordinatesFixedPoint,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1153,6 +1165,7 @@ impl ConsensusFeature {
         Self::ForecasterKeyBinding,
         Self::DeviceSubmissionLimit,
         Self::StreakReplayNodeService,
+        Self::StationCoordinatesFixedPoint,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1183,6 +1196,7 @@ impl ConsensusFeature {
             Self::ForecasterKeyBinding => "forecaster_key_binding",
             Self::DeviceSubmissionLimit => "device_submission_limit",
             Self::StreakReplayNodeService => "streak_replay_node_service",
+            Self::StationCoordinatesFixedPoint => "station_coordinates_fixed_point",
         }
     }
 
@@ -1239,7 +1253,9 @@ impl ConsensusFeature {
             // #3565: behaviour is wired, but activation is an owner decision.
             | Self::DeviceSubmissionLimit
             // #3591: wired and tested; scheduling is a separate owner step.
-            | Self::StreakReplayNodeService => false,
+            | Self::StreakReplayNodeService
+            // #3336: wired and tested; scheduling is a separate owner step.
+            | Self::StationCoordinatesFixedPoint => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1273,6 +1289,8 @@ impl ConsensusFeature {
             Self::DeviceSubmissionLimit => true,
             // #3591: the extractor's streak replay reads it.
             Self::StreakReplayNodeService => true,
+            // #3336: station_registration_step and the preimage read it.
+            Self::StationCoordinatesFixedPoint => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2837,6 +2855,7 @@ mod tests {
             ConsensusFeature::StakeSubmissionNonce,
             ConsensusFeature::DeviceSubmissionLimit,
             ConsensusFeature::StreakReplayNodeService,
+            ConsensusFeature::StationCoordinatesFixedPoint,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
