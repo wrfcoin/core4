@@ -4590,6 +4590,36 @@ impl State {
                 payload,
                 block_height,
             } => {
+                // #3565 (a), gated: from `device_submission_limit`'s activation a
+                // contribution commit for a REGISTERED station must be authorized
+                // by that station's registered owner key, so only the owner can
+                // occupy the station's one-per-block reveal slot. The commit's
+                // `auth_pubkey` already signs (station_id, commit_id, type); this
+                // binds that key to `owner_address` with the #2742 rule. An
+                // unregistered station has no owner to bind and is unchanged.
+                // Forecast commits are #3290's surface and are untouched here.
+                if payload.contribution_type != "forecast"
+                    && crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
+                        block_height,
+                    )
+                {
+                    if let Some(station) = self.station_registry.get(&payload.station_id) {
+                        let owner_signed = payload.auth_pubkey.as_deref().is_some_and(|pk| {
+                            crate::blockchain::transaction::owner_address_bound_to_pubkey(
+                                &station.owner_address,
+                                pk,
+                            )
+                        });
+                        if !owner_signed {
+                            return Err(StateError::CommitReveal(format!(
+                                "{}: commit for station {} is not authorized by its registered owner key",
+                                crate::consensus::proof_of_publishing::SP_DEVICE_COMMIT_NOT_OWNER,
+                                payload.station_id
+                            )));
+                        }
+                    }
+                }
                 let provenance_class = self
                     .station_registry
                     .get(&payload.station_id)

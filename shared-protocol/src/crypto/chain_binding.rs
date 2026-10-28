@@ -1092,9 +1092,13 @@ pub enum ConsensusFeature {
     /// including block (`late_data_multiplier_bps`). Both read only chain data:
     /// the reveal's committed `timestamp` and the block HEADER timestamp,
     /// never a node clock. A second reveal for the same station in one block is
-    /// refused by `classify_block_transaction` (so the producer self-screen and
-    /// `verify_block` agree) and at mempool admission. NOT schedulable by a
-    /// live extension in this slice; activation is a separate owner decision.
+    /// refused by `classify_block_transaction` (so `verify_block` refuses the
+    /// block); the producer defers it to a later block rather than evicting it.
+    /// A contribution commit for a registered station must be authorized by its
+    /// registered owner key (`State` RegisterCommit), so only the owner can
+    /// occupy the slot. No mempool rule (the mempool cannot check ownership).
+    /// NOT schedulable by a live extension in this slice; activation is a
+    /// separate owner decision.
     /// Unscheduled, every path is byte-identical to before.
     DeviceSubmissionLimit,
 }
