@@ -43,7 +43,7 @@ reporter has the wrong shape. Concretely, in this document:
 |---|---|---|
 | Emission roles | Contribution, Attester, Producer, Node, Faucet. **No Sink.** | PoP:797 `EmissionRole` |
 | Share tables | mainnet 70/15/10/5/0; testnet 69/15/10/5/1 (used by 888 through its genesis policy) | PoP:836-837; `crypto/chain_binding.rs:224-234` |
-| Unclaimed slice | Mints **zero**, never redistributed, never carried into a later block | PoP:996 ("A role that claims none of its slice mints **zero**"); test `attester_slice_is_unclaimed_and_unemitted_when_nothing_settles_2846` (PoP:25772); ADR-003:253 |
+| Unclaimed slice | Mints **zero**, never redistributed, never carried into a later block | PoP:996-997 ("A role that claims none of its slice mints **zero**"); test `attester_slice_is_unclaimed_and_unemitted_when_nothing_settles_2846` (PoP:25772); ADR-003:253 |
 | Supply cap basis | `issuance_committed_supply()` = sum of account balances + outstanding node reserves. A mint that would pass `MAX_SUPPLY` is **deferred**, not dropped | `blockchain/state.rs:1862`, `:4234` |
 | Burn accounting | `supply_authorized_burning` journal (not in the state root) | `state.rs:1267`, slashing burn `:5402`, paymaster burn `:5882` |
 | Signed receipt families | `ForecastVerificationReceipt` (oracle-signed forecast scores), `SignedNodeServiceReceipt` (consumer-signed service, domain tag `wrfcoin.node_service_receipt.v1`) | `forecast-score/src/blockchain.rs:296`; `consensus/node_service_receipt.rs:42,81` |
@@ -216,8 +216,15 @@ Shares still sum to exactly 10,000 bps, so the remainder bound becomes `EMISSION
 `EMISSION_ROLE_COUNT` changes from 5 to 6, which is wire- and root-affecting (tokenomics ADR §6) and
 is why the table is selected by a feature at a height (§7), never edited in place.
 
-On 888 at today's measured cadence (77 s, cadence report §1), 5% of the 22.22 WRF ceiling is
-**1.111 WRF per block, about 1,247 WRF/day ceiling**. At the 600 s design basis it is 160 WRF/day.
+On 888, 5% of the 22.22 WRF per-block ceiling is **1.111 WRF per block**. The daily figure
+depends on the block interval, and the interval is not established on chain. 77 s is the assumed
+operator-status interval (`native-chain/src/bin/launch_api/routes/network.rs:516-517`,
+`RESOURCE_CHAIN_BLOCK_INTERVAL_SECS`: "Operator visibility policy (#3599), not a consensus timing
+parameter"), and it is unmeasured. At an assumed 77 s the ceiling would be about 1,247 WRF/day; at
+the 600 s design basis it is 160 WRF/day. The block-speed record
+(`docs/adr/2026-10-23-3566-block-speed-record.md`, "Observed cadence": not established) and the
+tokenomics decision 2 both defer block-speed numbers until the cadence is measured. Every
+cadence-dependent figure in this document is therefore an assumption, not a measurement.
 
 ### 4.2 Zero-claim epochs mint nothing
 
@@ -227,7 +234,7 @@ The sink slice follows the attester rule exactly:
 - Claims that mature in block `h` divide that block's slice. The **epoch** (§3.2's 512-block window)
   is only the unit for caps; budget is not pooled across an epoch.
 - If no claim matures in a block, the slice is unclaimed and mints **zero**. It is not carried into a
-  later block, not handed to another role, and not accrued anywhere (PoP:996).
+  later block, not handed to another role, and not accrued anywhere (PoP:996-997).
 - If matured claims exceed the slice, the excess stays pending and retries in the next block in
   `(maturity height, outcome_id)` order, the same deferral shape as the `MAX_SUPPLY` path
   (`state.rs:4234`). This defers *claims*, not *budget*: a later block still mints at most its own
@@ -283,7 +290,7 @@ Issuance per year = `h × (21M − circulating)`, with `h = 1,753,200 / 21,000,0
 headroom, and every burn raises headroom, so the tail is both asymptotic and burn-funded with one
 formula.
 
-| Year | A issued/yr | A cumulative minted | A cumulative burned | A circulating | B issued/yr | B cumulative minted | B cumulative burned | B circulating |
+| Year | A rate at year end (WRF/yr) | A cumulative minted | A cumulative burned | A circulating | B rate at year end (WRF/yr) | B cumulative minted | B cumulative burned | B circulating |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 1,753,200 | 1,753,200 | 2,168 | 1,751,032 | 1,614,239 | 1,682,743 | 2,110 | 1,680,633 |
 | 2 | 1,753,200 | 3,506,400 | 8,708 | 3,497,692 | 1,485,387 | 3,230,989 | 8,247 | 3,222,741 |
@@ -307,12 +314,26 @@ Reading the table:
   flat "re-mint the burn" mode, so circulating supply freezes where the curve ran out (19.12M under
   this assumption). With no burns at all, A's tail is zero: the integer curve floors to nothing after
   about 60 periods (~240 years), and the "perpetual" tail is only as large as the burns.
-- **B** is one formula with no switch. It is slightly less front-loaded (year 1: 1.61M vs 1.75M;
-  year 4: 5.94M vs 6.97M circulating), and it keeps a tail even with zero burns (vanishing, but
+- The two "rate at year end" columns are the instantaneous annual issuance rate at the end of that
+  year, not that year's issuance. A year's issuance is the difference in cumulative minted (B,
+  year 1: 1,682,743 WRF issued, ending at a rate of 1,614,239 WRF/yr).
+- **B** is one formula with no switch. It is slightly less front-loaded (year-1 issuance 1.68M vs
+  1.75M; year 4: 5.94M vs 6.97M circulating), and it keeps a tail even with zero burns (vanishing, but
   never zero until integer flooring at ~250 years). With burns, its tail settles at the burn rate.
-- With 888's flat reward (22.22 WRF/block), B is simply the flat reward capped by
-  `h × headroom / blocks_per_year`. At 888's current supply the headroom term is far above the flat
-  reward, so 888 behaviour would not change for decades of testnet time.
+- **On 888, B binds, and how soon depends on the block interval.** 888 pays a flat 22.22 WRF per
+  block. Under B that becomes `min(22.22, h × headroom × interval / year)`. The headroom term starts at
+  8.35% × 21M = **1.753M WRF/yr**. Comparing the two:
+  - At the 600 s design basis the flat budget is about 1.168M WRF/yr, below the headroom term while
+    circulating supply stays under 21M × (1 − 1.168 / 1.753) ≈ **7.0M WRF**. Fully minted, that is
+    about 6 years; B changes nothing before then.
+  - At the assumed 77 s operator interval the flat ceiling is about 410k blocks × 22.22 ≈ **9.1M
+    WRF/yr**, five times the headroom term. B would bind immediately and cut 888's per-block
+    ceiling to roughly a fifth.
+  - So F8 on 888 is a monetary change whose size depends on the cadence, which is not established on
+    chain. The headroom term must be written **per second of block time** (`h × headroom ×
+    block_interval_seconds / seconds_per_year`, with the interval taken from consensus header
+    timestamps), so the cap holds whatever the heartbeat does. The owner's block-speed vote
+    (record 3566, B-V, issuance-neutral) needs the same per-second scaling.
 
 **Recommendation: Option B (asymptotic, headroom-proportional).** It satisfies both owner answers
 with one deterministic formula (`h`, `MAX_SUPPLY` and the state's circulating supply, already
@@ -340,7 +361,7 @@ Defined as value that reaches the protocol without belonging to anyone, all on c
 | Node-share fraud forfeiture | Moved to a non-spendable protocol account, still counted as supply (tokenomics ADR §1.4) | **Burn** at forfeiture |
 | Sink clawback from program bonds (§3.5) | — | **Burn** |
 | Transaction fees | Producer keeps all | **Burn 50%** of each fee (a base-fee burn); the producer keeps 50% |
-| Future private-analysis / compute fees (paper §5.3/5.5; `COMPUTATIONAL_FEE_ACTIVATION_HEIGHT`, PoP:167) | No split | **Burn 50%, sink slice 50%** when that fee exists (the paper funds sinks from these fees) |
+| Private-analysis / compute fees (paper §5.5 sinks funding, §5.6 burns) | No fee split exists. `COMPUTATIONAL_FEE_ACTIVATION_HEIGHT` (PoP:167) is `0`, so the computational-fee model is already active, but it is a gate (a fee-less weather tx must carry a valid compute receipt), not a fee split | **Burn 50%, sink slice 50%** of any protocol-charged analysis/compute fee, once such a fee is defined; the compute-receipt gate is the hook that exists today |
 | Stale-wallet balances (§6.2) | — | **Burn** |
 
 The 50% fee burn is the recommended value: enough that heavy chain use funds the tail, while
@@ -421,8 +442,9 @@ proof of clean-up through a registered program, view sinks), per #3562's accepta
    *Recommended: yes, both, each behind a signed data agreement.* No carbon-registry outcomes (P5)
    in this phase.
 4. **Rate cards:** who proposes the first WRF-per-unit prices? *Recommended: the LEAD drafts them
-   from the 888 sink budget (≈1,247 WRF/day ceiling at 77 s) so that each pilot's per-epoch cap is
-   10% of budget; the owner approves the governance proposal.*
+   from the 888 sink budget, 1.111 WRF per block (the daily figure waits on a measured cadence;
+   ≈1,247 WRF/day only at an assumed 77 s), so that each pilot's per-epoch cap is 10% of the
+   budget; the owner approves the governance proposal.*
 5. **Audit rate and window:** 5% sampled audit, 512-block audit window, escalation to 25% after a
    FAIL? *Recommended: yes.*
 6. **Auditor pay:** 10% of each audited claim, PASS or FAIL alike? *Recommended: yes.*
