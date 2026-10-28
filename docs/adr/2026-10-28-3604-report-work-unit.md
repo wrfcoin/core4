@@ -17,7 +17,7 @@ the protocol never asks whether a human, a script or an LLM did the work.
 
 - **Forecasts** check themselves: a later observation scores them, and an oracle-signed
   `ForecastVerificationReceipt` carries the score
-  (`forecast-score/src/blockchain.rs:296-346`; consensus mints at `receipt.metrics.skill_score`,
+  (`forecast-score/src/blockchain.rs:296-347`; consensus mints at `receipt.metrics.skill_score`,
   `shared-protocol/src/consensus/proof_of_publishing.rs:5378-5393`).
 - **Services** are checked by a second party's signed receipt: a consumer signs a
   `NodeServiceReceipt` for a snapshot it fetched, verified and applied
@@ -106,8 +106,9 @@ by anyone with a synced node or an archive (§5).
   have no later observation, so this ADR proposes 100 % recomputation for reports (Q2).
 - **Verifiers are themselves spot-checked.** A fraction of assignments (proposed 10 %) is a
   **known-answer unit**: a unit already settled by two independent verifiers. A verifier that
-  disagrees with a known answer is treated as a failed verification (§4). This is #3557's "spot
-  checks of verifiers" against collusion.
+  disagrees with a known answer is treated as a failed verification (§4). The "spot checks of
+  verifiers" idea comes from the white paper, carried into a comment on #3557 (not #3557's own text),
+  and is applied here against collusion.
 
 ### 2.2 The tolerance rule
 
@@ -143,7 +144,8 @@ fields  chain identity, work_unit_id, worker (20-byte address), verifier (20-byt
 The worker's own submission carries the output digest and summary and is signed by the worker's
 key. The **#3290 binding applies to both roles**: the worker and verifier addresses must equal the
 addresses of the keys that signed, so a third party cannot claim someone else's work or
-verification (`Transaction::forecast_commit_key_bound` is the forecast-lane precedent).
+verification. The forecast-lane binding that would set the precedent is pending in core4#54 (not on
+main yet).
 
 A unit is **settled** when its required attestations agree. Payment (§4) is made from settled units
 only.
