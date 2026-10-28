@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use wrfcoin_geo_grid::GeoCell;
 use wrfcoin_native_chain::security::api_auth::ApiRole;
 use wrfcoin_shared_protocol::consensus::data_desert::{
-    DataDesertPolicy, cell_for_station, desert_multiplier,
+    DataDesertPolicy, EMPTY_CELL_TIER_BONUS_PERCENT, EMPTY_CELL_TIER_MAX_STATIONS,
+    cell_for_station, desert_multiplier,
 };
+use wrfcoin_shared_protocol::crypto::chain_binding::{ConsensusFeature, feature_active};
 use wrfcoin_shared_protocol::rewards::RewardConfig;
 
 use crate::helpers::{envelope_error, require_role};
@@ -39,6 +41,14 @@ pub struct ScarcityRuleView {
     pub activation_height: u64,
     /// Whether the bonus applies at `observed_at_height + 1`, the next block.
     pub active: bool,
+    /// Empty-cell tier (`desert_empty_cell_tier`): a cell whose count is at most this (the
+    /// station itself included) pays `empty_cell_tier_percent` when the tier is active.
+    pub empty_cell_tier_max_stations: u32,
+    /// Empty-cell tier multiplier in percent (175 = ×1.75).
+    pub empty_cell_tier_percent: u32,
+    /// Whether the empty-cell tier applies at the next block. While false, a lone station is
+    /// paid `desert_bonus_percent` like any desert station.
+    pub empty_cell_tier_active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -68,8 +78,8 @@ pub struct ScarcityPointView {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct ScarcityResponse {
     pub rule: ScarcityRuleView,
-    /// Cells with at least one active station. Any other cell has count 0 and pays
-    /// `desert_bonus_percent` to a first station.
+    /// Cells with at least one active station. Any other cell has count 0 and pays a first
+    /// station `empty_cell_tier_percent` while the tier is active, else `desert_bonus_percent`.
     pub cells: Vec<ScarcityCellView>,
     /// Present when `lat` and `lon` were supplied.
     pub point: Option<ScarcityPointView>,
@@ -112,6 +122,10 @@ pub fn build_scarcity_view(
         baseline_percent: 100,
         activation_height: policy.activation_height,
         active: height >= policy.activation_height,
+        empty_cell_tier_max_stations: EMPTY_CELL_TIER_MAX_STATIONS,
+        empty_cell_tier_percent: EMPTY_CELL_TIER_BONUS_PERCENT,
+        empty_cell_tier_active: height >= policy.activation_height
+            && feature_active(ConsensusFeature::DesertEmptyCellTier, height),
     };
     let cells = station_counts
         .iter()
@@ -239,6 +253,46 @@ mod tests {
         let p = p.unwrap();
         assert_eq!((p.station_count, p.multiplier_percent), (0, 150));
         assert_eq!((rule.min_station_density, rule.desert_bonus_percent, rule.baseline_percent), (3, 150, 100));
+        assert!(!rule.empty_cell_tier_active, "the empty-cell tier is unscheduled here");
+    }
+
+    /// `desert_empty_cell_tier` scheduled from height 50 (isolated child: the schedule is
+    /// process-global). The view reports the tier exactly as the payout pays it: a lone station
+    /// and a first station into an empty cell get 175 from activation, 150 before it; a 2-station
+    /// cell keeps the ordinary desert bonus.
+    #[test]
+    fn empty_cell_tier_is_reported_as_paid_once_active() {
+        const CHILD: &str = "WRFCOIN_EMPTY_CELL_TIER_VIEW_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "routes::scarcity::tests::empty_cell_tier_is_reported_as_paid_once_active", "--nocapture"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{FeatureSchedule, install_feature_schedule};
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DesertEmptyCellTier.name().into(), 50)]).unwrap(),
+        );
+        let policy = DataDesertPolicy::default();
+        let sc = counts(&[(51.3, -0.1, 1), (47.5, -94.0, 2)]);
+        let lone = (51.3, -0.1);
+        let empty = (10.0, 10.0);
+        for (height, tier_on) in [(49, false), (50, true), (51, true)] {
+            let (rule, cells, _) = build_scarcity_view(&sc, &policy, height, None);
+            assert_eq!(rule.empty_cell_tier_active, tier_on, "h{height}");
+            assert_eq!((rule.empty_cell_tier_max_stations, rule.empty_cell_tier_percent), (1, 175));
+            let by_count = |n| cells.iter().find(|c| c.station_count == n).unwrap().multiplier_percent;
+            assert_eq!(by_count(1), if tier_on { 175 } else { 150 }, "h{height}: lone station");
+            assert_eq!(by_count(2), 150, "h{height}: two stations keep the desert bonus");
+            for (lat, lon) in [lone, empty] {
+                let p = build_scarcity_view(&sc, &policy, height, Some((lat, lon))).2.unwrap();
+                assert_eq!(p.multiplier_percent, desert_multiplier(lat, lon, &sc, &policy, height));
+                assert_eq!(p.multiplier_percent, if tier_on { 175 } else { 150 }, "h{height} ({lat},{lon})");
+            }
+        }
     }
 
     #[test]

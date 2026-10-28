@@ -8172,6 +8172,130 @@ mod tests {
         let _ = std::fs::remove_file(&storage_path);
     }
 
+    /// #3563 follow-up: `desert_empty_cell_tier` scheduled from height 2 (isolated child: the
+    /// schedule is process-global). The attested-reward fixture's station is the only station in
+    /// its ≈2° cell. At height 1 (tier off) it is paid the ordinary ×1.5 desert bonus; at height 2
+    /// (tier on) ×1.75, and the P2P applier, extracted transitions and WAL replay reach the
+    /// producer's root for the tier block.
+    #[tokio::test]
+    async fn empty_cell_tier_pays_a_lone_station_with_parity() {
+        const CHILD: &str = "WRFCOIN_EMPTY_CELL_TIER_PARITY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "p2p_events::tests::empty_cell_tier_pays_a_lone_station_with_parity",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .expect("re-exec child");
+            assert!(status.success(), "isolated empty-cell tier parity child failed");
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(
+                ConsensusFeature::DesertEmptyCellTier.name().to_string(),
+                2,
+            )])
+            .expect("schedule"),
+        );
+        let amount = |block: &Block| -> u128 {
+            let entries: Vec<wrfcoin_native_chain::blockchain::state::ContributionRewardRecord> =
+                serde_json::from_str(block.metadata.get("reward_entries").expect("reward_entries"))
+                    .expect("reward_entries JSON");
+            assert_eq!(entries.len(), 1, "vacuity guard: one contribution decision");
+            entries[0].amount.0
+        };
+
+        let off = mine_attested_reward_block_at_base_height(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0,
+        )
+        .await;
+        assert!(!feature_active(ConsensusFeature::DesertEmptyCellTier, off.block_1.height));
+        let on = mine_attested_reward_block_at_base_height(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 1,
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::DesertEmptyCellTier, on.block_1.height));
+        {
+            let producer = on.producer_chain.read().await;
+            let cell = wrfcoin_shared_protocol::consensus::data_desert::cell_for_station(10.123456, 20.654321);
+            assert_eq!(producer.state.station_counts.get(&cell), Some(&1), "fixture: the station is alone in its cell");
+        }
+        let (off_amount, on_amount) = (amount(&off.block_1), amount(&on.block_1));
+        assert!(off_amount > 0, "vacuity guard: the desert reveal is paid");
+        let expected = off_amount * 175 / 150;
+        assert!(
+            on_amount.abs_diff(expected) <= 2,
+            "tier ON pays x1.75 where tier OFF pays x1.5: off={off_amount} on={on_amount} expected~{expected}"
+        );
+
+        // Root parity for the tier block (producer sits at height 1 with a deterministic tip).
+        let block = on.block_1.clone();
+        let producer_root = on.producer_chain.read().await.state.state_root;
+        let storage_path = std::env::temp_dir().join(format!(
+            "wrfcoin-p2p-empty-cell-tier-{}.redb",
+            fastrand::u64(..)
+        ));
+        let _ = std::fs::remove_file(&storage_path);
+        let applier_storage = Arc::new(RwLock::new(
+            Storage::open(&storage_path, DEFAULT_CHECKPOINT_INTERVAL).expect("applier storage opens"),
+        ));
+        let mut applier_genesis = Blockchain::default();
+        (on.seed_genesis)(&mut applier_genesis);
+        applier_genesis.height = 1;
+        applier_genesis.tip = wrfcoin_native_chain::crypto::hash::hash_string("base-tip-1");
+        let applier_seed = applier_genesis.state.clone();
+        let applier_chain = Arc::new(RwLock::new(applier_genesis));
+        let applier_consensus = test_consensus();
+        let mut fork_buffer = ForkCandidateBuffer::new();
+        let mut orphan_buffer = OrphanBlockBuffer::new();
+        let wire_block: Block =
+            bincode::deserialize(&bincode::serialize(&block).expect("serializes")).expect("deserializes");
+        apply_p2p_block(
+            wire_block,
+            P2pBlockSource::HistoricalSync,
+            &applier_chain,
+            &applier_storage,
+            &applier_consensus,
+            None,
+            &mut fork_buffer,
+            &mut orphan_buffer,
+        )
+        .await;
+        {
+            let applier = applier_chain.read().await;
+            assert_eq!(applier.height, block.height, "applier must accept the tier block");
+            assert_eq!(applier.state.state_root, producer_root, "P2P applier state_root");
+        }
+        let version = wrfcoin_shared_protocol::crypto::chain_binding::protocol_version_at(block.height);
+        let transitions = extract_transitions(&applier_seed, &block, block.height, block.timestamp.timestamp());
+        let mut extracted = applier_seed.clone();
+        extracted.apply_transitions_batch_at_height(block.height, transitions.clone()).expect("extracted apply");
+        extracted.apply_block_finalization_checked_at(version, &block).expect("extracted commitment");
+        assert_eq!(extracted.state_root, producer_root, "extracted state_root");
+        let replayed = applier_storage
+            .read()
+            .await
+            .load_wal_transitions_range(block.height, block.height)
+            .expect("WAL rows load");
+        assert_eq!(replayed.len(), transitions.len(), "vacuity guard: WAL holds every transition");
+        let mut wal = applier_seed;
+        wal.apply_transitions_batch_at_height(block.height, replayed.into_iter().map(|(_, t)| t))
+            .expect("WAL apply");
+        wal.apply_block_finalization_checked_at(version, &block).expect("WAL commitment");
+        assert_eq!(wal.state_root, producer_root, "WAL replay state_root");
+        drop(applier_chain);
+        drop(applier_storage);
+        let _ = std::fs::remove_file(&storage_path);
+    }
+
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block
     /// `prune_commit_reveal_expired` sweep (now via the shared
     /// `State::apply_block_finalization`); the applier replay path previously
