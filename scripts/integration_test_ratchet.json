@@ -316,6 +316,15 @@
     },
     {
       "package": "wrfcoin-native-chain",
+      "target": "station_coordinates_fixed_point_3336",
+      "review": {
+        "source_pr": 0,
+        "owning_issue": 3336,
+        "covers": "#3336: station_coordinates_fixed_point scheduled at H through the extension overlay. Gate off: legacy f64-bit registrations apply as on main at every height (also with the new integer fields present, ignored) and a fixed-point signature does not verify. Gate on: a legacy registration below H applies as on main; from H a legacy registration yields nothing and a fixed-point one applies with coordinates from the integers, including the #3333 pair with its f64 longitude one ulp off. The real producer, the P2P applier (extract_transitions) and WAL replay agree on state_root and every station record at every height. Runs in child processes: the schedule is process-wide."
+      }
+    },
+    {
+      "package": "wrfcoin-native-chain",
       "target": "forecaster_key_binding_3290",
       "review": {
         "source_pr": 54,
