@@ -1,5 +1,6 @@
 pub mod node_receipts;
 pub mod node_bonds;
+pub mod node_fraud;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -316,6 +317,7 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .service(web::resource("/node/bonds/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::inspect)))
         .service(web::resource("/node/settlement/{epoch}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_receipts::settlement)))
         .service(web::resource("/node/receipts/submit").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(40 * 1024)).route(web::post().to(node_receipts::submit)))
+        .service(web::resource("/node/fraud/submit").guard(actix_web::guard::fn_guard(node_fraud::route_enabled)).app_data(web::JsonConfig::default().limit(node_fraud::MAX_NODE_FRAUD_JSON_BYTES)).route(web::post().to(node_fraud::submit)))
         .service(web::resource("/node/receipts/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::receipt)))
         .route("/state/snapshot/export", web::get().to(snapshot::get_state_snapshot_export))
         .route(

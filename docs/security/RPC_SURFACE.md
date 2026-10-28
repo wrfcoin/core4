@@ -424,3 +424,13 @@ is classified `disabled-in-release` and that no build profile enables the featur
 `python3 scripts/check_rpc_surface.py` extracts the registered Actix method/path/handler
 triples and WebSocket client actions and compares them with this table in both directions.
 The check is wired into the pull-request-triggered `ci-deploy-features.yml` workflow.
+
+## Node-fraud report route (core4-archive#3589)
+
+`POST /node/fraud/submit` (`routes/node_fraud.rs:node_fraud::submit`) is registered through a guarded
+`web::resource(..)`, like the other `/node/{bonds,receipts}/submit` routes, which the table scanner
+(`scripts/check_rpc_surface.py`, `.route(` only) does not see. Classification: `admin` (Operator
+token), mutates state (mempool admission and gossip), no unbounded work (40 KiB body, 8 KiB wire cap),
+per-token limit 30 requests/minute (429). It is **not mounted** (404) unless
+`WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1` (default off) and `NodeShareSettlement` is active. A non-forking
+change: it admits a transaction type the mempool and `apply` already handle.

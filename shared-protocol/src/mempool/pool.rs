@@ -454,7 +454,8 @@ impl Mempool {
 
         let tx_size = self.check_transaction_admission_cost(&tx)?;
 
-        // This type-only slice cannot stage or apply evidence reports yet.
+        // Admission checks authorization only. Provability (`responsible()`), the challenge deadline and duplicates
+        // are enforced by `node_fraud::apply`; the operator route runs them as an advisory dry-run at the edge.
         if tx.tx_type == TransactionType::NodeFraudReport {
             let height = current_height.ok_or_else(|| anyhow!("SP_NODE_FRAUD_HEIGHT_REQUIRED"))?;
             if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, height) { return Err(anyhow!("SP_NODE_FRAUD_INACTIVE")); }
