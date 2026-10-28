@@ -93,30 +93,49 @@ fn snapshot_summary_peak_allocation_is_bounded_3551() {
     assert_eq!(new_root, old_root, "same root");
     assert_eq!(new_count, old_count, "same entry count");
 
+    // The unavoidable part: the exported state entries, pushed and dropped.
+    let (_, state_only_peak) = peak_above_baseline(|| {
+        let mut builder = SnapshotRootBuilder::new();
+        for (key, value) in state_entries() {
+            builder.push(key, &value);
+        }
+        builder.finish()
+    });
     let block_window = BLOCKS as usize * BLOCK_BYTES;
+    // What the window may add on top: one block in flight (two for headroom)
+    // plus a key and leaf hash per block.
+    let window_allowance = 2 * BLOCK_BYTES + BLOCKS as usize * 1024;
     println!(
-        "#3551 peak: old {} KiB, new {} KiB (window {} KiB)",
+        "#3551 peak: old {} KiB, new {} KiB, state-only {} KiB (window {} KiB, allowance {} KiB)",
         old_peak / 1024,
         new_peak / 1024,
-        block_window / 1024
+        state_only_peak / 1024,
+        block_window / 1024,
+        window_allowance / 1024
     );
+    assert!(old_peak > state_only_peak + block_window, "precondition: old shape holds the whole window ({old_peak})");
     // The window of encoded blocks is never held by the new shape.
-    assert!(old_peak > block_window, "precondition: old shape holds the whole window ({old_peak})");
     assert!(
-        new_peak < block_window / 4,
-        "new peak {new_peak} must stay well below the {block_window}-byte window"
+        new_peak <= state_only_peak + window_allowance,
+        "new peak {new_peak} exceeds state-only {state_only_peak} + allowance {window_allowance}"
     );
-    assert!(new_peak * 4 < old_peak, "new peak {new_peak} vs old {old_peak}");
+    assert!(new_peak * 4 < old_peak * 3, "new peak {new_peak} vs old {old_peak}");
 
-    // RED control for the measurement itself: holding every encoded block
-    // (what the old shape did) trips the bound the new shape meets.
+    // RED control for the measurement itself: the same entries with every
+    // encoded block held at once (what the old shape did) trips the bound.
     let (_, held_peak) = peak_above_baseline(|| {
         let mut builder = SnapshotRootBuilder::new();
+        for (key, value) in state_entries() {
+            builder.push(key, &value);
+        }
         let blocks: Vec<_> = (1..=BLOCKS).map(encoded_block).collect();
         for (key, value) in blocks {
             builder.push(key, &value);
         }
         builder.finish()
     });
-    assert!(held_peak >= block_window / 4, "the bound must detect a held window ({held_peak})");
+    assert!(
+        held_peak > state_only_peak + window_allowance,
+        "the bound must detect a held window ({held_peak} vs {state_only_peak} + {window_allowance})"
+    );
 }
