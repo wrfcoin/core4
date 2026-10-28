@@ -68,13 +68,22 @@ keeping needs its own bond, or a larger one, is Q2.
 Per keeper, per epoch:
 
 1. **Seed.** One block hash is not enough: the producer of that block can grind it, retrying until the
-   seed lands on chunks a colluding keeper holds. The seed is therefore a hash over the hashes of
-   `SEED_SPAN_BLOCKS` (proposed 8) **consecutive blocks that all come after** the keeper's holdings for
-   the epoch are committed (`combine_seed` in the companion code PR). To steer it, an attacker must
-   produce every block in the span. The keeper cannot predict the seed when it commits its holdings,
-   and nobody can choose it afterwards. A commit-reveal beacon from bonded parties is the stronger
-   alternative if the producer set is small enough for one party to produce eight blocks in a row
-   (Q7).
+   seed lands on chunks a colluding keeper holds. The first slice hashes `SEED_SPAN_BLOCKS` (proposed
+   8) **consecutive blocks that all come after** the keeper's holdings for the epoch are committed
+   (`combine_seed` in core4#65). That keeps the seed unpredictable when the holdings are committed,
+   but it does **not** make it unbiasable:
+   - **The producer of the last block in the span can still grind.** It sees the seven earlier hashes,
+     can build many variants of its own block (transaction order, timestamp, or simply withholding the
+     block), and so can choose among many candidate seeds. With cheap variants, a keeper colluding
+     with it escapes the audit almost surely in every epoch where it produces that block.
+   - **The bound.** With `p` = the colluder's share of blocks, `f` = the fraction of chunks the keeper
+     really holds, and `k` = audits per epoch, the per-epoch escape probability is at most about
+     `p + (1 − p)·f^k`, against `f^k` with an unbiasable seed. For `f = 0.5`, `k = 4`: 6.25 % honest,
+     and about 16 % if the colluder makes 10 % of blocks.
+   - **Before audits can slash anyone, the seed must come from an unbiasable source:** a commit-reveal
+     beacon among bonded parties, where a non-revealer forfeits, or a VRF/VDF output. That removes the
+     `p` term (Q7). The multi-block span remains as a cheap, recomputable placeholder for the off-chain
+     slice, where nothing is paid or slashed.
 2. **Challenge.** `k` audits (proposed `k = 4`) are drawn deterministically from
    `H(seed ‖ keeper ‖ i)`. Each picks one of the keeper's registered objects and then one chunk
    index in it. Anyone can recompute the challenge from public data, so no auditor can single a
@@ -161,6 +170,7 @@ audit.
 6. **Which objects are archived first?** *Recommended: the block ranges that B-2 report work units
    read, so a verifier can always fetch a unit's inputs.* That makes "inputs remain retrievable" an
    audited property.
-7. **Seed source.** *Recommended: the 8-block span now, and a commit-reveal beacon among bonded parties
-   if the producer set is ever small enough for one party to produce eight consecutive blocks.* The
-   span costs nothing to compute and is the same for every node.
+7. **Seed source.** *Recommended: the 8-block span only for the off-chain slice, where nothing is paid
+   or slashed; a commit-reveal beacon among bonded parties (non-revealers forfeit) before audits
+   affect pay or bond.* The span leaves the last block's producer able to grind (escape bound
+   ≈ `p + (1 − p)·f^k`); the beacon removes the `p` term.
