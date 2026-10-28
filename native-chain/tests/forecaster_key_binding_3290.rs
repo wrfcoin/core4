@@ -268,7 +268,13 @@ fn binding_predicate_matches_the_issue_probe() {
 fn feature_is_registered_but_unscheduled_and_not_live_schedulable() {
     let feature = ConsensusFeature::ForecasterKeyBinding;
     assert_eq!(ConsensusFeature::parse(FEATURE), Some(feature));
-    assert_eq!(ConsensusFeature::ALL.last(), Some(&feature), "appended LAST");
+    // Appended right after node_share_settlement; #3565's DeviceSubmissionLimit was
+    // appended right after it, and later features append after that, so its wire
+    // ordinal stays fixed.
+    let all = ConsensusFeature::ALL;
+    let at = all.iter().position(|f| *f == feature).unwrap();
+    assert_eq!(all[at - 1], ConsensusFeature::NodeShareSettlement);
+    assert_eq!(all[at + 1], ConsensusFeature::DeviceSubmissionLimit, "#3565 follows it");
     assert!(
         wrfcoin_shared_protocol::crypto::protocol_support::KNOWN_FEATURES.contains(&FEATURE)
     );

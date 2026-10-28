@@ -62,6 +62,19 @@ class Gates(unittest.TestCase):
         self.assertFalse(job.key_binding_active({}))
 
 
+class AntiGamingConfig(unittest.TestCase):
+    def test_off_by_default_and_strictly_parsed(self):
+        self.assertFalse(job.anti_gaming_config({})["enabled"])
+        self.assertTrue(job.anti_gaming_config({"FORECAST_ANTI_GAMING": "1"})["enabled"])
+        for bad in ({"FORECAST_ANTI_GAMING": "yes"}, {"FORECAST_COPY_TOLERANCE": "[1]"},
+                    {"FORECAST_COPY_TOLERANCE": '{"temperature_c": -1}'}):
+            with self.assertRaises(job.Refusal):
+                job.anti_gaming_config(bad)
+        cfg = job.anti_gaming_config({"FORECAST_ANTI_GAMING": "1", "FORECAST_COPY_TOLERANCE": '{"temperature_c": 0.2}'})
+        self.assertEqual(cfg["copy_tolerance"]["temperature_c"], 0.2)
+        self.assertEqual(cfg["copy_tolerance"]["pressure_hpa"], job.DEFAULT_COPY_TOLERANCE["pressure_hpa"])
+
+
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -69,6 +82,8 @@ class Fixture(unittest.TestCase):
             self.index = fx.build(self.tmp, job.kit)
         self.status = os.path.join(self.tmp, "status.json")
         self.write_status(True)
+        self.references = os.path.join(self.tmp, "references.json")
+        fx.write_reference_forecasts(self.references)
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -160,6 +175,25 @@ class EndToEnd(Fixture):
         for station in fx.STATIONS:
             selected = [n for n, e in decided.items() if self.index[n][1] == station and e["decision"] == "selected"]
             self.assertLessEqual(len(selected), 1, station)
+
+    def test_anti_gaming_zeroes_copies_under_both_definitions(self):
+        for definition in job.SKILL_DEFINITIONS:
+            env = {**ENABLED, "SKILL_DEFINITION": definition, "FORECAST_ANTI_GAMING": "1"}
+            _, summary, printed = self.run_job(env, "--dry-run", "--scorer-bin", BIN,
+                                               "--reference-forecasts", self.references)
+            self.assertTrue(summary["anti_gaming"])
+            self.assertIn("with anti-gaming", printed)
+            decided, _ = self.decisions(summary)
+            for name, entry in decided.items():
+                strategy = self.index[name][0]
+                if strategy in ("climatology", "persistence", "reference"):
+                    self.assertEqual(entry["skill_score"], 0.0, (definition, name))
+                    self.assertEqual(entry["decision"], "below_baseline")
+                    with open(os.path.join(self.tmp, "reveals", name, "commit.json")) as fh:
+                        cid = json.load(fh)["commit_id"]
+                    self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", cid, "score.json")))
+            skilled = [e for n, e in decided.items() if self.index[n][0] == "skilled"]
+            self.assertTrue(all(e["decision"] == "selected" for e in skilled), definition)
 
     def test_signing_runs_the_cli_once_per_selected_forecast(self):
         log = os.path.join(self.tmp, "cli-calls.jsonl")

@@ -86,6 +86,7 @@ pub enum SignedObjectKind {
     NodeBondAuthorization,
     NodeBondPossession,
     NodeReceiptSubmissionAuthorization,
+    RetrievalAuditReceipt,
 }
 
 impl SignedObjectKind {
@@ -124,6 +125,7 @@ impl SignedObjectKind {
             Self::NodeBondAuthorization => "NodeBondAuthorization",
             Self::NodeBondPossession => "NodeBondPossession",
             Self::NodeReceiptSubmissionAuthorization => "NodeReceiptSubmissionAuthorization",
+            Self::RetrievalAuditReceipt => "RetrievalAuditReceipt",
         }
     }
 }
@@ -470,6 +472,14 @@ pub const SIGNED_OBJECT_REGISTRY: &[SignedObjectEntry] = &[
         rust_type: "consensus::node_receipt_registry::NodeReceiptSubmissionAuthorization",
         coverage: DomainCoverage::Implemented,
     },
+    SignedObjectEntry {
+        kind: SignedObjectKind::RetrievalAuditReceipt,
+        tag: b"wrfcoin.retrieval_audit_receipt.v1",
+        rust_type: "keeper_proof::audit::RetrievalAuditReceipt",
+        coverage: DomainCoverage::CrossCrate {
+            issue: CROSS_CRATE_IMPL_ISSUE,
+        },
+    },
 ];
 
 /// Every kind in [`SignedObjectKind`], for exhaustiveness checking.
@@ -509,6 +519,7 @@ pub const ALL_SIGNED_OBJECT_KINDS: &[SignedObjectKind] = &[
     SignedObjectKind::NodeBondAuthorization,
     SignedObjectKind::NodeBondPossession,
     SignedObjectKind::NodeReceiptSubmissionAuthorization,
+    SignedObjectKind::RetrievalAuditReceipt,
 ];
 
 /// Look up a registry row by kind.

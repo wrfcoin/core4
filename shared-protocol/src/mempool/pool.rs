@@ -452,6 +452,40 @@ impl Mempool {
             ));
         }
 
+        // #3565: one pending observation per registered device. While
+        // `DeviceSubmissionLimit` is active for the next block, a second
+        // `ContributionReveal` for a station that already has one pending is
+        // refused; the first must be mined before the next is admitted. A block
+        // carrying two is invalid (`classify_block_transaction`), so this keeps
+        // the mempool from holding a reveal no block may include beside its
+        // sibling. Legacy callers with no height keep their behaviour.
+        if tx.tx_type == TransactionType::ContributionReveal
+            && current_height.is_some_and(|height| {
+                crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
+                    height.saturating_add(1),
+                )
+            })
+        {
+            if let Some(payload) = tx.parse_reveal_payload() {
+                // Admission is node policy, never block content or state.
+                // determinism-ok: `any` over the pending set is order-independent
+                let already_pending = self.transactions.values().any(|pending| {
+                    pending.tx_type == TransactionType::ContributionReveal
+                        && pending
+                            .parse_reveal_payload()
+                            .is_some_and(|other| other.station_id == payload.station_id)
+                });
+                if already_pending {
+                    return Err(anyhow!(
+                        "{}: station {} already has a pending observation",
+                        crate::consensus::proof_of_publishing::SP_DEVICE_SUBMISSION_LIMIT,
+                        payload.station_id
+                    ));
+                }
+            }
+        }
+
         let tx_size = self.check_transaction_admission_cost(&tx)?;
 
         // Admission checks authorization only. Provability (`responsible()`), the challenge deadline and duplicates

@@ -7024,6 +7024,369 @@ mod tests {
         assert_eq!(ingest_gossiped_transaction_at_height(&mut invalid, forged, &keys, Some(f::A)), GossipIngest::Rejected, "canonical height cannot authorize forged gossip");
     }
 
+    /// #3591: a block carrying a node-bond Deposit AND a low-quality attested
+    /// ContributionReveal. Feature off, the extractor's streak replay derives no
+    /// streak transitions for it (today's behaviour). Feature on, the replay
+    /// begins the node-service block first, the Deposit block derives the same
+    /// streak transitions as an identical block without the Deposit, and
+    /// producer, P2P applier, independent extraction and persisted WAL replay
+    /// agree.
+    ///
+    /// Each mode runs in its own child process: the feature schedule is
+    /// process-wide.
+    #[test]
+    fn streak_replay_node_service_3591() {
+        const CHILD: &str = "WRFCOIN_STREAK_REPLAY_3591_CHILD";
+        const NAME: &str = "p2p_events::tests::streak_replay_node_service_3591";
+        let Some(mode) = std::env::var_os(CHILD) else {
+            for mode in ["off", "on"] {
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, mode)
+                    .env("WRFCOIN_CHAIN_ID", "777")
+                    .env("WRFCOIN_NETWORK_ID", "testnet")
+                    .output()
+                    .expect("isolated #3591 child");
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && stdout.contains("1 passed"),
+                    "#3591 child ({mode}) failed:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let feature_on = mode == "on";
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                use node_bond_parity_fixture as f;
+                use wrfcoin_shared_protocol::crypto::chain_binding::{
+                    ConsensusFeature, feature_active, refresh_feature_schedule_extensions,
+                };
+                let _schedule = f::state(); // installs the synthetic node-share schedule
+                if feature_on {
+                    refresh_feature_schedule_extensions(vec![(
+                        "streak_replay_node_service".to_string(),
+                        f::A,
+                    )]);
+                }
+                assert_eq!(
+                    feature_active(ConsensusFeature::StreakReplayNodeService, f::A + 1),
+                    feature_on
+                );
+                let with_deposit = mine_low_quality_block_3591(true, feature_on).await;
+                let without_deposit = mine_low_quality_block_3591(false, feature_on).await;
+                let streaks = |t: &[StateTransition3591]| -> Vec<(String, Option<u32>)> {
+                    t.iter()
+                        .filter_map(|t| match t {
+                            StateTransition3591::SetLowQualityStreak { address, streak } => {
+                                Some((address.to_string(), *streak))
+                            },
+                            _ => None,
+                        })
+                        .collect()
+                };
+                // The control block (no node-service tx) derives the streak in both modes.
+                assert!(
+                    !streaks(&without_deposit.extracted).is_empty(),
+                    "control: a low-quality attested reveal derives a streak transition"
+                );
+                assert!(without_deposit.applier_agrees, "control: producer and applier agree");
+                assert_eq!(
+                    without_deposit.producer_streak,
+                    Some(1),
+                    "control: the producer counted one low-quality reveal"
+                );
+                if feature_on {
+                    assert_eq!(with_deposit.producer_streak, Some(1), "gate on: producer streak");
+                    assert_eq!(
+                        streaks(&with_deposit.extracted),
+                        streaks(&without_deposit.extracted),
+                        "gate on: the Deposit block derives the same streak transitions"
+                    );
+                    assert!(with_deposit.applier_agrees, "gate on: producer and applier agree");
+                    assert!(with_deposit.extractor_agrees, "gate on: extractor root agrees");
+                    assert!(with_deposit.wal_agrees, "gate on: WAL replay root agrees");
+                } else {
+                    assert!(
+                        streaks(&with_deposit.extracted).is_empty(),
+                        "gate off: today's replay derives nothing on a node-service block"
+                    );
+                }
+            });
+    }
+
+    use wrfcoin_native_chain::blockchain::state::StateTransition as StateTransition3591;
+
+    struct LowQualityBlock3591 {
+        extracted: Vec<StateTransition3591>,
+        producer_streak: Option<u32>,
+        applier_agrees: bool,
+        extractor_agrees: bool,
+        wal_agrees: bool,
+    }
+
+    /// Producer at `A`, then block `A + 1` with a low-quality (0.20) attested
+    /// reveal, optionally plus a signed node-bond Deposit.
+    async fn mine_low_quality_block_3591(with_deposit: bool, feature_on: bool) -> LowQualityBlock3591 {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let (o1_sk, o1_id) = oracle(901);
+        let (o2_sk, o2_id) = oracle(902);
+        let recipient = Address([0x77; 20]);
+        let station_id = "station-3591";
+
+        let mut initial = f::state();
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        if feature_on {
+            // Scheduled the way an applied #3277 extension schedules it: the
+            // node refreshes the process overlay from these state entries on
+            // every applied block, so a test-only overlay would be wiped.
+            initial.feature_schedule_extensions[0].entries.push(
+                wrfcoin_shared_protocol::governance::schedule_extension::ScheduleEntry::new(
+                    "streak_replay_node_service",
+                    f::A,
+                ),
+            );
+        }
+        initial
+            .apply_transition(StateTransition3591::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        initial.create_account(recipient, Balance::new(0));
+        initial
+            .register_weather_station(WeatherStation {
+                station_id: station_id.to_string(),
+                owner_address: recipient.to_string(),
+                location: StationLocation {
+                    latitude: 10.5,
+                    longitude: 20.5,
+                    elevation_meters: Some(220.0),
+                },
+                hardware_model: "parity-fixture".to_string(),
+                calibration_date: None,
+                is_active: true,
+                reputation_score: 50,
+                data_quality_tier: DataQualityTier::Gold,
+                provenance_class: ContributionProvenanceClass::Real,
+                ring_public_key: None,
+            })
+            .unwrap();
+        initial.recalculate_state_root();
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, f::A - 1, 3591);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("streak-3591.redb"), 10_000).unwrap(),
+        ));
+        store.write().await.force_checkpoint(&initial, f::A - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+
+        let mut out = LowQualityBlock3591 {
+            extracted: Vec::new(),
+            producer_streak: None,
+            applier_agrees: false,
+            extractor_agrees: false,
+            wal_agrees: false,
+        };
+        for height in [f::A, f::A + 1] {
+            if height == f::A + 1 {
+                let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+                let metrics = serde_json::json!({"quality": 0.20, "volume": 1.0, "uniqueness": 1.0});
+                let nonce = "nonce-3591".to_string();
+                let commit_id = Transaction::compute_commit_id(
+                    &metrics, &nonce, station_id, timestamp, "contribution",
+                );
+                let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+                let mut commit_payload = CommitPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                };
+                commit_payload.sign_authorization(&oracle(903).0);
+                let reveal_payload = RevealPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    data: metrics,
+                    nonce,
+                    data_cid: None,
+                    data_hash: None,
+                    storage_provider: None,
+                    provenance: None,
+                    manifest: None,
+                    verification_receipt: None,
+                    compute_receipt: None,
+                    quality_tier: None,
+                };
+                let mk = |tx_type: TransactionType, tag: &str, data: String| {
+                    let mut tx = Transaction::new(
+                        vec![TransactionInput {
+                            txid: hash_string(&format!("in-3591-{tag}")),
+                            vout: 0,
+                            signature: None,
+                            public_key: None,
+                            coinbase_data: None,
+                        }],
+                        vec![TransactionOutput {
+                            amount: 1,
+                            address: format!("0x{}", hex::encode(recipient.0)),
+                            script: "OP_TRUE".to_string(),
+                            nft_data: None,
+                        }],
+                    );
+                    tx.tx_type = tx_type;
+                    tx.timestamp = tx_ts;
+                    tx.data = Some(data);
+                    tx.set_id();
+                    tx
+                };
+                let commit_tx = mk(
+                    TransactionType::ContributionCommit,
+                    "commit",
+                    serde_json::to_string(&commit_payload).unwrap(),
+                );
+                let mut reveal_tx = mk(
+                    TransactionType::ContributionReveal,
+                    "reveal",
+                    serde_json::to_string(&reveal_payload).unwrap(),
+                );
+                reveal_tx.sender_address = recipient;
+                reveal_tx.fee = 1;
+                reveal_tx.set_id();
+                let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                    let mut payload = OracleAttestationPayload {
+                        commit_id: commit_id.clone(),
+                        oracle_id: oracle_id.to_string(),
+                        approved: true,
+                        signature: None,
+                        confidence: Some(1.0),
+                        timestamp,
+                        nonce: Some(format!("nonce-3591-{tag}")),
+                    };
+                    payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                    mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap())
+                };
+                let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+                for id in [&o1_id, &o2_id] {
+                    keys.ensure_legacy_identity_key(
+                        id,
+                        wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle,
+                        0,
+                    )
+                    .unwrap();
+                }
+                let mut mp = mempool.write().await;
+                for tx in [
+                    commit_tx,
+                    reveal_tx,
+                    attestation(&o1_sk, &o1_id, "att1"),
+                    attestation(&o2_sk, &o2_id, "att2"),
+                ] {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                if with_deposit {
+                    let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                    mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                        .expect("signed Deposit admitted");
+                }
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(
+                    Arc::clone(&producer),
+                    Arc::clone(&mempool),
+                    &test_address_string(0x61),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            if height == f::A + 1 {
+                let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+                assert_eq!(count(TransactionType::ContributionReveal), 1, "low-quality reveal mined");
+                assert_eq!(count(TransactionType::NodeBondLifecycle), usize::from(with_deposit), "Deposit mined");
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(
+                wire,
+                P2pBlockSource::HistoricalSync,
+                &applier,
+                &store,
+                &peer_consensus,
+                None,
+                &mut fork,
+                &mut orphan,
+            )
+            .await;
+            let p = producer.read().await;
+            let a = applier.read().await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state
+                .apply_transitions_batch_at_height(height, inputs.clone())
+                .unwrap();
+            extracted_state.apply_block_finalization_checked(&block).unwrap();
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let wal_ok = if rows.is_empty() {
+                false
+            } else {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let applier_ok = a.height == height && a.state.state_root == p.state.state_root;
+            if height == f::A {
+                assert!(applier_ok && wal_ok, "the empty activation block agrees everywhere");
+                assert_eq!(extracted_state.state_root, p.state.state_root);
+            } else {
+                out = LowQualityBlock3591 {
+                    extracted: inputs,
+                    producer_streak: p.state.low_quality_streaks.get(&recipient).copied(),
+                    applier_agrees: applier_ok,
+                    extractor_agrees: extracted_state.state_root == p.state.state_root,
+                    wal_agrees: wal_ok,
+                };
+            }
+        }
+        out
+    }
+
     /// Cross the durable None -> Some checkpoint marker, a real signed bond
     /// deposit, next-epoch frozen eligibility and signed exit through mining,
     /// actual P2P apply, independent extraction and persisted WAL replay.
@@ -8170,6 +8533,220 @@ mod tests {
         drop(applier_chain);
         drop(applier_storage);
         let _ = std::fs::remove_file(&storage_path);
+    }
+
+    /// #3565: apply a mined scenario block through the real `apply_p2p_block`,
+    /// the extracted-transitions batch and the persisted WAL rows, and require
+    /// every leg to reach the producer's `state_root` (each leg re-checks the
+    /// block's root commitment through `apply_block_finalization_checked_at`).
+    async fn assert_producer_applier_wal_root_parity_3565(scenario: &AttestedRewardScenario, label: &str) {
+        let block = scenario.block_1.clone();
+        let producer_root = scenario.producer_chain.read().await.state.state_root;
+
+        let storage_path = std::env::temp_dir().join(format!(
+            "wrfcoin-p2p-device-limit-3565-{label}-{}.redb",
+            fastrand::u64(..)
+        ));
+        let _ = std::fs::remove_file(&storage_path);
+        let applier_storage = Arc::new(RwLock::new(
+            Storage::open(&storage_path, DEFAULT_CHECKPOINT_INTERVAL)
+                .expect("applier storage opens"),
+        ));
+        let mut applier_genesis = Blockchain::default();
+        (scenario.seed_genesis)(&mut applier_genesis);
+        let applier_seed = applier_genesis.state.clone();
+        let applier_chain = Arc::new(RwLock::new(applier_genesis));
+        let applier_consensus = test_consensus();
+        let mut fork_buffer = ForkCandidateBuffer::new();
+        let mut orphan_buffer = OrphanBlockBuffer::new();
+        let wire_block: Block = bincode::deserialize(
+            &bincode::serialize(&block).expect("block serializes for P2P"),
+        )
+        .expect("block deserializes for P2P");
+        apply_p2p_block(
+            wire_block,
+            P2pBlockSource::HistoricalSync,
+            &applier_chain,
+            &applier_storage,
+            &applier_consensus,
+            None,
+            &mut fork_buffer,
+            &mut orphan_buffer,
+        )
+        .await;
+        {
+            let applier = applier_chain.read().await;
+            assert_eq!(applier.height, block.height, "{label}: applier must accept the block");
+            assert_eq!(
+                applier.state.state_root, producer_root,
+                "{label}: P2P applier state_root must match the producer"
+            );
+        }
+
+        let version = wrfcoin_shared_protocol::crypto::chain_binding::protocol_version_at(block.height);
+        let applier_transitions =
+            extract_transitions(&applier_seed, &block, block.height, block.timestamp.timestamp());
+        let mut extracted = applier_seed.clone();
+        extracted
+            .apply_transitions_batch_at_height(block.height, applier_transitions.clone())
+            .expect("extracted transitions apply");
+        extracted
+            .apply_block_finalization_checked_at(version, &block)
+            .expect("extracted state must match the block commitment");
+        assert_eq!(extracted.state_root, producer_root, "{label}: extracted state_root");
+
+        let replayed = applier_storage
+            .read()
+            .await
+            .load_wal_transitions_range(block.height, block.height)
+            .expect("P2P-written WAL transitions must load");
+        assert_eq!(
+            replayed.len(),
+            applier_transitions.len(),
+            "{label}: vacuity guard: WAL must contain every extracted transition"
+        );
+        let mut wal = applier_seed;
+        wal.apply_transitions_batch_at_height(
+            block.height,
+            replayed.into_iter().map(|(_, transition)| transition),
+        )
+        .expect("P2P-written WAL batch must apply");
+        wal.apply_block_finalization_checked_at(version, &block)
+            .expect("WAL-replayed state must match the block commitment");
+        assert_eq!(wal.state_root, producer_root, "{label}: WAL replay state_root");
+        drop(applier_chain);
+        drop(applier_storage);
+        let _ = std::fs::remove_file(&storage_path);
+    }
+
+    fn count_3565(block: &Block, tx_type: TransactionType) -> usize {
+        block.transactions.iter().filter(|tx| tx.tx_type == tx_type).count()
+    }
+
+    /// The single contribution reward the block records, and the age of its
+    /// reading at the block (header timestamp minus the reveal's committed
+    /// timestamp).
+    fn reward_and_age_3565(block: &Block) -> (u128, i64) {
+        let entries: Vec<wrfcoin_native_chain::blockchain::state::ContributionRewardRecord> =
+            serde_json::from_str(block.metadata.get("reward_entries").expect("reward_entries"))
+                .expect("reward_entries JSON");
+        assert_eq!(entries.len(), 1, "vacuity guard: exactly one contribution decision");
+        let reveal = block
+            .transactions
+            .iter()
+            .find(|tx| tx.tx_type == TransactionType::ContributionReveal)
+            .and_then(|tx| tx.parse_reveal_payload())
+            .expect("the block carries the reveal");
+        (entries[0].amount.0, block.timestamp.timestamp() - reveal.timestamp)
+    }
+
+    fn reexec_child_3565(test: &str, child: &str) -> bool {
+        if std::env::var_os(child).is_some() {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .env(child, "1")
+            .status()
+            .expect("re-exec child");
+        assert!(status.success(), "isolated #3565 child {test} failed");
+        true
+    }
+
+    /// #3565 gate ON (scheduled from height 1, isolated child: the schedule is
+    /// process-global). Two quorum-attested reveals from ONE station are staged
+    /// in the mempool; the real producer keeps exactly one and both commits.
+    /// Producer, P2P applier, extracted transitions and WAL replay agree on the
+    /// root. A 1805 s old reading is paid `late_data_multiplier_bps(age)` of the
+    /// fresh reading's reward, exactly.
+    #[tokio::test]
+    async fn device_submission_limit_keeps_one_reveal_per_station_with_parity_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_keeps_one_reveal_per_station_with_parity_3565",
+            "WRFCOIN_3565_ON_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::late_data_multiplier_bps;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(
+                ConsensusFeature::DeviceSubmissionLimit.name().to_string(),
+                1,
+            )])
+            .expect("schedule"),
+        );
+
+        let two = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "vacuity guard: both commits mined");
+        assert_eq!(
+            count_3565(&two.block_1, TransactionType::ContributionReveal),
+            1,
+            "gate ON: one reveal per station per block"
+        );
+        assert_producer_applier_wal_root_parity_3565(&two, "on-two-reveals").await;
+        let (fresh_amount, fresh_age) = reward_and_age_3565(&two.block_1);
+        assert!(fresh_age <= 600, "fixture: the fresh reading is inside full pay ({fresh_age}s)");
+        assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
+
+        let late = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        let multiplier = late_data_multiplier_bps(late_age);
+        assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
+        assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "gate ON: late data is paid less, on the curve");
+    }
+
+    /// #3565 gate OFF control (isolated child, nothing scheduled): the same
+    /// two-reveal mempool mines BOTH reveals, as on main, and an 1805 s old
+    /// reading is paid exactly what a fresh one is. Roots agree on every leg.
+    #[tokio::test]
+    async fn device_submission_limit_unscheduled_is_unchanged_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_unscheduled_is_unchanged_3565",
+            "WRFCOIN_3565_OFF_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{feature_active, ConsensusFeature};
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+
+        let two = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        )
+        .await;
+        assert!(!feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(
+            count_3565(&two.block_1, TransactionType::ContributionReveal),
+            2,
+            "gate OFF: both same-station reveals are mined, as on main"
+        );
+        assert_producer_applier_wal_root_parity_3565(&two, "off-two-reveals").await;
+
+        let fresh = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5,
+        )
+        .await;
+        let late = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "off-late").await;
+        assert_eq!(
+            reward_and_age_3565(&late.block_1).0,
+            reward_and_age_3565(&fresh.block_1).0,
+            "gate OFF: no late-data reduction"
+        );
     }
 
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block
@@ -9823,6 +10400,32 @@ mod tests {
         base_height: u64,
         reveal_data: Option<serde_json::Value>,
     ) -> AttestedRewardScenario {
+        mine_attested_reward_block_with_reveals(
+            quality,
+            provenance_class,
+            configure_genesis,
+            base_height,
+            reveal_data,
+            1,
+            5,
+        )
+        .await
+    }
+
+    /// [`mine_attested_reward_block_with_reveal_data`] with `reveal_count`
+    /// quorum-attested commit/reveal pairs from the SAME station staged in one
+    /// mempool (#3565), each stamped `reveal_age_secs` before now. `(1, 5)` is
+    /// the historical single-reveal scenario, byte for byte (same nonce, tags
+    /// and timestamp offset).
+    async fn mine_attested_reward_block_with_reveals(
+        quality: f64,
+        provenance_class: wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass,
+        configure_genesis: Arc<dyn Fn(&mut Blockchain) + Send + Sync>,
+        base_height: u64,
+        reveal_data: Option<serde_json::Value>,
+        reveal_count: usize,
+        reveal_age_secs: i64,
+    ) -> AttestedRewardScenario {
         use wrfcoin_native_chain::blockchain::state::StateTransition;
         use wrfcoin_native_chain::blockchain::transaction::{
             CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
@@ -9887,50 +10490,11 @@ mod tests {
         // producer's 3600s submission window (the consensus manager runs on the
         // wall clock; a fixed past timestamp is filtered as stale and the reward
         // path never runs).
-        let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+        let timestamp: i64 = chrono::Utc::now().timestamp() - reveal_age_secs;
         let metrics = reveal_data.unwrap_or_else(|| {
             serde_json::json!({"quality": quality, "volume": 1.0, "uniqueness": 1.0})
         });
-        let nonce = "nonce-attest".to_string();
-        let commit_id = Transaction::compute_commit_id(
-            &metrics,
-            &nonce,
-            station_id,
-            timestamp,
-            contribution_type,
-        );
         let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).expect("ts");
-
-        let mut commit_payload = CommitPayload {
-            commit_id: commit_id.clone(),
-            station_id: station_id.to_string(),
-            timestamp,
-            contribution_type: contribution_type.to_string(),
-            auth_pubkey: None,
-            auth_signature: None,
-        };
-        // #1848 fail-closes commit admission: an unsigned commit is rejected at
-        // the mempool. Sign the authorization exactly as the collector/backend
-        // do (the auth key is not bound to the reward recipient — the reward
-        // follows the reveal sender — so a dedicated fixture key is fine).
-        commit_payload.sign_authorization(&oracle_identity(903).0);
-        let reveal_payload = RevealPayload {
-            commit_id: commit_id.clone(),
-            station_id: station_id.to_string(),
-            timestamp,
-            contribution_type: contribution_type.to_string(),
-            data: metrics,
-            nonce,
-            data_cid: None,
-            data_hash: None,
-            storage_provider: None,
-            provenance: None,
-            manifest: None,
-            verification_receipt: None,
-            compute_receipt: None,
-            quality_tier: None,
-        };
-
         let mk_tx = |tx_type: TransactionType, tag: &str, data: String| {
             let mut tx = Transaction::new(
                 vec![TransactionInput {
@@ -9954,43 +10518,88 @@ mod tests {
             tx
         };
 
-        let commit_tx = mk_tx(
-            TransactionType::ContributionCommit,
-            "commit",
-            serde_json::to_string(&commit_payload).unwrap(),
-        );
-        let mut reveal_tx = mk_tx(
-            TransactionType::ContributionReveal,
-            "reveal",
-            serde_json::to_string(&reveal_payload).unwrap(),
-        );
-        reveal_tx.sender_address = recipient;
-        // Non-zero fee so the reveal is not treated as a feeless weather tx
-        // (which would require a valid compute receipt and be rejected by
-        // `verify_block`). Mirrors the shared-protocol mining tests.
-        reveal_tx.fee = 1;
-        reveal_tx.set_id();
-
-        let signed_attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
-            let mut payload = OracleAttestationPayload {
-                commit_id: commit_id.clone(),
-                oracle_id: oracle_id.to_string(),
-                approved: true,
-                signature: None,
-                confidence: Some(1.0),
+        let mut pop_txs: Vec<Transaction> = Vec::with_capacity(4 * reveal_count);
+        for index in 0..reveal_count {
+            let sfx = if index == 0 { String::new() } else { format!("-{index}") };
+            let nonce = format!("nonce-attest{sfx}");
+            let commit_id = Transaction::compute_commit_id(
+                &metrics,
+                &nonce,
+                station_id,
                 timestamp,
-                nonce: Some(format!("nonce-{tag}")),
+                contribution_type,
+            );
+
+            let mut commit_payload = CommitPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: contribution_type.to_string(),
+                auth_pubkey: None,
+                auth_signature: None,
             };
-            let sig = sk.sign(payload.signing_message().as_bytes()).to_string();
-            payload.signature = Some(sig);
-            mk_tx(
-                TransactionType::OracleAttestation,
-                tag,
-                serde_json::to_string(&payload).unwrap(),
-            )
-        };
-        let att1 = signed_attestation(&o1_sk, &o1_id, "att1");
-        let att2 = signed_attestation(&o2_sk, &o2_id, "att2");
+            // #1848 fail-closes commit admission: an unsigned commit is rejected at
+            // the mempool. Sign the authorization exactly as the collector/backend
+            // do (the auth key is not bound to the reward recipient — the reward
+            // follows the reveal sender — so a dedicated fixture key is fine).
+            commit_payload.sign_authorization(&oracle_identity(903).0);
+            let reveal_payload = RevealPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: contribution_type.to_string(),
+                data: metrics.clone(),
+                nonce,
+                data_cid: None,
+                data_hash: None,
+                storage_provider: None,
+                provenance: None,
+                manifest: None,
+                verification_receipt: None,
+                compute_receipt: None,
+                quality_tier: None,
+            };
+
+
+            let commit_tx = mk_tx(
+                TransactionType::ContributionCommit,
+                &format!("commit{sfx}"),
+                serde_json::to_string(&commit_payload).unwrap(),
+            );
+            let mut reveal_tx = mk_tx(
+                TransactionType::ContributionReveal,
+                &format!("reveal{sfx}"),
+                serde_json::to_string(&reveal_payload).unwrap(),
+            );
+            reveal_tx.sender_address = recipient;
+            // Non-zero fee so the reveal is not treated as a feeless weather tx
+            // (which would require a valid compute receipt and be rejected by
+            // `verify_block`). Mirrors the shared-protocol mining tests.
+            reveal_tx.fee = 1;
+            reveal_tx.set_id();
+
+            let signed_attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                let mut payload = OracleAttestationPayload {
+                    commit_id: commit_id.clone(),
+                    oracle_id: oracle_id.to_string(),
+                    approved: true,
+                    signature: None,
+                    confidence: Some(1.0),
+                    timestamp,
+                    nonce: Some(format!("nonce-{tag}")),
+                };
+                let sig = sk.sign(payload.signing_message().as_bytes()).to_string();
+                payload.signature = Some(sig);
+                mk_tx(
+                    TransactionType::OracleAttestation,
+                    tag,
+                    serde_json::to_string(&payload).unwrap(),
+                )
+            };
+            let att1 = signed_attestation(&o1_sk, &o1_id, &format!("att1{sfx}"));
+            let att2 = signed_attestation(&o2_sk, &o2_id, &format!("att2{sfx}"));
+            pop_txs.extend([commit_tx, reveal_tx, att1, att2]);
+        }
 
         let mut producer_genesis = Blockchain::default();
         seed_genesis(&mut producer_genesis);
@@ -10019,7 +10628,7 @@ mod tests {
                 .expect("register oracle 2 signing key");
 
             let mut mp = producer_mempool.write().await;
-            for tx in [commit_tx, reveal_tx, att1, att2] {
+            for tx in pop_txs {
                 mp.add_transaction_with_signing_keys(tx, Some(&registry))
                     .expect("mempool admits pop tx");
             }
