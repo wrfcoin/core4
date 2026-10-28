@@ -468,6 +468,8 @@ impl Mempool {
             })
         {
             if let Some(payload) = tx.parse_reveal_payload() {
+                // Admission is node policy, never block content or state.
+                // determinism-ok: `any` over the pending set is order-independent
                 let already_pending = self.transactions.values().any(|pending| {
                     pending.tx_type == TransactionType::ContributionReveal
                         && pending
