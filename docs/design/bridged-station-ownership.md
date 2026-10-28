@@ -20,7 +20,7 @@ See [APRS-IS connection specification](https://www.aprs-is.net/Connecting.aspx)
 (read 2026-10-28). This is a security inference from the documented login model,
 not a claim that APRS-IS authenticates physical hardware.
 
-**Owner ruling, relayed by LEAD 2026-10-28:** US CWOP/APRS uses
+**Owner ruling, 2026-10-28:** US CWOP/APRS uses
 LICENCE-EMAIL proof: send a one-time, single-use, expiring, wallet-bound code to
 the licensee email listed in the public amateur licence database (for example
 FCC ULS), then accept the entered code. The destination is lookup-derived,
@@ -28,7 +28,8 @@ never claimant-supplied. Bind the challenge to the licence-record digest as well
 as wallet/source/callsign; a changed address invalidates an outstanding code.
 Use only an `EmailSender` interface implemented by `DryRunEmailSender`, and a
 `LicenceLookup` interface implemented by recorded fixtures. No live ULS or SMTP
-calls. Non-US and missing/currently invalid licence records remain reference-only.
+calls. A real email sender requires a later explicit owner go within the zero
+budget; this design does not authorize paid email or a live delivery service. Non-US and missing/currently invalid licence records remain reference-only.
 APRS status/passcode alone never verifies, even with a fresh echoed nonce.
 
 Limits: stale or reassigned licence email can reach the wrong person; this proof
@@ -49,7 +50,7 @@ bounded fixture licence-email path; the rest of story 1 proceeds.
 | WeatherLink v2 | Read-only account authorization and station UUID in its owned inventory | Public station lookup |
 | Netatmo | Read-only weather grant and module ID in the authorized account's owned modules | Public weather map |
 | WU / WOW | Fresh nonce independently read from an account-controlled field; establish who can write it first | Copied public feed or claimant screenshot |
-| CWOP/APRS (US) | Code sent to recorded public licence email, fixture-only tonight | Callsign, passcode, status/comment packet |
+| CWOP/APRS (US) | Code sent to recorded public licence email, fixture-only | Callsign, passcode, status/comment packet |
 | CWOP/APRS (non-US) | None yet; reference-only | Any public packet or claimed mailbox |
 
 Vendor inventory access must distinguish account-owned devices from shared or
@@ -102,8 +103,10 @@ with claim/source/device binding as associated data; never log keys or complete
 vendor URLs containing credentials. Keep only evidence hashes and minimal audit
 metadata after deletion. Propose 30-day audit retention for owner ratification.
 
-Reuse current owner-signed transfer/report-stolen/recovery contracts from
-wrfcoin/core4-archive#3345/#3347 and backend `station-owner-routes.ts`.
+Reuse owner-signed transfer consent from wrfcoin/core4-archive#3345 and
+report-stolen freeze from wrfcoin/core4-archive#3347. Recovery is a separate
+contract exposed by wrfcoin/backend `server/routes/station-owner-routes.ts`;
+those two archive issues are not the recovery specification.
 A stronger vendor proof is dispute evidence, not permission to bypass an owner's
 signature. Freeze contested claims while the existing recovery process resolves
 ownership. No backend balance mutation or automatic clawback is authorized here.
@@ -128,12 +131,11 @@ Forwarding eligibility must recheck holds immediately before dispatch.
 
 Propose seven days of continuous valid proof and adequate independent coverage
 before completing probation; propose thirty days of vesting for any future
-bridge allocation. These are draft parameters, not earning promises. Tonight
-all allocations are zero. A future revoked claim forfeits held/unvested amounts;
+bridge allocation. These are draft parameters, not earning promises. All allocations in this proposal are zero. A future revoked claim forfeits held/unvested amounts;
 never debit already vested balances without a separately ratified rule.
 
 Limit issuance and verification per wallet and client IP, using the existing
-IPv6 `/64` normalization from `server/utils/rate-limit-key.ts`. Persist shared
+IPv6 `/64` normalization from wrfcoin/backend `server/utils/rate-limit-key.ts`. Persist shared
 limits across workers; bound pending challenge retention and attempts. Count
 issued, expired, replayed, mismatched and refused challenges; duplicate holds;
 vendor revocations; disputes upheld per 1,000 claims; time to resolution; and
@@ -142,7 +144,7 @@ wallets, callsigns or device IDs as metric labels.
 
 ## Consensus follow-ups (not implemented here)
 
-1. Reconcile canonical hardware aliases with the existing #3346 commitment,
+1. Reconcile canonical hardware aliases with the existing wrfcoin/core4-archive#3346 commitment,
    uniqueness and stolen-hardware freeze; include replay and migration coverage.
 2. Define attested bridge provenance distinct from a device-signed reading. An
    operator signature must never silently upgrade a public packet to native.
