@@ -36,23 +36,23 @@
   "author": "WRFCoin Team",
   "license": "MIT",
   "dependencies": {
-    "@noble/curves": "^2.3.0",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "axios": "^1.20.0",
     "ethers": "^6.17.0",
     "graphql": "^16.14.0",
     "graphql-request": "^7.4.0",
-    "graphql-ws": "^6.2.2",
-    "ws": "^8.21.3"
+    "graphql-ws": "^6.4.1",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^26.6.4",
-    "@types/ws": "^8.5.8",
+    "@types/ws": "^8.18.2",
     "@typescript-eslint/eslint-plugin": "^8.71.1",
     "@typescript-eslint/parser": "^8.71.1",
-    "eslint": "^10.9.1",
-    "jest": "^30.4.0",
+    "eslint": "^10.13.0",
+    "jest": "^30.5.2",
     "ts-jest": "^29.4.12",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1"
