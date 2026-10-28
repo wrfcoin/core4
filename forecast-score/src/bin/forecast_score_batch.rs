@@ -7,11 +7,13 @@
 //! Request:
 //! ```json
 //! {"skill_definition": "rmse_sigma" | "mae_clim",
+//!  "anti_gaming": {"enabled": false, "copy_tolerance": {"temperature_c": 0.05}},
+//!  (the persistence lag is set per forecast from horizon_hours: the window is hourly)
 //!  "cap_per_cell_lead": 3, "baseline": 0.1,
 //!  "forecasts": [{"commit_id": "..", "forecaster": "0x..", "cell": "station-id",
 //!                 "horizon_hours": 6, "valid_at": 1700000000,
 //!                 "variables": {"temperature_c": {"forecast": 1.0, "truth": 1.2,
-//!                                                 "window": [..]}}}]}
+//!                                                 "window": [..], "reference_forecasts": []}}}]}
 //! ```
 //! `skill_definition` is REQUIRED; there is no default.
 
@@ -20,7 +22,7 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 use wrfcoin_forecast_score::skill::{
-    CapCandidate, CapDecision, ScoredForecast, SkillDefinition, VariableInput,
+    AntiGaming, CapCandidate, CapDecision, ScoredForecast, SkillDefinition, VariableInput,
     score_forecast, select_capped,
 };
 
@@ -28,6 +30,8 @@ use wrfcoin_forecast_score::skill::{
 #[serde(deny_unknown_fields)]
 struct Request {
     skill_definition: SkillDefinition,
+    #[serde(default)]
+    anti_gaming: AntiGaming,
     cap_per_cell_lead: usize,
     baseline: f64, // determinism-ok: off-chain scorer input
     forecasts: Vec<ForecastIn>,
@@ -71,7 +75,10 @@ fn main() {
     let mut outs = Vec::with_capacity(request.forecasts.len());
     let mut candidates = Vec::new();
     for f in &request.forecasts {
-        match score_forecast(&f.variables, request.skill_definition) {
+        // The window is hourly, so the persistence reference's lag is the lead in hours.
+        let mut anti = request.anti_gaming.clone();
+        anti.persistence_lag_steps = f.horizon_hours.max(1) as usize;
+        match score_forecast(&f.variables, request.skill_definition, &anti) {
             Ok(score) => {
                 candidates.push(CapCandidate {
                     commit_id: f.commit_id.clone(),
@@ -101,6 +108,7 @@ fn main() {
     }
     let response = serde_json::json!({
         "skill_definition": request.skill_definition,
+        "anti_gaming": request.anti_gaming.enabled,
         "forecasts": outs,
     });
     println!("{}", serde_json::to_string_pretty(&response).expect("serializable"));

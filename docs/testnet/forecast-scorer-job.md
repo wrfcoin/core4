@@ -43,6 +43,7 @@ The forecaster attaches the receipt to its own reveal. The job submits nothing t
 | `SKILL_DEFINITION` = `rmse_sigma` or `mae_clim`, set explicitly. **There is no default.** | exit 2 |
 | The node reports `forecaster_key_binding` known and `active_at_next` in `GET /network/upgrade` | exit 4 |
 | `forecast-score-batch` found | exit 2 |
+| `FORECAST_ANTI_GAMING` unset, `0` or `1`; `FORECAST_COPY_TOLERANCE` a JSON object of non-negative numbers | exit 2 |
 
 Every reveal record is re-checked against its own files before scoring: the commit id is re-derived from
 `data.json` + nonce + station + timestamp, the manifest digest must match, the manifest region must name the
@@ -57,6 +58,23 @@ have committed). A record failing any check is listed under `skipped` in `summar
 | `mae_clim` | `clamp(1 − |e| / |clim − truth|, 0, 1)` | how wrong the window mean was this time (the prototype rule) |
 
 Skill is the mean over the variables the forecast declares AND the truth reports (owner ruling 2026-10-19).
+
+## Anti-gaming (story A6, `FORECAST_ANTI_GAMING=1`, off by default)
+
+With the flag on, both definitions change the same two ways (`forecast-score/src/skill.rs`):
+
+1. **Copy rule.** A variable whose forecast is within the copy tolerance of a trivial baseline scores 0. The
+   baselines are the window mean (climatology), the last window value (persistence) and any value in
+   `--reference-forecasts` (an external model's point forecast, e.g. NOAA/GFS:
+   `{station_id: {valid_at: {variable: value}}}`). Default tolerances: 0.05 °C, 0.05 hPa, 0.5 % humidity;
+   override with `FORECAST_COPY_TOLERANCE='{"temperature_c": 0.1}'`.
+2. **Best-baseline reference.** `rmse_sigma` divides by the smaller of the window spread and the persistence
+   error **at the forecast's lead** (lag = `horizon_hours` on the hourly window). `mae_clim` divides by the
+   smallest realised error among the baselines this time.
+
+An honest forecast that happens to coincide with a baseline within the tolerance also scores 0 on that variable.
+That is the rule working as designed: such a value adds no information over the baseline. It is still a trade
+the owner should see (see the A6 PR's differential).
 
 ## Cap per cell and lead time (owner ruling 2026-10-24)
 
