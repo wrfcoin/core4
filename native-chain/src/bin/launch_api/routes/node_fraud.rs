@@ -36,6 +36,7 @@ static LIMITER: Mutex<Option<HashMap<[u8; 32], VecDeque<Instant>>>> = Mutex::new
 
 /// Default off: the route is not mounted (404) unless the switch is `1`/`true`.
 pub fn api_enabled() -> bool {
+    // determinism-ok: API-edge route switch (WRFCOIN_ENABLE_*_API convention); decides only whether this HTTP route is mounted and never enters block validity, a signing preimage or the state root
     std::env::var(ENABLE_ENV)
         .ok()
         .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
@@ -100,6 +101,7 @@ pub async fn submit(
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
         .unwrap_or_default();
+    // determinism-ok: API-edge per-token request rate limiter; wall-clock only decides whether this HTTP request is served and never feeds consensus, state or a signing preimage
     if !allow(token, Instant::now()) {
         let mut resp = err(
             &req,
