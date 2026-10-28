@@ -48,7 +48,8 @@ use wrfcoin_native_chain::storage::{DEFAULT_CHECKPOINT_INTERVAL, Storage};
 use wrfcoin_shared_protocol::blockchain::block::Block;
 use wrfcoin_shared_protocol::blockchain::state::{PopLivenessPolicy, State, StateTransition};
 use wrfcoin_shared_protocol::blockchain::transaction::{
-    CommitPayload, Transaction, TransactionInput, TransactionOutput, TransactionType,
+    CommitPayload, ForecastArtifactManifest, RevealPayload, Transaction, TransactionInput,
+    TransactionOutput, TransactionType,
 };
 use wrfcoin_shared_protocol::common::types::Address;
 use wrfcoin_shared_protocol::crypto::chain_binding::{
@@ -106,6 +107,96 @@ fn forecast_commit(forecaster: &str, signer: &PrivateKey, tag: &str) -> Transact
     tx.set_id();
     assert!(tx.verify_commit_authorization(), "the probe's signature itself is valid");
     tx
+}
+
+/// A protocol transaction shaped like `enqueue_protocol_transaction` builds it.
+fn protocol_tx(tx_type: TransactionType, forecaster: &str, data: String, tag: &str) -> Transaction {
+    let inputs = vec![TransactionInput {
+        txid: hash_bytes(format!("input:{tag}").as_bytes()),
+        vout: 0,
+        signature: None,
+        public_key: Some(forecaster.to_string()),
+        coinbase_data: None,
+    }];
+    let outputs = vec![TransactionOutput {
+        address: forecaster.to_string(),
+        amount: 0,
+        script: "OP_TRUE".to_string(),
+        nft_data: None,
+    }];
+    let mut tx = Transaction::new(inputs, outputs);
+    tx.tx_type = tx_type;
+    tx.data = Some(data);
+    if let Ok(address) = forecaster.parse::<Address>() {
+        tx.sender_address = address;
+    }
+    tx.set_id();
+    tx
+}
+
+/// A REAL commitment (commit id = `compute_commit_id` of the revealed data)
+/// and its reveal, so the pair can cross H: commit below, reveal above.
+fn forecast_commit_and_reveal(
+    forecaster: &str,
+    signer: &PrivateKey,
+    tag: &str,
+) -> (Transaction, Transaction) {
+    let timestamp = chrono::Utc::now().timestamp();
+    let data = serde_json::json!({"station_id": STATION, "values": {"temperature_c": 11.5}, "tag": tag});
+    let nonce = format!("nonce-{tag}");
+    let commit_id = Transaction::compute_commit_id(&data, &nonce, STATION, timestamp, "forecast");
+    let mut payload = CommitPayload {
+        commit_id: commit_id.clone(),
+        station_id: STATION.to_string(),
+        timestamp,
+        contribution_type: "forecast".to_string(),
+        auth_pubkey: None,
+        auth_signature: None,
+    };
+    payload.sign_authorization(signer);
+    let commit = protocol_tx(
+        TransactionType::ForecastCommit,
+        forecaster,
+        serde_json::to_string(&payload).unwrap(),
+        &format!("commit-{tag}"),
+    );
+    let reveal = RevealPayload {
+        commit_id,
+        station_id: STATION.to_string(),
+        timestamp,
+        contribution_type: "forecast".to_string(),
+        data,
+        nonce,
+        data_cid: None,
+        data_hash: None,
+        storage_provider: None,
+        provenance: None,
+        manifest: Some(ForecastArtifactManifest {
+            schema_version: 1,
+            model_id: "fkb-3290-fixture/v1".to_string(),
+            input_hash: "a".repeat(64),
+            output_hash: "b".repeat(64),
+            produced_at: timestamp,
+            region: STATION.to_string(),
+            horizon_hours: 6,
+            input_variables: vec!["temperature_c".to_string()],
+            output_variables: vec!["temperature_c".to_string()],
+        }),
+        verification_receipt: None,
+        compute_receipt: None,
+        quality_tier: None,
+    };
+    let mut reveal = protocol_tx(
+        TransactionType::ForecastReveal,
+        forecaster,
+        serde_json::to_string(&reveal).unwrap(),
+        &format!("reveal-{tag}"),
+    );
+    // A zero-fee reveal needs a compute receipt (#821 block classifier); a fee
+    // keeps this fixture about identity, not about useful-work receipts.
+    reveal.fee = 1;
+    reveal.set_id();
+    (commit, reveal)
 }
 
 fn commit_id(tx: &Transaction) -> String {
@@ -293,6 +384,11 @@ async fn forecaster_key_binding_refuses_unbound_commits_from_activation() {
     let pre_bound = forecast_commit(&victim, &victim_key, "pre-bound");
     admit(&mut *mempool.write().await, pre_probe.clone(), 1).expect("below H: probe admitted");
     admit(&mut *mempool.write().await, pre_bound.clone(), 1).expect("below H: bound admitted");
+    // Grandfathering: an UNBOUND commit accepted below H keeps its historical
+    // semantics; its reveal after H is accepted (the binding gates commits only).
+    let (grand_commit, grand_reveal) = forecast_commit_and_reveal(&victim, &attacker, "grandfathered");
+    assert!(!grand_commit.forecast_commit_key_bound());
+    admit(&mut *mempool.write().await, grand_commit.clone(), 1).expect("below H: unbound real commit admitted");
 
     // A probe that slipped in under the old rule (admitted against a stale tip
     // 1) must still be dropped by the producer at H: admission at H − 1 gives
@@ -313,6 +409,8 @@ async fn forecaster_key_binding_refuses_unbound_commits_from_activation() {
             expected_commits.push(commit_id(&bound));
         }
         if height == H + 1 {
+            admit(&mut *mempool.write().await, grand_reveal.clone(), H)
+                .expect("after H: the reveal of a commit accepted below H is admitted");
             // Unknown height while the feature is scheduled: fail closed.
             let err = mempool
                 .write()
@@ -334,7 +432,15 @@ async fn forecaster_key_binding_refuses_unbound_commits_from_activation() {
             .filter(|tx| tx.tx_type == TransactionType::ForecastCommit)
             .map(commit_id)
             .collect();
+        if height == H + 1 {
+            assert!(
+                block.transactions.iter().any(|tx| tx.tx_type == TransactionType::ForecastReveal
+                    && tx.parse_reveal_payload().is_some_and(|r| r.commit_id == commit_id(&grand_commit))),
+                "after H the producer includes the grandfathered reveal"
+            );
+        }
         if height == H - 1 {
+            assert!(ids.contains(&commit_id(&grand_commit)), "below H the unbound real commit is mined");
             assert!(ids.contains(&commit_id(&pre_probe)), "below H the probe is mined");
             assert!(ids.contains(&commit_id(&pre_bound)));
             expected_commits.push(commit_id(&pre_probe));
@@ -367,6 +473,12 @@ async fn forecaster_key_binding_refuses_unbound_commits_from_activation() {
         assert!(producer.pending_commits.contains_key(id), "commit {id} registered");
     }
     assert!(!producer.pending_commits.contains_key(&commit_id(&held_probe)));
+    let grand_id = commit_id(&grand_commit);
+    assert!(
+        producer.pending_reveals.contains_key(&grand_id),
+        "the grandfathered commit is revealed after H (producer)"
+    );
+    assert!(applier.pending_reveals.contains_key(&grand_id), "applier records the reveal");
 
     let rows = storage.load_wal_transitions_range(1, H + 1).unwrap();
     let mut wal = State::new();
@@ -383,6 +495,7 @@ async fn forecaster_key_binding_refuses_unbound_commits_from_activation() {
         producer.pending_commits.keys().collect::<std::collections::BTreeSet<_>>(),
         "WAL replay commits"
     );
+    assert!(wal.pending_reveals.contains_key(&grand_id), "WAL replay records the reveal");
 
     drop(storage);
     std::fs::remove_file(db).unwrap();
