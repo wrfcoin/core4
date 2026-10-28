@@ -20,12 +20,14 @@ sys.path.insert(0, HERE)
 import scorer_fixtures as fx  # noqa: E402
 from test_scorer_job import BIN, job  # noqa: E402
 
-CONFIGS = [(d, {}) for d in job.SKILL_DEFINITIONS]
+CONFIGS = [(d, {}) for d in job.SKILL_DEFINITIONS] + [
+    (d, {"anti_gaming": {"enabled": True, "copy_tolerance": job.DEFAULT_COPY_TOLERANCE}}) for d in job.SKILL_DEFINITIONS]
 
 
 def score_all(tmp, index, definition, extra, cap, baseline):
     reveals = [job.load_reveal(os.path.join(tmp, "reveals", n)) for n in sorted(index)]
-    request, _ = job.build_request(reveals, os.path.join(tmp, "obs"), definition, cap)
+    request, _ = job.build_request(reveals, os.path.join(tmp, "obs"), definition, cap,
+                                   references=job.load_reference_forecasts(os.path.join(tmp, "references.json")))
     request["baseline"] = baseline
     request.update(extra)
     out = json.loads(subprocess.run([BIN], input=json.dumps(request), capture_output=True, text=True, check=True).stdout)
@@ -40,10 +42,12 @@ def main(configs=CONFIGS):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             index = fx.build(tmp, job.kit)
-        raw = {c: score_all(tmp, index, c[0], dict(c[1]), 10**6, 0.0) for c in map(lambda c: (c[0], tuple(c[1].items())), configs)}
-        capped = {c: score_all(tmp, index, c[0], dict(c[1]), job.DEFAULT_CAP_PER_CELL_LEAD, job.BASELINE_FORECAST_SKILL)
-                  for c in raw}
-        labels = [f"{d}{' +A6' if extra else ''}" for d, extra in raw]
+        fx.write_reference_forecasts(os.path.join(tmp, "references.json"))
+        keyed = [(d, json.dumps(extra, sort_keys=True)) for d, extra in configs]
+        raw = {c: score_all(tmp, index, c[0], json.loads(c[1]), 10**6, 0.0) for c in keyed}
+        capped = {c: score_all(tmp, index, c[0], json.loads(c[1]), job.DEFAULT_CAP_PER_CELL_LEAD,
+                               job.BASELINE_FORECAST_SKILL) for c in raw}
+        labels = [f"{d}{' +A6' if extra != '{}' else ''}" for d, extra in raw]
         print("| forecast | station | " + " | ".join(f"{l} skill" for l in labels) + " | "
               + " | ".join(f"{l} decision" for l in labels) + " |")
         print("|---|---|" + "---:|" * len(labels) + "---|" * len(labels))

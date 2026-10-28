@@ -129,6 +129,13 @@ def build(root: str, kit) -> dict:
     return index
 
 
+def write_reference_forecasts(path: str) -> None:
+    """The external reference forecasts the A6 copy check compares against (scorer_job --reference-forecasts)."""
+    body = {station: {str((ISSUE_HOUR + HORIZON) * 3600): reference_forecast(station)} for station in STATIONS}
+    with open(path, "w") as fh:
+        json.dump(body, fh)
+
+
 def node_status(active: bool, known: bool = True) -> dict:
     return {"status": "ready", "scheduled": {"entries": [
         {"feature": "forecaster_key_binding", "activation_height": 100, "source": "extension",

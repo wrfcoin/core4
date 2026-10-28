@@ -13,6 +13,10 @@ unless every gate below is satisfied:
                               (GET /network/upgrade); without it a gossiped commit can name any forecaster,
                               and the owner ruled that receipts wait for the binding (#3290).
 
+Optional: FORECAST_ANTI_GAMING=1 (story A6, #3244) measures skill against the best trivial baseline
+(climatology, persistence, and any --reference-forecasts value such as a NOAA point forecast) and scores a
+variable zero when the forecast copies one of them within FORECAST_COPY_TOLERANCE (per-variable defaults below).
+
 Pipeline: verify every reveal record against its own files (commit id, manifest digest, region), pair it with
 the scorer's OWN truth store (the truth reading at valid_at and the 24 h window before issued_at, from
 `forecast_kit.py fetch-observations`), score with the `forecast-score` crate (`forecast-score-batch`), apply
@@ -43,6 +47,8 @@ SKILL_DEFINITIONS = ("rmse_sigma", "mae_clim")
 KEY_BINDING_FEATURE = "forecaster_key_binding"
 BASELINE_FORECAST_SKILL = 0.1  # shared-protocol proof_of_publishing BASELINE_FORECAST_SKILL
 DEFAULT_CAP_PER_CELL_LEAD = 3
+# A6 copy tolerances in each variable's units: about the resolution a forecaster would round to.
+DEFAULT_COPY_TOLERANCE = {"temperature_c": 0.05, "pressure_hpa": 0.05, "humidity_pct": 0.5}
 WINDOW_HOURS = kit.WINDOW_HOURS
 
 EXIT_DISABLED, EXIT_CONFIG, EXIT_BINDING, EXIT_INPUT = 3, 2, 4, 5
@@ -57,6 +63,23 @@ class Refusal(Exception):
 # ---------------------------------------------------------------------------
 # Gates
 # ---------------------------------------------------------------------------
+
+def anti_gaming_config(env) -> dict:
+    """FORECAST_ANTI_GAMING=1 switches A6 on; FORECAST_COPY_TOLERANCE is an optional JSON object override."""
+    flag = env.get("FORECAST_ANTI_GAMING", "")
+    if flag not in ("", "0", "1"):
+        raise Refusal(EXIT_CONFIG, f"FORECAST_ANTI_GAMING must be 0 or 1 (got {flag!r})")
+    tolerance = dict(DEFAULT_COPY_TOLERANCE)
+    if env.get("FORECAST_COPY_TOLERANCE"):
+        try:
+            override = json.loads(env["FORECAST_COPY_TOLERANCE"])
+            tolerance.update({str(k): float(v) for k, v in override.items()})
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise Refusal(EXIT_CONFIG, f"FORECAST_COPY_TOLERANCE is not a JSON object of numbers: {exc}") from None
+    if any(not (v >= 0) for v in tolerance.values()):
+        raise Refusal(EXIT_CONFIG, "copy tolerances must be non-negative")
+    return {"enabled": flag == "1", "copy_tolerance": tolerance}
+
 
 def check_env(env) -> str:
     """Return the configured skill definition, or raise Refusal."""
@@ -117,7 +140,15 @@ def load_reveal(record_dir: str) -> dict:
     return {"dir": record_dir, "record": record, "data": data, "manifest": manifest, "problems": problems}
 
 
-def truth_inputs(reveal: dict, observations_dir: str) -> tuple[dict, list[str]]:
+def load_reference_forecasts(path: str | None) -> dict:
+    """{station_id: {str(valid_at): {variable: value | [values]}}} — external forecasts for the copy check."""
+    if not path:
+        return {}
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def truth_inputs(reveal: dict, observations_dir: str, references: dict | None = None) -> tuple[dict, list[str]]:
     """Per declared variable: forecast, truth at valid_at, and the WINDOW_HOURS hourly means before issued_at."""
     data = reveal["data"]
     hourly = kit.hourly_means(kit.load_store(kit.store_path(observations_dir, data["station_id"])))
@@ -132,19 +163,24 @@ def truth_inputs(reveal: dict, observations_dir: str) -> tuple[dict, list[str]]:
         if len(window) < 2:
             notes.append(f"{var}: fewer than 2 window readings; not scored")
             continue
-        variables[var] = {"forecast": float(data["values"][var]), "truth": float(truth[var]), "window": window}
+        entry = {"forecast": float(data["values"][var]), "truth": float(truth[var]), "window": window}
+        ref = ((references or {}).get(data["station_id"]) or {}).get(str(int(data["valid_at"])), {}).get(var)
+        if ref is not None:
+            entry["reference_forecasts"] = [float(x) for x in (ref if isinstance(ref, list) else [ref])]
+        variables[var] = entry
     if not variables:
         notes.append("nothing to score (declared ∩ reported variables with a window is empty)")
     return variables, notes
 
 
-def build_request(reveals: list[dict], observations_dir: str, definition: str, cap: int) -> tuple[dict, dict]:
+def build_request(reveals: list[dict], observations_dir: str, definition: str, cap: int,
+                  anti_gaming: dict | None = None, references: dict | None = None) -> tuple[dict, dict]:
     forecasts, skipped = [], {}
     for r in reveals:
         if r["problems"]:
             skipped[r["record"]["commit_id"]] = r["problems"]
             continue
-        variables, notes = truth_inputs(r, observations_dir)
+        variables, notes = truth_inputs(r, observations_dir, references)
         if not variables:
             skipped[r["record"]["commit_id"]] = notes
             continue
@@ -152,7 +188,8 @@ def build_request(reveals: list[dict], observations_dir: str, definition: str, c
                           "cell": r["record"]["station_id"], "horizon_hours": int(r["manifest"]["horizon_hours"]),
                           "valid_at": int(r["data"]["valid_at"]), "variables": variables})
     request = {"skill_definition": definition, "cap_per_cell_lead": cap,
-               "baseline": BASELINE_FORECAST_SKILL, "forecasts": forecasts}
+               "baseline": BASELINE_FORECAST_SKILL, "forecasts": forecasts,
+               "anti_gaming": anti_gaming or {"enabled": False, "copy_tolerance": {}}}
     return request, skipped
 
 
@@ -181,6 +218,7 @@ def sign_command(args, reveal: dict, metrics_path: str, receipt_path: str) -> li
 
 def run(args, env=os.environ) -> int:
     definition = check_env(env)
+    anti_gaming = anti_gaming_config(env)
     if not key_binding_active(fetch_upgrade(args.node, args.node_status_file)):
         raise Refusal(EXIT_BINDING, f"node does not report {KEY_BINDING_FEATURE} active for the next block; "
                                     "receipts wait for the forecaster key binding (#3290, owner ruling)")
@@ -191,12 +229,13 @@ def run(args, env=os.environ) -> int:
     record_dirs = sorted(os.path.join(args.reveals, d) for d in os.listdir(args.reveals)
                          if os.path.isfile(os.path.join(args.reveals, d, "commit.json")))
     reveals = [load_reveal(d) for d in record_dirs]
-    request, skipped = build_request(reveals, args.observations, definition, args.cap_per_cell_lead)
+    request, skipped = build_request(reveals, args.observations, definition, args.cap_per_cell_lead,
+                                     anti_gaming, load_reference_forecasts(args.reference_forecasts))
     response = run_scorer(scorer_bin, request) if request["forecasts"] else {"forecasts": []}
     by_id = {r["record"]["commit_id"]: r for r in reveals}
 
     os.makedirs(args.out, exist_ok=True)
-    summary = {"skill_definition": definition, "dry_run": args.dry_run, "cap_per_cell_lead": args.cap_per_cell_lead,
+    summary = {"skill_definition": definition, "anti_gaming": anti_gaming["enabled"], "dry_run": args.dry_run, "cap_per_cell_lead": args.cap_per_cell_lead,
                "skipped": skipped, "forecasts": []}
     signed = 0
     for item in response["forecasts"]:
@@ -225,7 +264,8 @@ def run(args, env=os.environ) -> int:
     with open(os.path.join(args.out, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2)
     selected = sum(1 for f in summary["forecasts"] if f["decision"] == "selected")
-    print(f"scored {len(response['forecasts'])} forecast(s) under {definition}; {selected} selected for a receipt, "
+    print(f"scored {len(response['forecasts'])} forecast(s) under {definition}"
+          f"{' with anti-gaming' if anti_gaming['enabled'] else ''}; {selected} selected for a receipt, "
           f"{len(skipped)} skipped; {'dry run: nothing signed' if args.dry_run else f'{signed} receipt(s) signed'}; "
           f"summary -> {os.path.join(args.out, 'summary.json')}")
     return 0
@@ -241,6 +281,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--chain-id", required=True)
     p.add_argument("--network-id", required=True)
     p.add_argument("--cap-per-cell-lead", type=int, default=DEFAULT_CAP_PER_CELL_LEAD)
+    p.add_argument("--reference-forecasts", help="JSON of external reference forecasts for the A6 copy check")
     p.add_argument("--scorer-bin", help="path to forecast-score-batch")
     p.add_argument("--cli", default="wrfcoin")
     p.add_argument("--rehearsal-oracle-key", help="debug-build file key for a rehearsal (never production)")
