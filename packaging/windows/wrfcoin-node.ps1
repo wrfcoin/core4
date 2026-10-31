@@ -10,7 +10,12 @@
       generated from the infra cut pins), the per-user data folder and the
       operator token; its output goes to %LOCALAPPDATA%\WRFCoin\logs\node.log.
       Then opens the node's status page in the default browser
-      (/dashboard, or /network/info on a build without the dashboard).
+      (/dashboard, or /network/info on a build without the dashboard). The
+      dashboard URL carries the operator token in its fragment
+      (/dashboard#operator=<token>): browsers never send a fragment to the
+      server, and the page moves it into the tab's session storage and clears
+      it from the address bar, so the page's Stop button and host panel work
+      without copying the token by hand.
   -Action Stop
       Sends the running node Ctrl+C on its own hidden console (the same signal
       as pressing Ctrl+C in a node window) and waits for it to finish its
@@ -167,11 +172,20 @@ function Test-Url([string]$Url) {
     try { (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 } catch { $false }
 }
 
+function Get-StatusPageUrl([string]$Api, [bool]$HasDashboard) {
+    # /dashboard is the node's own status page (#3599); older builds lack it.
+    if (-not $HasDashboard) { return "$Api/network/info" }
+    # The token goes in the FRAGMENT only (never a query string): it is not
+    # sent to the node, not logged, and the page clears it from the address bar.
+    $token = ''
+    try { $token = [System.IO.File]::ReadAllText($TokenFile).Trim() } catch { }
+    if ($token -match '^[0-9a-f]{64}$') { return "$Api/dashboard#operator=$token" }
+    return "$Api/dashboard"
+}
+
 function Open-StatusPage([string]$Api) {
     if ($NoBrowser) { return }
-    # /dashboard is the node's own status page (#3599); older builds lack it.
-    $url = if (Test-Url "$Api/dashboard") { "$Api/dashboard" } else { "$Api/network/info" }
-    Start-Process $url
+    Start-Process (Get-StatusPageUrl $Api (Test-Url "$Api/dashboard"))
 }
 
 function Start-Node {

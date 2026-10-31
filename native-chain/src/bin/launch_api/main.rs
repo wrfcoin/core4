@@ -3775,11 +3775,17 @@ async fn main() -> std::io::Result<()> {
     // Global per-IP HTTP rate limiter (issue #1080).
     let rl_state = rate_limit::RateLimiterState::new(state.token_store.clone());
 
+    // The dashboard's Stop button (`POST /node/shutdown`, Operator) raises this;
+    // the graceful-shutdown task below waits for it alongside the signals.
+    let node_shutdown = web::Data::new(routes::node_shutdown::NodeShutdown::new());
+    let node_shutdown_app = node_shutdown.clone();
+
     let server = HttpServer::new(move || {
         let app = App::new()
             .wrap(rate_limit::RateLimiter::new(rl_state.clone()))
             .wrap(build_cors())
             .app_data(state.clone())
+            .app_data(node_shutdown_app.clone())
             .app_data(launch_api_json_config());
         // #3586: only the isolated ReceiptConsumer gets the large receiver-ingest budget.
         let app = if node_role == NodeRole::ReceiptConsumer {
@@ -3827,7 +3833,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // Spawn a task that waits for SIGTERM or SIGINT — or the #3093 upgrade
-    // halt — then orchestrates a graceful shutdown: P2P disconnect -> storage
+    // halt, or the operator's `POST /node/shutdown` — then orchestrates a graceful shutdown: P2P disconnect -> storage
     // checkpoint -> HTTP stop. The upgrade halt additionally exits with its
     // distinct code once the shutdown is complete.
     let upgrade_halt_signal = wrfcoin_native_chain::upgrade::halt_signal();
@@ -3871,11 +3877,17 @@ async fn main() -> std::io::Result<()> {
                 .expect("failed to register SIGINT handler");
         };
         let upgrade_halt = upgrade_halt_signal.notified();
+        let stop_requested = node_shutdown.wait();
 
         let mut exit_upgrade_required = false;
         tokio::select! {
             _ = sigterm => log::info!("Received SIGTERM, initiating graceful shutdown..."),
             _ = sigint => log::info!("Received SIGINT, initiating graceful shutdown..."),
+            _ = stop_requested => {
+                log::info!("Stop requested from the node's API (POST /node/shutdown), initiating graceful shutdown...");
+                // Let the route's 202 reach the page before P2P goes down.
+                tokio::time::sleep(routes::node_shutdown::RESPONSE_GRACE).await;
+            },
             _ = upgrade_halt => {
                 log::error!(
                     "EXIT_UPGRADE_REQUIRED: upgrade deadline reached, initiating clean shutdown \
@@ -5783,6 +5795,93 @@ mod tests {
         if let Some(gpu) = body.get("gpu") {
             assert!(gpu.is_array(), "optional GPU section must not be null or an error");
         }
+    }
+
+    /// The dashboard's Stop button: `POST /node/shutdown` is Operator-only, a
+    /// refused caller signals nothing, and the operator's call answers 202 and
+    /// wakes the graceful-shutdown task's wait.
+    #[actix_web::test]
+    async fn node_shutdown_requires_the_operator_and_signals_the_shutdown_task() {
+        use routes::node_shutdown::NodeShutdown;
+        let shutdown = web::Data::new(NodeShutdown::new());
+        let app = test::init_service(test_app(test_state(None)).app_data(shutdown.clone())).await;
+        let path = "/node/shutdown";
+
+        let response = test::call_service(&app, test::TestRequest::post().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN, "not-a-token"] {
+            let response = test::call_service(&app, test::TestRequest::post().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "token {token}");
+        }
+        // GET is not the route.
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert!(response.status().is_client_error(), "GET {path} must not stop the node");
+        assert!(!shutdown.is_requested(), "a refused caller must not signal the shutdown");
+
+        let response = test::call_service(&app, test::TestRequest::post().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["status"], "shutting_down");
+        assert_eq!(body["already_requested"], false);
+        assert!(shutdown.is_requested());
+        tokio::time::timeout(std::time::Duration::from_secs(5), shutdown.wait())
+            .await
+            .expect("the operator's request wakes the shutdown task's wait");
+
+        // A second press is answered, not re-signalled.
+        let response = test::call_service(&app, test::TestRequest::post().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["already_requested"], true);
+    }
+
+    /// Without the shared request registered (no shutdown task to wake), the
+    /// operator is told so instead of being answered "shutting down".
+    #[actix_web::test]
+    async fn node_shutdown_without_a_shutdown_task_is_unavailable() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let response = test::call_service(&app, test::TestRequest::post().uri("/node/shutdown")
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `main` must hand the SAME request object to the server and to the
+    /// graceful-shutdown task, and the task must wait on it next to the signals.
+    #[actix_web::test]
+    async fn main_wires_the_stop_route_into_the_graceful_shutdown_task() {
+        let code = strip_comments_and_literals(include_str!("main.rs"));
+        let builder = code.find("let server = HttpServer::new(").expect("server builder");
+        let created = code
+            .find("let node_shutdown = web::Data::new(routes::node_shutdown::NodeShutdown::new());")
+            .expect("main creates one NodeShutdown");
+        assert!(created < builder, "the request is created before the server factory");
+        let run = code[builder..].find(".run();").expect("builder runs") + builder;
+        assert!(
+            code[builder..run].contains(".app_data(node_shutdown_app.clone())"),
+            "every worker gets the shared NodeShutdown as app data"
+        );
+        let task = code.find("let shutdown_task = tokio::spawn(").expect("shutdown task");
+        // The signal select! follows `exit_upgrade_required` (a Windows-only
+        // select! for the console events comes earlier).
+        let select = code[task..].find("let mut exit_upgrade_required").expect("task selects") + task;
+        assert!(code[task..select].contains("let stop_requested = node_shutdown.wait();"));
+        let flag = code[select..]
+            .find("shutdown_started_task.store(true")
+            .expect("task marks the sequence started")
+            + select;
+        assert!(
+            code[select..flag].contains("_ = stop_requested =>"),
+            "the stop route must wake the same select! as SIGINT/SIGTERM"
+        );
     }
 
     fn test_app(

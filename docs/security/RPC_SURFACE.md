@@ -8,8 +8,8 @@ historical CLI/backend route notes in `docs/ROUTE_MATRIX.md` and
 
 ## Scope and classification rule
 
-- Inventory total: **153 methods** (150 HTTP, 3 WebSocket, 0 JSON-RPC).
-- Classification totals: **30 public**, **78 authenticated**, **39 admin**, and **6 disabled-in-release**.
+- Inventory total: **154 methods** (151 HTTP, 3 WebSocket, 0 JSON-RPC).
+- Classification totals: **30 public**, **78 authenticated**, **40 admin**, and **6 disabled-in-release**.
 - The inventory is the union of the default routes and the `p2p`, `zk`, `execution`, and `privacy` feature-gated routes. A feature annotation in the handler column identifies conditional registration.
 - `public` means no bearer token is required. `authenticated` means any non-operator role enforced by `require_role` or the authenticated WebSocket handshake. `admin` means `ApiRole::Operator` is enforced. Health/readiness remain public because anonymous callers receive deliberately reduced responses; localhost/operator callers receive detail.
 - Applied mechanically: a method that can alter peers or partition state, modify validator/oracle/signing-key state, seed or purge node state, control bridge safety, mine blocks, submit rollup batches, or otherwise perform an operator mutation is `admin`. User-signed protocol transactions remain `authenticated`, except the deliberately permissionless signed submission route.
@@ -137,6 +137,7 @@ that exploitation is currently demonstrated.
 | `GET /node/capability` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_node_capability` | `public` | no | no | global-read |
 | `GET /node/metrics/host` | `http` | `native-chain/src/bin/launch_api/routes/host_metrics.rs:host_metrics::get_host_metrics` | `admin` | no | no | global-read |
 | `GET /dashboard` | `http` | `native-chain/src/bin/launch_api/routes/status_page.rs:status_page::dashboard` | `public` | no | no | global-read |
+| `POST /node/shutdown` | `http` | `native-chain/src/bin/launch_api/routes/node_shutdown.rs:node_shutdown::shutdown_node` | `admin` | yes | no | global-write |
 | `GET /node/partition-status` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_partition_status` | `public` | no | no | global-read |
 | `POST /operator/partition-mode` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::set_partition_mode` | `admin` | yes | no | global-write |
 | `POST /debug/seed-account` | `http` | `native-chain/src/bin/launch_api/routes/debug.rs:debug::seed_account (feature: dev-endpoints)` | `disabled-in-release` | yes | no | global-write |
@@ -304,7 +305,7 @@ Every route in `configure_launch_routes` is registered inside one `web::scope(""
 | Check | Rule | Refusal |
 | --- | --- | --- |
 | `Host` | must name this node: `localhost`, `127.0.0.1`, `[::1]` plus `WRFCOIN_API_ALLOWED_HOSTS` (comma-separated names, port ignored). A request whose `Host` is not allowlisted is refused **even though it reached the socket** — that is the DNS-rebinding defence. `X-Forwarded-Host` is deliberately ignored. | 403 `HOST_NOT_ALLOWED` |
-| `Origin` | when present, must be in the allowlist: `LAUNCH_API_CORS_ORIGINS` (the same list CORS is built from), or the two local dev origins when unset outside production, or nothing in production. Refused before the handler executes, not by withholding a CORS header. `null` is never allowed. | 403 `ORIGIN_NOT_ALLOWED` |
+| `Origin` | when present, must be in the allowlist: `LAUNCH_API_CORS_ORIGINS` (the same list CORS is built from), or the two local dev origins when unset outside production, or nothing in production. Refused before the handler executes, not by withholding a CORS header. `null` is never allowed. One exception: when the browser asserts `Sec-Fetch-Site: same-origin` **and** the `Origin` is exactly `http(s)://` plus the `Host` header the browser sent (which must itself pass the `Host` check), the request comes from the node's own page — the `/dashboard` Stop button's `POST /node/shutdown` — and is judged as a same-origin request with no `Origin`; the handler's Operator bearer check still decides. | 403 `ORIGIN_NOT_ALLOWED` |
 | No `Origin` | a **browser-originated** request (any `Sec-Fetch-*` header) to an `admin` method must carry an allowlisted `Origin` — unless the browser itself asserts `Sec-Fetch-Site: same-origin`, i.e. the page was served by this node (`GET /dashboard`, #3599) and the `Host` check has already passed; a same-origin GET never carries `Origin`, so such a request is judged like a non-browser client. Other requests without one proceed while `WRFCOIN_API_ALLOW_NO_ORIGIN` is `1` (the default — the CLI, curl and node-to-node calls send none). | 403 `ORIGIN_REQUIRED` |
 
 Wildcards are unrepresentable: `*` in either allowlist, or an origin that is not

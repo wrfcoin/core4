@@ -123,7 +123,7 @@ jobs:
         run: |
           sha256sum -- *-setup.exe > SHA256SUMS
           cat SHA256SUMS
-      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, uninstall
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, uninstall
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -190,6 +190,9 @@ jobs:
             if (("$($info.genesis_hash)".ToLower() -replace '^0x', '') -ne $cfg['WRFCOIN_GENESIS_HASH']) { throw "genesis_hash $($info.genesis_hash)" }
             $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
             if ($dash.StatusCode -ne 200 -or $dash.Content -notmatch '<html') { throw 'dashboard' }
+            foreach ($text in 'id="stop-btn"', "What's next", "shutdown: '/node/shutdown'") {
+              if (-not $dash.Content.Contains($text)) { throw "dashboard is missing $text" }
+            }
             # Syncing depends on the public seed being up, so it is reported, not gated.
             $height = 0
             $until = (Get-Date).AddMinutes(3)
@@ -211,6 +214,27 @@ jobs:
             if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop' }
             if (-not (Select-String -Path $nodeLog -Pattern 'initiating graceful shutdown' -Quiet)) { throw 'node.log shows no graceful shutdown' }
             Write-Host 'Stop: graceful shutdown confirmed in node.log'
+
+            # The dashboard's Stop button: start again, then POST /node/shutdown the
+            # way the page does - refused without the operator token, accepted with
+            # the token the installer wrote, then the same graceful shutdown.
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start again' }
+            $stopUrl = 'http://127.0.0.1:8556/node/shutdown'
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck
+            if ($r.StatusCode -ne 401) { throw "POST /node/shutdown without a token answered $($r.StatusCode), expected 401" }
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck -Headers @{ Authorization = 'Bearer not-the-operator-token' }
+            if ($r.StatusCode -ne 403) { throw "POST /node/shutdown with a wrong token answered $($r.StatusCode), expected 403" }
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'a refused stop request stopped the node' }
+            $tok = (Get-Content (Join-Path $root 'operator.token') -Raw).Trim()
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck -Headers @{ Authorization = "Bearer $tok" }
+            if ($r.StatusCode -ne 202) { throw "POST /node/shutdown with the operator token answered $($r.StatusCode): $($r.Content)" }
+            $until = (Get-Date).AddSeconds(120)
+            while ((Get-Date) -lt $until -and @(Get-Process launch_api -ErrorAction SilentlyContinue).Count -gt 0) { Start-Sleep 1 }
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running 120 s after POST /node/shutdown' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'POST /node/shutdown\), initiating graceful shutdown' -Quiet)) { throw 'node.log shows no stop request from the route' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'Graceful shutdown complete' -Quiet)) { throw 'node.log shows no completed graceful shutdown after the route' }
+            Write-Host 'Dashboard Stop route: 401 without token, 403 wrong token, 202 + graceful shutdown with the operator token'
           } finally {
             Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -222,7 +246,7 @@ jobs:
           if (Test-Path (Join-Path $app 'launch_api.exe')) { throw 'uninstall left launch_api.exe' }
           if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
           if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
-          Write-Host 'install / hidden start / chain-888 check / clean stop / uninstall: OK'
+          Write-Host 'install / hidden start / chain-888 check / clean stop / dashboard Stop route / uninstall: OK'
       - uses: actions/upload-artifact@v4
         with:
           name: wrfcoin-node-windows-x86_64-setup

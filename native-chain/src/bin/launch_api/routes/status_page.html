@@ -181,6 +181,33 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 @media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
 .hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .hero.down { border-color: rgba(239, 68, 68, 0.5); }
+/* Stop control: the node's own off switch, at the bottom of the summary. */
+.control { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-sm) var(--s-md); border-top: 1px solid var(--border); padding-top: var(--s-md); }
+.control-text { flex: 1 1 280px; min-width: 0; display: grid; gap: 2px; }
+.control-title { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+.control .note { max-width: 72ch; }
+.control .note.bad { color: var(--error); }
+.control .note.done { color: var(--text); font-weight: 600; }
+.btn.danger { background: transparent; border-color: rgba(239, 68, 68, 0.6); color: var(--error); padding: 8px 18px; font-size: 0.875rem; font-weight: 600; }
+.btn.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); border-color: var(--error); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* What's next: the participation ladder. Calm, no numbers beyond the real ones. */
+.next { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s-md); margin-bottom: var(--s-lg); display: grid; gap: var(--s-md); }
+@media (min-width: 600px) { .next { padding: var(--s-lg); } }
+.next-head { display: grid; gap: var(--s-xs); }
+.next-head h2 { font-size: 1.125rem; }
+.next-head p { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 72ch; }
+.ladder { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: var(--s-sm); }
+@media (min-width: 900px) { .ladder { gap: var(--s-md); } }
+.rung { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-md); min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: var(--s-sm) var(--s-md); align-content: start; }
+.rung.here { border-color: rgba(16, 185, 129, 0.55); }
+.rung .num { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-3); color: var(--text-2); font-weight: 700; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+.rung.here .num { background: var(--success); color: #fff; }
+.rung-body { min-width: 0; display: grid; gap: var(--s-xs); }
+.rung h3 { margin: 0; font-size: 1rem; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-xs) var(--s-sm); }
+.rung p { margin: 0; color: var(--text-2); font-size: 0.875rem; }
+.rung .links { display: flex; flex-wrap: wrap; gap: var(--s-xs) var(--s-md); font-size: 0.875rem; }
+.next-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
 </style>
@@ -217,6 +244,52 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
     </dl>
     <p class="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
+    <div class="control" id="stop-control">
+      <div class="control-text">
+        <p class="control-title">Stop the node</p>
+        <p class="note" id="stop-note" aria-live="polite">The Stop button needs this node's operator token (enter it under Host, below). You can also stop the node from the Start menu: Stop WRFCoin Node.</p>
+      </div>
+      <button class="btn danger" type="button" id="stop-btn" disabled>Stop node</button>
+    </div>
+  </section>
+
+  <section class="next" id="whats-next" aria-labelledby="h-next">
+    <div class="next-head">
+      <h2 id="h-next">What's next</h2>
+      <p>Nodes take on more over time. You climb by reliable time on the rung below, not by computer power.</p>
+    </div>
+    <ol class="ladder">
+      <li class="rung here">
+        <span class="num" aria-hidden="true">1</span>
+        <div class="rung-body">
+          <h3>Sync node <span class="pill ok">You are here</span></h3>
+          <p>Keeps its own checked copy of the chain and shares blocks with other nodes. Leave it running: time online is what counts for the next step. A sync node is not paid.</p>
+        </div>
+      </li>
+      <li class="rung">
+        <span class="num" aria-hidden="true">2</span>
+        <div class="rung-body">
+          <h3>Bonded node <span class="pill info">Preview</span></h3>
+          <p>Locks a 250.36 WRF bond and serves chain snapshots to new nodes, and is paid each epoch (about 11 hours) for that service. Newcomers can get the bond once, as a faucet bond grant, after their node has been a visible peer for 24 hours. Needs a P2P address other nodes can reach.</p>
+          <p class="links"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Bonded node guide</a><a href="https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md" target="_blank" rel="noopener noreferrer">Join the testnet</a></p>
+        </div>
+      </li>
+      <li class="rung">
+        <span class="num" aria-hidden="true">3</span>
+        <div class="rung-body">
+          <h3>Attester (oracle) <span class="pill">Coming</span></h3>
+          <p>Vouches for the quality of weather data. Seated by governance after proven service as a bonded node.</p>
+        </div>
+      </li>
+      <li class="rung">
+        <span class="num" aria-hidden="true">4</span>
+        <div class="rung-body">
+          <h3>Block producer <span class="pill">Coming</span></h3>
+          <p>Makes blocks. Seated by governance from proven bonded nodes.</p>
+        </div>
+      </li>
+    </ol>
+    <p class="next-note">Nothing here happens by itself, and this page promises no income. Steps marked Coming are not open yet.</p>
   </section>
 
   <h2 class="details-title">Details for operators</h2>
@@ -269,7 +342,7 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       </div>
       <div class="locked" id="host-locked">
         <h3><span class="lock" aria-hidden="true"></span>Operator token required</h3>
-        <p>CPU, memory, swap and disk come from <span class="mono">/node/metrics/host</span>, which only the operator role may read. Paste this node's operator API token: it is kept in this tab's session storage only, sent to this node as an <span class="mono">Authorization</span> header, never placed in the URL and never logged.</p>
+        <p>CPU, memory, swap and disk come from <span class="mono">/node/metrics/host</span>, which only the operator role may read. Paste this node's operator API token (on Windows the Start-menu entry WRFCoin Node fills it in for you): it is kept in this tab's session storage only, sent to this node as an <span class="mono">Authorization</span> header, never sent in a URL and never logged. The same token unlocks the Stop button above.</p>
         <form class="token-form" id="token-form" autocomplete="off">
           <input id="token-input" type="password" placeholder="operator token" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Operator token">
           <button class="btn primary" type="submit">Unlock</button>
@@ -357,7 +430,8 @@ const ROUTES = {
   capability: '/node/capability',
   upgrade: '/network/upgrade',
   health: '/health',
-  host: '/node/metrics/host'
+  host: '/node/metrics/host',
+  shutdown: '/node/shutdown'
 };
 const TOKEN_KEY = 'wrfcoin.dashboard.operatorToken';
 const TICK_MS = 10000;
@@ -381,13 +455,31 @@ let timer = null;
 let intervalMs = TICK_MS;
 let token = null;
 try { token = sessionStorage.getItem(TOKEN_KEY) || null; } catch (_) { token = null; }
+let stopState = null;   // null, 'stopping' or 'stopped'
+let stopError = null;   // why the last stop request was refused
+const STOP_CONFIRM = 'Stop your node? It stops syncing until you start it again from the Start menu.';
+const STOPPED_TEXT = 'Node stopped. Start it again from Start menu \u2192 WRFCoin Node.';
+
+// The Windows Start-menu entry opens /dashboard#operator=<token>. A fragment is
+// never sent to the server and never logged; take the token into session
+// storage (as if pasted) and remove it from the address bar at once.
+(function takeTokenFromFragment() {
+  const hash = location.hash || '';
+  if (hash.indexOf('#operator=') !== 0) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (_) { /* nothing to clear */ }
+  const value = hash.slice('#operator='.length).trim();
+  if (!/^[A-Za-z0-9._~-]{16,512}$/.test(value)) return;
+  token = value;
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch (_) { /* a private window may refuse; the token still works for this page load */ }
+})();
 
 // ---------- fetch ----------
-async function getJson(path, withToken) {
+// The page's only request helper: every path comes from ROUTES.
+async function request(path, method, withToken) {
   const headers = { 'Accept': 'application/json' };
   if (withToken && token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const res = await fetch(path, { method: 'GET', headers, cache: 'no-store', credentials: 'omit' });
+    const res = await fetch(path, { method, headers, cache: 'no-store', credentials: 'omit' });
     let data = null;
     try { data = await res.json(); } catch (_) { data = null; }
     return { ok: res.ok, status: res.status, data };
@@ -395,6 +487,7 @@ async function getJson(path, withToken) {
     return { ok: false, status: 0, data: null };
   }
 }
+function getJson(path, withToken) { return request(path, 'GET', withToken); }
 
 function errorCode(data) {
   return data && data.error && typeof data.error.code === 'string' ? data.error.code : null;
@@ -748,7 +841,7 @@ function setSyncBar(pct, cls) {
 function renderHero() {
   const info = last.info, sync = last.sync, stats = last.stats;
   const hero = $('hero');
-  hero.className = 'hero' + (unreachable ? ' down' : '');
+  hero.className = 'hero' + (unreachable && stopState !== 'stopped' ? ' down' : '');
   const height = (sync && sync.chain_height) ?? (info && info.chain_height) ?? null;
   const peers = (stats && stats.connected_peers) ?? (sync && sync.peer_count) ?? (info && info.peer_count) ?? null;
   const p2p = sync && sync.p2p_sync ? sync.p2p_sync : null;
@@ -761,7 +854,10 @@ function renderHero() {
     : 'It is connected to ' + fmtInt(peers) + ' other node' + (peers === 1 ? '' : 's') + '.';
 
   let text, detail, pct = null, cls = '';
-  if (unreachable) {
+  if (stopState === 'stopped') {
+    text = 'Node stopped';
+    detail = 'Start it again from Start menu \u2192 WRFCoin Node, and open this page again.';
+  } else if (unreachable) {
     text = "Can't reach your node";
     detail = 'The node program did not answer. It may have stopped: start it again, and this page reconnects by itself.';
   } else if (typeof height !== 'number') {
@@ -808,10 +904,74 @@ function renderHero() {
   $('fact-bpm').textContent = bpm === null ? 'measuring' : bpm.toFixed(1);
 }
 
-function renderAll() { renderHero(); renderChain(); renderHost(); renderNode(); renderAsOf(); }
+// ---------- stop ----------
+function renderStop() {
+  const btn = $('stop-btn'), note = $('stop-note');
+  btn.hidden = stopState === 'stopped';
+  btn.disabled = !token || stopState !== null || unreachable;
+  btn.textContent = stopState === 'stopping' ? 'Stopping\u2026' : 'Stop node';
+  note.className = 'note';
+  if (stopState === 'stopped') {
+    note.className = 'note done';
+    note.textContent = STOPPED_TEXT;
+  } else if (stopState === 'stopping') {
+    note.textContent = 'Stopping: the node is disconnecting from other nodes and saving its place. This can take up to a minute.';
+  } else if (stopError) {
+    note.className = 'note bad';
+    note.textContent = stopError;
+  } else if (!token) {
+    note.textContent = "The Stop button needs this node's operator token (enter it under Host, below). You can also stop the node from the Start menu: Stop WRFCoin Node.";
+  } else {
+    note.textContent = 'Stops syncing and closes the node program cleanly, the same as Start menu \u2192 Stop WRFCoin Node. Closing this tab does not stop the node.';
+  }
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitForStop() {
+  // The node answers 202, then shuts down; it is stopped once it no longer answers at all.
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const r = await getJson(ROUTES.health, false);
+    if (r.status === 0) {
+      stopState = 'stopped';
+      unreachable = true;
+      renderAll();
+      return;
+    }
+  }
+  stopState = null;
+  stopError = 'The node is still shutting down after 3 minutes. Look at its log, or use Start menu \u2192 Stop WRFCoin Node.';
+  renderAll();
+  schedule();
+}
+async function stopNode() {
+  if (!token || stopState !== null) return;
+  if (!window.confirm(STOP_CONFIRM)) return;
+  stopError = null;
+  stopState = 'stopping';
+  if (timer) { clearTimeout(timer); timer = null; }
+  renderStop();
+  const r = await request(ROUTES.shutdown, 'POST', true);
+  if (r.ok || r.status === 0) { waitForStop(); return; }
+  stopState = null;
+  const code = errorCode(r.data);
+  if (GUARD_CODES.includes(code)) {
+    stopError = "This node's origin guard refused the stop request (" + code + '). Use Start menu \u2192 Stop WRFCoin Node.';
+  } else if ((r.status === 401 || r.status === 403) && (code === null || TOKEN_CODES.includes(code))) {
+    stopError = 'The node refused the operator token (HTTP ' + r.status + '). Check the token under Host, then try again.';
+  } else {
+    stopError = 'The node did not accept the stop request (HTTP ' + r.status + (code ? ', ' + code : '') + ').';
+  }
+  renderAll();
+  schedule();
+}
+$('stop-btn').addEventListener('click', stopNode);
+
+function renderAll() { renderHero(); renderChain(); renderHost(); renderNode(); renderStop(); renderAsOf(); }
 
 // ---------- tick ----------
 async function tick() {
+  if (stopState !== null) return;
   tickCount += 1;
   const slow = tickCount === 1 || tickCount % SLOW_EVERY === 1;
   const keys = ['info', 'sync', 'stats', 'resources', 'capability'];
@@ -847,7 +1007,7 @@ async function tick() {
 }
 function schedule() {
   if (timer) clearTimeout(timer);
-  if (document.hidden) { timer = null; return; }
+  if (document.hidden || stopState !== null) { timer = null; return; }
   timer = setTimeout(tick, intervalMs);
 }
 document.addEventListener('visibilitychange', () => {
@@ -866,7 +1026,9 @@ $('token-form').addEventListener('submit', (ev) => {
   try { sessionStorage.setItem(TOKEN_KEY, token); } catch (_) { /* a private window may refuse; the token still works for this page load */ }
   delete failed.host;
   delete failedCode.host;
+  stopError = null;
   renderHost();
+  renderStop();
   if (timer) clearTimeout(timer);
   tick();
 });
@@ -876,7 +1038,9 @@ $('forget-token').addEventListener('click', () => {
   delete failed.host;
   delete failedCode.host;
   try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* nothing stored */ }
+  stopError = null;
   renderHost();
+  renderStop();
 });
 
 // ---------- copy genesis ----------

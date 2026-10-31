@@ -50,6 +50,7 @@ fn guarded_app(
 > {
     let admin_counter = reached.clone();
     let admin_get_counter = reached.clone();
+    let shutdown_counter = reached.clone();
     let public_counter = reached;
     App::new().app_data(test_state(None)).service(
         web::scope("")
@@ -68,6 +69,17 @@ fn guarded_app(
                 "/health",
                 web::get().to(move || {
                     let c = public_counter.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        HttpResponse::Ok().body("handler reached")
+                    }
+                }),
+            )
+            // An `admin` POST the node's own status page sends (its Stop button).
+            .route(
+                "/node/shutdown",
+                web::post().to(move || {
+                    let c = shutdown_counter.clone();
                     async move {
                         c.fetch_add(1, Ordering::SeqCst);
                         HttpResponse::Ok().body("handler reached")
@@ -213,6 +225,51 @@ async fn admin_method_from_a_browser_needs_an_allowlisted_origin_but_the_cli_doe
     assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
     assert_eq!(error_code(&json), "HOST_NOT_ALLOWED");
     assert_eq!(reached.load(Ordering::SeqCst), 4);
+}
+
+/// The page's Stop button: a same-origin POST carries `Origin` naming this node.
+/// Admitted only when the browser asserts same-origin AND that Origin names the
+/// Host the browser sent; every other Origin is still judged by the allowlist.
+#[actix_web::test]
+async fn the_node_own_page_may_post_its_stop_request_and_nobody_else_is_laundered() {
+    let reached = Arc::new(AtomicUsize::new(0));
+    let app = test::init_service(guarded_app(dev_policy(), reached.clone())).await;
+    let host = ("Host", "127.0.0.1:8556");
+    let same = ("Sec-Fetch-Site", "same-origin");
+    let mode = ("Sec-Fetch-Mode", "cors");
+
+    let (status, json) = call!(app, "POST", "/node/shutdown", &[host, ("Origin", "http://127.0.0.1:8556"), mode, same]);
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(reached.load(Ordering::SeqCst), 1);
+
+    // Origin case differences are the same origin.
+    let (status, json) = call!(app, "POST", "/node/shutdown", &[("Host", "LOCALHOST:8556"), ("Origin", "http://localhost:8556"), mode, same]);
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(reached.load(Ordering::SeqCst), 2);
+
+    // Without the browser's same-origin assertion the Origin must be allowlisted.
+    let (status, json) = call!(app, "POST", "/node/shutdown", &[host, ("Origin", "http://127.0.0.1:8556"), mode, ("Sec-Fetch-Site", "same-site")]);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    assert_eq!(error_code(&json), "ORIGIN_NOT_ALLOWED");
+
+    // Another port on this host, another scheme's authority with a path, or a
+    // foreign site are not this node, whatever Sec-Fetch-Site says.
+    for origin in ["http://127.0.0.1:3001", "http://127.0.0.1:8556/x", "https://evil.example", "null"] {
+        let (status, json) = call!(app, "POST", "/node/shutdown", &[host, ("Origin", origin), mode, same]);
+        assert_eq!(status, StatusCode::FORBIDDEN, "Origin {origin}: {json}");
+        assert_eq!(error_code(&json), "ORIGIN_NOT_ALLOWED", "Origin {origin}");
+    }
+
+    // A rebinding page names its own host: refused by the host allowlist first.
+    let (status, json) = call!(app, "POST", "/node/shutdown", &[("Host", "attacker.example:8556"), ("Origin", "http://attacker.example:8556"), mode, same]);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    assert_eq!(error_code(&json), "HOST_NOT_ALLOWED");
+    assert_eq!(reached.load(Ordering::SeqCst), 2, "no refused request reached the handler");
+
+    assert!(origin::origin_names_host("http://127.0.0.1:8556", Some("127.0.0.1:8556")));
+    assert!(!origin::origin_names_host("http://127.0.0.1:8556", None));
+    assert!(!origin::origin_names_host("ftp://127.0.0.1:8556", Some("127.0.0.1:8556")));
+    assert!(!origin::origin_names_host("http://", Some("")));
 }
 
 #[actix_web::test]

@@ -9,8 +9,15 @@
 //!
 //! Operators may open it on a laptop whose only network is the tailnet, so the
 //! document makes no external request of any kind: inline CSS and JS, no CDN,
-//! no fonts, no images. The tests below pin that, and that every path the page
-//! fetches is registered in `routes/mod.rs`.
+//! no fonts, no images. Its only off-node URLs are two navigation links in the
+//! "What's next" section (opened by the user, never fetched by the page). The
+//! tests below pin that, and that every path the page fetches is registered in
+//! `routes/mod.rs`.
+//!
+//! The page can also stop the node (`POST /node/shutdown`, Operator) with the
+//! same token. The Windows Start-menu entry hands that token over in the URL
+//! fragment (`/dashboard#operator=<token>`), which browsers never send to the
+//! server; the page moves it to session storage and clears the address bar.
 
 use actix_web::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use actix_web::{HttpResponse, Responder};
@@ -45,6 +52,31 @@ mod tests {
     /// The registration site, read at compile time like the other source pins
     /// in this binary (`main.rs`, `p2p_events.rs`).
     const MOD_RS: &str = include_str!("mod.rs");
+
+    /// The only off-node URLs the page may carry: navigation links in the
+    /// "What's next" ladder, each an `<a href>` opened in a new tab without a
+    /// referrer. The page never fetches them.
+    const NAVIGATION_LINKS: &[&str] = &[
+        "https://wrfcoin.com/downloads",
+        "https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md",
+    ];
+
+    /// The page with its allowlisted navigation links removed, after checking
+    /// each one appears only as such a link.
+    fn page_without_navigation_links() -> String {
+        let mut page = STATUS_PAGE_HTML.to_string();
+        for link in NAVIGATION_LINKS {
+            let anchor =
+                format!("<a href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\">");
+            assert_eq!(
+                STATUS_PAGE_HTML.matches(link).count(),
+                STATUS_PAGE_HTML.matches(&anchor).count(),
+                "{link} may appear only as a new-tab, no-referrer navigation link"
+            );
+            page = page.replace(&anchor, "");
+        }
+        page
+    }
 
     /// Every path the page may request: the string literals of its single
     /// `const ROUTES = { ... }` object.
@@ -105,7 +137,7 @@ mod tests {
                 "the page fetches {path}, which routes/mod.rs does not register"
             );
         }
-        for required in ["/network/info", "/node/sync/status", "/node/metrics/host"] {
+        for required in ["/network/info", "/node/sync/status", "/node/metrics/host", "/node/shutdown"] {
             assert!(paths.iter().any(|p| p == required), "the page must read {required}");
         }
         // The ROUTES object is the only place a path may come from: one fetch
@@ -120,6 +152,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn the_page_makes_no_external_request() {
+        let page = page_without_navigation_links();
         for forbidden in [
             "http://",
             "https://",
@@ -132,7 +165,7 @@ mod tests {
             "<iframe",
         ] {
             assert!(
-                !STATUS_PAGE_HTML.contains(forbidden),
+                !page.contains(forbidden),
                 "the page must not contain {forbidden:?}: it has to work with no network \
                  beyond the node itself"
             );
@@ -141,9 +174,10 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn the_page_names_no_environment() {
+        let page = page_without_navigation_links();
         for forbidden in ["192.168.", "10.0.", "172.16.", ".ts.net", "/home/", "wrfcoin.com"] {
             assert!(
-                !STATUS_PAGE_HTML.contains(forbidden),
+                !page.contains(forbidden),
                 "the page must not carry environment-specific text {forbidden:?}"
             );
         }
@@ -202,6 +236,68 @@ mod tests {
         }
     }
 
+    /// The owner's ladder: four rungs, the newcomer's own marked, what is not
+    /// open yet marked "Coming", the climbing principle stated, and no promise
+    /// of income — a sync-only node is said to be unpaid.
+    #[::core::prelude::v1::test]
+    fn the_page_shows_the_participation_ladder_and_promises_no_income() {
+        let next = STATUS_PAGE_HTML
+            .find("id=\"whats-next\"")
+            .map(|start| &STATUS_PAGE_HTML[start..])
+            .and_then(|rest| rest.find("</section>").map(|end| &rest[..end]))
+            .expect("the page has a What's next section");
+        let rungs = [
+            "Sync node <span class=\"pill ok\">You are here</span>",
+            "Bonded node <span class=\"pill info\">Preview</span>",
+            "Attester (oracle) <span class=\"pill\">Coming</span>",
+            "Block producer <span class=\"pill\">Coming</span>",
+        ];
+        let mut at = 0;
+        for rung in rungs {
+            let found = next[at..].find(rung).unwrap_or_else(|| panic!("ladder rung {rung:?} in order"));
+            at += found + rung.len();
+        }
+        for text in [
+            "You climb by reliable time on the rung below, not by computer power.",
+            "250.36 WRF bond",
+            "faucet bond grant",
+            "visible peer for 24 hours",
+            "serves chain snapshots to new nodes",
+            "about 11 hours",
+            "P2P address other nodes can reach",
+            "Seated by governance",
+            "A sync node is not paid.",
+            "this page promises no income",
+            "https://wrfcoin.com/downloads",
+            "testnet/JOIN_TESTNET.md",
+        ] {
+            assert!(next.contains(text), "What's next must say {text:?}");
+        }
+        let lower = next.to_ascii_lowercase();
+        for forbidden in ["guarantee", "apy", "profit", "per day", "per month", "you will earn", "you'll earn"] {
+            assert!(!lower.contains(forbidden), "the ladder must make no income claim ({forbidden:?})");
+        }
+    }
+
+    /// The Stop button: Operator token required, plain-words confirm, the
+    /// stopped message once the node no longer answers, and the Start-menu
+    /// entry still named.
+    #[::core::prelude::v1::test]
+    fn the_page_offers_a_guarded_stop_button() {
+        for text in [
+            "id=\"stop-btn\" disabled>Stop node</button>",
+            "btn.disabled = !token || stopState !== null || unreachable;",
+            "Stop your node? It stops syncing until you start it again from the Start menu.",
+            "if (!window.confirm(STOP_CONFIRM)) return;",
+            "request(ROUTES.shutdown, 'POST', true)",
+            "Node stopped. Start it again from Start menu \\u2192 WRFCoin Node.",
+            "if (r.status === 0) {\n      stopState = 'stopped';",
+            "Stop WRFCoin Node",
+        ] {
+            assert!(STATUS_PAGE_HTML.contains(text), "the Stop control must carry {text:?}");
+        }
+    }
+
     #[::core::prelude::v1::test]
     fn the_token_never_reaches_the_url_or_persistent_storage() {
         assert!(STATUS_PAGE_HTML.contains("sessionStorage"), "the token lives in sessionStorage");
@@ -213,5 +309,20 @@ mod tests {
             "the token is sent as the bearer header helpers.rs expects"
         );
         assert!(!STATUS_PAGE_HTML.contains("token="), "never a token query parameter");
+        // The Windows launcher hands the token over in the fragment: read once,
+        // removed from the address bar, never written back into a URL.
+        assert!(STATUS_PAGE_HTML.contains("hash.indexOf('#operator=') !== 0"));
+        assert!(
+            STATUS_PAGE_HTML
+                .contains("history.replaceState(null, '', location.pathname + location.search)"),
+            "the fragment token is cleared from the address bar"
+        );
+        let take = STATUS_PAGE_HTML.find("function takeTokenFromFragment").expect("fragment intake");
+        let clear = STATUS_PAGE_HTML[take..].find("history.replaceState").expect("clears") + take;
+        let store = STATUS_PAGE_HTML[take..].find("token = value;").expect("stores") + take;
+        assert!(clear < store, "the address bar is cleared before the token is used");
+        for forbidden in ["location.hash =", "location.href =", "location.search =", "pushState("] {
+            assert!(!STATUS_PAGE_HTML.contains(forbidden), "the page must not write {forbidden:?}");
+        }
     }
 }
