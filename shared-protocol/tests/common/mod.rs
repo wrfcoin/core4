@@ -521,6 +521,22 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["expires_at_height"].as_u64().expect("expires_at_height"),
             )
         },
+        "sponsored_send_authorization_v1" => {
+            let n = |k: &str| input[k].as_u64().unwrap_or_else(|| panic!("{input_key}.{k}"));
+            wrfcoin_shared_protocol::accounts::paymaster::sponsored_send_authorization_message_with_domain(
+                s("chain_id"),
+                s("network_id"),
+                s("sponsor"),
+                s("from"),
+                s("to"),
+                n("amount"),
+                n("nonce"),
+                n("fee"),
+                n("expires_at_height"),
+                n("balance_floor"),
+                input["first_send_only"].as_bool().expect("first_send_only"),
+            )
+        },
         other => panic!("unknown money-path kind {other:?}"),
     }
 }

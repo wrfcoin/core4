@@ -735,6 +735,13 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         domain_tag: "wrfcoin_station_owner_action_v1",
         golden_kind: "station_owner_action_v1",
     },
+    // Sponsored first sends: carried in TransparentTransferPayload.sponsorship,
+    // read by state apply only once `paymaster` is active.
+    AuthSurface {
+        rust_type: "SponsorAuthorization",
+        domain_tag: "wrfcoin_sponsored_send_auth_v1",
+        golden_kind: "sponsored_send_authorization_v1",
+    },
 ];
 
 fn auth_surface_names() -> BTreeSet<String> {

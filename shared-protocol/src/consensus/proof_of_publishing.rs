@@ -16861,6 +16861,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(
@@ -16911,6 +16912,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         if let Some(key) = attacker_key {
             payload.sign_authorization(key, nonce);

@@ -2491,6 +2491,18 @@ pub struct TransparentTransferPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub passkey_auth: Option<crate::accounts::passkey::PasskeyAuthorization>,
+    /// A sponsor's signed promise to pay this transfer's fee (sponsored first
+    /// sends, `accounts::paymaster::SponsorAuthorization`). Read only once
+    /// `ConsensusFeature::Paymaster` is active; before that it is ignored and
+    /// the transfer applies exactly as it does without it. Deserialised
+    /// leniently — a malformed member reads as `None` — so a payload an older
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "crate::accounts::paymaster::deserialize_lenient_sponsorship",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sponsorship: Option<crate::accounts::paymaster::SponsorAuthorization>,
 }
 
 /// Domain separator for transparent-transfer authorization signatures (#1727).
@@ -2690,9 +2702,24 @@ impl TransparentTransferPayload {
     /// block validation and state apply; on a chain that never schedules the
     /// feature this is exactly `verify_authorization`.
     pub fn verify_authorization_for_admission(&self, nonce: u64) -> bool {
-        self.verify_authorization(nonce)
+        (self.verify_authorization(nonce)
             || (crate::accounts::passkey::passkey_auth_scheduled()
-                && self.verify_passkey_authorization(nonce))
+                && self.verify_passkey_authorization(nonce)))
+            && self.sponsorship_admissible(nonce)
+    }
+
+    /// Mempool screen for a carried sponsorship: on a chain that schedules
+    /// `paymaster`, a sponsorship whose signature does not verify over this
+    /// transfer is refused. On every other chain the field is ignored, as it
+    /// is by state apply, so admission is unchanged. Height-dependent rules
+    /// (expiry, balance, rate limits) are enforced by state apply.
+    pub fn sponsorship_admissible(&self, nonce: u64) -> bool {
+        match &self.sponsorship {
+            Some(auth) if crate::accounts::paymaster::sponsorship_scheduled() => auth
+                .verify_signature(&self.from, &self.to, self.amount, nonce)
+                .is_ok(),
+            _ => true,
+        }
     }
 }
 
@@ -5980,6 +6007,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         // Unsigned → not authorized.
         assert!(!payload.verify_authorization(0));
@@ -6009,6 +6037,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         forged.sign_authorization(&attacker, 0);
         assert!(
@@ -6069,6 +6098,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         }
     }
 

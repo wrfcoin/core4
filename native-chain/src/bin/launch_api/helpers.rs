@@ -1105,6 +1105,7 @@ pub fn build_transparent_opt_out_payload(
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
     }
 }
 
