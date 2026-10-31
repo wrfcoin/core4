@@ -277,7 +277,7 @@
     "graphene-pk11": "^2.3.6",
     "graphql": "16.12.0",
     "graphql-redis-subscriptions": "^2.7.0",
-    "graphql-scalars": "^1.22.4",
+    "graphql-scalars": "^2.0.1",
     "graphql-subscriptions": "^3.0.0",
     "graphql-tag": "2.12.6",
     "graphql-tools": "9.0.18",
