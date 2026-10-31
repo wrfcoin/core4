@@ -303,6 +303,7 @@ jobs:
             $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet
             if ($LASTEXITCODE -eq 0) { throw 'the launcher started with WRFCOIN_API_HOST in reachable.conf' }
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
             if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused reachable.conf still started the node' }
             if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'WRFCOIN_API_HOST cannot be set there' -Quiet)) { throw 'launcher.log does not explain the refused key' }
             Remove-Item -LiteralPath $reach
