@@ -178,6 +178,7 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .fact dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
 .fact dd { margin: 2px 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact dd.mono { font-size: 0.9375rem; }
+.fact .update-link { display: block; margin-top: 2px; font-size: 0.8125rem; font-weight: 500; }
 .fact.reach { grid-column: span 2; }
 @media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
 .hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
@@ -242,7 +243,7 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div class="fact"><dt>Chain</dt><dd id="fact-chain">—</dd></div>
       <div class="fact wide"><dt>Genesis</dt><dd class="mono" id="fact-genesis">—</dd></div>
       <div class="fact wide reach"><dt>Reachable at</dt><dd class="mono" id="fact-reach">—</dd></div>
-      <div class="fact"><dt>Node version</dt><dd id="fact-version">—</dd></div>
+      <div class="fact"><dt>Node version</dt><dd><span id="fact-version">—</span> <span class="update-link"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Check for updates</a></span></dd></div>
       <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
     </dl>
     <p class="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
@@ -506,6 +507,12 @@ function fmtInt(n) {
   if (typeof n !== 'number' || !isFinite(n)) return null;
   return Math.round(n).toLocaleString('en-US');
 }
+// "v0.3.0 (68f6d291)": the build commit is only known for release builds.
+function versionLabel(version, info) {
+  const build = info && typeof info.node_build === 'string' && /^[0-9a-f]{7,40}$/.test(info.node_build) ? info.node_build : null;
+  return 'v' + version + (build ? ' (' + build + ')' : '');
+}
+
 function setStat(el, value, opts) {
   // Integer part large; fraction and unit small, after WrfStatCard.
   opts = opts || {};
@@ -782,7 +789,7 @@ function renderHost() {
 function renderNode() {
   const info = last.info, res = last.resources, cap = last.capability, health = last.health, stats = last.stats, upgrade = last.upgrade;
   const version = (info && info.node_version) || (health && health.version) || null;
-  setStat($('st-version'), version ? 'v' + version : null);
+  setStat($('st-version'), version ? versionLabel(version, info) : null);
   $('st-version-hint').textContent = info && info.network_id ? info.network_id + ' node' : 'node software';
 
   // Prefer the swarm's own uptime; /health only reports it to loopback or operator callers;
@@ -908,7 +915,7 @@ function renderHero() {
   $('fact-reach').textContent = ext || (peerInfo ? 'outbound only (no open port)' : '—');
   $('fact-reach').title = ext ? ext + ': the address other nodes are told to dial (reachable.conf, WRFCOIN_P2P_EXTERNAL_ADDR)' : '';
   const version = (info && info.node_version) || (last.health && last.health.version) || null;
-  $('fact-version').textContent = version ? 'v' + version : '—';
+  $('fact-version').textContent = version ? versionLabel(version, info) : '—';
   const bpm = blocksPerMinute();
   $('fact-bpm').textContent = bpm === null ? 'measuring' : bpm.toFixed(1);
 }

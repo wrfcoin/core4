@@ -12888,6 +12888,8 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert!(body["node_version"].is_string());
+        // Release builds stamp the short commit; local and test builds report null.
+        assert!(body["node_build"].is_null() || body["node_build"].is_string());
         assert!(body["sync_status"].is_string());
         assert!(body["chain_height"].is_number());
         // Without P2P, peer_count should be 0.

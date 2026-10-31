@@ -151,6 +151,17 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn the_version_shows_the_build_and_links_to_updates() {
+        assert!(
+            STATUS_PAGE_HTML.contains("/^[0-9a-f]{7,40}$/.test(info.node_build)"),
+            "the version fact shows the release build commit, and only a hex commit"
+        );
+        let anchor = "<span class=\"update-link\"><a href=\"https://wrfcoin.com/downloads\" \
+                      target=\"_blank\" rel=\"noopener noreferrer\">Check for updates</a></span>";
+        assert!(STATUS_PAGE_HTML.contains(anchor), "the version fact links to the downloads page");
+    }
+
+    #[::core::prelude::v1::test]
     fn the_page_makes_no_external_request() {
         let page = page_without_navigation_links();
         for forbidden in [

@@ -248,6 +248,9 @@ pub async fn get_network_info(state: web::Data<AppState>) -> impl Responder {
         "chain_id": std::env::var("WRFCOIN_CHAIN_ID").unwrap_or_else(|_| "777".into()),
         "disclaimer_url": "https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html",
         "node_version": env!("CARGO_PKG_VERSION"),
+        // Short commit of the source, set at compile time by release builds (the Windows
+        // installer workflow); null for local builds, so they stay reproducible.
+        "node_build": option_env!("WRFCOIN_BUILD_COMMIT"),
         "genesis_hash": genesis_hash,
         "peer_count": peer_count,
         "sync_status": sync_status,
