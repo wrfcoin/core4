@@ -154,6 +154,108 @@ pub async fn inspect(
         "jailed":chain.state.node_fraud.as_ref().map(|f|f.jailed.contains(&id)),"registration":registration}))
 }
 
+/// Page size bounds for `GET /node/bonds`.
+pub const DEFAULT_NODE_BOND_PAGE: usize = 50;
+pub const MAX_NODE_BOND_PAGE: usize = 200;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct BondListQuery {
+    pub limit: Option<usize>,
+    /// Exclusive cursor: hex deployment id of the last row of the previous page.
+    pub after: Option<String>,
+}
+
+/// `GET /node/bonds` — canonical registered bonds in deployment-id order,
+/// keyset-paginated so a page is bounded regardless of registry size.
+pub async fn list(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    query: web::Query<BondListQuery>,
+) -> impl Responder {
+    use std::ops::Bound;
+    use wrfcoin_shared_protocol::consensus::node_bond_registry::epoch_at;
+    // Same observable refusal as the guarded `/node/bonds/{id}` resource when the
+    // Node feature is absent from the process schedule.
+    if !wrfcoin_shared_protocol::crypto::chain_binding::feature_active(
+        wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::NodeShareSettlement,
+        u64::MAX,
+    ) {
+        return HttpResponse::NotFound().finish();
+    }
+    if let Err(response) = require_role(&req, &state, ApiRole::Reader) {
+        return response;
+    }
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_NODE_BOND_PAGE)
+        .clamp(1, MAX_NODE_BOND_PAGE);
+    let after = match query.after.as_deref() {
+        None => None,
+        Some(text) => match decode_id(text) {
+            Some(id) => Some(id),
+            None => {
+                return envelope_error(
+                    &req,
+                    StatusCode::BAD_REQUEST,
+                    "NODE_BOND_ID",
+                    "invalid deployment identifier",
+                );
+            },
+        },
+    };
+    let chain = state.blockchain.read().await;
+    let Some(registry) = &chain.state.node_bond_registry else {
+        return envelope_error(
+            &req,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NODE_BOND_UNAVAILABLE",
+            "Node bond state unavailable",
+        );
+    };
+    let jailed = chain.state.node_fraud.as_ref().map(|f| &f.jailed);
+    let lower = after.map_or(Bound::Unbounded, Bound::Excluded);
+    let mut page = registry.registrations.range((lower, Bound::Unbounded));
+    let bonds: Vec<serde_json::Value> = page
+        .by_ref()
+        .take(limit)
+        .map(|(id, r)| {
+            serde_json::json!({
+                "deployment_id": hex::encode(id),
+                "status": if r.exit_effective_height.is_some() { "EXITING" } else { "REGISTERED" },
+                "principal_base_units": r.principal_units.to_string(),
+                "escrow_balance_base_units": chain
+                    .state
+                    .accounts
+                    .get(&r.binding.escrow_account)
+                    .map(|a| a.balance.0.to_string()),
+                "jailed": jailed.map(|j| j.contains(id)),
+                "registered_epoch": r.registered_epoch.to_string(),
+                "last_change_epoch": r.last_change_epoch.to_string(),
+                "exit_effective_height": r.exit_effective_height.map(|h| h.to_string()),
+                "payout_account": r.binding.payout_account.to_string(),
+                "owner_account": r.binding.owner_account.to_string(),
+                "service_alias": r.binding.service_alias,
+                "update_pending": r.pending_binding.is_some(),
+            })
+        })
+        .collect();
+    let next_after = if page.next().is_some() {
+        bonds.last().and_then(|b| b["deployment_id"].as_str().map(str::to_owned))
+    } else {
+        None
+    };
+    HttpResponse::Ok().json(serde_json::json!({
+        "height": chain.height.to_string(),
+        "activation_height": registry.activation_height.to_string(),
+        "epoch": epoch_at(registry.activation_height, chain.height).map(|e| e.to_string()),
+        "total": registry.registrations.len(),
+        "limit": limit,
+        "returned": bonds.len(),
+        "next_after": next_after,
+        "bonds": bonds,
+    }))
+}
+
 pub async fn receipt(
     req: HttpRequest,
     state: web::Data<AppState>,

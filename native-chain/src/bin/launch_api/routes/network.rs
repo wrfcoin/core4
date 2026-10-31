@@ -813,6 +813,128 @@ pub async fn get_network_upgrade(state: web::Data<AppState>) -> impl Responder {
     })
 }
 
+/// Default and maximum number of recent blocks `/network/producers` scans for
+/// per-key activity. Only in-memory blocks are scanned (never storage), so the
+/// work is bounded by `MAX_PRODUCER_ACTIVITY_WINDOW` under one read lock.
+pub const DEFAULT_PRODUCER_ACTIVITY_WINDOW: u64 = 256;
+pub const MAX_PRODUCER_ACTIVITY_WINDOW: u64 = 2048;
+
+#[derive(Debug, Deserialize)]
+pub struct ProducersQuery {
+    pub window: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProducerView {
+    pub producer_id: String,
+    /// Hex ed25519 key that authenticates this producer's blocks.
+    pub public_key: String,
+    pub payout_address: String,
+    /// Newest height in the scanned window whose block this key signed.
+    pub last_produced_height: Option<u64>,
+    pub blocks_in_window: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProducerActivityWindow {
+    /// Requested window after clamping to `1..=MAX_PRODUCER_ACTIVITY_WINDOW`.
+    pub requested: u64,
+    /// Lowest and highest heights actually scanned (`null` when nothing was).
+    pub from_height: Option<u64>,
+    pub to_height: Option<u64>,
+    pub blocks_scanned: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NetworkProducersResponse {
+    pub tip_height: u64,
+    /// The set below authorizes the block at this height (`tip_height + 1`).
+    pub authorizes_height: u64,
+    /// `epoch` / `effective_height` of the producer-set change in force; `null`
+    /// when the chain carries no producer-set history.
+    pub set_epoch: Option<u64>,
+    pub set_effective_height: Option<u64>,
+    pub producer_set_hash: Option<String>,
+    pub producers: Vec<ProducerView>,
+    pub activity_window: ProducerActivityWindow,
+}
+
+/// `GET /network/producers` — read-only view of the authorized producer set
+/// (`State::producer_set_history`) plus cheap recent activity per key.
+pub async fn get_network_producers(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    query: web::Query<ProducersQuery>,
+) -> impl Responder {
+    use wrfcoin_shared_protocol::consensus::producer_set::validate_producer_set_history;
+    if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
+        return resp;
+    }
+    let requested = query
+        .window
+        .unwrap_or(DEFAULT_PRODUCER_ACTIVITY_WINDOW)
+        .clamp(1, MAX_PRODUCER_ACTIVITY_WINDOW);
+    let chain = state.blockchain.read().await;
+    let history = &chain.state.producer_set_history;
+    if validate_producer_set_history(history).is_err() {
+        return envelope_error(
+            &req,
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "PRODUCER_SET_INVALID",
+            "producer set history is invalid",
+        );
+    }
+    let tip_height = chain.height;
+    let authorizes_height = tip_height.saturating_add(1);
+    // Validated history is in strictly-increasing effective_height order, so the
+    // change in force is the last one at or below the height it authorizes.
+    let active = history.iter().rfind(|c| c.effective_height <= authorizes_height);
+    let mut producers: Vec<ProducerView> = active
+        .map(|c| {
+            c.canonical_members()
+                .into_iter()
+                .map(|m| ProducerView {
+                    producer_id: m.producer_id.clone(),
+                    public_key: hex::encode(m.public_key),
+                    payout_address: m.payout_address.clone(),
+                    last_produced_height: None,
+                    blocks_in_window: 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let keys: Vec<[u8; 32]> = active
+        .map(|c| c.canonical_members().into_iter().map(|m| m.public_key).collect())
+        .unwrap_or_default();
+    let mut from_height = None;
+    let mut to_height = None;
+    let mut blocks_scanned = 0u64;
+    for (height, block) in chain.blocks().iter().rev().take(requested as usize) {
+        to_height.get_or_insert(*height);
+        from_height = Some(*height);
+        blocks_scanned += 1;
+        let index = keys.iter().position(|k| *k == block.producer_pubkey);
+        if let Some(view) = index.and_then(|i| producers.get_mut(i)) {
+            view.blocks_in_window += 1;
+            view.last_produced_height.get_or_insert(*height);
+        }
+    }
+    HttpResponse::Ok().json(NetworkProducersResponse {
+        tip_height,
+        authorizes_height,
+        set_epoch: active.map(|c| c.epoch),
+        set_effective_height: active.map(|c| c.effective_height),
+        producer_set_hash: active.map(|c| c.producer_set_hash().to_hex()),
+        producers,
+        activity_window: ProducerActivityWindow {
+            requested,
+            from_height,
+            to_height,
+            blocks_scanned,
+        },
+    })
+}
+
 #[cfg(all(test, feature = "p2p"))]
 mod tests {
     use crate::peer_reputation::{PeerReputationTracker, SharedPeerReputation, apply_peer_penalty};

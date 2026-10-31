@@ -4028,6 +4028,8 @@ mod tests {
     mod node_share_slice6b;
     #[path = "node_bond_slice6a.rs"]
     mod node_bond_slice6a;
+    #[path = "producers_bonds_list.rs"]
+    mod producers_bonds_list;
     #[path = "node_receipt_slice3.rs"]
     mod node_receipt_slice3;
     #[cfg(feature = "p2p")]
