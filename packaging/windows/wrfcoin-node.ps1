@@ -177,7 +177,7 @@ function Open-StatusPage([string]$Api) {
 function Start-Node {
     $cfg = Read-NodeConfig $Config
     $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
-    if ((Get-NodeProcess).Count -gt 0) { Open-StatusPage $api; return }
+    if (@(Get-NodeProcess).Count -gt 0) { Open-StatusPage $api; return }
     if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
 
     foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
@@ -203,7 +203,7 @@ function Start-Node {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 2
         if (Test-Url "$api/health") { Open-StatusPage $api; return }
-        if ((Get-NodeProcess).Count -eq 0) {
+        if (@(Get-NodeProcess).Count -eq 0) {
             Start-Sleep -Seconds 1
             $tail = if (Test-Path -LiteralPath $LogFile) { (Get-Content -LiteralPath $LogFile -Tail 15) -join "`n" } else { '' }
             Fail "the node stopped during startup. Last lines of ${LogFile}:`n`n$tail"
@@ -236,7 +236,7 @@ public static class WrfcoinConsoleCtrl {
 '@
 
 function Stop-Node {
-    $nodes = Get-NodeProcess
+    $nodes = @(Get-NodeProcess)
     if ($nodes.Count -eq 0) { Show-Message 'The WRFCoin node is not running.'; return }
     Add-Type -TypeDefinition $ConsoleCtrl
     foreach ($node in $nodes) {
@@ -245,8 +245,8 @@ function Stop-Node {
     }
     # Wait for the graceful shutdown (P2P disconnect, checkpoint, HTTP stop).
     $deadline = (Get-Date).AddSeconds($StopWaitSeconds)
-    while ((Get-Date) -lt $deadline -and (Get-NodeProcess).Count -gt 0) { Start-Sleep -Seconds 1 }
-    if ((Get-NodeProcess).Count -gt 0) {
+    while ((Get-Date) -lt $deadline -and @(Get-NodeProcess).Count -gt 0) { Start-Sleep -Seconds 1 }
+    if (@(Get-NodeProcess).Count -gt 0) {
         Fail "the node is still shutting down after $StopWaitSeconds s. Try again in a minute; see $LogFile"
     }
     Show-Message 'The WRFCoin node has stopped.'
