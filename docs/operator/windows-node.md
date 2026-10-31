@@ -1,0 +1,122 @@
+# Running a WRFCoin node on Windows
+
+One download, no WSL, Docker, Rust or command line. The installer sets up a
+**sync-only** node for testnet chain 888: it downloads and checks the whole chain
+from the public seed, makes outbound connections only, and holds no
+block-signing key.
+
+Requirements: 64-bit Windows 10 or 11, free disk space for the chain (it grows),
+and an internet connection. No administrator rights are needed.
+
+## Install
+
+1. Download `wrfcoin-node-<version>-windows-x86_64-setup.exe` and its `SHA256SUMS`.
+   Optional check, in PowerShell from the download folder:
+   `Get-FileHash .\wrfcoin-node-*-setup.exe -Algorithm SHA256` must print the hash
+   in `SHA256SUMS`.
+2. Run the installer. **It is not code-signed yet**, so Windows SmartScreen shows
+   "Windows protected your PC". Click **More info**, then **Run anyway**.
+3. Click through the wizard. You can tick "Start the WRFCoin node when I sign in to
+   Windows" (off by default). On the last page, leave "Start the WRFCoin node now"
+   ticked.
+
+The installer puts the program in `%LOCALAPPDATA%\Programs\WRFCoin Node` and adds
+a **WRFCoin Node** folder to the Start menu.
+
+## Start and stop
+
+- **Start:** Start menu → **WRFCoin Node**. A console window opens and shows the
+  node's log. Keep it open; the node runs as long as the window does.
+- **Stop:** click the window and press **Ctrl+C**, then wait until it says the node
+  exited. This lets the node save its place, so the next start resumes there.
+
+Only one node can run at a time (it uses ports 8556 and 9000 on this PC).
+
+### The firewall prompt
+
+Windows may ask whether to allow `launch_api.exe` on networks. A sync-only node
+needs **no inbound access**: it only connects out to the seed. Choose **Cancel**
+(deny); the node syncs either way.
+
+## Check that it is syncing
+
+Start menu → **WRFCoin Node Status** opens `http://127.0.0.1:8556/dashboard` in
+your browser. The chain panel shows the height climbing and the number of peers.
+The raw numbers are at `http://127.0.0.1:8556/network/info`: look for
+`"chain_id":"888"`, `chain_height` going up, and `peer_count` of 1 or more.
+
+From an empty folder the node reached about 9,700 blocks in 15 minutes on a laptop.
+The page only answers on this PC (127.0.0.1); nothing is exposed to your network.
+
+The dashboard's host panel asks for an operator token. It is in
+`%LOCALAPPDATA%\WRFCoin\operator.token` (created at install, unique to this PC).
+You do not need it to watch the sync.
+
+## Where the data lives
+
+| What | Where |
+|---|---|
+| Program, chain-888 config, launcher | `%LOCALAPPDATA%\Programs\WRFCoin Node` |
+| Chain database (`WRFCOIN_DATA_DIR`) | `%LOCALAPPDATA%\WRFCoin\data` |
+| Node identity key | `%LOCALAPPDATA%\WRFCoin\data\peer_identity.key` |
+| Local API operator token | `%LOCALAPPDATA%\WRFCoin\operator.token` |
+
+`%LOCALAPPDATA%\WRFCoin` is restricted to your Windows account: the launcher
+removes inherited permissions and grants only your user, so other accounts on the
+PC cannot read the identity key or token. Start menu → **WRFCoin Node Data Folder**
+opens it.
+
+## Uninstall
+
+Start menu → **Uninstall WRFCoin Node**, or Settings → Apps → **WRFCoin Node** →
+Uninstall. Stop the node first. The uninstaller asks whether to delete the chain
+data and identity key too; answer **No** to keep them, so a reinstall resumes
+where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
+
+## Troubleshooting
+
+- **The window flashes and closes, or says "running scripts is disabled":** the
+  shortcut runs the launcher with `-ExecutionPolicy Bypass`, which a company
+  Group Policy can override. Ask your administrator, or use a personal PC.
+- **"Address in use" / the node exits at once:** another node is already running.
+  Close the other WRFCoin Node window.
+- **Height stays at 0:** check the internet connection; the seed is
+  `seed.wrfcoin.com` port 9000 (outbound TCP).
+
+## Not done yet
+
+- **Code signing.** The installer and `launch_api.exe` are unsigned, hence the
+  SmartScreen warning.
+- **Windows Service / tray icon.** The node runs in a console window while you are
+  signed in. A service would run it without a window and before sign-in; it needs
+  a service host (the node binary does not speak the Service Control Manager
+  protocol yet: either native support via the `windows-service` crate, or a
+  wrapper), a dedicated low-privilege account and a data folder ACL'd to that
+  account instead of the user, an installer that runs elevated (per-machine), and
+  the graceful-stop path wired to the service stop request.
+
+## For maintainers: how the package is built
+
+`packaging/windows/` holds everything; `.github/workflows/windows-node-build.yml`
+builds `launch_api.exe` (`--features full-mining,p2p`), packages it with Inno
+Setup 6, installs it silently on the runner, starts it through its Start-menu
+shortcut, checks `/network/info` reports chain 888 with the pinned genesis hash,
+uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+`SHA256SUMS`).
+
+The node is configured only by environment variables. `chain-888.conf` is the
+exact set, one `KEY=VALUE` per line with no comments or quotes, generated from the
+infra repository and committed:
+
+```sh
+python3 packaging/windows/gen_chain888_config.py --infra ../infra          # write
+python3 packaging/windows/gen_chain888_config.py --infra ../infra --check  # verify
+```
+
+It reads infra `testnet/cut-pins.env` (chain identity and genesis pins, parsed the
+same way as infra `testnet/scripts/chain-identity.py`, so inline `# comments`
+after quoted JSON are handled) and the `wrfcoin-node` service of
+`testnet/docker-compose.testnet.yml` (oracle-governance allowlist, producer-auth
+flag), and refuses any missing, placeholder or malformed pin. Regenerate and
+commit it whenever the cut pins change. The launcher `wrfcoin-node.ps1` adds the
+two per-user values, `WRFCOIN_DATA_DIR` and `WRFCOIN_OPERATOR_TOKEN`.

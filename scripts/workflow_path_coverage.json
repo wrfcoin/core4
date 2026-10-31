@@ -552,7 +552,7 @@
       "why": "Reads all workflows/actions/admission manifests, workflow coverage declarations, and the checker scripts/fixtures. Independent of required admission evidence."
     },
     ".github/workflows/windows-node-build.yml": {
-      "why": "Native Windows build of launch_api (full-mining,p2p): any change to a crate the node links, or to the toolchain/lockfile, must rebuild it on windows-2022.",
+      "why": "Native Windows build of launch_api (full-mining,p2p) and its per-user installer: any change to a crate the node links, the toolchain/lockfile, or the Windows package (installer script, chain-888 config, launcher) must rebuild, install and boot it on windows-2022.",
       "must_trigger": [
         "build-provenance/src/lib.rs",
         "consensus-engines/src/lib.rs",
@@ -574,6 +574,9 @@
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/config.toml",
+        "packaging/windows/wrfcoin-node.iss",
+        "packaging/windows/chain-888.conf",
+        "packaging/windows/wrfcoin-node.ps1",
         ".github/workflows/windows-node-build.yml"
       ],
       "must_not_trigger": [

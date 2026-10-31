@@ -6,6 +6,11 @@ name: Windows node build
 # hardware detection and a Unix-only SIGTERM handler) went uncompiled from the
 # public release (2026-10-22) until a native build on the owner's laptop (2026-10-31).
 # The built .exe is uploaded as a run artifact for hands-on testing; it is not a release.
+#
+# The same binary is then packaged as a per-user Windows installer (Inno Setup,
+# packaging/windows/), installed silently on the runner, started through its own
+# Start-menu shortcut, and checked against chain 888 over the local API before
+# it is uploaded with its SHA256SUMS line. Unsigned: SmartScreen will warn.
 
 on:
   pull_request:
@@ -30,6 +35,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - 'packaging/windows/**'
       - '.github/workflows/windows-node-build.yml'
   push:
     branches: [main]
@@ -54,6 +60,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - 'packaging/windows/**'
       - '.github/workflows/windows-node-build.yml'
   workflow_dispatch:
 
@@ -89,4 +96,118 @@ jobs:
         with:
           name: wrfcoin-node-windows-x86_64
           path: target/release/launch_api.exe
+          retention-days: 14
+
+      # ---- Windows package (packaging/windows) --------------------------------
+      - name: Package config and launcher tests
+        shell: bash
+        run: python -m unittest discover -s packaging/windows -p 'test_*.py' -v
+      - name: Build installer (Inno Setup 6)
+        shell: pwsh
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+          $version = "$((Get-Content VERSION -Raw).Trim())-g$($env:HEAD_SHA.Substring(0, 8))"
+          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" `
+            "/DOutputDir=$PWD\target\installer" packaging\windows\wrfcoin-node.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          Get-ChildItem target\installer
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: target/installer
+        run: |
+          sha256sum -- *-setup.exe > SHA256SUMS
+          cat SHA256SUMS
+      - name: Smoke test - install, start from the Start menu, check chain 888, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem target\installer\*-setup.exe).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/LOG=$PWD\target\installer\install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content target\installer\install.log; throw "installer exit $($p.ExitCode)" }
+
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
+          $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
+          $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
+          foreach ($f in 'launch_api.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+            if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
+          }
+          foreach ($f in 'WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
+            if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
+          }
+          if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
+
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          function Assert-UserOnly($path) {
+            $acl = Get-Acl -LiteralPath $path
+            $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+            $who = ($rules | ForEach-Object { $_.IdentityReference.Value }) -join ','
+            if ($rules.Count -ne 1 -or $who -ne $sid) { throw "ACL on $path is [$who], expected only $sid" }
+            if (-not $acl.AreAccessRulesProtected -and (Get-Item -LiteralPath $path).PSIsContainer) { throw "$path still inherits" }
+            Write-Host "ACL ok: $path -> $who"
+          }
+          Assert-UserOnly $root
+          Assert-UserOnly (Join-Path $root 'operator.token')
+
+          # Start the node exactly as the Start-menu shortcut does.
+          $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $menu 'WRFCoin Node.lnk'))
+          Write-Host "shortcut: $($lnk.TargetPath) $($lnk.Arguments)"
+          $log = Join-Path $PWD 'target\installer\node'
+          $launcher = Start-Process $lnk.TargetPath -ArgumentList $lnk.Arguments -WorkingDirectory $lnk.WorkingDirectory `
+            -RedirectStandardOutput "$log.out.log" -RedirectStandardError "$log.err.log" -PassThru
+
+          $cfg = @{}; Get-Content (Join-Path $app 'chain-888.conf') | ForEach-Object { $k, $v = $_ -split '=', 2; $cfg[$k] = $v }
+          $info = $null
+          $deadline = (Get-Date).AddMinutes(5)
+          while ((Get-Date) -lt $deadline -and -not $launcher.HasExited) {
+            try { $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 5; break } catch { Start-Sleep 5 }
+          }
+          try {
+            if (-not $info) { throw 'node API never answered on 127.0.0.1:8556' }
+            $info | ConvertTo-Json -Depth 4
+            if ("$($info.chain_id)" -ne '888') { throw "chain_id $($info.chain_id)" }
+            if (("$($info.genesis_hash)".ToLower() -replace '^0x', '') -ne $cfg['WRFCOIN_GENESIS_HASH']) { throw "genesis_hash $($info.genesis_hash)" }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            if ($dash.StatusCode -ne 200 -or $dash.Content -notmatch '<html') { throw 'dashboard' }
+            # Syncing depends on the public seed being up, so it is reported, not gated.
+            $height = 0
+            $until = (Get-Date).AddMinutes(3)
+            while ((Get-Date) -lt $until -and $height -eq 0) {
+              Start-Sleep 10
+              $i = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 5
+              $height = [int64]$i.chain_height
+              Write-Host "chain_height=$height peer_count=$($i.peer_count) sync_status=$($i.sync_status)"
+            }
+            if ($height -gt 0) { Write-Host "SYNCING: reached height $height from the public seed" }
+            else { Write-Host '::warning::node booted on chain 888 but did not sync a block within 3 minutes (seed reachable?)' }
+            $key = Join-Path $root 'data\peer_identity.key'
+            if (-not (Test-Path $key)) { throw 'peer_identity.key was not created under the data folder' }
+            Assert-UserOnly $key
+          } finally {
+            Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
+            Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep 3
+            Write-Host '--- node log (tail) ---'
+            Get-Content "$log.err.log","$log.out.log" -Tail 60 -ErrorAction SilentlyContinue
+          }
+
+          $un = Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($un.ExitCode -ne 0) { throw "uninstaller exit $($un.ExitCode)" }
+          Start-Sleep 3
+          if (Test-Path (Join-Path $app 'launch_api.exe')) { throw 'uninstall left launch_api.exe' }
+          if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
+          if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
+          Write-Host 'install / start / chain-888 check / uninstall: OK'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrfcoin-node-windows-x86_64-setup
+          path: |
+            target/installer/*-setup.exe
+            target/installer/SHA256SUMS
+          if-no-files-found: error
           retention-days: 14
