@@ -472,6 +472,7 @@ fn passkey_payload(
         authority_signature: None,
         passkey_auth: Some(auth.authorize_transfer(&to.to_hex(), amount, nonce)),
         sponsorship: None,
+        session_key_auth: None,
     }
 }
 
@@ -583,6 +584,7 @@ fn the_ed25519_path_is_byte_identical_with_or_without_a_passkey_member() {
         authority_signature: None,
         passkey_auth: None,
         sponsorship: None,
+        session_key_auth: None,
     };
     payload.sign_authorization(&sk, 3);
     assert!(payload.verify_authorization(3));

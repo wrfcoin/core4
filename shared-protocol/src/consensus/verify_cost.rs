@@ -321,6 +321,9 @@ impl VerifyCost for Transaction {
             TransactionType::NodeFraudReport => crate::consensus::node_fraud::parse(self).map(|p| 1 + 4 * p.batch.claims.len() as u32).unwrap_or(9),
             TransactionType::NodeServiceBatch => crate::consensus::node_receipt_registry::NodeReceiptSubmission::parse(self)
                 .map(|p| 1 + 4 * p.batch.claims.len() as u32).unwrap_or(1 + 4 * crate::consensus::node_share_contracts::MAX_NODE_CLAIMS as u32),
+            // Register: owner signature + session-key possession proof
+            // (charged for the larger case; revoke verifies one).
+            TransactionType::SessionKeyAction => 2,
             TransactionType::NodeBondLifecycle => crate::consensus::node_bond_registry::NodeBondLifecycle::parse(self)
                 .map(|p| if matches!(p.signed.authorization.action,
                     crate::consensus::node_share_contracts::NodeBondAction::Deposit | crate::consensus::node_share_contracts::NodeBondAction::Update) { 5 } else { 1 })
@@ -644,6 +647,7 @@ mod tests {
                 authority_signature: None,
                 passkey_auth: auth,
                 sponsorship: None,
+                session_key_auth: None,
             };
             tx(
                 TransactionType::Transfer,

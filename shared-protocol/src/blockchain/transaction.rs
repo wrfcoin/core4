@@ -157,6 +157,12 @@ pub enum TransactionType {
     NodeServiceBatch,
     /// Attributable bonded-service evidence, append-only index 39.
     NodeFraudReport,
+    /// Register or revoke a session key (`accounts::session_keys`), signed by
+    /// the account's primary key; append-only index 40. Carries a
+    /// [`crate::accounts::session_keys::SessionKeyActionPayload`] as JSON in
+    /// `data`. Refused at admission, producer self-screen, block validation
+    /// and apply unless `ConsensusFeature::SessionKeys` is active.
+    SessionKeyAction,
 }
 
 impl fmt::Display for TransactionType {
@@ -202,6 +208,7 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeServiceBatch => write!(f, "NodeServiceBatch"),
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
+            TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }
     }
 }
@@ -2503,6 +2510,107 @@ pub struct TransparentTransferPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub sponsorship: Option<crate::accounts::paymaster::SponsorAuthorization>,
+    /// Session-key authorization of the debit: a device key the `from`
+    /// account registered (`accounts::session_keys`) signs
+    /// [`session_key_transfer_authorization_message_with_domain`]. The third
+    /// alternative to ed25519 / passkey, consulted only once
+    /// `ConsensusFeature::SessionKeys` is active and only when the other two
+    /// fail; state apply then checks the key is registered to `from`, live,
+    /// and that this transfer fits its scope and limits. Deserialised
+    /// leniently exactly like `passkey_auth`, so a payload a pre-feature
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_session_key_auth",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_key_auth: Option<SessionKeyTransferAuth>,
+}
+
+/// A session key's signature over one transparent transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKeyTransferAuth {
+    /// Hex ed25519 public key of the registered session key.
+    pub session_public_key: String,
+    /// Hex ed25519 signature over
+    /// [`session_key_transfer_authorization_message_with_domain`].
+    pub signature: String,
+}
+
+impl SessionKeyTransferAuth {
+    /// Address of the session key (the key under which `State::session_keys`
+    /// records its grant), or `None` if the key is not valid hex ed25519.
+    pub fn session_key_address(&self) -> Option<Address> {
+        PublicKey::from_hex(self.session_public_key.trim())
+            .ok()
+            .map(|pk| Address::from_public_key(&pk))
+    }
+}
+
+/// Same contract as `accounts::passkey::deserialize_lenient_passkey`: a
+/// member that is not a well-formed [`SessionKeyTransferAuth`] reads as
+/// `None`, so adding this field never makes a payload that an older binary
+/// parses (and, if ed25519-authorised, accepts) unparseable here.
+fn deserialize_lenient_session_key_auth<'de, D>(
+    deserializer: D,
+) -> Result<Option<SessionKeyTransferAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value::<SessionKeyTransferAuth>(value).ok()))
+}
+
+/// Domain separator for a session key's transparent-transfer authorization.
+/// Distinct from the owner's [`TRANSPARENT_TRANSFER_AUTH_DOMAIN`] so a session
+/// signature is never an owner authorization, nor the reverse.
+pub const SESSION_KEY_TRANSFER_AUTH_DOMAIN: &[u8] = b"wrfcoin_session_key_transfer_auth_v1";
+
+/// The bytes a session key signs to authorize one transparent transfer:
+/// chain domain, `from`, `to`, `amount`, the `from` account nonce, and the
+/// session public key itself (so one key's signature can never be presented
+/// as another key's). Same framing as
+/// [`transparent_transfer_authorization_message_with_domain`].
+pub fn session_key_transfer_authorization_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(SESSION_KEY_TRANSFER_AUTH_DOMAIN.len() + 128);
+    buf.extend_from_slice(SESSION_KEY_TRANSFER_AUTH_DOMAIN);
+    push_chain_domain(&mut buf, chain_id, network_id);
+    buf.extend_from_slice(&(from.len() as u32).to_le_bytes());
+    buf.extend_from_slice(from.as_bytes());
+    buf.extend_from_slice(&(to.len() as u32).to_le_bytes());
+    buf.extend_from_slice(to.as_bytes());
+    buf.extend_from_slice(&amount.to_le_bytes());
+    buf.extend_from_slice(&nonce.to_le_bytes());
+    buf.extend_from_slice(session_public_key.as_bytes());
+    buf
+}
+
+/// [`session_key_transfer_authorization_message_with_domain`] under the
+/// node's signing identity.
+pub fn session_key_transfer_authorization_message(
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    session_key_transfer_authorization_message_with_domain(
+        &signing_chain_id(),
+        &signing_network_id(),
+        from,
+        to,
+        amount,
+        nonce,
+        session_public_key,
+    )
 }
 
 /// Domain separator for transparent-transfer authorization signatures (#1727).
@@ -2661,6 +2769,42 @@ impl TransparentTransferPayload {
         }
     }
 
+    /// Sign this payload with a registered session key, populating
+    /// `session_key_auth`. Leaves `auth_pubkey`/`auth_signature` untouched.
+    pub fn sign_session_key_authorization(&mut self, session_key: &PrivateKey, nonce: u64) {
+        let public_key = PublicKey::from_private_key(session_key);
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        self.session_key_auth = Some(SessionKeyTransferAuth {
+            session_public_key: public_key.to_hex(),
+            signature: session_key.sign(&message).to_hex(),
+        });
+    }
+
+    /// **Ungated, stateless** check of `session_key_auth`: the session key's
+    /// signature verifies over this transfer at `nonce`. Says nothing about
+    /// whether the key is registered to `from` or within its limits — that is
+    /// state, checked by `State` at apply (`session_keys::consume_transfer`).
+    pub fn verify_session_key_signature(&self, nonce: u64) -> bool {
+        let Some(auth) = &self.session_key_auth else {
+            return false;
+        };
+        let (Ok(public_key), Ok(signature)) = (
+            PublicKey::from_hex(auth.session_public_key.trim()),
+            Signature::from_hex(auth.signature.trim()),
+        ) else {
+            return false;
+        };
+        if self.from.parse::<Address>().is_err() {
+            return false;
+        }
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        public_key.verify(&message, &signature)
+    }
+
     /// Authorization at a consensus height (#2169): the ed25519 rule
     /// ([`Self::verify_authorization`], unchanged at every height) OR, once
     /// `ConsensusFeature::PasskeyP256Auth` is active at `height`, a valid
@@ -2689,6 +2833,24 @@ impl TransparentTransferPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
+        self.verify_owner_authorization_at_height_with_view(view, nonce, height, timestamp)
+            || (crate::accounts::session_keys::session_keys_active(height)
+                && self.verify_session_key_signature(nonce))
+    }
+
+    /// The owner's own authorization at a consensus height: ed25519 or, once
+    /// active, passkey — exactly the pre-session-key rule. State apply uses
+    /// this to decide whether a transfer is owner-signed (no session use is
+    /// consumed) or must be charged to a session key.
+    pub fn verify_owner_authorization_at_height_with_view<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+    ) -> bool {
         self.verify_authorization_with_view(view, nonce, height, timestamp)
             || (crate::accounts::passkey::passkey_auth_active(height)
                 && self.verify_passkey_authorization(nonce))
@@ -2704,7 +2866,9 @@ impl TransparentTransferPayload {
     pub fn verify_authorization_for_admission(&self, nonce: u64) -> bool {
         (self.verify_authorization(nonce)
             || (crate::accounts::passkey::passkey_auth_scheduled()
-                && self.verify_passkey_authorization(nonce)))
+                && self.verify_passkey_authorization(nonce))
+            || (crate::accounts::session_keys::session_keys_scheduled()
+                && self.verify_session_key_signature(nonce)))
             && self.sponsorship_admissible(nonce)
     }
 
@@ -6008,6 +6172,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         };
         // Unsigned → not authorized.
         assert!(!payload.verify_authorization(0));
@@ -6038,6 +6203,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         };
         forged.sign_authorization(&attacker, 0);
         assert!(
@@ -6099,6 +6265,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         }
     }
 

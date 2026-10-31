@@ -504,6 +504,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "session_key_transfers"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "weather_skew_block_time_allowance_3270",
       "review": {
         "source_pr": 3280,

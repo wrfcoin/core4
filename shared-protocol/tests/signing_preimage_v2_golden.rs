@@ -1003,6 +1003,7 @@ fn build_session_key_register_case() -> Value {
             allowed_targets: vec![Address([0x82; 20])],
             max_value_per_use: 25,
             max_total_value: 250,
+            window: None,
         },
         valid_from: 2_170,
         valid_until: 2_270,

@@ -24,6 +24,7 @@ pub mod node_receipt;
 pub mod oracle;
 pub mod operator;
 pub mod send_interactive;
+pub mod session_key;
 pub mod setup;
 pub mod snapshot;
 pub mod station;

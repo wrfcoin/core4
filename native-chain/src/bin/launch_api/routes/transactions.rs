@@ -73,6 +73,13 @@ pub struct LegacyTransactionSubmitRequest {
     /// when it passes every stateless rule for this exact transfer.
     #[serde(default)]
     pub sponsorship: Option<wrfcoin_shared_protocol::accounts::paymaster::SponsorAuthorization>,
+    /// A registered session key's signature over the transfer
+    /// (`session_key_transfer_authorization_message`). Used only when neither
+    /// `auth_pubkey`/`auth_signature` nor `passkey_auth` is supplied, and only
+    /// once `session_keys` is active at tip+1. The node also pre-checks the
+    /// key's on-chain scope and limits so an over-limit send fails fast.
+    #[serde(default)]
+    pub session_key_auth: Option<wrfcoin_shared_protocol::blockchain::transaction::SessionKeyTransferAuth>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -314,6 +321,79 @@ pub async fn submit_transaction_compat(
                         "AUTHORIZATION_INVALID",
                         "passkey_auth does not verify over from|to|amount|nonce, \
                          or its credential does not derive to from",
+                    );
+                }
+                payload
+            },
+            (None, None) if body.session_key_auth.is_some() => {
+                let next_height = state.blockchain.read().await.height.saturating_add(1);
+                if !wrfcoin_shared_protocol::accounts::session_keys::session_keys_active(next_height) {
+                    return envelope_error(
+                        &req,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "FEATURE_NOT_ACTIVE",
+                        format!(
+                            "session_keys is not active at the next block height \
+                             {next_height}; use auth_pubkey/auth_signature (ed25519)"
+                        ),
+                    );
+                }
+                let mut payload = build_transparent_opt_out_payload(
+                    from,
+                    to,
+                    amount,
+                    body.transparent_opt_out_reason.as_deref(),
+                    None,
+                    None,
+                );
+                payload.session_key_auth = body.session_key_auth.clone();
+                if !payload.verify_session_key_signature(nonce_u64) {
+                    // Charged like a failed ed25519 authorization (#3258 R1).
+                    if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                        return resp;
+                    }
+                    return envelope_error(
+                        &req,
+                        StatusCode::BAD_REQUEST,
+                        "AUTHORIZATION_INVALID",
+                        "session_key_auth does not verify over from|to|amount|nonce|session key",
+                    );
+                }
+                // Advisory pre-check against the current state: is the key
+                // registered to `from`, live, and is this send inside its
+                // scope and limits? Consensus re-checks at apply; this only
+                // spares the caller a send that would be dropped.
+                let session_key = payload
+                    .session_key_auth
+                    .as_ref()
+                    .and_then(|auth| auth.session_key_address());
+                let (Ok(from_address), Ok(to_address), Some(session_key)) =
+                    (from.parse::<Address>(), to.parse::<Address>(), session_key)
+                else {
+                    return envelope_error(
+                        &req,
+                        StatusCode::BAD_REQUEST,
+                        "VALIDATION_ERROR",
+                        "invalid session key or address",
+                    );
+                };
+                let precheck = {
+                    let chain = state.blockchain.read().await;
+                    wrfcoin_shared_protocol::accounts::session_keys::check_transfer(
+                        &chain.state.session_keys,
+                        &from_address,
+                        &session_key,
+                        &to_address,
+                        u128::from(amount),
+                        next_height,
+                    )
+                };
+                if let Err(err) = precheck {
+                    return envelope_error(
+                        &req,
+                        StatusCode::FORBIDDEN,
+                        "SESSION_KEY_LIMIT",
+                        format!("session key cannot authorize this transfer: {err}"),
                     );
                 }
                 payload

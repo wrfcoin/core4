@@ -397,6 +397,7 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                         .collect(),
                     max_value_per_use: s("max_value_per_use").parse().expect("max per use"),
                     max_total_value: s("max_total_value").parse().expect("max total"),
+                    window: None,
                 },
                 valid_from: input["valid_from"].as_u64().expect("valid_from"),
                 valid_until: input["valid_until"].as_u64().expect("valid_until"),

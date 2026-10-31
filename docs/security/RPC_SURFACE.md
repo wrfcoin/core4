@@ -8,8 +8,8 @@ historical CLI/backend route notes in `docs/ROUTE_MATRIX.md` and
 
 ## Scope and classification rule
 
-- Inventory total: **154 methods** (151 HTTP, 3 WebSocket, 0 JSON-RPC).
-- Classification totals: **30 public**, **78 authenticated**, **40 admin**, and **6 disabled-in-release**.
+- Inventory total: **156 methods** (153 HTTP, 3 WebSocket, 0 JSON-RPC).
+- Classification totals: **30 public**, **80 authenticated**, **40 admin**, and **6 disabled-in-release**.
 - The inventory is the union of the default routes and the `p2p`, `zk`, `execution`, and `privacy` feature-gated routes. A feature annotation in the handler column identifies conditional registration.
 - `public` means no bearer token is required. `authenticated` means any non-operator role enforced by `require_role` or the authenticated WebSocket handshake. `admin` means `ApiRole::Operator` is enforced. Health/readiness remain public because anonymous callers receive deliberately reduced responses; localhost/operator callers receive detail.
 - Applied mechanically: a method that can alter peers or partition state, modify validator/oracle/signing-key state, seed or purge node state, control bridge safety, mine blocks, submit rollup batches, or otherwise perform an operator mutation is `admin`. User-signed protocol transactions remain `authenticated`, except the deliberately permissionless signed submission route.
@@ -51,6 +51,8 @@ that exploitation is currently demonstrated.
 | `POST /transactions/submit` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::submit_transaction_compat` | `authenticated` | yes | no | global-write + legacy-submit |
 | `POST /transactions/permissionless/submit` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::submit_permissionless_transaction` | `public` | yes | no | global-write + signer-submit |
 | `GET /participation/policy` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_participation_policy` | `public` | no | no | global-read |
+| `GET /accounts/{address}/session-keys` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::list_session_keys` | `authenticated` | no | no | global-read |
+| `POST /session-keys/submit` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::submit_session_key_action` | `authenticated` | yes | no | global-write + legacy-submit (failed authorization) |
 | `GET /addresses/{address}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_compat` | `authenticated` | no | no | global-read |
 | `GET /prometheus` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |
 | `GET /metrics` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |

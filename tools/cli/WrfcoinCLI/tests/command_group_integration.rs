@@ -673,6 +673,7 @@ async fn wallet_send_posts_signed_transparent_transfer() {
         authority_signature: None,
         passkey_auth: None,
         sponsorship: None,
+        session_key_auth: None,
     };
     let signature = hex::encode(key.sign(&payload.authorization_message(nonce)).as_ref());
 

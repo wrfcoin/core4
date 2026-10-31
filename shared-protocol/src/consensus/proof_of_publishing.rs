@@ -2188,6 +2188,7 @@ struct BlockTxValidationAccumulators {
     /// Number of fee-less (zero-fee weather) transactions seen so far.
     feeless_tx_count: usize,
     node_bond_lifecycle_count: usize,
+    session_key_action_count: usize,
     node_receipt_batch_count: usize,
     node_fraud_report_count: usize,
     /// Per-worker fee-less transaction counts for the per-block rate limit.
@@ -6230,6 +6231,16 @@ impl ProofOfPublishing {
                     .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
                 Ok(Some(StateTransition::ApplyNodeBondLifecycle { payload, block_height }))
             },
+            // Session-key register/revoke. The SAME parse the P2P/WAL extractor
+            // uses, so producer == applier == WAL replay. The apply arm is
+            // gated on `ConsensusFeature::SessionKeys` and fails closed, so the
+            // producer prunes an inapplicable action and a peer rejects a block
+            // carrying one.
+            TransactionType::SessionKeyAction => {
+                let action = crate::accounts::session_keys::SessionKeyActionPayload::parse(tx)
+                    .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
+                Ok(Some(StateTransition::ApplySessionKeyAction { action, block_height }))
+            },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
                     ConsensusInvariantError::MissingPopPayload {
@@ -8632,6 +8643,30 @@ impl ProofOfPublishing {
             && !tx.verify_commit_authorization_at_height(ctx.height)
         {
             return Some("SP_FORECASTER_KEY_UNBOUND".into());
+        }
+        // Session-key register/revoke: refused outright below
+        // `ConsensusFeature::SessionKeys` (so no valid pre-activation block can
+        // carry one), capped per block, and the state-free half of the action
+        // (key binding, owner + possession signatures, grant bounds) must
+        // verify. The stateful half runs in the apply arm.
+        if tx.tx_type == TransactionType::SessionKeyAction {
+            use crate::accounts::session_keys::{
+                MAX_SESSION_KEY_ACTIONS_PER_BLOCK, SessionKeyActionPayload, session_keys_active,
+                verify_stateless,
+            };
+            if !session_keys_active(ctx.height) {
+                return Some("SP_SESSION_KEYS_INACTIVE".into());
+            }
+            acc.session_key_action_count += 1;
+            if acc.session_key_action_count > MAX_SESSION_KEY_ACTIONS_PER_BLOCK {
+                return Some("SP_SESSION_KEYS_BLOCK_CAP".into());
+            }
+            let chain_id = &crate::crypto::chain_binding::ChainIdentity::active().chain_id;
+            let valid = SessionKeyActionPayload::parse(tx)
+                .is_some_and(|action| verify_stateless(&action, chain_id).is_ok());
+            if !valid {
+                return Some("SP_SESSION_KEYS_AUTHORIZATION".into());
+            }
         }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Some(crate::security::slash_evidence::dispatch_refusal(ctx.height).to_string());
@@ -16862,6 +16897,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(
@@ -16913,6 +16949,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         };
         if let Some(key) = attacker_key {
             payload.sign_authorization(key, nonce);

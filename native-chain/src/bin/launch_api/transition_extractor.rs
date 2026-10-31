@@ -65,6 +65,15 @@ pub fn extract_transitions(
                     launch_transitions.push(transition.clone()); transitions.push(transition);
                 }
             },
+            // Session-key register/revoke: the same parse as the PoP producer
+            // arm, so producer == applier == WAL replay. The apply arm is gated
+            // on `ConsensusFeature::SessionKeys` and fails closed.
+            TransactionType::SessionKeyAction => {
+                if let Some(action) = wrfcoin_shared_protocol::accounts::session_keys::SessionKeyActionPayload::parse(tx) {
+                    let transition = StateTransition::ApplySessionKeyAction { action, block_height };
+                    launch_transitions.push(transition.clone()); transitions.push(transition);
+                }
+            },
             // --- Commit/Reveal protocol (PoP core) ---
             // Fail-closed sender auth (#1848): a commit without a valid
             // authorization emits no transition so a forged payload injected
