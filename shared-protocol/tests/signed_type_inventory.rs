@@ -213,6 +213,14 @@ const UNREGISTERED: &[(&str, &str)] = &[
          transfer tag there",
     ),
     (
+        "SessionKeyTransferAuth",
+        "session-key signature carried in TransparentTransferPayload.session_key_auth; \
+         signs `wrfcoin_session_key_transfer_auth_v1` (session_key_transfer_authorization_message_with_domain), \
+         distinct from the owner's ed25519 transfer tag. Its preimage bytes are pinned by \
+         session_keys::tests::wallet_client_golden_vectors and its gating by \
+         tests/session_key_transfers.rs",
+    ),
+    (
         "PasskeyAuthorization",
         "hex wire form of WebAuthnAssertion carried in \
          TransparentTransferPayload.passkey_auth (#2169); same coverage as \

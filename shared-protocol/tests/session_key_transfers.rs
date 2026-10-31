@@ -247,7 +247,7 @@ async fn session_keys_are_inert_until_scheduled_then_spend_within_limits() {
     let root0 = state.state_root;
     let err = apply_action(&mut state, register_action(&k, 0, grant(&k, vec![ANY_TARGET])), H)
         .unwrap_err();
-    assert!(err.contains("InvalidTransition"), "{err}");
+    assert!(err.contains("Invalid state transition"), "{err}");
     assert!(state.session_keys.is_empty());
 
     // A session-only transfer is refused everywhere, pre-schedule.
