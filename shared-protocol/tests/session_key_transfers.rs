@@ -149,6 +149,7 @@ fn payload(from: Address, to: Address, amount: u64) -> TransparentTransferPayloa
         authority_signature: None,
         passkey_auth: None,
         session_key_auth: None,
+        sponsorship: None,
     }
 }
 
