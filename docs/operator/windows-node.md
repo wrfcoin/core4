@@ -238,6 +238,23 @@ $cli = "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin.exe"
 A server key file is accepted for the grant request only when the node reports
 network `testnet`.
 
+## Which version am I running? Updating
+
+The status page shows the version under **Node version**, for example
+`v0.3.0 (68f6d291)`: the version number, then the commit the installer was built
+from. The same pair is in the installer's file name
+(`wrfcoin-node-0.3.0-g68f6d291-windows-x86_64-setup.exe`) and in Settings → Apps →
+**WRFCoin Node**. Each Windows preview raises the version: preview 3 is 0.3.0.
+
+**Check for updates** under the version opens wrfcoin.com/downloads, which lists the
+newest installer with its version and SHA-256. The status page itself never
+contacts anything but this node, so it cannot tell you about an update on its own.
+
+To update: download the new installer, check its hash as in Install, and run it.
+It stops a running node cleanly first, replaces only the program files, and keeps
+your chain data, keys and settings in `%LOCALAPPDATA%\WRFCoin`. Then start the node
+from the Start menu; it continues from where it stopped.
+
 ## Uninstall
 
 Start menu → **Uninstall WRFCoin Node**, or Settings → Apps → **WRFCoin Node** →
@@ -259,6 +276,9 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 
 ## Not done yet
 
+- **Update notice.** The node does not yet tell you when a newer version exists;
+  use **Check for updates**. A later version can learn the newest version from
+  the seed over P2P.
 - **Code signing.** The installer and `launch_api.exe` are unsigned, hence the
   SmartScreen warning.
 - **Windows Service / tray icon.** The node runs in the background only while you
