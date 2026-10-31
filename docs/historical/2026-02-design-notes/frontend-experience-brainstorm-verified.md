@@ -1,9 +1,11 @@
+> **Superseded, design-only (February 2026).** An early brainstorm/analysis kept for history. It is not a description of the current testnet or a product roadmap; features it discusses (marketplaces, NFTs, bridges, DeFi and others) are not offered today. For what works now, see [STATUS](https://github.com/wrfcoin/docs/blob/main/STATUS.md).
+
 # WRFCoin Frontend Experience Brainstorm (Verified Mapping Edition)
 
 ## Why this document exists
 This brainstorm proposes a **user-first frontend experience** for WRFCoin while explicitly grounding ideas in:
 
-1. Verified Rust blockchain capabilities from `artifacts/modern-rust-blockchain-audit-report.md` (validated against the referenced `.rs` files, not blindly trusted).
+1. Verified Rust blockchain capabilities from `docs/historical/2026-02-design-notes/modern-rust-blockchain-audit-report.md` (validated against the referenced `.rs` files, not blindly trusted).
 2. Current frontend routes/components and whether they appear to be truly connected vs mock/demo-only.
 3. The product vision: users earn by contributing weather + environmental + compute/storage resources, and consume forecasts from the distributed network.
 

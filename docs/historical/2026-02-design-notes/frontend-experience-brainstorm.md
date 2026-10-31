@@ -1,7 +1,9 @@
+> **Superseded, design-only (February 2026).** An early brainstorm/analysis kept for history. It is not a description of the current testnet or a product roadmap; features it discusses (marketplaces, NFTs, bridges, DeFi and others) are not offered today. For what works now, see [STATUS](https://github.com/wrfcoin/docs/blob/main/STATUS.md).
+
 # WRFCoin Frontend Experience: Comprehensive Brainstorm
 
 > Generated 2026-02-14 by a 3-agent brainstorming swarm covering Data Submission, Data Analysis/Crunching, and Data Viewing/Reports
-> Companion to: `artifacts/modern-rust-blockchain-brainstorm.md` and `artifacts/modern-rust-blockchain-audit-report.md`
+> Companion to: `docs/historical/2026-02-design-notes/modern-rust-blockchain-brainstorm.md` and `docs/historical/2026-02-design-notes/modern-rust-blockchain-audit-report.md`
 
 ---
 

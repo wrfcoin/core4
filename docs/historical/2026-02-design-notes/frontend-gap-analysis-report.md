@@ -1,8 +1,10 @@
+> **Superseded, design-only (February 2026).** An early brainstorm/analysis kept for history. It is not a description of the current testnet or a product roadmap; features it discusses (marketplaces, NFTs, bridges, DeFi and others) are not offered today. For what works now, see [STATUS](https://github.com/wrfcoin/docs/blob/main/STATUS.md).
+
 # WRFCoin Platform Gap Analysis: Frontend Vision vs. Current Reality
 
 > Generated 2026-02-14 by codebase analysis swarm
-> Brainstorm reference: `artifacts/frontend-experience-brainstorm.md`
-> Blockchain audit reference: `artifacts/modern-rust-blockchain-audit-report.md`
+> Brainstorm reference: `docs/historical/2026-02-design-notes/frontend-experience-brainstorm.md`
+> Blockchain audit reference: `docs/historical/2026-02-design-notes/modern-rust-blockchain-audit-report.md`
 
 ---
 

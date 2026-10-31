@@ -1,3 +1,5 @@
+> **Superseded, design-only (February 2026).** An early brainstorm/analysis kept for history. It is not a description of the current testnet or a product roadmap; features it discusses (marketplaces, NFTs, bridges, DeFi and others) are not offered today. For what works now, see [STATUS](https://github.com/wrfcoin/docs/blob/main/STATUS.md).
+
 # Modern Rust Blockchain: Comprehensive Feature Brainstorm
 
 > Generated 2026-02-14 by a 5-agent brainstorming swarm covering consensus, security, smart contracts, infrastructure, and ecosystem domains.
