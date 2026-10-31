@@ -26,7 +26,9 @@ fn appended_evidence_transaction_discriminant_is_36() {
     assert_eq!(bincode::deserialize::<TransactionType>(&38u32.to_le_bytes()).unwrap(), TransactionType::NodeServiceBatch);
     assert_eq!(bincode::deserialize::<TransactionType>(&39u32.to_le_bytes()).unwrap(), TransactionType::NodeFraudReport);
     assert_eq!(bincode::deserialize::<TransactionType>(&40u32.to_le_bytes()).unwrap(), TransactionType::SessionKeyAction);
-    assert!(bincode::deserialize::<TransactionType>(&41u32.to_le_bytes()).is_err());
+    // Security-key wallets (`security_key_spend`) append 41.
+    assert_eq!(bincode::deserialize::<TransactionType>(&41u32.to_le_bytes()).unwrap(), TransactionType::SecurityKeyAction);
+    assert!(bincode::deserialize::<TransactionType>(&42u32.to_le_bytes()).is_err());
 }
 
 #[test]
