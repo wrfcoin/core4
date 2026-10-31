@@ -19,6 +19,7 @@
 //! # }
 //! ```
 
+pub mod announce;
 mod behaviour;
 mod bootstrap_redial;
 pub mod config;

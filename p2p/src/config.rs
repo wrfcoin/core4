@@ -10,6 +10,12 @@
 //! - `WRFCOIN_MAX_PEERS_PER_SUBNET` -- max peers from same /16 subnet (0 = disabled)
 //! - `WRFCOIN_P2P_EXTERNAL_ADDR` -- operator-specified external multiaddr (Docker / NAT)
 //! - `WRFCOIN_AUTONAT_ONLY_GLOBAL_IPS` -- restrict AutoNAT probes to global IPs (default: true)
+//! - `WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS` -- also announce non-global addresses (RFC1918, CGNAT
+//!   100.64/10 incl. Tailscale, link-local, loopback, ULA fc00::/7, fe80::/10) to peers via
+//!   identify, Kademlia and UPnP/AutoNAT external addresses (default: false — only globally
+//!   routable addresses and `WRFCOIN_P2P_EXTERNAL_ADDR`/`WRFCOIN_P2P_QUIC_EXTERNAL_ADDR` are
+//!   announced). Set `true` for a LAN-, docker- or tailnet-only cluster that discovers its members
+//!   on private addresses. See [`crate::announce`].
 //! - `WRFCOIN_P2P_BOOTSTRAP_REDIAL_INTERVAL_SECS` -- base interval between bootstrap-peer redial attempts (default: 30)
 //! - `WRFCOIN_P2P_BOOTSTRAP_REDIAL_MAX_BACKOFF_SECS` -- maximum exponential backoff cap (default: 300)
 //! - `WRFCOIN_P2P_INBOUND_RATE_LIMIT_BYTES` -- per-peer inbound gossip bytes per window (default: 8388608; 0 disables)
@@ -444,6 +450,12 @@ pub struct P2pConfig {
     /// Default: `true`. Set `false` for single-host Docker testnets.
     pub only_global_ips: bool,
 
+    /// Announce non-global addresses (private, CGNAT/Tailscale, link-local,
+    /// loopback, ULA) to peers. Default `false`: only globally routable
+    /// addresses plus the operator's external addresses are announced. Parsed
+    /// from `WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS`; see [`crate::announce`].
+    pub announce_non_global_addrs: bool,
+
     // -- Genesis handshake ----------------------------------------------------
     /// Network identifier sent in the genesis handshake (e.g. "mainnet", "testnet").
     pub network_id: String,
@@ -572,6 +584,7 @@ impl Default for P2pConfig {
             quic_external_address: env_string("WRFCOIN_P2P_QUIC_EXTERNAL_ADDR")
                 .and_then(|s| s.parse::<Multiaddr>().ok()),
             only_global_ips: env_bool("WRFCOIN_AUTONAT_ONLY_GLOBAL_IPS", true),
+            announce_non_global_addrs: env_bool(crate::announce::ANNOUNCE_NON_GLOBAL_ADDRS_ENV, false),
             network_id: std::env::var("WRFCOIN_NETWORK_ID")
                 .unwrap_or_else(|_| "mainnet".to_string()),
             chain_id: std::env::var("WRFCOIN_CHAIN_ID")
