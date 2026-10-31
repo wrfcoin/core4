@@ -110,5 +110,12 @@ Worst case with the recommended service caps: 200 sends/day x 0.01 WRF = 2 WRF/d
 2. Meter the sponsor signature in `verify_cost` (one ed25519 per sponsored transfer). It is not
    charged today, to keep the pre-activation block budget byte-identical. Bounded by the per-epoch cap.
 3. Flip `ConsensusFeature::Paymaster` to `schedulable = true` in its own release.
-4. Determinism differential across the three producers; all three upgrade together.
-5. Provision the sponsor key (HSM or the faucet's key custody), fund it, ship the sponsor service.
+4. A populated `paymasters` producer/applier/WAL parity test: a mined block carrying a sponsored transfer, synced
+   by a P2P applier and replayed from its WAL, reaching the same root. `p2p_events.rs`
+   (`producer_applier_and_wal_keep_aa_maps_empty_2168_2170_2171_2172`) names this as the scheduling blocker once
+   an extraction path exists, and this change adds one (gated).
+5. Determinism differential across the three producers; all three upgrade together.
+6. Provision a dedicated sponsor key (not the faucet payout key), fund it, and ship in the same release: the
+   sponsor endpoint in the faucet service (signer already in infra `testnet/services/faucet/sponsor-authorization.js`),
+   a backend relay that also passes `sponsorship` through the two send relays, the edge rule, and the wallet offer
+   (web and phone; the phone's current sponsored path calls the old EVM relay and must be replaced, not re-enabled).
