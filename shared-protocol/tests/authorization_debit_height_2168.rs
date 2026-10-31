@@ -28,6 +28,7 @@ fn transfer_apply_uses_the_inclusion_height_for_the_state_backed_debit_view() {
         transparent_opt_out: true, opt_out_audit_tag: None,
         auth_pubkey: None, auth_signature: None, authority: None, authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
     };
     let mut tx = Transaction::new(vec![], vec![]);
     tx.tx_type = TransactionType::Transfer;

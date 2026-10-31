@@ -10151,6 +10151,104 @@ mod tests {
         refresh_feature_schedule_extensions(Vec::new());
     }
 
+    /// Sponsored first sends: `/transactions/submit` refuses a transfer that
+    /// carries a sponsorship while `paymaster` is not active at tip+1 (before
+    /// any replay/rate state), refuses a sponsorship that does not match the
+    /// transfer, and admits a valid one once active.
+    #[actix_web::test]
+    async fn transactions_submit_accepts_sponsorship_only_once_paymaster_active_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::accounts::paymaster::SponsorAuthorization;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_accepts_sponsorship_only_once_paymaster_active_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x1101110111011101110111011101110111011101",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 5_000;
+        let _env = crate::helpers::test_env::lock();
+        refresh_feature_schedule_extensions(vec![(ConsensusFeature::Paymaster.name().to_string(), H)]);
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x3333333333333333333333333333333333333333";
+        let amount = 42u64;
+
+        let (user_sk, user_pk_hex) = keypair(0x1101_01);
+        let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
+        let (sponsor_sk, _) = keypair(0x1101_02);
+        let sponsor = Address::from_public_key(&PublicKey::from_private_key(&sponsor_sk)).to_hex();
+        let sponsorship = |expires: u64, fee: u64| {
+            let mut auth = SponsorAuthorization {
+                sponsor: sponsor.clone(),
+                fee,
+                expires_at_height: expires,
+                balance_floor: 0,
+                first_send_only: true,
+                sponsor_public_key: String::new(),
+                signature: String::new(),
+            };
+            auth.sign(&sponsor_sk, &from, to, amount, 0);
+            auth
+        };
+        let body = |auth: SponsorAuthorization| {
+            json!({
+                "from": from,
+                "to": to,
+                "amount": amount,
+                "nonce": "0",
+                "transparent_opt_out": true,
+                "auth_pubkey": user_pk_hex,
+                "auth_signature": user_sk
+                    .sign(&transparent_transfer_authorization_message(&from, to, amount, 0))
+                    .to_string(),
+                "sponsorship": auth,
+            })
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+
+        // Tip = H-2: the next block (H-1) is below activation.
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(body(sponsorship(H + 10, 5_000)))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&json_body);
+        assert_eq!(json_body["error"]["code"], "FEATURE_NOT_ACTIVE", "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enqueued before activation");
+
+        // Tip = H-1: the next block (H) is at activation.
+        state.blockchain.write().await.height = H - 1;
+        let mut tampered = sponsorship(H + 10, 5_000);
+        tampered.fee += 1;
+        let resp = test::call_service(&app, submit(body(tampered))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(json_body["error"]["code"], "SPONSORSHIP_INVALID", "{json_body}");
+
+        let resp = test::call_service(&app, submit(body(sponsorship(H + 10, 5_000)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_success_envelope(&json_body);
+        assert_eq!(json_body["data"]["sponsored"], true, "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), 1, "the sponsored transfer is pending");
+
+        refresh_feature_schedule_extensions(Vec::new());
+    }
+
     #[actix_web::test]
     async fn legacy_submit_rate_limit_helper_enforces_current_window() {
         let state = test_state(None);

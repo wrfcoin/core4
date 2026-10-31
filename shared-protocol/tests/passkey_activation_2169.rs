@@ -96,6 +96,7 @@ async fn passkey_auth_scheduled_at_five_flips_at_five_and_leaves_ed25519_alone()
         authority: None,
         authority_signature: None,
         passkey_auth: Some(auth.authorize_transfer(&to.to_hex(), AMOUNT, 0)),
+        sponsorship: None,
     };
     let passkey_tx = transfer_tx(&passkey_payload, passkey_from, "passkey-2169");
 
@@ -113,6 +114,7 @@ async fn passkey_auth_scheduled_at_five_flips_at_five_and_leaves_ed25519_alone()
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
     };
     ed_payload.sign_authorization(&ed_sk, 0);
     let ed_tx = transfer_tx(&ed_payload, ed_from, "ed25519-2169");

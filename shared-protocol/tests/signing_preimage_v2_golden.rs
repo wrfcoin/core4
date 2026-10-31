@@ -1383,6 +1383,53 @@ fn build_station_owner_action_case(action: &str, tamper_to: &str, seed: u64) -> 
     )
 }
 
+/// Sponsored first sends: the sponsor's authorization of one transfer's fee
+/// (`accounts::paymaster::sponsored_send_authorization_message_with_domain`).
+/// Pinned so the sponsor service's signer cannot drift from consensus.
+fn build_sponsored_send_authorization_case() -> Value {
+    use wrfcoin_shared_protocol::accounts::paymaster::sponsored_send_authorization_message_with_domain;
+    let identity = identity();
+    let input = json!({
+        "chain_id": identity.chain_id, "network_id": identity.network_id,
+        "sponsor": "0x".to_string() + &"5a".repeat(20),
+        "from": "0x".to_string() + &"a1".repeat(20),
+        "to": "0x".to_string() + &"b2".repeat(20),
+        "amount": 10_000_000u64,
+        "nonce": 0u64,
+        "fee": 5_000u64,
+        "expires_at_height": 21_000u64,
+        "balance_floor": 100_000_000u64,
+        "first_send_only": true,
+    });
+    let mut tampered = input.clone();
+    tampered["first_send_only"] = json!(false);
+    station_owner_case(
+        "sponsored_send_authorization_v1",
+        "wrfcoin_sponsored_send_auth_v1",
+        900_150,
+        |i: &Value| {
+            let s = |k: &str| i[k].as_str().expect(k).to_string();
+            let n = |k: &str| i[k].as_u64().expect(k);
+            sponsored_send_authorization_message_with_domain(
+                &s("chain_id"),
+                &s("network_id"),
+                &s("sponsor"),
+                &s("from"),
+                &s("to"),
+                n("amount"),
+                n("nonce"),
+                n("fee"),
+                n("expires_at_height"),
+                n("balance_floor"),
+                i["first_send_only"].as_bool().expect("first_send_only"),
+            )
+        },
+        input,
+        tampered,
+        "first_send_only true -> false (a sponsor's rule cannot be widened after signing)",
+    )
+}
+
 fn build_all_cases() -> Vec<Value> {
     let mut cases = Vec::new();
     {
@@ -1460,6 +1507,7 @@ fn build_all_cases() -> Vec<Value> {
     cases.push(build_station_owner_action_case("deactivate", "reactivate", 900_137));
     cases.push(build_station_owner_action_case("reactivate", "deactivate", 900_138));
     cases.push(build_station_registration_authorization_v2_case());
+    cases.push(build_sponsored_send_authorization_case());
     cases
 }
 

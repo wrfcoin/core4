@@ -42,6 +42,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use wrfcoin_geo_grid::GeoCell;
 use wrfcoin_reputation_engine::{ContributorRole, ReputationEvent, ReputationSignal};
 
+/// A sponsorship that passed every check and is waiting for its transfer to
+/// apply (sponsored first sends). Private to the transfer apply path.
+struct SponsorshipCharge {
+    sponsor: Address,
+    fee: u64,
+    floor: u64,
+    record: crate::accounts::paymaster::PaymasterAccount,
+}
+
 /// Height at which ring signature cryptographic verification activates.
 const RING_SIG_VERIFICATION_ACTIVATION_HEIGHT: u64 = 0;
 
@@ -8117,13 +8126,94 @@ impl State {
                     .to_string(),
             )
         })?;
+        // Sponsored first sends: read ONLY once `ConsensusFeature::Paymaster`
+        // is active. Before that the field is ignored, so this path is byte
+        // for byte the unsponsored one and `paymasters` stays empty.
+        let sponsorship = match payload.sponsorship.as_ref() {
+            Some(auth) if crate::accounts::paymaster::sponsorship_active(current_block) => {
+                Some(self.check_sponsorship(auth, &payload, from, tx_nonce, current_block)?)
+            },
+            _ => None,
+        };
         self.apply_transition(StateTransition::BalanceTransfer {
             from,
             to,
             amount: Balance::new(payload.amount as u128),
             nonce: Some(tx_nonce),
             current_block,
-        })
+        })?;
+        if let Some(charge) = sponsorship {
+            self.commit_sponsorship(charge)?;
+        }
+        Ok(())
+    }
+
+    /// Every check a sponsorship must pass before its transfer applies,
+    /// without mutating state: the sponsor's signature and stateless rules
+    /// (`SponsorAuthorization::check`), the sponsor's balance against its
+    /// fee and floor, and the protocol rate limits on its record.
+    fn check_sponsorship(
+        &self,
+        auth: &crate::accounts::paymaster::SponsorAuthorization,
+        payload: &TransparentTransferPayload,
+        from: Address,
+        tx_nonce: u64,
+        current_block: u64,
+    ) -> Result<SponsorshipCharge, StateError> {
+        let refuse = |reason: String| {
+            StateError::Governance(format!("SP_SPONSORED_SEND_REFUSED: {reason}"))
+        };
+        let sponsor = auth
+            .check(&payload.from, &payload.to, payload.amount, tx_nonce, current_block)
+            .map_err(|e| refuse(e.to_string()))?;
+        let fee = u128::from(auth.fee);
+        let available = self
+            .accounts
+            .get(&sponsor)
+            .map(|account| account.spendable_balance.0)
+            .unwrap_or(0);
+        if available < fee.saturating_add(u128::from(auth.balance_floor)) {
+            return Err(refuse(
+                crate::accounts::paymaster::SponsorshipError::SponsorBalanceBelowFloor {
+                    available,
+                    fee: auth.fee,
+                    floor: auth.balance_floor,
+                }
+                .to_string(),
+            ));
+        }
+        let record = crate::accounts::paymaster::charge_balance_sponsorship(
+            &self.paymasters,
+            sponsor,
+            from,
+            fee,
+            current_block,
+        )
+        .map_err(|e| refuse(e.to_string()))?;
+        Ok(SponsorshipCharge { sponsor, fee: auth.fee, floor: auth.balance_floor, record })
+    }
+
+    /// Debit the sponsor's fee, burn it and store its updated record. Runs
+    /// after the transfer applied. The transfer can only have RAISED the
+    /// sponsor's balance (the sponsor is never `from`), but the floor is
+    /// re-checked here so the rule holds on the post-transfer balance too.
+    fn commit_sponsorship(&mut self, charge: SponsorshipCharge) -> Result<(), StateError> {
+        let fee = Balance::new(u128::from(charge.fee));
+        let floor = Balance::new(u128::from(charge.floor));
+        let account = self.get_account_mut(&charge.sponsor).ok_or(StateError::AccountNotFound)?;
+        let needed = fee.0.checked_add(floor.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed || account.balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        self.paymasters.insert(charge.sponsor, charge.record);
+        Ok(())
     }
 
     fn apply_confidential_transfer(
@@ -10818,6 +10908,7 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
             };
             payload.sign_authorization(&from_key, 0);
             let mut tx = Transaction::new(
@@ -12769,6 +12860,7 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
             })
             .unwrap(),
         );
@@ -12824,6 +12916,7 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
             })
             .unwrap(),
         );

@@ -677,6 +677,7 @@ impl Wallet {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         let signature = key_pair.sign_hex(&payload.authorization_message(nonce))?;
         Ok((from, key_pair.public_key_hex()?, signature))

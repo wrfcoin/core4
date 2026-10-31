@@ -1745,6 +1745,43 @@
         "provenance_class": "synthetic",
         "station_id": "station-golden-1"
       }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "amount": 10000000,
+        "balance_floor": 100000000,
+        "chain_id": "wrfcoin-testnet",
+        "expires_at_height": 21000,
+        "fee": 5000,
+        "first_send_only": true,
+        "from": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "network_id": "testnet",
+        "nonce": 0,
+        "sponsor": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "to": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "kind": "sponsored_send_authorization_v1",
+      "preimage_hex": "777266636f696e5f73706f6e736f7265645f73656e645f617574685f76310f000000777266636f696e2d746573746e657407000000746573746e65742a0000003078356135613561356135613561356135613561356135613561356135613561356135613561356135612a0000003078613161316131613161316131613161316131613161316131613161316131613161316131613161312a000000307862326232623262326232623262326232623262326232623262326232623262326232623262326232809698000000000000000000000000008813000000000000085200000000000000e1f5050000000001",
+      "signature_hex": "5e10917ab7cd2de2dc5e3026264d37c98aa213d16a9297b237da3a25badcbfda426a48816fc8cb065e2ff03f0b595b005343183ae52bf40f6c28c9e60bf74d07",
+      "signer_public_key_hex": "094f2af81ea7e0a39f03d30b81c8fb178707d640ad36763cecae1378e31ce15d",
+      "signer_secret_hex": "22dc700eedc45aff2bca437029ab6b4df1187f64248ebace9ab5447d3a96d46f",
+      "signer_seed": 900150,
+      "tag": "wrfcoin_sponsored_send_auth_v1",
+      "tamper_note": "first_send_only true -> false (a sponsor's rule cannot be widened after signing)",
+      "tampered_input": {
+        "amount": 10000000,
+        "balance_floor": 100000000,
+        "chain_id": "wrfcoin-testnet",
+        "expires_at_height": 21000,
+        "fee": 5000,
+        "first_send_only": false,
+        "from": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "network_id": "testnet",
+        "nonce": 0,
+        "sponsor": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "to": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      }
     }
   ],
   "chain_id": "wrfcoin-testnet",

@@ -68,6 +68,11 @@ pub struct LegacyTransactionSubmitRequest {
     /// absent, and only once `passkey_p256_auth` is active at tip+1 (#2169).
     #[serde(default)]
     pub passkey_auth: Option<wrfcoin_shared_protocol::accounts::passkey::PasskeyAuthorization>,
+    /// A sponsor's signed promise to pay this transfer's fee (sponsored first
+    /// sends). Accepted only once `paymaster` is active at tip+1, and only
+    /// when it passes every stateless rule for this exact transfer.
+    #[serde(default)]
+    pub sponsorship: Option<wrfcoin_shared_protocol::accounts::paymaster::SponsorAuthorization>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -329,6 +334,38 @@ pub async fn submit_transaction_compat(
                 );
             },
         };
+        let mut payload = payload;
+        if let Some(sponsorship) = body.sponsorship.clone() {
+            // Sponsored first sends: refused before replay/rate-limit state
+            // changes, like an unavailable feature (#3235), unless `paymaster`
+            // is active at the height this transfer would be mined at.
+            let next_height = state.blockchain.read().await.height.saturating_add(1);
+            if !wrfcoin_shared_protocol::accounts::paymaster::sponsorship_active(next_height) {
+                return envelope_error(
+                    &req,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "FEATURE_NOT_ACTIVE",
+                    format!(
+                        "paymaster is not active at the next block height {next_height}; \
+                         send without a sponsorship"
+                    ),
+                );
+            }
+            if let Err(err) = sponsorship.check(from, to, amount, nonce_u64, next_height) {
+                // Charged like a failed authorization (#3258 R1): each attempt
+                // costs an ed25519 verification.
+                if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                    return resp;
+                }
+                return envelope_error(
+                    &req,
+                    StatusCode::BAD_REQUEST,
+                    "SPONSORSHIP_INVALID",
+                    err.to_string(),
+                );
+            }
+            payload.sponsorship = Some(sponsorship);
+        }
         (
             TransactionType::Transfer,
             serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
@@ -399,6 +436,7 @@ pub async fn submit_transaction_compat(
             "amount": amount.to_string(),
             "privacy_mode": privacy_mode,
             "transparent_opt_out": transparent_opt_out,
+            "sponsored": body.sponsorship.is_some(),
             "default_privacy_mode": "feature_disabled",
             "transparent_mode_note": "supported transfers require transparent_opt_out=true with from-account authorization (#1727)",
         }),

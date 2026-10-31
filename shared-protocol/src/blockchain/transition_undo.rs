@@ -236,6 +236,9 @@ const GOVERNANCE: &[&str] = &[
     "archived_quality_policy_event_through_event_id",
 ];
 const PROTOCOL: &[&str] = &[
+    // Sponsored first sends: a transfer carrying a sponsorship updates the
+    // sponsor's rate-limit record once `paymaster` is active.
+    "paymasters",
     "governance",
     "audit_events",
     "oracle_set",

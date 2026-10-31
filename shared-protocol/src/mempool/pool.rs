@@ -3623,6 +3623,7 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(

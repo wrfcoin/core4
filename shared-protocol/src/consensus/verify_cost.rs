@@ -643,6 +643,7 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: auth,
+                sponsorship: None,
             };
             tx(
                 TransactionType::Transfer,

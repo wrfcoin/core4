@@ -867,6 +867,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "sponsored_first_send"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "state_root_commitment_2219"
     },
     {
