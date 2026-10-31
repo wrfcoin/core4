@@ -162,6 +162,26 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .token-form input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2); }
 .token-state { display: inline-flex; align-items: center; gap: var(--s-sm); font-size: 0.8125rem; color: var(--text-2); }
 [hidden] { display: none !important; }
+/* Newcomer summary: what this page is, and the one thing to know right now. */
+.hero { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s-md); margin-bottom: var(--s-lg); display: grid; gap: var(--s-md); }
+@media (min-width: 600px) { .hero { padding: var(--s-lg); } }
+.hero-intro { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 72ch; }
+.hero-intro strong { color: var(--text); font-weight: 600; }
+.sync-line { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--s-xs) var(--s-md); }
+.sync-text { margin: 0; font-size: 1.375rem; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sync-pct { color: var(--text-2); font-size: 0.9375rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bar.big { height: 12px; }
+.bar.ok > i { background: var(--success); }
+.sync-detail { margin: 0; color: var(--text-2); font-size: 0.875rem; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: var(--s-sm); margin: 0; }
+.fact { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-sm) var(--s-md); min-width: 0; }
+.fact dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+.fact dd { margin: 2px 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact dd.mono { font-size: 0.9375rem; }
+@media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
+.hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
+.hero.down { border-color: rgba(239, 68, 68, 0.5); }
+.details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
 </style>
 </head>
@@ -172,7 +192,7 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <span class="logo" aria-hidden="true"></span>
       <div>
         <h1>WRFCoin node</h1>
-        <p class="sub">Operator status, served by this node at <span class="mono">/dashboard</span></p>
+        <p class="sub">Node status page</p>
       </div>
     </div>
     <div class="asof" aria-live="polite">
@@ -181,6 +201,25 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
     </div>
   </header>
 
+  <section class="hero" id="hero" aria-labelledby="sync-text">
+    <p class="hero-intro" id="hero-intro">This page shows the <strong>WRFCoin node running on this computer</strong>. The node program serves it to your browser from this machine; nothing on this page is sent anywhere else. You can close this tab at any time: the node keeps running.</p>
+    <div class="sync-line">
+      <p class="sync-text" id="sync-text" aria-live="polite">Connecting to your node…</p>
+      <span class="sync-pct" id="sync-pct"></span>
+    </div>
+    <div class="bar big" id="sync-bar" role="progressbar" aria-label="Sync progress" aria-valuemin="0" aria-valuemax="100"><i id="sync-fill"></i></div>
+    <p class="sync-detail" id="sync-detail">Waiting for the first answer from the node.</p>
+    <dl class="facts">
+      <div class="fact"><dt>Other nodes</dt><dd id="fact-peers">—</dd></div>
+      <div class="fact"><dt>Chain</dt><dd id="fact-chain">—</dd></div>
+      <div class="fact wide"><dt>Genesis</dt><dd class="mono" id="fact-genesis">—</dd></div>
+      <div class="fact"><dt>Node version</dt><dd id="fact-version">—</dd></div>
+      <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
+    </dl>
+    <p class="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
+  </section>
+
+  <h2 class="details-title">Details for operators</h2>
   <main class="grid">
     <section class="panel" id="panel-chain" aria-labelledby="h-chain">
       <div class="panel-head">
@@ -336,6 +375,7 @@ const TOKEN_CODES = ['UNAUTHORIZED', 'FORBIDDEN'];
 const GUARD_CODES = ['ORIGIN_REQUIRED', 'ORIGIN_NOT_ALLOWED', 'HOST_NOT_ALLOWED'];
 const samples = [];     // { t, h } height samples for blocks per minute
 let lastOkAt = null;
+let unreachable = false; // the last tick got no response from any route
 let tickCount = 0;
 let timer = null;
 let intervalMs = TICK_MS;
@@ -695,7 +735,80 @@ function renderNode() {
   setErr($('err-node'), errs);
 }
 
-function renderAll() { renderChain(); renderHost(); renderNode(); renderAsOf(); }
+// ---------- newcomer summary ----------
+function setSyncBar(pct, cls) {
+  const bar = $('sync-bar'), fill = $('sync-fill');
+  bar.className = 'bar big' + (cls ? ' ' + cls : '');
+  if (pct === null) { fill.style.width = '0'; bar.removeAttribute('aria-valuenow'); $('sync-pct').textContent = ''; return; }
+  const p = Math.max(0, Math.min(100, pct));
+  fill.style.width = p + '%';
+  bar.setAttribute('aria-valuenow', String(Math.floor(p)));
+  $('sync-pct').textContent = (p >= 100 ? '100' : p.toFixed(1)) + '%';
+}
+function renderHero() {
+  const info = last.info, sync = last.sync, stats = last.stats;
+  const hero = $('hero');
+  hero.className = 'hero' + (unreachable ? ' down' : '');
+  const height = (sync && sync.chain_height) ?? (info && info.chain_height) ?? null;
+  const peers = (stats && stats.connected_peers) ?? (sync && sync.peer_count) ?? (info && info.peer_count) ?? null;
+  const p2p = sync && sync.p2p_sync ? sync.p2p_sync : null;
+  const target = p2p && typeof p2p.target_height === 'number' && p2p.target_height > 0 ? p2p.target_height : null;
+  const state = p2p && typeof p2p.state === 'string' ? p2p.state : null;
+  const status = (sync && sync.sync_status) || (info && info.sync_status) || null;
+  const ageSecs = sync && typeof sync.block_age_secs === 'number' ? sync.block_age_secs : null;
+  const peersText = typeof peers !== 'number' ? null
+    : peers === 0 ? 'It is not connected to any other node yet and keeps looking.'
+    : 'It is connected to ' + fmtInt(peers) + ' other node' + (peers === 1 ? '' : 's') + '.';
+
+  let text, detail, pct = null, cls = '';
+  if (unreachable) {
+    text = "Can't reach your node";
+    detail = 'The node program did not answer. It may have stopped: start it again, and this page reconnects by itself.';
+  } else if (typeof height !== 'number') {
+    text = 'Connecting to your node…';
+    detail = 'Waiting for the first answer from the node.';
+  } else if (state === 'validation_halted') {
+    text = 'Sync stopped at block ' + fmtInt(height);
+    detail = 'A block received from the network failed this node\'s checks, so it stopped syncing to stay safe. The node\'s log says which block.';
+    cls = 'bad';
+    pct = target ? height / target * 100 : null;
+  } else if (target && target > height) {
+    text = 'Syncing: block ' + fmtInt(height) + ' of ' + fmtInt(target);
+    pct = height / target * 100;
+    detail = 'The node is downloading and checking the chain from other nodes. ' + (peersText || '')
+      + (state === 'stalled' ? ' No node is sending blocks right now; it keeps retrying.' : '');
+    if (state === 'stalled') cls = 'warn';
+  } else if (status === 'synced') {
+    text = 'Up to date';
+    pct = 100; cls = 'ok';
+    detail = 'The node has every block up to block ' + fmtInt(height)
+      + (ageSecs !== null ? ', the newest made ' + humanDuration(ageSecs) + ' ago' : '') + '. ' + (peersText || '');
+  } else if (status === 'genesis' || height === 0) {
+    text = 'Starting up';
+    detail = 'The node has no blocks yet. ' + (peersText || '');
+  } else {
+    text = 'Waiting for new blocks';
+    detail = 'The node has block ' + fmtInt(height)
+      + (ageSecs !== null ? ', made ' + humanDuration(ageSecs) + ' ago' : '')
+      + ', and is waiting for the network to share newer ones. ' + (peersText || '');
+  }
+  $('sync-text').textContent = text;
+  $('sync-detail').textContent = detail.trim();
+  setSyncBar(unreachable ? null : pct, cls);
+
+  $('fact-peers').textContent = typeof peers === 'number' ? fmtInt(peers) : '—';
+  $('fact-chain').textContent = info && info.chain_id ? String(info.chain_id) : '—';
+  $('fact-chain').title = info && info.network_id && info.network_id !== 'unknown' ? info.network_id : '';
+  const genesis = info && typeof info.genesis_hash === 'string' && info.genesis_hash !== 'unknown' ? info.genesis_hash : null;
+  $('fact-genesis').textContent = genesis ? shortHash(genesis) : (info ? 'not known yet' : '—');
+  $('fact-genesis').title = genesis || '';
+  const version = (info && info.node_version) || (last.health && last.health.version) || null;
+  $('fact-version').textContent = version ? 'v' + version : '—';
+  const bpm = blocksPerMinute();
+  $('fact-bpm').textContent = bpm === null ? 'measuring' : bpm.toFixed(1);
+}
+
+function renderAll() { renderHero(); renderChain(); renderHost(); renderNode(); renderAsOf(); }
 
 // ---------- tick ----------
 async function tick() {
@@ -722,6 +835,7 @@ async function tick() {
     }
   });
   if (anyOk) lastOkAt = Date.now();
+  unreachable = results.every((r) => r.status === 0);
   const h = (last.sync && last.sync.chain_height) ?? (last.info && last.info.chain_height);
   if (typeof h === 'number') recordHeight(h);
   // Back off while the node's per-IP read limiter is refusing us; recover on a clean tick.
