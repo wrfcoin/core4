@@ -178,6 +178,30 @@ mod tests {
         );
     }
 
+    /// The Windows package opens this page for people who have never run a
+    /// node: it must say what it is, give sync as a sentence and a bar, and
+    /// make no claim of earnings (a sync-only node earns nothing).
+    #[::core::prelude::v1::test]
+    fn the_page_greets_a_newcomer_and_claims_no_earnings() {
+        for text in [
+            "WRFCoin node running on this computer",
+            "'Syncing: block ' + fmtInt(height) + ' of ' + fmtInt(target)",
+            "'Up to date'",
+            "Can't reach your node",
+            "role=\"progressbar\"",
+            "It does not earn coins or rewards, and this page shows no balances.",
+        ] {
+            assert!(STATUS_PAGE_HTML.contains(text), "the newcomer summary must carry {text:?}");
+        }
+        let lower = STATUS_PAGE_HTML.to_ascii_lowercase();
+        for forbidden in ["earned", "earning", "/balance", "/rewards", "payout"] {
+            assert!(
+                !lower.contains(forbidden),
+                "the page must not show or fetch earnings ({forbidden:?})"
+            );
+        }
+    }
+
     #[::core::prelude::v1::test]
     fn the_token_never_reaches_the_url_or_persistent_storage() {
         assert!(STATUS_PAGE_HTML.contains("sessionStorage"), "the token lives in sessionStorage");

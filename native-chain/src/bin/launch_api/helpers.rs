@@ -1436,6 +1436,11 @@ pub struct PreflightConfig {
     pub network_id: String,
     pub chain_id: String,
     pub p2p_enabled: bool,
+    /// The P2P TCP listen host, read exactly as startup reads it
+    /// (`WRFCOIN_P2P_HOST`, default `0.0.0.0`). The preflight port check
+    /// binds THIS host: binding `0.0.0.0` for a node configured on
+    /// `127.0.0.1` made Windows raise a firewall prompt for a sync-only node.
+    pub p2p_host: String,
     pub p2p_port: u16,
     pub p2p_quic_enabled: bool,
     pub p2p_quic_port: u16,
@@ -1462,6 +1467,8 @@ impl PreflightConfig {
             p2p_enabled: std::env::var("WRFCOIN_P2P_ENABLED")
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("true"),
+            // determinism-ok: startup-only preflight probe of the transport bind address; never enters state
+            p2p_host: std::env::var("WRFCOIN_P2P_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             p2p_port,
             p2p_quic_enabled: std::env::var("WRFCOIN_P2P_QUIC_ENABLED")
                 .unwrap_or_default()
@@ -1596,7 +1603,7 @@ pub fn run_preflight_checks(config: &PreflightConfig) -> PreflightReport {
 
     // 2. P2P port (if enabled)
     if config.p2p_enabled {
-        checks.push(check_port_available("0.0.0.0", config.p2p_port, "p2p_port"));
+        checks.push(check_p2p_port(config));
     }
 
     // 3. Data directory
@@ -1648,22 +1655,28 @@ pub fn run_preflight_checks(config: &PreflightConfig) -> PreflightReport {
     PreflightReport { checks }
 }
 
+/// Bind-test the P2P TCP port on the host the node will actually listen on,
+/// not on the `0.0.0.0` wildcard.
+fn check_p2p_port(config: &PreflightConfig) -> CheckResult {
+    check_port_available(&config.p2p_host, config.p2p_port, "p2p_port")
+}
+
 fn check_port_available(host: &str, port: u16, name: &'static str) -> CheckResult {
     match std::net::TcpListener::bind((host, port)) {
         Ok(_listener) => CheckResult {
             name,
             status: CheckStatus::Ok,
-            message: format!("Port {} available", port),
+            message: format!("Port {} available on {}", port, host),
         },
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => CheckResult {
             name,
             status: CheckStatus::Fail,
-            message: format!("Port {} already in use", port),
+            message: format!("Port {} already in use on {}", port, host),
         },
         Err(e) => CheckResult {
             name,
             status: CheckStatus::Warn,
-            message: format!("Port {} check inconclusive: {}", port, e),
+            message: format!("Port {} check on {} inconclusive: {}", port, host, e),
         },
     }
 }
@@ -1915,6 +1928,7 @@ mod preflight_tests {
         std::env::remove_var("WRFCOIN_DATA_DIR");
         std::env::remove_var("WRFCOIN_NETWORK_ID");
         std::env::remove_var("WRFCOIN_P2P_ENABLED");
+        std::env::remove_var("WRFCOIN_P2P_HOST");
         std::env::remove_var("WRFCOIN_P2P_PORT");
         std::env::remove_var("WRFCOIN_P2P_QUIC_ENABLED");
         std::env::remove_var("WRFCOIN_P2P_QUIC_PORT");
@@ -1929,6 +1943,7 @@ mod preflight_tests {
         assert_eq!(config.network_id, "unknown");
         assert_eq!(config.chain_id, "777");
         assert!(!config.p2p_enabled);
+        assert_eq!(config.p2p_host, "0.0.0.0");
         assert_eq!(config.p2p_port, 8555);
         assert!(!config.p2p_quic_enabled);
         assert_eq!(config.p2p_quic_port, 8555);
@@ -1951,6 +1966,53 @@ mod preflight_tests {
 
         std::env::remove_var("WRFCOIN_P2P_PORT");
         std::env::remove_var("WRFCOIN_P2P_QUIC_ENABLED");
+    }
+
+    fn loopback_p2p_config(port: u16) -> PreflightConfig {
+        PreflightConfig {
+            api_host: "127.0.0.1".into(),
+            api_port: 0,
+            data_dir: "./data".into(),
+            network_id: "unknown".into(),
+            chain_id: "777".into(),
+            p2p_enabled: true,
+            p2p_host: "127.0.0.1".into(),
+            p2p_port: port,
+            p2p_quic_enabled: false,
+            p2p_quic_port: port,
+            p2p_bootstrap: None,
+            operator_token_set: false,
+        }
+    }
+
+    /// The P2P preflight must bind-test the configured host. Binding 0.0.0.0
+    /// for a node configured on 127.0.0.1 pops the Windows firewall prompt.
+    #[test]
+    fn p2p_port_check_binds_the_configured_host_not_the_wildcard() {
+        let _guard = test_env::lock();
+        std::env::set_var("WRFCOIN_P2P_HOST", "127.0.0.1");
+        let from_env = PreflightConfig::from_env();
+        std::env::remove_var("WRFCOIN_P2P_HOST");
+        assert_eq!(from_env.p2p_host, "127.0.0.1");
+
+        // Free port: the check passes and says which host it tested.
+        let free = check_p2p_port(&loopback_p2p_config(0));
+        assert_eq!(free.status, CheckStatus::Ok, "{}", free.message);
+        assert!(free.message.contains("127.0.0.1"), "{}", free.message);
+        assert!(!free.message.contains("0.0.0.0"), "{}", free.message);
+
+        // Occupied on the configured host: the check sees it.
+        let held = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener,
+            Err(e) => panic!("bind an ephemeral loopback port: {e}"),
+        };
+        let port = match held.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => panic!("read the held port: {e}"),
+        };
+        let busy = check_p2p_port(&loopback_p2p_config(port));
+        assert_eq!(busy.status, CheckStatus::Fail, "{}", busy.message);
+        assert!(busy.message.contains("127.0.0.1"), "{}", busy.message);
     }
 
     #[test]
