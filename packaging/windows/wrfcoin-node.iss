@@ -4,7 +4,7 @@
 ;   ISCC.exe /DAppVersion=<ver> /DSourceExe=<path\launch_api.exe> /DOutputDir=<dir> wrfcoin-node.iss
 ; Installs launch_api.exe, the chain-888 sync-node config and the launcher to
 ; %LOCALAPPDATA%\Programs\WRFCoin Node. Node data goes to %LOCALAPPDATA%\WRFCoin
-; (created and locked to the current user by wrfcoin-node.ps1 -Setup).
+; (created and locked to the current user by wrfcoin-node.ps1 -Action Setup).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -18,10 +18,12 @@
 
 #define AppName "WRFCoin Node"
 #define StatusUrl "http://127.0.0.1:8556/dashboard"
-#define Launcher "powershell.exe"
-; Single-quoted ISPP string: the doubled "" survive into the [Icons]/[Run]
-; parameters, where Inno reads "" as one embedded quote around the path.
-#define LauncherArgs '-NoProfile -ExecutionPolicy Bypass -File ""{app}\wrfcoin-node.ps1""'
+#define Launcher "{sys}\WindowsPowerShell\v1.0\powershell.exe"
+; -WindowStyle Hidden: the user sees no console window (a brief flash at most).
+; A VBScript shim would hide even that, but VBScript is being retired from
+; Windows. Single-quoted ISPP string: the doubled "" survive into the entry
+; parameters below, where Inno reads "" as one quote around the path.
+#define LauncherArgs '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\wrfcoin-node.ps1""'
 
 [Setup]
 AppId={{408EB92E-F98C-47E6-AFBF-1A4226024AE5}
@@ -62,21 +64,41 @@ Filename: "{app}\WRFCoin Node Status.url"; Section: "InternetShortcut"; Key: "UR
 Name: "startup"; Description: "Start the WRFCoin node when I sign in to Windows"; Flags: unchecked
 
 [Icons]
-Name: "{group}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Start the WRFCoin sync node (chain 888)"
+Name: "{group}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Start the WRFCoin sync node (chain 888) and open its status page"
+Name: "{group}\Stop WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Stop the WRFCoin node cleanly"
 Name: "{group}\WRFCoin Node Status"; Filename: "{app}\WRFCoin Node Status.url"; Comment: "Open the node's status page in your browser"
-Name: "{group}\WRFCoin Node Data Folder"; Filename: "{localappdata}\WRFCoin"; Comment: "Where the node keeps the chain and its identity key"
+Name: "{group}\WRFCoin Node Data Folder"; Filename: "{localappdata}\WRFCoin"; Comment: "Chain data, identity key and logs"
 Name: "{group}\Uninstall WRFCoin Node"; Filename: "{uninstallexe}"
-Name: "{userstartup}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Tasks: startup
+Name: "{userstartup}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start -NoBrowser"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Tasks: startup
 
 [Run]
 ; Create %LOCALAPPDATA%\WRFCoin, lock it to this user and create the operator token.
-Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Setup"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing the node data folder..."
-Filename: "{#Launcher}"; Parameters: "{#LauncherArgs}"; WorkingDir: "{app}"; Description: "Start the WRFCoin node now"; Flags: postinstall nowait skipifsilent
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Setup -Quiet"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing the node data folder..."
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start"; WorkingDir: "{app}"; Description: "Start the WRFCoin node now"; Flags: postinstall nowait skipifsilent
+
+[UninstallRun]
+; Stop a running node cleanly (Ctrl+C on its hidden console) before its files go.
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopNode"
 
 [UninstallDelete]
 Type: files; Name: "{app}\WRFCoin Node Status.url"
 
 [Code]
+// Upgrading over a running node: stop it cleanly first, so its files can be
+// replaced without killing it mid-checkpoint.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Script: String;
+  ResultCode: Integer;
+begin
+  Result := '';
+  Script := ExpandConstant('{app}\wrfcoin-node.ps1');
+  if FileExists(Script) then
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+         '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + Script + '" -Action Stop -Quiet',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataRoot: String;

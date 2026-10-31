@@ -1,40 +1,75 @@
 <#
 .SYNOPSIS
-  Starts the WRFCoin sync-only node for chain 888 (the Windows package launcher).
+  Starts, stops or prepares the WRFCoin sync-only node for chain 888 (the
+  Windows package launcher). No console window is shown to the user.
 
 .DESCRIPTION
-  launch_api.exe is configured only by environment variables. This script sets
-  them for this process from chain-888.conf (installed next to it, generated
-  from the infra cut pins), points the node at the per-user data folder, and
-  runs the node in this console window. Press Ctrl+C to stop it.
+  -Action Start (default)
+      If the node is not running, starts launch_api.exe in the background with
+      the environment from chain-888.conf (installed next to this script,
+      generated from the infra cut pins), the per-user data folder and the
+      operator token; its output goes to %LOCALAPPDATA%\WRFCoin\logs\node.log.
+      Then opens the node's status page in the default browser
+      (/dashboard, or /network/info on a build without the dashboard).
+  -Action Stop
+      Sends the running node Ctrl+C on its own hidden console (the same signal
+      as pressing Ctrl+C in a node window) and waits for it to finish its
+      shutdown checkpoint and exit.
+  -Action Setup
+      Creates %LOCALAPPDATA%\WRFCoin, restricts it to the current user and
+      creates the operator token. The installer runs this once.
+
+  -NoBrowser  start without opening the browser (sign-in start, CI).
+  -Quiet      never show a message box (installer, CI).
 
   Per-user state lives in %LOCALAPPDATA%\WRFCoin:
-    data\              the chain database and peer_identity.key (WRFCOIN_DATA_DIR)
-    operator.token     the node's local API operator token, created on first run
+    data\              chain database and peer_identity.key (WRFCOIN_DATA_DIR)
+    logs\node.log      node output (previous run: node.log.1)
+    logs\launcher.log  this script's own errors
+    operator.token     the node's local API operator token
   The folder is restricted to the current user (inheritance removed, one
-  full-control entry for the user's SID) before the node is started.
-
-  -Setup prepares the folder and token and exits; the installer runs it once.
+  full-control entry for the user's SID).
 #>
 [CmdletBinding()]
 param(
-    [switch]$Setup
+    [ValidateSet('Start', 'Stop', 'Setup')]
+    [string]$Action = 'Start',
+    [switch]$NoBrowser,
+    [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
-$AppDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Exe      = Join-Path $AppDir 'launch_api.exe'
-$Config   = Join-Path $AppDir 'chain-888.conf'
-$Root     = Join-Path $env:LOCALAPPDATA 'WRFCoin'
-$DataDir  = Join-Path $Root 'data'
+$AppDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Exe       = Join-Path $AppDir 'launch_api.exe'
+$Config    = Join-Path $AppDir 'chain-888.conf'
+$Root      = Join-Path $env:LOCALAPPDATA 'WRFCoin'
+$DataDir   = Join-Path $Root 'data'
+$LogDir    = Join-Path $Root 'logs'
+$LogFile   = Join-Path $LogDir 'node.log'
+$LauncherLog = Join-Path $LogDir 'launcher.log'
 $TokenFile = Join-Path $Root 'operator.token'
+$StopWaitSeconds = 120
+
+function Show-Message([string]$Text, [string]$Icon = 'Information') {
+    # Stop detaches from its own console to signal the node's, so writing to
+    # the host can fail afterwards; the message box is what the user sees.
+    try { Write-Output $Text } catch { }
+    if ($Quiet) { return }
+    try {
+        Add-Type -AssemblyName PresentationFramework
+        [System.Windows.MessageBox]::Show($Text, 'WRFCoin Node', 'OK', $Icon) | Out-Null
+    } catch { }
+}
 
 function Fail([string]$Message) {
-    Write-Host ''
-    Write-Host "WRFCoin node: $Message" -ForegroundColor Red
-    if (-not $Setup) { Read-Host 'Press Enter to close' | Out-Null }
+    try {
+        if (Test-Path -LiteralPath $LogDir) {
+            Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) $Action failed: $Message"
+        }
+    } catch { }
+    Show-Message "WRFCoin node: $Message" 'Error'
     exit 1
 }
 
@@ -58,7 +93,7 @@ function Protect-UserOnly([string]$Path) {
 }
 
 function Initialize-UserState {
-    foreach ($dir in @($Root, $DataDir)) {
+    foreach ($dir in @($Root, $DataDir, $LogDir)) {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     }
     # Lock the root first: everything created below it afterwards inherits the
@@ -98,36 +133,111 @@ function Read-NodeConfig([string]$Path) {
     return $pairs
 }
 
-if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
-Initialize-UserState
-if ($Setup) { exit 0 }
-if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
+function Get-NodeProcess {
+    # Only this installation's node, not some other launch_api.exe.
+    $target = [System.IO.Path]::GetFullPath($Exe)
+    @(Get-Process -Name launch_api -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -ieq $target) } catch { $false }
+    })
+}
 
-$cfg = Read-NodeConfig $Config
-foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
-[Environment]::SetEnvironmentVariable('WRFCOIN_DATA_DIR', $DataDir, 'Process')
-[Environment]::SetEnvironmentVariable('WRFCOIN_OPERATOR_TOKEN', ([System.IO.File]::ReadAllText($TokenFile).Trim()), 'Process')
+function Test-Url([string]$Url) {
+    try { (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 } catch { $false }
+}
 
-$api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
-try { $Host.UI.RawUI.WindowTitle = 'WRFCoin Node (chain 888) - Ctrl+C to stop' } catch { }
-Write-Host 'WRFCoin node - chain 888, sync-only (outbound connections only)'
-Write-Host "  data:    $DataDir"
-Write-Host "  status:  $api/dashboard   (or $api/network/info)"
-Write-Host '  stop:    press Ctrl+C in this window and wait for it to exit'
-Write-Host ''
+function Open-StatusPage([string]$Api) {
+    if ($NoBrowser) { return }
+    # /dashboard is the node's own status page (#3599); older builds lack it.
+    $url = if (Test-Url "$Api/dashboard") { "$Api/dashboard" } else { "$Api/network/info" }
+    Start-Process $url
+}
 
-# Relative paths the node may use land in the per-user folder, never in the
-# install folder.
-Set-Location -LiteralPath $Root
+function Start-Node {
+    $cfg = Read-NodeConfig $Config
+    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    if ((Get-NodeProcess).Count -gt 0) { Open-StatusPage $api; return }
+    if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
 
-# Start-Process shares this console, so Ctrl+C and closing the window reach the
-# node directly and it shuts down on its own; PowerShell only waits and never
-# kills it mid-checkpoint.
-$node = Start-Process -FilePath $Exe -WorkingDirectory $Root -NoNewWindow -PassThru
-$null = $node.Handle  # keep a handle so ExitCode is available after exit
-$node.WaitForExit()
-$code = $node.ExitCode
-Write-Host ''
-Write-Host "WRFCoin node exited (code $code)."
-if ($code -ne 0) { Read-Host 'Press Enter to close' | Out-Null }
-exit $code
+    foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
+    [Environment]::SetEnvironmentVariable('WRFCOIN_DATA_DIR', $DataDir, 'Process')
+    [Environment]::SetEnvironmentVariable('WRFCOIN_OPERATOR_TOKEN', ([System.IO.File]::ReadAllText($TokenFile).Trim()), 'Process')
+
+    if (Test-Path -LiteralPath $LogFile) { Move-Item -LiteralPath $LogFile -Destination "$LogFile.1" -Force }
+
+    # cmd.exe only redirects the node's output to the log file. CreateNoWindow
+    # gives the node a console that is never shown, so Stop can still deliver
+    # Ctrl+C to it. No new process group: that would disable Ctrl+C.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $psi.Arguments = "/d /c `"`"$Exe`" >> `"$LogFile`" 2>&1`""
+    $psi.WorkingDirectory = $Root   # relative paths land in the per-user folder
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $null = [System.Diagnostics.Process]::Start($psi)
+
+    # Wait for the API before opening the page. A node that dies at startup is
+    # reported with the end of its log instead of a browser error.
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 2
+        if (Test-Url "$api/health") { Open-StatusPage $api; return }
+        if ((Get-NodeProcess).Count -eq 0) {
+            Start-Sleep -Seconds 1
+            $tail = if (Test-Path -LiteralPath $LogFile) { (Get-Content -LiteralPath $LogFile -Tail 15) -join "`n" } else { '' }
+            Fail "the node stopped during startup. Last lines of ${LogFile}:`n`n$tail"
+        }
+    }
+    # Still starting (slow disk, first run): open the page anyway; it refreshes.
+    Open-StatusPage $api
+}
+
+$ConsoleCtrl = @'
+using System;
+using System.Runtime.InteropServices;
+public static class WrfcoinConsoleCtrl {
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool FreeConsole();
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AttachConsole(uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);
+    // Ctrl+C to every process on pid's console (the node and its cmd.exe
+    // wrapper) while this process ignores it. Returns a Win32 error; 0 = sent.
+    public static int SendCtrlC(uint pid) {
+        FreeConsole();
+        if (!AttachConsole(pid)) return Marshal.GetLastWin32Error();
+        SetConsoleCtrlHandler(IntPtr.Zero, true);
+        int err = GenerateConsoleCtrlEvent(0, 0) ? 0 : Marshal.GetLastWin32Error();
+        System.Threading.Thread.Sleep(500);
+        FreeConsole();
+        return err;
+    }
+}
+'@
+
+function Stop-Node {
+    $nodes = Get-NodeProcess
+    if ($nodes.Count -eq 0) { Show-Message 'The WRFCoin node is not running.'; return }
+    Add-Type -TypeDefinition $ConsoleCtrl
+    foreach ($node in $nodes) {
+        $err = [WrfcoinConsoleCtrl]::SendCtrlC([uint32]$node.Id)
+        if ($err -ne 0) { Fail "could not signal the node (process $($node.Id), Win32 error $err)" }
+    }
+    # Wait for the graceful shutdown (P2P disconnect, checkpoint, HTTP stop).
+    $deadline = (Get-Date).AddSeconds($StopWaitSeconds)
+    while ((Get-Date) -lt $deadline -and (Get-NodeProcess).Count -gt 0) { Start-Sleep -Seconds 1 }
+    if ((Get-NodeProcess).Count -gt 0) {
+        Fail "the node is still shutting down after $StopWaitSeconds s. Try again in a minute; see $LogFile"
+    }
+    Show-Message 'The WRFCoin node has stopped.'
+}
+
+try {
+    if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
+    switch ($Action) {
+        'Setup' { Initialize-UserState }
+        'Start' { Initialize-UserState; Start-Node }
+        'Stop'  { Stop-Node }
+    }
+} catch {
+    Fail "$($_.Exception.Message) ($($_.InvocationInfo.PositionMessage))"
+}
+exit 0

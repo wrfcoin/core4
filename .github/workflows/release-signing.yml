@@ -30,20 +30,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # artifact_name is the file cargo builds (--bin launch_api); asset_name is
+        # the published name. Every leg copied a nonexistent wrfcoin-node[.exe]
+        # until core4-archive#2691 was fixed.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            artifact_name: wrfcoin-node
+            artifact_name: launch_api
             asset_name: wrfcoin-node-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
-            artifact_name: wrfcoin-node
+            artifact_name: launch_api
             asset_name: wrfcoin-node-linux-aarch64
             cross: true
           # macOS targets moved to build-binaries-macos (workflow_dispatch only — 10x runner cost)
           - target: x86_64-pc-windows-msvc
             os: windows-2022
-            artifact_name: wrfcoin-node.exe
+            artifact_name: launch_api.exe
             asset_name: wrfcoin-node-windows-x86_64.exe
 
     outputs:
@@ -184,10 +187,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-apple-darwin
-            artifact_name: wrfcoin-node
+            artifact_name: launch_api
             asset_name: wrfcoin-node-macos-x86_64
           - target: aarch64-apple-darwin
-            artifact_name: wrfcoin-node
+            artifact_name: launch_api
             asset_name: wrfcoin-node-macos-aarch64
 
     steps:

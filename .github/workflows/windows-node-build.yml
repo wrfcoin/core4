@@ -123,13 +123,14 @@ jobs:
         run: |
           sha256sum -- *-setup.exe > SHA256SUMS
           cat SHA256SUMS
-      - name: Smoke test - install, start from the Start menu, check chain 888, uninstall
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, uninstall
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $setup = (Get-ChildItem target\installer\*-setup.exe).FullName
           $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/LOG=$PWD\target\installer\install.log" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { Get-Content target\installer\install.log; throw "installer exit $($p.ExitCode)" }
+          Write-Host '::group::install.log'; Get-Content target\installer\install.log; Write-Host '::endgroup::'
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
 
           $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
           $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
@@ -137,7 +138,7 @@ jobs:
           foreach ($f in 'launch_api.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
           }
-          foreach ($f in 'WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
+          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
             if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
           }
           if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
@@ -147,28 +148,43 @@ jobs:
             $acl = Get-Acl -LiteralPath $path
             $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
             $who = ($rules | ForEach-Object { $_.IdentityReference.Value }) -join ','
-            if ($rules.Count -ne 1 -or $who -ne $sid) { throw "ACL on $path is [$who], expected only $sid" }
-            if (-not $acl.AreAccessRulesProtected -and (Get-Item -LiteralPath $path).PSIsContainer) { throw "$path still inherits" }
+            if ($rules.Count -ne 1 -or $who -ne $sid -or ((Get-Item -LiteralPath $path).PSIsContainer -and -not $acl.AreAccessRulesProtected)) {
+              & icacls.exe $path
+              Get-Content (Join-Path $root 'logs\launcher.log') -ErrorAction SilentlyContinue
+              throw "ACL on $path is [$who] (protected=$($acl.AreAccessRulesProtected)), expected only $sid"
+            }
             Write-Host "ACL ok: $path -> $who"
           }
+          # Set up by the installer's own [Run] entry, not by this test.
           Assert-UserOnly $root
           Assert-UserOnly (Join-Path $root 'operator.token')
 
-          # Start the node exactly as the Start-menu shortcut does.
-          $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $menu 'WRFCoin Node.lnk'))
-          Write-Host "shortcut: $($lnk.TargetPath) $($lnk.Arguments)"
-          $log = Join-Path $PWD 'target\installer\node'
-          $launcher = Start-Process $lnk.TargetPath -ArgumentList $lnk.Arguments -WorkingDirectory $lnk.WorkingDirectory `
-            -RedirectStandardOutput "$log.out.log" -RedirectStandardError "$log.err.log" -PassThru
-
-          $cfg = @{}; Get-Content (Join-Path $app 'chain-888.conf') | ForEach-Object { $k, $v = $_ -split '=', 2; $cfg[$k] = $v }
-          $info = $null
-          $deadline = (Get-Date).AddMinutes(5)
-          while ((Get-Date) -lt $deadline -and -not $launcher.HasExited) {
-            try { $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 5; break } catch { Start-Sleep 5 }
+          $shell = New-Object -ComObject WScript.Shell
+          function Invoke-Shortcut($name, $extra) {
+            $lnk = $shell.CreateShortcut((Join-Path $menu $name))
+            Write-Host "$name -> $($lnk.TargetPath) $($lnk.Arguments) $extra"
+            if ($lnk.Arguments -notmatch '-WindowStyle Hidden') { throw "$name does not hide its window" }
+            $out = Join-Path $PWD "target\installer\$($name -replace '\W', '_')"
+            $r = Start-Process $lnk.TargetPath -ArgumentList "$($lnk.Arguments) $extra" -WorkingDirectory $lnk.WorkingDirectory `
+              -RedirectStandardOutput "$out.out.log" -RedirectStandardError "$out.err.log" -PassThru
+            # Not -Wait: that also waits for descendants, and the node keeps running.
+            $null = $r.Handle
+            if (-not $r.WaitForExit(180000)) { throw "$name did not return within 3 minutes" }
+            Get-Content "$out.out.log","$out.err.log" -ErrorAction SilentlyContinue
+            if ($r.ExitCode -ne 0) { throw "$name exited $($r.ExitCode)" }
           }
+          $nodeLog = Join-Path $root 'logs\node.log'
+          function Show-NodeLog { Write-Host '::group::node.log (tail)'; Get-Content $nodeLog -Tail 80 -ErrorAction SilentlyContinue; Write-Host '::endgroup::' }
+
           try {
-            if (-not $info) { throw 'node API never answered on 127.0.0.1:8556' }
+            # Start exactly as the Start-menu entry does (it returns once the API answers).
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            $node = @(Get-Process launch_api -ErrorAction SilentlyContinue)
+            if ($node.Count -ne 1) { throw "expected one launch_api process, found $($node.Count)" }
+            if ($node[0].MainWindowHandle -ne 0) { throw 'the node has a visible window' }
+
+            $cfg = @{}; Get-Content (Join-Path $app 'chain-888.conf') | ForEach-Object { $k, $v = $_ -split '=', 2; $cfg[$k] = $v }
+            $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 10
             $info | ConvertTo-Json -Depth 4
             if ("$($info.chain_id)" -ne '888') { throw "chain_id $($info.chain_id)" }
             if (("$($info.genesis_hash)".ToLower() -replace '^0x', '') -ne $cfg['WRFCOIN_GENESIS_HASH']) { throw "genesis_hash $($info.genesis_hash)" }
@@ -188,12 +204,16 @@ jobs:
             $key = Join-Path $root 'data\peer_identity.key'
             if (-not (Test-Path $key)) { throw 'peer_identity.key was not created under the data folder' }
             Assert-UserOnly $key
+            if ((Get-Item $nodeLog).Length -eq 0) { throw 'node.log is empty' }
+
+            # Stop exactly as the Start-menu entry does: Ctrl+C on the node's hidden console.
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'initiating graceful shutdown' -Quiet)) { throw 'node.log shows no graceful shutdown' }
+            Write-Host 'Stop: graceful shutdown confirmed in node.log'
           } finally {
+            Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
-            Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
-            Start-Sleep 3
-            Write-Host '--- node log (tail) ---'
-            Get-Content "$log.err.log","$log.out.log" -Tail 60 -ErrorAction SilentlyContinue
           }
 
           $un = Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
@@ -202,7 +222,7 @@ jobs:
           if (Test-Path (Join-Path $app 'launch_api.exe')) { throw 'uninstall left launch_api.exe' }
           if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
           if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
-          Write-Host 'install / start / chain-888 check / uninstall: OK'
+          Write-Host 'install / hidden start / chain-888 check / clean stop / uninstall: OK'
       - uses: actions/upload-artifact@v4
         with:
           name: wrfcoin-node-windows-x86_64-setup

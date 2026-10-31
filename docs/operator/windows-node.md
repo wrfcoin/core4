@@ -25,11 +25,15 @@ a **WRFCoin Node** folder to the Start menu.
 
 ## Start and stop
 
-- **Start:** Start menu → **WRFCoin Node**. A console window opens and shows the
-  node's log. Keep it open; the node runs as long as the window does.
-- **Stop:** click the window and press **Ctrl+C**, then wait until it says the node
-  exited. This lets the node save its place, so the next start resumes there.
+- **Start:** Start menu → **WRFCoin Node**. The node starts in the background (no
+  window) and your browser opens its status page once it is up. Choosing the
+  entry again while the node runs just opens the page again.
+- **Stop:** Start menu → **Stop WRFCoin Node**. This sends the node the same
+  signal as pressing Ctrl+C, waits until it has saved its place and exited, and
+  then says so. The next start resumes from there.
 
+The node keeps running after you close the browser. It writes its log to
+`%LOCALAPPDATA%\WRFCoin\logs\node.log` (the previous run's log is `node.log.1`).
 Only one node can run at a time (it uses ports 8556 and 9000 on this PC).
 
 ### The firewall prompt
@@ -60,6 +64,7 @@ You do not need it to watch the sync.
 | Chain database (`WRFCOIN_DATA_DIR`) | `%LOCALAPPDATA%\WRFCoin\data` |
 | Node identity key | `%LOCALAPPDATA%\WRFCoin\data\peer_identity.key` |
 | Local API operator token | `%LOCALAPPDATA%\WRFCoin\operator.token` |
+| Node log, launcher errors | `%LOCALAPPDATA%\WRFCoin\logs\node.log`, `logs\launcher.log` |
 
 `%LOCALAPPDATA%\WRFCoin` is restricted to your Windows account: the launcher
 removes inherited permissions and grants only your user, so other accounts on the
@@ -69,17 +74,19 @@ opens it.
 ## Uninstall
 
 Start menu → **Uninstall WRFCoin Node**, or Settings → Apps → **WRFCoin Node** →
-Uninstall. Stop the node first. The uninstaller asks whether to delete the chain
+Uninstall. The uninstaller stops a running node cleanly first, then asks whether to delete the chain
 data and identity key too; answer **No** to keep them, so a reinstall resumes
 where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 
 ## Troubleshooting
 
-- **The window flashes and closes, or says "running scripts is disabled":** the
-  shortcut runs the launcher with `-ExecutionPolicy Bypass`, which a company
-  Group Policy can override. Ask your administrator, or use a personal PC.
-- **"Address in use" / the node exits at once:** another node is already running.
-  Close the other WRFCoin Node window.
+- **Nothing happens, or a window flashes and nothing opens:** look in
+  `%LOCALAPPDATA%\WRFCoin\logs\launcher.log`. The shortcuts run the launcher with
+  `-ExecutionPolicy Bypass`, which a company Group Policy can override; ask your
+  administrator, or use a personal PC.
+- **"The node stopped during startup":** the message shows the end of
+  `node.log`. "Address in use" means another node (or another program on port
+  8556 or 9000) is already running.
 - **Height stays at 0:** check the internet connection; the seed is
   `seed.wrfcoin.com` port 9000 (outbound TCP).
 
@@ -87,8 +94,8 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 
 - **Code signing.** The installer and `launch_api.exe` are unsigned, hence the
   SmartScreen warning.
-- **Windows Service / tray icon.** The node runs in a console window while you are
-  signed in. A service would run it without a window and before sign-in; it needs
+- **Windows Service / tray icon.** The node runs in the background only while you
+  are signed in, and there is no tray icon. A service would run it without a window and before sign-in; it needs
   a service host (the node binary does not speak the Service Control Manager
   protocol yet: either native support via the `windows-service` crate, or a
   wrapper), a dedicated low-privilege account and a data folder ACL'd to that
@@ -100,8 +107,9 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 `packaging/windows/` holds everything; `.github/workflows/windows-node-build.yml`
 builds `launch_api.exe` (`--features full-mining,p2p`), packages it with Inno
 Setup 6, installs it silently on the runner, starts it through its Start-menu
-shortcut, checks `/network/info` reports chain 888 with the pinned genesis hash,
-uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+shortcut (checking it has no visible window), checks `/network/info` reports
+chain 888 with the pinned genesis hash, stops it through the "Stop" shortcut
+(checking `node.log` shows a graceful shutdown), uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the
