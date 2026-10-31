@@ -10293,9 +10293,11 @@ mod tests {
         let app = test::init_service(test_app(state.clone())).await;
         let to = "0x4444444444444444444444444444444444444444";
         let amount = 42u64;
-        let (user_sk, user_pk_hex) = keypair(0x1101_05);
-        let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
+        // One sender per submit: the per-`from` submit budget (#3337) is not
+        // what this test exercises.
         let body = |nonce: u64, fee: Option<u64>| {
+            let (user_sk, user_pk_hex) = keypair(0x1101_10 + nonce);
+            let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
             let mut body = json!({
                 "from": from,
                 "to": to,
