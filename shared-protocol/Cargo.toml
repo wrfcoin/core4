@@ -88,6 +88,17 @@ wrfcoin-privacy = { path = "../privacy" }
 cryptoki = { version = "0.7", optional = true }
 cryptoki-sys = { version = "0.1", optional = true }
 
+# Windows only: read a key file's owner and DACL so `security::key_file::
+# open_owner_only_key_file` can refuse a key another account can read (the
+# Windows counterpart of the Unix 0600 check). Already in the lock file.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Integration tests link the library without cfg(test). Enable its test-only
 # helpers for test targets, without exposing them to normal library consumers.

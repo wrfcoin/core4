@@ -123,7 +123,7 @@ jobs:
         run: |
           sha256sum -- *-setup.exe > SHA256SUMS
           cat SHA256SUMS
-      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, uninstall
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, uninstall
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -235,6 +235,53 @@ jobs:
             if (-not (Select-String -Path $nodeLog -Pattern 'POST /node/shutdown\), initiating graceful shutdown' -Quiet)) { throw 'node.log shows no stop request from the route' }
             if (-not (Select-String -Path $nodeLog -Pattern 'Graceful shutdown complete' -Quiet)) { throw 'node.log shows no completed graceful shutdown after the route' }
             Write-Host 'Dashboard Stop route: 401 without token, 403 wrong token, 202 + graceful shutdown with the operator token'
+
+            # Testnet software server key (a bonded node's snapshot signer):
+            # -Action ServerKey writes a user-only seed file, the next Start hands
+            # it to the node, which logs the public key it signs with. Key bytes
+            # are only pattern-checked here, never printed.
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action ServerKey -Quiet
+            if ($LASTEXITCODE -ne 0) { throw "-Action ServerKey exited $LASTEXITCODE" }
+            $serverKey = Join-Path $root 'server.key'
+            if ((Get-Content -LiteralPath $serverKey -Raw).Trim() -notmatch '^[0-9a-f]{64}$') { throw 'server.key is not one 64-hex seed' }
+            Assert-UserOnly $serverKey
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start with the server key' }
+            $loaded = Select-String -Path $nodeLog -Pattern 'TESTNET software server key active' | Select-Object -First 1
+            if (-not $loaded) { throw 'node.log does not show the testnet server key loading' }
+            Write-Host "server key: $($loaded.Line)"
+            # Signing depends on the synced state being exportable, so it is reported, not gated.
+            try {
+              $p = Invoke-RestMethod http://127.0.0.1:8556/state/snapshot/sync-payload -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 120
+              if ($p.signed_payload) { Write-Host "signed snapshot payload at height $($p.payload.height), signer $($p.signed_payload.signer_id)" }
+              else { Write-Host '::warning::snapshot payload came back unsigned' }
+            } catch { Write-Host "::warning::snapshot payload not available yet: $($_.Exception.Message)" }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (server key run)' }
+
+            # The node's own ACL check (not the launcher's re-lock): a key copy that
+            # BUILTIN\Users can read must stop launch_api.exe at startup.
+            $loose = Join-Path $env:RUNNER_TEMP 'loose-server.key'
+            Copy-Item -LiteralPath $serverKey -Destination $loose
+            & icacls.exe $loose /grant '*S-1-5-32-545:(R)' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'icacls could not add the Users entry' }
+            foreach ($k in $cfg.Keys) { [Environment]::SetEnvironmentVariable($k, $cfg[$k], 'Process') }
+            $env:WRFCOIN_DATA_DIR = Join-Path $root 'data'
+            $env:WRFCOIN_OPERATOR_TOKEN = $tok
+            $env:WRFCOIN_SNAPSHOT_SERVER_KEY_FILE = $loose
+            $errLog = Join-Path $PWD 'target\installer\loose-key.err.log'
+            $r = Start-Process (Join-Path $app 'launch_api.exe') -WorkingDirectory $root -NoNewWindow -PassThru `
+              -RedirectStandardOutput (Join-Path $PWD 'target\installer\loose-key.out.log') -RedirectStandardError $errLog
+            $null = $r.Handle
+            if (-not $r.WaitForExit(180000)) { $r | Stop-Process -Force; throw 'launch_api kept running with a key file BUILTIN\Users can read' }
+            Remove-Item Env:WRFCOIN_SNAPSHOT_SERVER_KEY_FILE, Env:WRFCOIN_OPERATOR_TOKEN
+            Remove-Item -LiteralPath $loose -Force
+            $err = Get-Content -LiteralPath $errLog -Raw
+            Write-Host "loose key run: exit $($r.ExitCode); last lines:"
+            Get-Content -LiteralPath $errLog -Tail 5
+            if ($r.ExitCode -eq 0 -or $err -notmatch 'S-1-5-32-545') { throw 'launch_api did not refuse a key file BUILTIN\Users can read' }
+            Write-Host 'Server key: created user-only, loaded by the node, and a Users-readable copy refused'
           } finally {
             Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force

@@ -8509,6 +8509,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "wrf-primitives",
  "wrfcoin-build-provenance",
  "wrfcoin-dataset-manifest",
