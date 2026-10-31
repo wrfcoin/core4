@@ -233,8 +233,15 @@ pub fn build_behaviour(
     // libp2p-identify's internal NewExternalAddrOfPeer injection at the sender,
     // which no receive-side filter can intercept. Nodes WITHOUT an external
     // address keep the default so LAN-only development discovery still works.
-    let hide_listen_addrs =
-        config.external_address.is_some() || config.quic_external_address.is_some();
+    //
+    // Unless WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS opts in, raw listen addresses
+    // are always hidden: a 0.0.0.0 listener expands to every interface, and
+    // identify cannot filter them per address. The event loop instead promotes
+    // each globally routable listen address to an external address, which is
+    // what identify then announces (see `crate::announce`).
+    let hide_listen_addrs = config.external_address.is_some()
+        || config.quic_external_address.is_some()
+        || !config.announce_non_global_addrs;
     let identify = identify::Behaviour::new(
         identify::Config::new("/wrfcoin/id/1.0.0".to_string(), keypair.public())
             .with_hide_listen_addrs(hide_listen_addrs),
@@ -361,7 +368,7 @@ pub fn test_swarm() -> P2pResult<libp2p::Swarm<WrfcoinBehaviour>> {
     test_swarm_with_config(&P2pConfig::default())
 }
 
-fn loopback_listeners_only(config: &P2pConfig) -> bool {
+pub(crate) fn loopback_listeners_only(config: &P2pConfig) -> bool {
     let addresses: Vec<_> = config.listen_addresses.iter()
         .chain(config.quic_listen_addresses.iter()).collect();
     !addresses.is_empty() && addresses.iter().all(|address| {

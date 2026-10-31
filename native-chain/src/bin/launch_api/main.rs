@@ -3804,6 +3804,12 @@ async fn main() -> std::io::Result<()> {
     // and drops roughly one request in 400.
     .keep_alive(LAUNCH_API_KEEP_ALIVE)
     .shutdown_timeout(30)
+    // Our shutdown task below owns SIGINT/SIGTERM (and the Windows console
+    // events). Left enabled, actix catches Ctrl-C itself and stops the server
+    // on its own, so `main` returned while P2P disconnect and the shutdown
+    // checkpoint were still running and "Graceful shutdown complete." never
+    // printed. Only the explicit `server_handle.stop` may stop the server.
+    .disable_signals()
     .run();
 
     let server_handle = server.handle();
@@ -3825,7 +3831,9 @@ async fn main() -> std::io::Result<()> {
     // checkpoint -> HTTP stop. The upgrade halt additionally exits with its
     // distinct code once the shutdown is complete.
     let upgrade_halt_signal = wrfcoin_native_chain::upgrade::halt_signal();
-    tokio::spawn(async move {
+    let shutdown_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_started_task = Arc::clone(&shutdown_started);
+    let shutdown_task = tokio::spawn(async move {
         let sigterm = async {
             #[cfg(unix)]
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -3876,6 +3884,7 @@ async fn main() -> std::io::Result<()> {
                 exit_upgrade_required = true;
             },
         }
+        shutdown_started_task.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Phase 1: Shut down P2P networking.
         #[cfg(feature = "p2p")]
@@ -3911,17 +3920,50 @@ async fn main() -> std::io::Result<()> {
         server_handle.stop(true).await;
 
         log::info!("Graceful shutdown complete.");
-        if exit_upgrade_required {
-            log::error!(
-                "Stopped cleanly at the upgrade deadline; exiting with code {} \
-                 (EXIT_UPGRADE_REQUIRED, #3093). Install the announced release and restart.",
-                wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED
-            );
-            std::process::exit(wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED);
-        }
+        exit_upgrade_required
     });
 
-    server.await
+    let (served, exit_upgrade_required) =
+        serve_until_shutdown_complete(server, shutdown_task, &shutdown_started).await;
+    if exit_upgrade_required == Some(true) {
+        log::error!(
+            "Stopped cleanly at the upgrade deadline; exiting with code {} \
+             (EXIT_UPGRADE_REQUIRED, #3093). Install the announced release and restart.",
+            wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED
+        );
+        std::process::exit(wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED);
+    }
+    served
+}
+
+/// Run the HTTP server to completion, then — when the graceful-shutdown task is
+/// what stopped it — wait for that task to finish before returning.
+///
+/// The task stops the server as its LAST phase and logs "Graceful shutdown
+/// complete." after that, so `server.await` alone returns while the task is
+/// still mid-sequence and `main` can exit underneath it. If the server ended
+/// for any other reason (the task never saw a signal), the task is still
+/// waiting for one and is aborted instead of awaited forever.
+///
+/// Returns the server's own result and the task's output (`None` when the task
+/// did not run the sequence or panicked).
+async fn serve_until_shutdown_complete<T>(
+    server: actix_web::dev::Server,
+    shutdown_task: tokio::task::JoinHandle<T>,
+    shutdown_started: &std::sync::atomic::AtomicBool,
+) -> (std::io::Result<()>, Option<T>) {
+    let served = server.await;
+    if !shutdown_started.load(std::sync::atomic::Ordering::SeqCst) {
+        shutdown_task.abort();
+        return (served, None);
+    }
+    match shutdown_task.await {
+        Ok(outcome) => (served, Some(outcome)),
+        Err(err) => {
+            log::error!("Graceful shutdown task did not finish: {err}");
+            (served, None)
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -17877,5 +17919,110 @@ mod tests {
             "keep-alive {LAUNCH_API_KEEP_ALIVE:?} exceeds the documented \
              retention ceiling {LAUNCH_API_KEEP_ALIVE_CEILING:?}"
         );
+    }
+
+    /// The shipped server must be built with actix's own signal handling
+    /// disabled, so Ctrl-C reaches only our graceful-shutdown task. Comments and
+    /// literals are stripped first, as in the keep-alive guard above.
+    #[actix_web::test]
+    async fn main_builds_the_shipped_server_with_signals_disabled() {
+        let call_needle = concat!(".disable_", "signals()");
+        assert!(
+            !strip_comments_and_literals("// .disable_signals()").contains(call_needle),
+            "the stripper must erase line comments"
+        );
+        let code = strip_comments_and_literals(include_str!("main.rs"));
+        let start = code
+            .find(".bind((host.as_str(), port))?")
+            .expect("the launch_api builder must still bind host/port");
+        let chain = &code[start..];
+        let end = chain
+            .find(".run();")
+            .expect("the launch_api builder must still call .run()");
+        assert!(
+            chain[..end].contains(call_needle),
+            "the launch_api HttpServer builder must CALL .disable_signals() between \
+             .bind(..) and .run(); otherwise actix stops the server on Ctrl-C by itself \
+             and main returns before the graceful shutdown (P2P disconnect, checkpoint) \
+             finishes"
+        );
+    }
+
+    fn signal_free_probe_server() -> actix_web::dev::Server {
+        actix_web::HttpServer::new(|| {
+            App::new().route(
+                "/probe",
+                web::get().to(|| async { actix_web::HttpResponse::Ok().finish() }),
+            )
+        })
+        .workers(1)
+        .disable_signals()
+        .bind(("127.0.0.1", 0))
+        .expect("bind an ephemeral port")
+        .run()
+    }
+
+    /// The race this closes: the shutdown task stops the server and only THEN
+    /// finishes its sequence. `serve_until_shutdown_complete` must not return
+    /// until the task has finished, and must hand back its outcome.
+    #[actix_web::test]
+    async fn serve_waits_for_the_shutdown_sequence_after_the_server_stops() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let server = signal_free_probe_server();
+        let handle = server.handle();
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let task = {
+            let started = Arc::clone(&started);
+            let finished = Arc::clone(&finished);
+            tokio::spawn(async move {
+                let _ = signal_rx.await;
+                started.store(true, Ordering::SeqCst);
+                handle.stop(true).await;
+                // Work that happens after the HTTP stop, like the final log line.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                finished.store(true, Ordering::SeqCst);
+                true
+            })
+        };
+
+        let _ = signal_tx.send(());
+        let (served, outcome) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            serve_until_shutdown_complete(server, task, &started),
+        )
+        .await
+        .expect("serve must return once the shutdown sequence finishes");
+        assert!(served.is_ok());
+        assert_eq!(outcome, Some(true), "the task's outcome must be returned");
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "serve returned before the shutdown sequence finished"
+        );
+    }
+
+    /// If the server ends without the shutdown task having started (it is
+    /// still waiting for a signal), serve must abort it rather than hang.
+    #[actix_web::test]
+    async fn serve_does_not_wait_for_a_shutdown_task_that_never_started() {
+        use std::sync::atomic::AtomicBool;
+
+        let server = signal_free_probe_server();
+        let handle = server.handle();
+        let started = AtomicBool::new(false);
+        let task = tokio::spawn(std::future::pending::<bool>());
+        tokio::spawn(async move { handle.stop(false).await });
+
+        let (served, outcome) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            serve_until_shutdown_complete(server, task, &started),
+        )
+        .await
+        .expect("serve must not wait on a shutdown task that never started");
+        assert!(served.is_ok());
+        assert_eq!(outcome, None);
     }
 }

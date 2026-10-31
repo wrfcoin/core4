@@ -1356,6 +1356,7 @@ impl P2pNode {
             config.preauth_limits,
             config.handshake_limits,
             initial_chain_state,
+            crate::announce::AnnouncePolicy::from_config(&config),
         ));
 
         Ok(P2pHandle {
@@ -1430,6 +1431,7 @@ async fn event_loop(
     preauth_limits: crate::preauth_budget::PreAuthLimits,
     handshake_limits: crate::handshake_guard::HandshakeLimits,
     initial_chain_state: InitialChainState,
+    announce_policy: crate::announce::AnnouncePolicy,
 ) {
     let tm = TopicManager::new();
     // #2114: the self-chosen outbound peer set, and its diversity. Addresses
@@ -1564,6 +1566,7 @@ async fn event_loop(
                             &mut pending_broadcasts,
                             &mut status_announced_peers,
                             &mut pre_proof_statuses,
+                            &announce_policy,
                         )
                         .await;
                     }
@@ -1791,7 +1794,14 @@ async fn event_loop(
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Listening on {address}");
+                        on_new_listen_addr(&mut swarm, &announce_policy, &address);
                         let _ = event_tx.send(P2pEvent::ListeningAddress(address)).await;
+                    }
+                    SwarmEvent::ExpiredListenAddr { address, .. } => {
+                        on_expired_listen_addr(&mut swarm, &announce_policy, &address);
+                    }
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        on_external_addr_confirmed(&mut swarm, &announce_policy, &address);
                     }
                     _ => {}
                 }
@@ -2449,6 +2459,8 @@ mod tests {
         local_handshake: crate::genesis_handshake::GenesisHandshakeMessage,
         discovered: DiscoveredPeers,
         did_bootstrap: bool,
+        /// Production default: filter non-global addresses (crate::announce).
+        announce_policy: crate::announce::AnnouncePolicy,
     }
 
     impl BehaviourHarness {
@@ -2495,6 +2507,7 @@ mod tests {
                 ),
                 discovered: DiscoveredPeers::new(),
                 did_bootstrap: false,
+                announce_policy: crate::announce::AnnouncePolicy::filtering(Vec::new()),
             };
             (h, rx)
         }
@@ -2532,6 +2545,7 @@ mod tests {
                 &mut self.pending_broadcasts,
                 &mut self.status_announced_peers,
                 &mut self.pre_proof_statuses,
+                &self.announce_policy,
             )
             .await;
         }
@@ -3577,6 +3591,10 @@ mod tests {
     #[tokio::test]
     async fn identify_advertised_junk_addresses_are_not_ingested() {
         let (mut h, _rx) = BehaviourHarness::new();
+        // The tailnet address below is relayed only under the
+        // WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS opt-in; the default is covered by
+        // identify_private_addresses_are_not_relayed_via_kademlia_by_default.
+        h.announce_policy = crate::announce::AnnouncePolicy::announce_all();
         let peer_keypair = libp2p::identity::Keypair::generate_ed25519();
         let peer_id = peer_keypair.public().to_peer_id();
 
@@ -3628,6 +3646,99 @@ mod tests {
                 "undialable advertised address {addr} must be filtered; got {ingested:?}"
             );
         }
+    }
+
+    /// Default announce policy: a tailnet (100.64/10) or LAN address a peer
+    /// advertised must not enter Kademlia, which re-serves it to every peer
+    /// that asks; a /dns4 and a global address must. Mutation control: drop
+    /// the `may_relay_peer_addr` check in the Identify::Received arm and the
+    /// private assertions go red.
+    #[tokio::test]
+    async fn identify_private_addresses_are_not_relayed_via_kademlia_by_default() {
+        let (mut h, _rx) = BehaviourHarness::new();
+        let peer_keypair = libp2p::identity::Keypair::generate_ed25519();
+        let peer_id = peer_keypair.public().to_peer_id();
+
+        let private: Vec<libp2p::Multiaddr> = vec![
+            "/ip4/100.64.0.1/tcp/9000".parse().unwrap(), // secret-leak-ok: CGNAT range constant, not a key
+            "/ip4/192.168.0.10/tcp/9000".parse().unwrap(),
+            "/ip6/fd7a:115c:a1e0::1/tcp/9000".parse().unwrap(),
+        ];
+        let public: Vec<libp2p::Multiaddr> = vec![
+            "/dns4/seed.example.org/tcp/9000".parse().unwrap(),
+            "/ip4/8.8.4.4/tcp/9000".parse().unwrap(),
+        ];
+        let info = libp2p::identify::Info {
+            public_key: peer_keypair.public(),
+            protocol_version: "/wrfcoin/id/1.0.0".to_string(),
+            agent_version: "test".to_string(),
+            listen_addrs: private.iter().chain(public.iter()).cloned().collect(),
+            protocols: Vec::new(),
+            observed_addr: "/ip4/100.64.0.2/tcp/4001".parse().unwrap(), // secret-leak-ok: CGNAT range constant, not a key
+            signed_peer_record: None,
+        };
+        h.dispatch(WrfcoinBehaviourEvent::Identify(libp2p::identify::Event::Received {
+            connection_id: ConnectionId::new_unchecked(3),
+            peer_id,
+            info,
+        }))
+        .await;
+
+        let kad = &mut h.swarm.behaviour_mut().kademlia;
+        let ingested: Vec<String> = kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .flat_map(|entry| entry.node.value.iter().map(|a| a.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for addr in &public {
+            assert!(
+                ingested.iter().any(|a| a.starts_with(&addr.to_string())),
+                "global address {addr} must be relayed; got {ingested:?}"
+            );
+        }
+        for addr in &private {
+            assert!(
+                !ingested.iter().any(|a| a.starts_with(&addr.to_string())),
+                "non-global address {addr} must not be relayed; got {ingested:?}"
+            );
+        }
+    }
+
+    /// Own-address announcements: with filtering on, a private listen address
+    /// is never promoted to an external address (identify's announce list), a
+    /// global one is, and a private address an AutoNAT peer confirms is
+    /// withdrawn — but the operator's own private WRFCOIN_P2P_EXTERNAL_ADDR is
+    /// kept.
+    #[tokio::test]
+    async fn own_private_addresses_are_not_announced_but_operator_choice_is() {
+        let (mut h, _rx) = BehaviourHarness::new();
+        let operator: libp2p::Multiaddr = "/ip4/100.64.0.7/tcp/9000".parse().unwrap(); // secret-leak-ok: CGNAT range constant, not a key
+        let policy = crate::announce::AnnouncePolicy::filtering(vec![operator.clone()]);
+        let tailnet: libp2p::Multiaddr = "/ip4/100.101.102.103/tcp/9000".parse().unwrap(); // secret-leak-ok: CGNAT range constant, not a key
+        let global: libp2p::Multiaddr = "/ip4/8.8.4.4/tcp/9000".parse().unwrap();
+
+        super::on_new_listen_addr(&mut h.swarm, &policy, &tailnet);
+        super::on_new_listen_addr(&mut h.swarm, &policy, &global);
+        h.swarm.add_external_address(operator.clone());
+        // A tailnet peer's AutoNAT confirmed our tailnet address.
+        h.swarm.add_external_address(tailnet.clone());
+        super::on_external_addr_confirmed(&mut h.swarm, &policy, &tailnet);
+        super::on_external_addr_confirmed(&mut h.swarm, &policy, &operator);
+
+        let announced: Vec<libp2p::Multiaddr> = h.swarm.external_addresses().cloned().collect();
+        assert!(announced.contains(&global), "global listen addr must be announced: {announced:?}");
+        assert!(announced.contains(&operator), "operator addr must be announced: {announced:?}");
+        assert!(!announced.contains(&tailnet), "tailnet addr must not be announced: {announced:?}");
+
+        super::on_expired_listen_addr(&mut h.swarm, &policy, &global);
+        super::on_expired_listen_addr(&mut h.swarm, &policy, &operator);
+        let announced: Vec<libp2p::Multiaddr> = h.swarm.external_addresses().cloned().collect();
+        assert!(!announced.contains(&global), "expired listener must be withdrawn: {announced:?}");
+        assert!(announced.contains(&operator), "operator addr must survive: {announced:?}");
     }
 
     /// #2819 same-scope exception: a peer that observes US at loopback shares
@@ -4986,6 +5097,47 @@ pub(crate) fn claim_verify_budget(
     false
 }
 
+/// A listener came up. When announcement filtering is on (the default),
+/// identify's raw listen-address list is hidden (see `build_behaviour`), so
+/// each listen address that may be announced is promoted to an external
+/// address here — that is the list identify sends. Private interface addresses
+/// a `0.0.0.0` listener expands to are simply never promoted.
+fn on_new_listen_addr(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if policy.is_filtering() && policy.may_announce_own(address) {
+        swarm.add_external_address(address.clone());
+    }
+}
+
+/// Undo [`on_new_listen_addr`] when the listener goes away, without touching
+/// an operator-configured external address that happens to be equal.
+fn on_expired_listen_addr(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if policy.is_filtering() && !policy.is_operator_addr(address) {
+        swarm.remove_external_address(address);
+    }
+}
+
+/// AutoNAT (or any behaviour) confirmed an external address. A peer on the
+/// same tailnet/LAN can confirm a private address; withdraw it immediately so
+/// it is not announced (crate::announce).
+fn on_external_addr_confirmed(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if !policy.may_announce_own(address) {
+        info!("External address {address} is not globally routable; withdrawing it from announcements");
+        swarm.remove_external_address(address);
+    }
+}
+
 async fn handle_behaviour_event(
     event: WrfcoinBehaviourEvent,
     // #2117: claimed before any signature verification.
@@ -5027,6 +5179,8 @@ async fn handle_behaviour_event(
     pending_broadcasts: &mut PendingBroadcasts,
     status_announced_peers: &mut FxHashSet<PeerId>,
     pre_proof_statuses: &mut FxHashMap<PeerId, (u64, [u8; 32], [u8; 32])>,
+    // Which addresses may be passed on to other peers (`crate::announce`).
+    announce_policy: &crate::announce::AnnouncePolicy,
 ) {
     match event {
         WrfcoinBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -5789,10 +5943,19 @@ async fn handle_behaviour_event(
                     debug!("Identify: ignoring undialable advertised addr {addr} from {peer_id}");
                     continue;
                 }
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, addr.clone());
+                // Kademlia re-serves its routing table to every peer that asks,
+                // so a private/tailnet address a peer told US must not go in
+                // there unless the operator opted in (crate::announce). The
+                // peer manager still keeps it for this node's own dials (QUIC
+                // upgrade), which never leave the node.
+                if announce_policy.may_relay_peer_addr(addr) {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
+                } else {
+                    debug!("Identify: not relaying non-global advertised addr {addr} from {peer_id} via Kademlia");
+                }
                 if let Some(peer_info) = peer_manager.get_mut(&peer_id) {
                     peer_info.add_address(addr.clone());
                 }
@@ -6032,8 +6195,15 @@ async fn handle_behaviour_event(
         },
 
         WrfcoinBehaviourEvent::Upnp(upnp::Event::NewExternalAddr(addr)) => {
-            info!("UPnP: new external address mapped: {addr}");
-            swarm.add_external_address(addr);
+            // A router behind carrier-grade NAT maps to a 100.64/10 address,
+            // which is not reachable from the internet and must not be
+            // announced (crate::announce).
+            if announce_policy.may_announce_own(&addr) {
+                info!("UPnP: new external address mapped: {addr}");
+                swarm.add_external_address(addr);
+            } else {
+                info!("UPnP: mapped external address {addr} is not globally routable; not announcing it");
+            }
         },
         WrfcoinBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr(addr)) => {
             info!("UPnP: external address mapping expired: {addr}");
