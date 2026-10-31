@@ -123,7 +123,7 @@ jobs:
         run: |
           sha256sum -- *-setup.exe > SHA256SUMS
           cat SHA256SUMS
-      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, uninstall
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, reachable.conf, uninstall
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -282,6 +282,32 @@ jobs:
             Get-Content -LiteralPath $errLog -Tail 5
             if ($r.ExitCode -eq 0 -or $err -notmatch 'S-1-5-32-545') { throw 'launch_api did not refuse a key file BUILTIN\Users can read' }
             Write-Host 'Server key: created user-only, loaded by the node, and a Users-readable copy refused'
+
+            # reachable.conf ("Open your port"): the two allowed keys reach the node
+            # and the dashboard shows the announced address; any other key stops
+            # the start. The external address uses the reserved .invalid TLD so the
+            # public seed is never handed a dialable fake address.
+            $reach = Join-Path $root 'reachable.conf'
+            $extAddr = '/dns4/reachable-check.invalid/tcp/9000'
+            [System.IO.File]::WriteAllText($reach, "# test`r`nWRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`n")
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            $peer = Invoke-RestMethod http://127.0.0.1:8556/network/peer_id -TimeoutSec 10
+            if ("$($peer.external_addr)" -notlike "$extAddr/p2p/*") { throw "external_addr is '$($peer.external_addr)', expected $extAddr/p2p/<id>" }
+            $listen = @(Get-NetTCPConnection -LocalPort 9000 -State Listen -ErrorAction SilentlyContinue | Where-Object LocalAddress -eq '0.0.0.0')
+            if ($listen.Count -eq 0) { throw 'P2P is not listening on 0.0.0.0:9000 with WRFCOIN_P2P_HOST=0.0.0.0' }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            if (-not $dash.Content.Contains('id="fact-reach"') -or -not $dash.Content.Contains("peer: '/network/peer_id'")) { throw 'dashboard has no "Reachable at" fact' }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (reachable run)' }
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_API_HOST=0.0.0.0`r`n")
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'the launcher started with WRFCOIN_API_HOST in reachable.conf' }
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused reachable.conf still started the node' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'WRFCOIN_API_HOST cannot be set there' -Quiet)) { throw 'launcher.log does not explain the refused key' }
+            Remove-Item -LiteralPath $reach
+            Write-Host 'reachable.conf: allowed keys applied (0.0.0.0 listener, announced address on /network/peer_id and the dashboard), other keys refused'
           } finally {
             Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force

@@ -178,6 +178,7 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .fact dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
 .fact dd { margin: 2px 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact dd.mono { font-size: 0.9375rem; }
+.fact.reach { grid-column: span 2; }
 @media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
 .hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .hero.down { border-color: rgba(239, 68, 68, 0.5); }
@@ -240,6 +241,7 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div class="fact"><dt>Other nodes</dt><dd id="fact-peers">—</dd></div>
       <div class="fact"><dt>Chain</dt><dd id="fact-chain">—</dd></div>
       <div class="fact wide"><dt>Genesis</dt><dd class="mono" id="fact-genesis">—</dd></div>
+      <div class="fact wide reach"><dt>Reachable at</dt><dd class="mono" id="fact-reach">—</dd></div>
       <div class="fact"><dt>Node version</dt><dd id="fact-version">—</dd></div>
       <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
     </dl>
@@ -429,6 +431,7 @@ const ROUTES = {
   resources: '/node/resources',
   capability: '/node/capability',
   upgrade: '/network/upgrade',
+  peer: '/network/peer_id',
   health: '/health',
   host: '/node/metrics/host',
   shutdown: '/node/shutdown'
@@ -898,6 +901,12 @@ function renderHero() {
   const genesis = info && typeof info.genesis_hash === 'string' && info.genesis_hash !== 'unknown' ? info.genesis_hash : null;
   $('fact-genesis').textContent = genesis ? shortHash(genesis) : (info ? 'not known yet' : '—');
   $('fact-genesis').title = genesis || '';
+  // The address other nodes are told to dial (WRFCOIN_P2P_EXTERNAL_ADDR), without
+  // the /p2p/<id> suffix. None set: the node only connects out.
+  const peerInfo = last.peer;
+  const ext = peerInfo && typeof peerInfo.external_addr === 'string' ? peerInfo.external_addr.replace(/\/p2p\/[^/]+$/, '') : null;
+  $('fact-reach').textContent = ext || (peerInfo ? 'outbound only (no open port)' : '—');
+  $('fact-reach').title = ext ? ext + ': the address other nodes are told to dial (reachable.conf, WRFCOIN_P2P_EXTERNAL_ADDR)' : '';
   const version = (info && info.node_version) || (last.health && last.health.version) || null;
   $('fact-version').textContent = version ? 'v' + version : '—';
   const bpm = blocksPerMinute();
@@ -975,7 +984,7 @@ async function tick() {
   tickCount += 1;
   const slow = tickCount === 1 || tickCount % SLOW_EVERY === 1;
   const keys = ['info', 'sync', 'stats', 'resources', 'capability'];
-  if (slow) keys.push('upgrade', 'health');
+  if (slow) keys.push('upgrade', 'health', 'peer');
   if (token) keys.push('host');
   const results = await Promise.all(keys.map((k) => getJson(ROUTES[k], k === 'host')));
   let anyOk = false, any429 = false;
