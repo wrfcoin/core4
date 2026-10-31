@@ -7734,7 +7734,7 @@ impl State {
                             .to_string(),
                     )
                 })?;
-                self.apply_transparent_transfer(payload, tx.nonce, current_block)
+                self.apply_transparent_transfer(payload, tx.nonce, tx.fee, current_block)
             },
             TransactionType::GovernanceProposal => {
                 let payload = tx.parse_governance_proposal_payload().ok_or_else(|| {
@@ -8097,6 +8097,7 @@ impl State {
         &mut self,
         payload: TransparentTransferPayload,
         tx_nonce: u64,
+        declared_fee: u64,
         current_block: u64,
     ) -> Result<(), StateError> {
         if !payload.transparent_opt_out {
@@ -8155,6 +8156,14 @@ impl State {
                     .to_string(),
             )
         })?;
+        // Burned transfer fee: `None` (and `declared_fee` never read) until
+        // `ConsensusFeature::TransferFeeBurn` is active at this block, so
+        // below activation this path is byte for byte the pre-fee one.
+        let transfer_fee = crate::consensus::transfer_fee::check_declared_fee(
+            declared_fee,
+            current_block,
+        )
+        .map_err(|e| StateError::Governance(e.to_string()))?;
         // Sponsored first sends: read ONLY once `ConsensusFeature::Paymaster`
         // is active. Before that the field is ignored, so this path is byte
         // for byte the unsponsored one and `paymasters` stays empty.
@@ -8164,11 +8173,40 @@ impl State {
             },
             _ => None,
         };
+        let amount = Balance::new(payload.amount as u128);
+        // Who burns the fee: a sponsor whose signed fee covers it, else the
+        // sender. Every check runs before the transfer mutates anything.
+        let sender_fee = match (transfer_fee, sponsorship.as_ref()) {
+            (None, _) => None,
+            (Some(required), Some(charge)) => {
+                if charge.fee < required {
+                    return Err(StateError::Governance(
+                        crate::consensus::transfer_fee::TransferFeeError::SponsorBelowMinimum {
+                            signed: charge.fee,
+                            required,
+                        }
+                        .to_string(),
+                    ));
+                }
+                None
+            },
+            (Some(required), None) => {
+                let fee = Balance::new(u128::from(required));
+                self.check_sender_covers_amount_and_fee(&from, amount, fee)?;
+                Some(fee)
+            },
+        };
         // Session keys: charge the key first (all-or-nothing: a key over its
         // limit or out of scope writes nothing and moves no value), then move
-        // the value. If the move (bad nonce, insufficient balance) or the
-        // sponsorship commit fails, the owner's grants are restored exactly,
-        // so a failed transfer never spends a use or allowance.
+        // the value. The key's limits count the transfer AMOUNT only, never
+        // the burned fee: the fee is a protocol charge the chain sets, so a
+        // fee change can never push a key over a limit its owner chose. The
+        // fee itself is still debited from the sender's balance (or paid by a
+        // sponsor), and the fee pre-check above already ran, so a sender who
+        // cannot cover amount + fee spends no session use. If the move (bad
+        // nonce, insufficient balance), the sponsorship commit or the fee burn
+        // fails, the owner's grants are restored exactly, so a failed
+        // transfer never spends a use or allowance.
         let original_grants = if session_authorized {
             let session_key = payload
                 .session_key_auth
@@ -8197,12 +8235,16 @@ impl State {
             .apply_transition(StateTransition::BalanceTransfer {
                 from,
                 to,
-                amount: Balance::new(payload.amount as u128),
+                amount,
                 nonce: Some(tx_nonce),
                 current_block,
             })
             .and_then(|()| match sponsorship {
                 Some(charge) => self.commit_sponsorship(charge),
+                None => Ok(()),
+            })
+            .and_then(|()| match sender_fee {
+                Some(fee) => self.burn_transfer_fee(&from, fee),
                 None => Ok(()),
             });
         if result.is_err() {
@@ -8212,6 +8254,51 @@ impl State {
             }
         }
         result
+    }
+
+    /// Transfer fee pre-check: the sender's spendable balance and balance
+    /// each cover `amount + fee`, so the transfer and the fee debit either
+    /// both apply or neither does. An absent sender is left to the transfer
+    /// itself (`AccountNotFound`), exactly as without a fee.
+    fn check_sender_covers_amount_and_fee(
+        &self,
+        from: &Address,
+        amount: Balance,
+        fee: Balance,
+    ) -> Result<(), StateError> {
+        let Some(account) = self.accounts.get(from) else {
+            return Ok(());
+        };
+        let needed = amount.0.checked_add(fee.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance.0 < needed {
+            return Err(StateError::InsufficientBalance);
+        }
+        Ok(())
+    }
+
+    /// Debit the transfer fee from the sender and burn it: the value is
+    /// credited to nobody and journalled in `supply_authorized_burning`, so
+    /// INV-SUPPLY-1 reads it as an authorized burn and the circulating supply
+    /// (`issuance_committed_supply`) drops by exactly the fee.
+    fn burn_transfer_fee(&mut self, from: &Address, fee: Balance) -> Result<(), StateError> {
+        let account = self.get_account_mut(from).ok_or(StateError::AccountNotFound)?;
+        if account.spendable_balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance < fee {
+            return Err(StateError::InsufficientBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        Ok(())
     }
 
     /// Every check a sponsorship must pass before its transfer applies,

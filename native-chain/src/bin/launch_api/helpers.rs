@@ -1126,6 +1126,21 @@ pub async fn enqueue_protocol_transaction_with_nonce(
     payload: serde_json::Value,
     nonce: u64,
 ) -> Result<TxAcceptedResponse, String> {
+    enqueue_protocol_transaction_with_nonce_and_fee(state, tx_type, sender_label, payload, nonce, 0)
+        .await
+}
+
+/// [`enqueue_protocol_transaction_with_nonce`] with a declared `tx.fee`
+/// (the burned transfer fee, `transfer_fee_burn`). `fee = 0` builds exactly
+/// the envelope the fee-less helper builds.
+pub async fn enqueue_protocol_transaction_with_nonce_and_fee(
+    state: web::Data<AppState>,
+    tx_type: wrfcoin_native_chain::blockchain::transaction::TransactionType,
+    sender_label: &str,
+    payload: serde_json::Value,
+    nonce: u64,
+    fee: u64,
+) -> Result<TxAcceptedResponse, String> {
     use wrfcoin_native_chain::blockchain::transaction::{
         Transaction, TransactionInput, TransactionOutput,
     };
@@ -1155,6 +1170,7 @@ pub async fn enqueue_protocol_transaction_with_nonce(
     let mut tx = Transaction::new(inputs, outputs);
     tx.tx_type = tx_type;
     tx.nonce = nonce;
+    tx.fee = fee;
     tx.data = Some(payload.to_string());
     if let Ok(addr) = sender_label.parse::<wrfcoin_native_chain::common::types::Address>() {
         tx.sender_address = addr;

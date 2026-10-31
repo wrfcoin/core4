@@ -618,6 +618,21 @@ impl Mempool {
             ));
         }
 
+        // Burned transfer fee: once `transfer_fee_burn` is active at the block
+        // this transfer would be mined in (tip+1), a transfer that declares
+        // less than the fee in force is refused here, with the same error
+        // state apply gives, so this node never relays or packs a transfer
+        // every peer refuses. Callers without a height (tests, legacy pool
+        // paths) are screened by producer pruning and state apply. On a chain
+        // that schedules nothing, `check_declared_fee` is `Ok(None)` at every
+        // height, so admission is unchanged.
+        if let Some(height) = current_height {
+            if tx.has_transparent_transfer_payload() {
+                crate::consensus::transfer_fee::check_declared_fee(tx.fee, height.saturating_add(1))
+                    .map_err(|e| anyhow!("transparent transfer rejected: {e}"))?;
+            }
+        }
+
         // #2024: a non-transparent `Transfer` is authorized by its per-input
         // ed25519 signatures. Block validation verifies these
         // (`classify_block_transaction` in proof_of_publishing.rs, gated on

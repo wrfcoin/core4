@@ -26,11 +26,26 @@ pub struct RiskWarning {
     pub message: String,
 }
 
-/// What a transparent transfer costs on this testnet. core4 applies it as a
-/// balance transfer of exactly `amount` (no fee is debited), and the submitted
-/// body carries no fee, so the preview shows no fee and no fee-inclusive total.
+/// What a transparent transfer costs. Until the chain schedules
+/// `transfer_fee_burn`, core4 applies a transfer as a balance move of exactly
+/// `amount` and the preview shows no fee. Once the node reports the fee in
+/// force at the next block (`/network/info` `transfer_fee`), the preview shows
+/// it, the remaining balance subtracts it, and the submitted body carries it.
+/// The fee is burned: nobody receives it.
 pub const NETWORK_FEE_NONE: &str = "none";
 pub const NO_NETWORK_FEE_NOTE: &str = "This testnet charges no network fee: the recipient receives exactly the amount, and your balance drops by exactly the amount.";
+pub const BURNED_NETWORK_FEE_NOTE: &str = "The network fee is burned (destroyed), not paid to anyone. The recipient receives exactly the amount; your balance drops by the amount plus the fee.";
+/// Shown when the node could not be asked; never claim "no fee" then.
+pub const NETWORK_FEE_UNKNOWN: &str = "unknown (the node did not report it; it charges at most its own fee)";
+
+/// The preview's fee line for a lookup result.
+pub fn network_fee_label(fee: &Result<Option<u64>>) -> String {
+    match fee {
+        Ok(None) => NETWORK_FEE_NONE.to_string(),
+        Ok(Some(units)) => format!("{} (burned)", format_wrf_units(*units)),
+        Err(_) => NETWORK_FEE_UNKNOWN.to_string(),
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionPreview {
@@ -38,6 +53,9 @@ pub struct TransactionPreview {
     pub to: String,
     pub amount: u64,
     pub network_fee: String,
+    /// The burned fee in base units, when the node reports one in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_fee_base_units: Option<u64>,
     pub remaining_balance: u64,
     pub warnings: Vec<RiskWarning>,
 }
@@ -53,7 +71,7 @@ pub fn reject_unsupported_send_options(fee: Option<f64>, memo: Option<&str>) -> 
     }
     if fee.is_some() {
         anyhow::bail!(
-            "--fee is not supported: this testnet charges no network fee, so the recipient receives exactly --amount. Send again without --fee."
+            "--fee is not supported: the chain sets the network fee (shown in the preview; none until the burned transfer fee is switched on), so there is nothing to choose. Send again without --fee."
         );
     }
     Ok(())
@@ -87,18 +105,33 @@ pub async fn handle_send_interactive(
         .map_err(|_| anyhow::anyhow!("node returned an invalid spendable balance"))?;
 
     let amount_units = wrf_amount_to_units(amount)?;
+    let fee = client.get_transfer_fee().await;
+    let fee_units = fee.as_ref().ok().copied().flatten();
+    let debit = amount_units.saturating_add(fee_units.unwrap_or(0));
 
     // Risk assessment
     let history = w.get_transaction_history();
-    let warnings = assess_risks(amount_units, balance, to, &history);
-    let remaining_balance = balance.saturating_sub(amount_units);
+    let mut warnings = assess_risks(debit, balance, to, &history);
+    if debit > balance {
+        warnings.push(RiskWarning {
+            level: RiskLevel::High,
+            code: "INSUFFICIENT_FOR_AMOUNT_AND_FEE".to_string(),
+            message: format!(
+                "Spendable balance {} does not cover {} plus the network fee; the chain will refuse this send",
+                format_wrf_units(balance),
+                format_wrf_units(amount_units)
+            ),
+        });
+    }
+    let remaining_balance = balance.saturating_sub(debit);
 
     // Build preview
     let preview = TransactionPreview {
         from: from.clone(),
         to: to.to_string(),
         amount: amount_units,
-        network_fee: NETWORK_FEE_NONE.to_string(),
+        network_fee: network_fee_label(&fee),
+        network_fee_base_units: fee_units,
         remaining_balance,
         warnings,
     };
@@ -151,6 +184,7 @@ pub async fn handle_send_interactive(
             nonce,
             &auth_pubkey,
             &auth_signature,
+            fee_units,
         )
         .await?;
 
@@ -230,7 +264,16 @@ fn render_preview(preview: &TransactionPreview) {
         "Remaining balance:".dimmed(),
         format_wrf_units(preview.remaining_balance)
     );
-    println!("  {}", NO_NETWORK_FEE_NOTE.dimmed());
+    let note = if preview.network_fee_base_units.is_some() {
+        BURNED_NETWORK_FEE_NOTE
+    } else if preview.network_fee == NETWORK_FEE_NONE {
+        NO_NETWORK_FEE_NOTE
+    } else {
+        ""
+    };
+    if !note.is_empty() {
+        println!("  {}", note.dimmed());
+    }
 
     if !preview.warnings.is_empty() {
         println!();

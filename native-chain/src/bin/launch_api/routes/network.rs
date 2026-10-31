@@ -198,6 +198,7 @@ pub async fn get_network_info(state: web::Data<AppState>) -> impl Responder {
 
     let height = blockchain.height;
     drop(blockchain);
+    let transfer_fee = transfer_fee_info(height.saturating_add(1));
 
     let genesis_hash = if let Some(hash) = cached {
         hash
@@ -256,7 +257,27 @@ pub async fn get_network_info(state: web::Data<AppState>) -> impl Responder {
         "sync_status": sync_status,
         "chain_height": height,
         "local_peer_id": local_peer_id,
+        "transfer_fee": transfer_fee,
     }))
+}
+
+/// The burned transfer fee (`transfer_fee_burn`) for a transfer mined at
+/// `next_height`, for wallets to show before a send. `base_units` is `"0"` and
+/// `active` false on a chain that charges no fee.
+pub(crate) fn transfer_fee_info(next_height: u64) -> serde_json::Value {
+    use wrfcoin_shared_protocol::consensus::transfer_fee as fee;
+    let charged = fee::transfer_fee_at(next_height);
+    let base_units = charged.unwrap_or(0);
+    serde_json::json!({
+        "feature": wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::TransferFeeBurn.name(),
+        "active": charged.is_some(),
+        "scheduled": fee::transfer_fee_scheduled(),
+        "next_height": next_height,
+        "base_units": base_units.to_string(),
+        "wrf": fee::format_wrf(base_units),
+        "burned": true,
+        "sponsorable": wrfcoin_shared_protocol::accounts::paymaster::sponsorship_active(next_height),
+    })
 }
 
 // ---------------------------------------------------------------------------

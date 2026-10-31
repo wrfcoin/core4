@@ -79,6 +79,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "device_submission_limit",
     "streak_replay_node_service",
     "station_coordinates_fixed_point",
+    "transfer_fee_burn",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -307,7 +308,8 @@ mod tests {
                 "forecaster_key_binding",
                 "device_submission_limit",
                 "streak_replay_node_service",
-                "station_coordinates_fixed_point"
+                "station_coordinates_fixed_point",
+                "transfer_fee_burn"
             ]
         );
     }
