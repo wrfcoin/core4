@@ -10,6 +10,7 @@ mod peer_reputation;
 mod rate_limit;
 mod routes;
 mod slashing_submitter;
+mod snapshot_server_key;
 mod state;
 mod stateful_invariants;
 mod transition_extractor;
@@ -549,6 +550,31 @@ fn load_token_store() -> Arc<FxHashMap<String, AuthPrincipal>> {
 /// `protocol_signer::load_block_signer`, so release binaries physically
 /// cannot contain the env-key path.
 fn load_snapshot_signer(node_role: NodeRole) -> Option<Arc<dyn BlockSigner>> {
+    // Testnet software server key (WRFCOIN_SNAPSHOT_SERVER_KEY_FILE): lets a
+    // node without a PKCS#11 token, such as the native Windows package, serve
+    // signed snapshots and bonded tickets under its registered server key. It
+    // is resolved first because it is an explicit opt-in; a configured but
+    // refused key (wrong network, loose file, HSM also set) stops the node
+    // instead of falling back. The isolated receipt consumer never takes it.
+    if node_role != NodeRole::ReceiptConsumer {
+        match snapshot_server_key::load_from_env() {
+            Ok(Some(signer)) => return Some(signer),
+            Ok(None) => {},
+            Err(e) => {
+                eprintln!("FATAL: {e:#}");
+                std::process::exit(1);
+            },
+        }
+    } else if
+    // determinism-ok: node-local startup credential presence check for the isolated rehearsal receiver, never consensus input
+    std::env::var_os(snapshot_server_key::SNAPSHOT_SERVER_KEY_FILE_ENV).is_some() {
+        eprintln!(
+            "FATAL: {} is not accepted by the signing-rehearsal receiver",
+            snapshot_server_key::SNAPSHOT_SERVER_KEY_FILE_ENV
+        );
+        std::process::exit(1);
+    }
+
     // #2860: a public sync-only joiner has no signing token by design. It still
     // loads the independent trusted-signer set used to verify incoming snapshot
     // payloads; it simply cannot sign payloads served by this process. Producing

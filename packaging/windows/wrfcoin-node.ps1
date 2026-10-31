@@ -23,6 +23,12 @@
   -Action Setup
       Creates %LOCALAPPDATA%\WRFCoin, restricts it to the current user and
       creates the operator token. The installer runs this once.
+  -Action ServerKey
+      Creates %LOCALAPPDATA%\WRFCoin\server.key (testnet only): the node's
+      software server key, the key a bonded node registers and signs the
+      snapshots it serves with. Never overwrites an existing key. Once the file
+      exists, every Start locks it to the current user and passes it to the
+      node as WRFCOIN_SNAPSHOT_SERVER_KEY_FILE; the node logs its public key.
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
   -Quiet      never show a message box (installer, CI).
@@ -32,12 +38,13 @@
     logs\node.log      node output (previous run: node.log.1)
     logs\launcher.log  this script's own errors
     operator.token     the node's local API operator token
+    server.key         optional testnet server key (-Action ServerKey)
   The folder is restricted to the current user (inheritance removed, one
   full-control entry for the user's SID).
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup')]
+    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -67,6 +74,7 @@ $LogDir    = Join-Path $Root 'logs'
 $LogFile   = Join-Path $LogDir 'node.log'
 $LauncherLog = Join-Path $LogDir 'launcher.log'
 $TokenFile = Join-Path $Root 'operator.token'
+$ServerKeyFile = Join-Path $Root 'server.key'
 $StopWaitSeconds = 120
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
@@ -127,15 +135,36 @@ function Initialize-UserState {
     # user-only entry, including peer_identity.key, which the node writes later.
     Protect-UserOnly $Root
     if (-not (Test-Path -LiteralPath $TokenFile)) {
-        $bytes = New-Object byte[] 32
-        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
-        $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-        [System.IO.File]::WriteAllText($TokenFile, $token)
+        [System.IO.File]::WriteAllText($TokenFile, (New-RandomHex))
     }
     Protect-UserOnly $TokenFile
     $identity = Join-Path $DataDir 'peer_identity.key'
     if (Test-Path -LiteralPath $identity) { Protect-UserOnly $identity }
+    if (Test-Path -LiteralPath $ServerKeyFile) { Protect-UserOnly $ServerKeyFile }
+}
+
+function New-RandomHex {
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    -join ($bytes | ForEach-Object { $_.ToString('x2') })
+}
+
+function New-ServerKey {
+    # Testnet only: the node refuses a key file on any other network.
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'a software server key is for testnet only' }
+    if (Test-Path -LiteralPath $ServerKeyFile) {
+        Protect-UserOnly $ServerKeyFile
+        Show-Message "The server key already exists: $ServerKeyFile (not replaced)."
+        return
+    }
+    # Create the file empty, lock it, then write the seed: it is never readable
+    # by anyone else, not even for a moment.
+    [System.IO.File]::WriteAllText($ServerKeyFile, '')
+    Protect-UserOnly $ServerKeyFile
+    [System.IO.File]::WriteAllText($ServerKeyFile, (New-RandomHex))
+    Show-Message "Created the node's server key: $ServerKeyFile. Restart the node; its log shows the public key."
 }
 
 function Read-NodeConfig([string]$Path) {
@@ -197,6 +226,10 @@ function Start-Node {
     foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
     [Environment]::SetEnvironmentVariable('WRFCOIN_DATA_DIR', $DataDir, 'Process')
     [Environment]::SetEnvironmentVariable('WRFCOIN_OPERATOR_TOKEN', ([System.IO.File]::ReadAllText($TokenFile).Trim()), 'Process')
+    if (Test-Path -LiteralPath $ServerKeyFile) {
+        # Locked to this user by Initialize-UserState; the node checks it again.
+        [Environment]::SetEnvironmentVariable('WRFCOIN_SNAPSHOT_SERVER_KEY_FILE', $ServerKeyFile, 'Process')
+    }
 
     if (Test-Path -LiteralPath $LogFile) { Move-Item -LiteralPath $LogFile -Destination "$LogFile.1" -Force }
 
@@ -270,6 +303,7 @@ try {
     if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
     switch ($Action) {
         'Setup' { Initialize-UserState }
+        'ServerKey' { Initialize-UserState; New-ServerKey }
         'Start' { Initialize-UserState; Start-Node }
         'Stop'  { Stop-Node }
     }

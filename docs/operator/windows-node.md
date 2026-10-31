@@ -84,12 +84,51 @@ same). **Forget** clears it from the tab.
 | Chain database (`WRFCOIN_DATA_DIR`) | `%LOCALAPPDATA%\WRFCoin\data` |
 | Node identity key | `%LOCALAPPDATA%\WRFCoin\data\peer_identity.key` |
 | Local API operator token | `%LOCALAPPDATA%\WRFCoin\operator.token` |
+| Server key (only if you bond, below) | `%LOCALAPPDATA%\WRFCoin\server.key` |
 | Node log, launcher errors | `%LOCALAPPDATA%\WRFCoin\logs\node.log`, `logs\launcher.log` |
 
 `%LOCALAPPDATA%\WRFCoin` is restricted to your Windows account: the launcher
 removes inherited permissions and grants only your user, so other accounts on the
 PC cannot read the identity key or token. Start menu → **WRFCoin Node Data Folder**
 opens it.
+
+## Server key for bonding (testnet only)
+
+A bonded node registers a **server key** and signs every snapshot it serves with
+it. Linux nodes keep that key in a hardware token (PKCS#11); on testnet a Windows
+node may keep it in a file instead. Create it once, in PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin-node.ps1" -Action ServerKey
+```
+
+This writes `%LOCALAPPDATA%\WRFCoin\server.key` (a random ed25519 seed, 64 hex
+characters), readable only by your Windows account. It never replaces an
+existing key. Start the node again (Start menu → **Stop WRFCoin Node**, then
+**WRFCoin Node**); from then on the launcher passes the file to the node as
+`WRFCOIN_SNAPSHOT_SERVER_KEY_FILE` and `node.log` shows
+
+```
+[signer] TESTNET software server key active: KeyFileSigner(...server.key) (public key <64 hex>)
+```
+
+That public key is the `--server-key` of your bond. The node still never
+produces blocks; it now signs the snapshots it serves.
+
+Rules the node enforces (it refuses to start otherwise):
+
+- **Testnet only.** The key file is accepted only when the node runs with
+  `WRFCOIN_NETWORK_ID=testnet` and a testnet chain id (chain 888). Any other
+  network, mainnet included, still requires a hardware token.
+- **Only your account can read it.** The file's owner and every allow entry
+  must be you, SYSTEM or Administrators. The launcher locks the file on every
+  start; if you copy it elsewhere, lock it again (`icacls <file> /inheritance:r
+  /grant:r "%USERNAME%:F"`).
+- **Not together with an HSM.** If `WRFCOIN_HSM_MODULE_PATH` is also set, the node
+  stops: the token is the default signer, so pick one.
+
+Back up `server.key` somewhere only you can read: a new key means a new bond. To
+stop serving as a bonded node, stop the node and move the file out of the folder.
 
 ## Uninstall
 
@@ -133,7 +172,9 @@ button, stops it through the "Stop" shortcut (checking `node.log` shows a gracef
 shutdown), starts it again and stops it through the dashboard's route
 `POST /node/shutdown` (refused without the operator token and with a wrong one,
 accepted with the installed token, then the same graceful shutdown in `node.log`),
-uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+creates a testnet server key (`-Action ServerKey`), starts with it and checks the
+node logs it, checks that `launch_api.exe` refuses a copy of the key that
+`BUILTIN\Users` can read, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the
