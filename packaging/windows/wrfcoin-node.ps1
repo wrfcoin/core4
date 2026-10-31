@@ -31,6 +31,16 @@
       node as WRFCOIN_SNAPSHOT_SERVER_KEY_FILE; the node logs its public key.
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
+
+  Opening a port (optional): %LOCALAPPDATA%\WRFCoin\reachable.conf may set
+  ONLY these keys, one KEY=VALUE per line (blank lines and # comments allowed):
+    WRFCOIN_P2P_HOST=0.0.0.0                        an IPv4 address to listen on
+    WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<ip>/tcp/<port>  the address other nodes dial
+                              (or /dns4/<name>/tcp/<port>)
+  They override the same keys of chain-888.conf; any other key, a duplicate or
+  a malformed value stops the start with a message. chain-888.conf itself is
+  still checked as the chain-888 sync-only config. See docs/operator/
+  windows-node.md, "Open your port".
   -Quiet      never show a message box (installer, CI).
 
   Per-user state lives in %LOCALAPPDATA%\WRFCoin:
@@ -39,6 +49,7 @@
     logs\launcher.log  this script's own errors
     operator.token     the node's local API operator token
     server.key         optional testnet server key (-Action ServerKey)
+    reachable.conf     optional: open a P2P port (see above)
   The folder is restricted to the current user (inheritance removed, one
   full-control entry for the user's SID).
 #>
@@ -75,6 +86,9 @@ $LogFile   = Join-Path $LogDir 'node.log'
 $LauncherLog = Join-Path $LogDir 'launcher.log'
 $TokenFile = Join-Path $Root 'operator.token'
 $ServerKeyFile = Join-Path $Root 'server.key'
+$ReachableConfig = Join-Path $Root 'reachable.conf'
+# The only chain-888.conf keys a user may override (case-sensitive).
+$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR')
 $StopWaitSeconds = 120
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
@@ -189,6 +203,51 @@ function Read-NodeConfig([string]$Path) {
     return $pairs
 }
 
+function Test-Ipv4([string]$Text) {
+    if ($Text -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { return $false }
+    foreach ($octet in $Text.Split('.')) { if ([int]$octet -gt 255) { return $false } }
+    return $true
+}
+
+function Test-ReachableValue([string]$Key, [string]$Value) {
+    switch -CaseSensitive ($Key) {
+        'WRFCOIN_P2P_HOST' { return (Test-Ipv4 $Value) }
+        'WRFCOIN_P2P_EXTERNAL_ADDR' {
+            if ($Value -cnotmatch '^/(ip4|dns4)/([^/\s]+)/tcp/(\d{1,5})$') { return $false }
+            $hostPart = $Matches[2]
+            $port = [int]$Matches[3]
+            if ($port -lt 1 -or $port -gt 65535) { return $false }
+            if ($Matches[1] -ceq 'ip4') { return (Test-Ipv4 $hostPart) }
+            return ($hostPart.Length -le 253 -and $hostPart -match '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$')
+        }
+    }
+    return $false
+}
+
+function Read-ReachableConfig {
+    # Optional, per user, inside the user-only folder. Only $ReachableKeys may
+    # appear; everything else about the node stays as chain-888.conf says.
+    $pairs = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $ReachableConfig)) { return $pairs }
+    $n = 0
+    foreach ($raw in [System.IO.File]::ReadAllLines($ReachableConfig)) {
+        $n++
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { Fail "${ReachableConfig} line ${n} is not KEY=VALUE" }
+        $key = $line.Substring(0, $eq).Trim()
+        $value = $line.Substring($eq + 1).Trim()
+        if ($ReachableKeys -cnotcontains $key) {
+            Fail "${ReachableConfig} line ${n}: $key cannot be set there (only $($ReachableKeys -join ', '))"
+        }
+        if ($pairs.Contains($key)) { Fail "${ReachableConfig} defines $key twice" }
+        if (-not (Test-ReachableValue $key $value)) { Fail "${ReachableConfig} line ${n}: '$value' is not a valid $key" }
+        $pairs[$key] = $value
+    }
+    return $pairs
+}
+
 function Get-NodeProcess {
     # Only this installation's node, not some other launch_api.exe.
     $target = [System.IO.Path]::GetFullPath($Exe)
@@ -223,7 +282,9 @@ function Start-Node {
     if (@(Get-NodeProcess).Count -gt 0) { Open-StatusPage $api; return }
     if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
 
+    $reach = Read-ReachableConfig
     foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
+    foreach ($key in $reach.Keys) { [Environment]::SetEnvironmentVariable($key, $reach[$key], 'Process') }
     [Environment]::SetEnvironmentVariable('WRFCOIN_DATA_DIR', $DataDir, 'Process')
     [Environment]::SetEnvironmentVariable('WRFCOIN_OPERATOR_TOKEN', ([System.IO.File]::ReadAllText($TokenFile).Trim()), 'Process')
     if (Test-Path -LiteralPath $ServerKeyFile) {

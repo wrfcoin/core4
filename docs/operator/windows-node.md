@@ -47,7 +47,8 @@ Only one node can run at a time (it uses ports 8556 and 9000 on this PC).
 
 Windows may ask whether to allow `launch_api.exe` on networks. A sync-only node
 needs **no inbound access**: it only connects out to the seed. Choose **Cancel**
-(deny); the node syncs either way.
+(deny); the node syncs either way. (If you later open your port, below, you
+remove that "deny" again.)
 
 ## Check that it is syncing
 
@@ -76,6 +77,81 @@ open the page without the token; there, paste the token into the field under
 **Host** (on another computer, or a node you run some other way, paste works the
 same). **Forget** clears it from the tab.
 
+## Open your port (optional)
+
+By default the node only connects out. Opening one port lets other nodes connect
+to yours, which a bonded node needs. You do it in four steps: give the PC a fixed
+address on your network, forward the port on your router, allow it in Windows
+Firewall, and tell the node its public address. Only **TCP 9000** (the node's
+peer-to-peer port) is opened; the status page and its API stay on this PC
+(127.0.0.1) and are never reachable from outside.
+
+**1. This PC's address on your network.** In PowerShell:
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -in 'Dhcp','Manual' } | Select-Object InterfaceAlias, IPAddress
+```
+
+Note the address of the adapter you use (for example `192.168.1.20`). In your
+router's settings, reserve that address for this PC (often called "DHCP
+reservation" or "static lease"), so the forward below keeps pointing at it.
+
+**2. Router: forward TCP 9000.** In the router's port-forwarding page add one
+rule: protocol **TCP**, external port **9000**, internal address = the address
+from step 1, internal port **9000**. Nothing else. Also note your router's
+**public (WAN) address**, shown on its status page (or search "what is my IP"
+from this PC). If it changes now and then, a free dynamic-DNS name for it works
+too.
+
+**3. Windows Firewall: allow the node on TCP 9000.** Open PowerShell **as
+administrator** (Start → type PowerShell → Run as administrator) and run the
+lines below. If Windows asked for a *different* administrator account's
+password, replace `$env:LOCALAPPDATA` with `C:\Users\<your user name>\AppData\Local`.
+
+```powershell
+$node = "$env:LOCALAPPDATA\Programs\WRFCoin Node\launch_api.exe"
+# If you answered "Cancel" to the first firewall prompt, Windows created block
+# rules for the node; a block rule wins over an allow rule, so remove them.
+Get-NetFirewallApplicationFilter -Program $node | Get-NetFirewallRule |
+  Where-Object { $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' } | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName 'WRFCoin node P2P (TCP 9000)' -Direction Inbound -Action Allow `
+  -Protocol TCP -LocalPort 9000 -Program $node -Profile Any
+```
+
+The rule admits only `launch_api.exe`, only on TCP 9000. To undo it later:
+`Remove-NetFirewallRule -DisplayName 'WRFCoin node P2P (TCP 9000)'`.
+
+**4. Tell the node.** Create `%LOCALAPPDATA%\WRFCoin\reachable.conf`
+(`notepad "$env:LOCALAPPDATA\WRFCoin\reachable.conf"`) with these two lines,
+your public address in the second:
+
+```
+WRFCOIN_P2P_HOST=0.0.0.0
+WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000
+```
+
+(With a dynamic-DNS name: `WRFCOIN_P2P_EXTERNAL_ADDR=/dns4/yourname.example.org/tcp/9000`.)
+The first line makes the node listen on your network instead of only on this PC;
+the second is the address it tells other nodes to dial. The file may contain only
+these two settings (and `#` comment lines): anything else, a typo or a malformed
+address stops the start with a message saying which line is wrong, and
+`launch_api.exe` settings from the installed `chain-888.conf` stay as they are.
+Restart the node (Start menu → **Stop WRFCoin Node**, then **WRFCoin Node**).
+
+**Check it.**
+
+- The status page shows your address under **Reachable at** (it says "outbound
+  only" while no address is set).
+- `Get-NetTCPConnection -LocalPort 9000 -State Listen` lists `0.0.0.0` port 9000.
+- From **outside** your network, for example a phone on mobile data with a port
+  checker app, or a friend's PC: `Test-NetConnection 203.0.113.7 -Port 9000`
+  (your address) should report `TcpTestSucceeded : True`. Testing your public
+  address from inside your own network often fails even when everything is
+  right, because many routers do not loop back.
+
+To close the port again: delete `reachable.conf`, restart the node, and remove
+the router rule and the firewall rule.
+
 ## Where the data lives
 
 | What | Where |
@@ -85,6 +161,7 @@ same). **Forget** clears it from the tab.
 | Node identity key | `%LOCALAPPDATA%\WRFCoin\data\peer_identity.key` |
 | Local API operator token | `%LOCALAPPDATA%\WRFCoin\operator.token` |
 | Server key (only if you bond, below) | `%LOCALAPPDATA%\WRFCoin\server.key` |
+| Open-port settings (optional) | `%LOCALAPPDATA%\WRFCoin\reachable.conf` |
 | Node log, launcher errors | `%LOCALAPPDATA%\WRFCoin\logs\node.log`, `logs\launcher.log` |
 
 `%LOCALAPPDATA%\WRFCoin` is restricted to your Windows account: the launcher
@@ -174,7 +251,9 @@ shutdown), starts it again and stops it through the dashboard's route
 accepted with the installed token, then the same graceful shutdown in `node.log`),
 creates a testnet server key (`-Action ServerKey`), starts with it and checks the
 node logs it, checks that `launch_api.exe` refuses a copy of the key that
-`BUILTIN\Users` can read, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+`BUILTIN\Users` can read, starts it with a `reachable.conf` (checks the `0.0.0.0:9000` listener, the
+announced address on `/network/peer_id` and the dashboard's "Reachable at") and
+checks that a `reachable.conf` with any other key stops the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the
@@ -192,4 +271,6 @@ after quoted JSON are handled) and the `wrfcoin-node` service of
 `testnet/docker-compose.testnet.yml` (oracle-governance allowlist, producer-auth
 flag), and refuses any missing, placeholder or malformed pin. Regenerate and
 commit it whenever the cut pins change. The launcher `wrfcoin-node.ps1` adds the
-two per-user values, `WRFCOIN_DATA_DIR` and `WRFCOIN_OPERATOR_TOKEN`.
+two per-user values, `WRFCOIN_DATA_DIR` and `WRFCOIN_OPERATOR_TOKEN`, and the
+optional `reachable.conf` overrides, limited to `WRFCOIN_P2P_HOST` and
+`WRFCOIN_P2P_EXTERNAL_ADDR`.
