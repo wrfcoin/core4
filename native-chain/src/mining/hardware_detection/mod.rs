@@ -893,14 +893,19 @@ impl HardwareDetector {
             }
         }
 
+        // `os_name` is assigned exactly once per target: each branch works out its
+        // value first, because a second assignment does not compile (E0384).
         #[cfg(target_os = "macos")]
         {
-            os_name = String::from("macOS");
-            if let Ok(output) = Command::new("sw_vers").args(&["-productVersion"]).output() {
-                if let Ok(version) = String::from_utf8(output.stdout) {
-                    os_name = format!("macOS {}", version.trim());
-                }
-            }
+            let product_version = Command::new("sw_vers")
+                .args(&["-productVersion"])
+                .output()
+                .ok()
+                .and_then(|output| String::from_utf8(output.stdout).ok());
+            os_name = match product_version {
+                Some(version) => format!("macOS {}", version.trim()),
+                None => String::from("macOS"),
+            };
 
             if let Ok(output) = Command::new("uname").args(&["-r"]).output() {
                 if let Ok(version) = String::from_utf8(output.stdout) {
@@ -911,7 +916,7 @@ impl HardwareDetector {
 
         #[cfg(target_os = "windows")]
         {
-            os_name = String::from("Windows");
+            let mut caption_name = None;
             let args = [
                 "-Command",
                 "Get-WmiObject -Class Win32_OperatingSystem | Select-Object -Property Caption,Version | ConvertTo-Json",
@@ -921,7 +926,7 @@ impl HardwareDetector {
                 if let Ok(json_str) = String::from_utf8(output.stdout) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
                         if let Some(caption) = json.get("Caption").and_then(|v| v.as_str()) {
-                            os_name = caption.to_string();
+                            caption_name = Some(caption.to_string());
                         }
 
                         if let Some(version) = json.get("Version").and_then(|v| v.as_str()) {
@@ -930,6 +935,7 @@ impl HardwareDetector {
                     }
                 }
             }
+            os_name = caption_name.unwrap_or_else(|| String::from("Windows"));
         }
 
         Ok((os_name, kernel_version))

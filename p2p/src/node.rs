@@ -1216,6 +1216,10 @@ impl P2pNode {
             .with_quic_config(|quic_config| {
                 configure_quic_transport(quic_config, idle_connection_timeout)
             })
+            // Resolve /dns4/ and /dns/ peer addresses (the public seed is /dns4/seed.wrfcoin.com/...),
+            // using the operating system's resolver settings on Linux, macOS and Windows.
+            .with_dns()
+            .map_err(|e| P2pError::Transport(format!("dns: {e}")))?
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(|e| P2pError::Transport(format!("relay client: {e}")))?
             .with_behaviour(|key, relay_behaviour| {
