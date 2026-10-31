@@ -163,6 +163,13 @@ pub enum TransactionType {
     /// `data`. Refused at admission, producer self-screen, block validation
     /// and apply unless `ConsensusFeature::SessionKeys` is active.
     SessionKeyAction,
+    /// Security-key wallet action (`security_key_spend`), append-only index 41.
+    /// Carries a [`crate::accounts::security_key::SecurityKeyActionPayload`] as
+    /// JSON in `data` and is applied through the governance sink
+    /// (`ProcessGovernanceTransaction`), so an invalid action is dropped at
+    /// block assembly rather than faulting a block. A block carrying one below
+    /// the feature's activation height is invalid.
+    SecurityKeyAction,
 }
 
 impl fmt::Display for TransactionType {
@@ -207,6 +214,7 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeBondLifecycle => write!(f, "NodeBondLifecycle"),
             TransactionType::NodeServiceBatch => write!(f, "NodeServiceBatch"),
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
+            TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
             TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }
@@ -2725,17 +2733,37 @@ impl TransparentTransferPayload {
     pub fn verify_authorization_with_view<V: crate::accounts::authorization::AuthorizationView>(
         &self, view: &V, nonce: u64, height: u64, timestamp: Timestamp,
     ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, None)
+            .is_ok()
+    }
+
+    /// The from-bound debit check with the transaction's optional
+    /// `security_key_auth` assertion (`security_key_spend`). The assertion is
+    /// read only for an account whose State-backed rule requires it; for every
+    /// other account (and for every pre-block `EmptyAuthorizationView` caller)
+    /// this is exactly [`Self::verify_authorization_with_view`].
+    pub fn authorize_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> Result<(), crate::accounts::authorization::AuthorizationError> {
+        use crate::accounts::authorization::AuthorizationError;
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
-            return false;
+            return Err(AuthorizationError::MalformedSignature);
         };
         // Bind the signer to the account being debited. `from` must be a real
         // hex address; protocol transfers debit a keyed account, never a label.
         let Ok(from_address) = self.from.parse::<Address>() else {
-            return false;
+            return Err(AuthorizationError::SignerIsNotSender);
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &from_address,
             &self.authorization_message(nonce),
@@ -2743,10 +2771,10 @@ impl TransparentTransferPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
-        .is_ok()
     }
 
     /// Whether this payload carries a (well-formed) passkey authorization
@@ -2851,7 +2879,26 @@ impl TransparentTransferPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
-        self.verify_authorization_with_view(view, nonce, height, timestamp)
+        self.verify_owner_authorization_at_height_with_view_and_security_key(
+            view, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_owner_authorization_at_height_with_view`] with the
+    /// transaction's optional `security_key_auth` assertion
+    /// (`security_key_spend`). Used by state apply, which holds the State view.
+    pub fn verify_owner_authorization_at_height_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, security_key)
+            .is_ok()
             || (crate::accounts::passkey::passkey_auth_active(height)
                 && self.verify_passkey_authorization(nonce))
     }
@@ -3019,6 +3066,24 @@ impl StakeAuthPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
+        self.verify_authorization_with_view_and_security_key(
+            view, is_unstake, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_authorization_with_view`] with the transaction's
+    /// optional `security_key_auth` assertion (`security_key_spend`).
+    pub fn verify_authorization_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        is_unstake: bool,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
@@ -3029,7 +3094,7 @@ impl StakeAuthPayload {
         let Ok(account_address) = self.account.parse::<Address>() else {
             return false;
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &account_address,
             &self.authorization_message(is_unstake, nonce),
@@ -3037,6 +3102,7 @@ impl StakeAuthPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
@@ -4149,12 +4215,32 @@ impl Transaction {
             TransactionType::Unstake => true,
             _ => return false,
         };
+        let security_key = self.security_key_spend_proof();
         match self.parse_stake_auth_payload() {
-            Some(payload) => payload.verify_authorization_with_view(
-                view, is_unstake, self.nonce, height, timestamp,
+            Some(payload) => payload.verify_authorization_with_view_and_security_key(
+                view, is_unstake, self.nonce, height, timestamp, security_key.as_ref(),
             ),
             None => false,
         }
+    }
+
+    /// The optional `security_key_auth` member of this transaction's JSON
+    /// `data` (`security_key_spend`), read leniently: anything malformed reads
+    /// as absent and never makes the payload unparseable.
+    pub fn security_key_spend_proof(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyAssertionWire> {
+        crate::accounts::security_key::spend_proof_from_tx_data(self.data.as_deref())
+    }
+
+    /// Parse a `SecurityKeyAction` payload from tx data.
+    pub fn parse_security_key_action_payload(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyActionPayload> {
+        if self.tx_type != TransactionType::SecurityKeyAction {
+            return None;
+        }
+        serde_json::from_str(self.data.as_deref()?).ok()
     }
 
     /// Parse layer2 batch submit payload from tx data.
@@ -4569,8 +4655,17 @@ impl Transaction {
         if self.tx_type != TransactionType::Transfer {
             return false;
         }
+        let security_key = self.security_key_spend_proof();
         match self.parse_transparent_transfer_payload() {
-            Some(payload) => payload.verify_authorization_with_view(view, self.nonce, height, timestamp),
+            Some(payload) => payload
+                .authorize_with_view_and_security_key(
+                    view,
+                    self.nonce,
+                    height,
+                    timestamp,
+                    security_key.as_ref(),
+                )
+                .is_ok(),
             None => false,
         }
     }

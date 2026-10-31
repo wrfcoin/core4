@@ -88,6 +88,13 @@ pub struct LegacyTransactionSubmitRequest {
     /// never more, whatever is declared here.
     #[serde(default)]
     pub fee: Option<u64>,
+    /// WebAuthn assertion from the account's registered security key
+    /// (`security_key_spend`), over `security_key::spend_challenge(from,
+    /// ed25519 preimage)`. Required, alongside `auth_pubkey`/`auth_signature`,
+    /// when the `from` account has a security-key policy in force at tip+1;
+    /// ignored otherwise.
+    #[serde(default)]
+    pub security_key_auth: Option<wrfcoin_shared_protocol::accounts::security_key::SecurityKeyAssertionWire>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -282,6 +289,9 @@ pub async fn submit_transaction_compat(
         }
     }
 
+    // Set when the `from` account's security-key policy is in force at tip+1
+    // and the supplied assertion verified; carried as `security_key_auth`.
+    let mut security_key_member = None;
     let (tx_type, payload_value, privacy_mode) = {
         // #1727: a transparent transfer debits `from` with no per-input
         // signature, so it must carry a verifiable `from`-bound authorization.
@@ -325,6 +335,57 @@ pub async fn submit_transaction_compat(
                         "auth_signature does not verify for auth_pubkey over from|to|amount|nonce, \
                          or auth_pubkey does not derive to from",
                     );
+                }
+                // `security_key_spend`: the State-backed debit check at the
+                // height the transfer would be mined at. For an account
+                // without a security-key policy this is the ed25519 check
+                // above again; for a protected account it also needs a valid
+                // `security_key_auth`, so a phrase-only send is refused here
+                // instead of being silently dropped at block assembly.
+                let checked = {
+                    let chain = state.blockchain.read().await;
+                    let next_height = chain.height.saturating_add(1);
+                    let required = wrfcoin_shared_protocol::accounts::security_key::security_key_active(next_height)
+                        && from.parse::<Address>().ok().is_some_and(|account| {
+                            chain.state.authorization_declarations.get(&account)
+                                .and_then(wrfcoin_shared_protocol::accounts::security_key::stored_policy)
+                                .is_some_and(|policy| policy.enforced_at(next_height))
+                        });
+                    let result = payload.authorize_with_view_and_security_key(
+                        &chain.state,
+                        nonce_u64,
+                        next_height,
+                        wrfcoin_shared_protocol::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
+                        body.security_key_auth.as_ref(),
+                    );
+                    (required, result)
+                };
+                match checked {
+                    (required, Ok(())) => {
+                        if required {
+                            security_key_member = body.security_key_auth.clone();
+                        }
+                    },
+                    (_, Err(wrfcoin_shared_protocol::accounts::authorization::AuthorizationError::SecurityKeyRequired)) => {
+                        return envelope_error(
+                            &req,
+                            StatusCode::BAD_REQUEST,
+                            "SECURITY_KEY_REQUIRED",
+                            "this account requires its security key to send: add security_key_auth \
+                             (a WebAuthn assertion over the security-key spend challenge)",
+                        );
+                    },
+                    (_, Err(error)) => {
+                        if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                            return resp;
+                        }
+                        return envelope_error(
+                            &req,
+                            StatusCode::BAD_REQUEST,
+                            "SECURITY_KEY_INVALID",
+                            error.to_string(),
+                        );
+                    },
                 }
                 payload
             },
@@ -493,11 +554,14 @@ pub async fn submit_transaction_compat(
             }
             payload.sponsorship = Some(sponsorship);
         }
-        (
-            TransactionType::Transfer,
-            serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
-            "transparent_opt_out",
-        )
+        let mut value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+        if let (Some(proof), Some(object)) = (security_key_member.take(), value.as_object_mut()) {
+            object.insert(
+                wrfcoin_shared_protocol::accounts::security_key::SECURITY_KEY_AUTH_MEMBER.to_string(),
+                serde_json::to_value(proof).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        (TransactionType::Transfer, value, "transparent_opt_out")
     };
 
     // Deduplicate only after the caller has proved authorization. Recording

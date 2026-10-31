@@ -337,6 +337,10 @@ pub fn extract_transitions(
             | TransactionType::ShieldedDeposit
             | TransactionType::ShieldedWithdrawal
             | TransactionType::RewardClaim
+            // Security-key wallet actions (`security_key_spend`) apply through
+            // the same governance sink; a direct transition here would apply
+            // them twice.
+            | TransactionType::SecurityKeyAction
             // Governance proposal/vote/etc. were already governance-routed.
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote

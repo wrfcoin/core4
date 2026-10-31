@@ -6,4 +6,5 @@ pub mod native_smart_accounts;
 pub mod passkey;
 pub mod paymaster;
 pub mod recovery;
+pub mod security_key;
 pub mod session_keys;

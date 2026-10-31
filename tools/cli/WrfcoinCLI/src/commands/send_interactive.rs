@@ -176,8 +176,13 @@ pub async fn handle_send_interactive(
     let (from, auth_pubkey, auth_signature) =
         w.sign_transparent_transfer(to, amount_units, nonce)?;
     drop(w);
+    // `security_key_spend`: a protected account also needs its key.
+    let security_key_auth = crate::commands::security_key::spend_assertion_if_required(
+        &client, &from, to, amount_units, nonce,
+    )
+    .await?;
     let accepted = client
-        .submit_transparent_transfer(
+        .submit_transparent_transfer_with_security_key(
             &from,
             to,
             amount_units,
@@ -185,6 +190,7 @@ pub async fn handle_send_interactive(
             &auth_pubkey,
             &auth_signature,
             fee_units,
+            security_key_auth.as_ref(),
         )
         .await?;
 

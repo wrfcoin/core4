@@ -1,6 +1,7 @@
 pub mod node_receipts;
 pub mod node_bonds;
 pub mod node_fraud;
+pub mod security_key;
 pub mod node_shutdown;
 pub mod bridge;
 pub mod chain;
@@ -104,6 +105,20 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             web::post().to(session_keys::submit_session_key_action),
         )
         .route("/addresses/{address}", web::get().to(chain::get_address_compat))
+        // Security-key wallets (`security_key_spend`): public status read and
+        // client-signed actions, dry-run against State before enqueueing.
+        .route(
+            "/accounts/{address}/security-key",
+            web::get().to(security_key::get_security_key_status),
+        )
+        .service(
+            web::resource("/accounts/security-key/actions")
+                .app_data(
+                    web::JsonConfig::default()
+                        .limit(security_key::MAX_SECURITY_KEY_ACTION_JSON_BYTES),
+                )
+                .route(web::post().to(security_key::submit_security_key_action)),
+        )
         .route("/prometheus", web::get().to(chain::get_prometheus_metrics))
         .route("/metrics", web::get().to(chain::get_prometheus_metrics))
         .route("/heatmap/json", web::get().to(chain::get_heatmap_json_compat))

@@ -15,6 +15,10 @@
     },
     {
       "package": "test_server",
+      "target": "security_key_feature_parity"
+    },
+    {
+      "package": "test_server",
       "target": "schedule_extension_bootstrap_parity_3277",
       "review": {
         "source_pr": 3368,
@@ -331,6 +335,10 @@
         "owning_issue": 3290,
         "covers": "#3290: forecaster_key_binding (unschedulable) scheduled at H through the extension overlay. The issue's random-key probe is admitted, mined and registered with the gate off; from H it is refused at mempool admission (with a height and, once scheduled, without one), a block carrying it fails verify_block, and the real producer drops one admitted against a stale tip; a commit accepted below H is revealed after H (grandfathering); producer, P2P applier (extract_transitions) and WAL replay agree on state_root, pending commits and reveals at H-1, H and H+1 (RED: removing the classifier or the admission check fails it). Runs in a child process: the included extractor unit tests share the binary and the overlay is process-wide."
       }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "security_key_spend_parity"
     },
     {
       "package": "wrfcoin-native-chain",
@@ -799,6 +807,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "passkey_webauthn_2169"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "security_key_spend"
     },
     {
       "package": "wrfcoin-shared-protocol",

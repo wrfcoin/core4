@@ -684,6 +684,17 @@ impl Wallet {
         Ok((from, key_pair.public_key_hex()?, signature))
     }
 
+    /// Sign `message` with the primary address's phrase key. Returns
+    /// `(address, ed25519 public key hex, signature hex)`. Used for
+    /// security-key actions (`security_key_spend`); the key never leaves
+    /// this process.
+    pub fn sign_with_primary(&self, message: &[u8]) -> Result<(String, String, String)> {
+        let from = self.primary_signing_address()?;
+        let key_pair = self.key_manager()?.load_key_pair(&from)?;
+        let signature = key_pair.sign_hex(message)?;
+        Ok((from, key_pair.public_key_hex()?, signature))
+    }
+
     /// Validate the primary key before any node request. This ensures a
     /// legacy wallet receives the migration hint instead of an unrelated
     /// address-route 400 response.
@@ -1031,8 +1042,14 @@ pub async fn handle_wallet_command(
             // force; otherwise omitted, and the node declares its own.
             let fee = client.get_transfer_fee().await;
             let fee_units = fee.as_ref().ok().copied().flatten();
+            // `security_key_spend`: a protected account also needs a touch +
+            // PIN on its registered key (nothing happens for other accounts).
+            let security_key_auth = crate::commands::security_key::spend_assertion_if_required(
+                &client, &from, to, amount_units, nonce,
+            )
+            .await?;
             let accepted = client
-                .submit_transparent_transfer(
+                .submit_transparent_transfer_with_security_key(
                     &from,
                     to,
                     amount_units,
@@ -1040,6 +1057,7 @@ pub async fn handle_wallet_command(
                     &auth_pubkey,
                     &auth_signature,
                     fee_units,
+                    security_key_auth.as_ref(),
                 )
                 .await?;
             Ok(json!({

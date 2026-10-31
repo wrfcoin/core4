@@ -580,6 +580,17 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
 
+                if let WalletCommands::SecurityKey(command) = &action {
+                    match commands::security_key::handle_security_key_command(command).await {
+                        Ok(data) => emit_success(&context, "wallet", &data)?,
+                        Err(err) => {
+                            emit_error(&context, "wallet", &err)?;
+                            return Err(err);
+                        },
+                    }
+                    return Ok(());
+                }
+
                 if let WalletCommands::Price { pair } = &action {
                     match commands::swap::handle_price(pair).await {
                         Ok(data) => emit_success(&context, "wallet", &data)?,
@@ -641,7 +652,8 @@ async fn run() -> Result<()> {
                     WalletCommands::Watch { .. }
                     | WalletCommands::Swap { .. }
                     | WalletCommands::Price { .. }
-                    | WalletCommands::Liquidity { .. } => unreachable!(),
+                    | WalletCommands::Liquidity { .. }
+                    | WalletCommands::SecurityKey(_) => unreachable!(),
                 };
 
                 match handle_wallet_command(&cli_action, wallet).await {

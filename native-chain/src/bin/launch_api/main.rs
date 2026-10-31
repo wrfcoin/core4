@@ -4039,6 +4039,8 @@ mod tests {
     mod node_fraud_slice5;
     #[path = "node_fraud_route.rs"]
     mod node_fraud_route;
+    #[path = "security_key_route.rs"]
+    mod security_key_route;
 
     #[cfg(unix)]
     #[path = "payout_signer_3499.rs"]
