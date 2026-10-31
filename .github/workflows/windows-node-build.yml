@@ -306,6 +306,7 @@ jobs:
             $ErrorActionPreference = 'Stop'
             if ($cliExit -eq 0 -or $cliErr -notmatch 'S-1-5-32-545') { throw "wrfcoin.exe did not refuse a Users-readable key file: $cliErr" }
             Write-Host 'wrfcoin.exe refuses a Users-readable key file'
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
             Remove-Item -LiteralPath $loose -Force
             $err = Get-Content -LiteralPath $errLog -Raw
             Write-Host "loose key run: exit $($r.ExitCode); last lines:"
