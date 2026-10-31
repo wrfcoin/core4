@@ -38,6 +38,18 @@ param(
     [switch]$Quiet
 )
 
+# Started from PowerShell 7 (or anything it launched, such as an installer),
+# Windows PowerShell 5.1 inherits a PSModulePath that points at PowerShell 7's
+# modules and then cannot load its own Get-Acl, Invoke-WebRequest, ... Use the
+# Windows PowerShell module path before the first cmdlet runs.
+if ($PSVersionTable.PSEdition -ne 'Core') {
+    $env:PSModulePath = @(
+        "$env:USERPROFILE\Documents\WindowsPowerShell\Modules",
+        "$env:ProgramFiles\WindowsPowerShell\Modules",
+        "$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+    ) -join ';'
+}
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
