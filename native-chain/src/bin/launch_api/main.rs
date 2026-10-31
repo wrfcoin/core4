@@ -3827,10 +3827,35 @@ async fn main() -> std::io::Result<()> {
     let upgrade_halt_signal = wrfcoin_native_chain::upgrade::halt_signal();
     tokio::spawn(async move {
         let sigterm = async {
+            #[cfg(unix)]
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .expect("failed to register SIGTERM handler")
                 .recv()
                 .await;
+            // Windows has no SIGTERM: closing the console window or a system shutdown
+            // is the "terminate" a Windows node receives. If a handler cannot be
+            // registered the node keeps running and Ctrl-C still stops it cleanly.
+            #[cfg(windows)]
+            {
+                use tokio::signal::windows::{ctrl_close, ctrl_shutdown};
+                match (ctrl_close(), ctrl_shutdown()) {
+                    (Ok(mut close), Ok(mut shutdown)) => {
+                        tokio::select! {
+                            _ = close.recv() => {},
+                            _ = shutdown.recv() => {},
+                        }
+                    }
+                    (close, shutdown) => {
+                        log::warn!(
+                            "Windows close/shutdown handlers unavailable (close ok: {}, shutdown ok: {}); \
+                             only Ctrl-C triggers a graceful shutdown",
+                            close.is_ok(),
+                            shutdown.is_ok()
+                        );
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
         };
         let sigint = async {
             tokio::signal::ctrl_c()

@@ -1,0 +1,92 @@
+name: Windows node build
+
+# Builds the node exactly as the release workflow does for x86_64-pc-windows-msvc
+# (launch_api, features full-mining,p2p) on a hosted Windows runner, so Windows-only
+# code paths fail a PR instead of rotting unnoticed. Two such breaks (an E0384 in
+# hardware detection and a Unix-only SIGTERM handler) went uncompiled from the
+# public release (2026-10-22) until a native build on the owner's laptop (2026-10-31).
+# The built .exe is uploaded as a run artifact for hands-on testing; it is not a release.
+
+on:
+  pull_request:
+    paths:
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'zk-circuits/**'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/workflows/windows-node-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'zk-circuits/**'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - '.github/workflows/windows-node-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-node-build-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: launch_api (x86_64-pc-windows-msvc, full-mining,p2p)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-node-build
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked --bin launch_api --features full-mining,p2p
+      # launch_api has no --help/--version flag (any run starts a node), so this only
+      # proves the binary was produced; the run test is a sync against chain 888.
+      - name: Binary produced
+        shell: bash
+        run: ls -l target/release/launch_api.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrfcoin-node-windows-x86_64
+          path: target/release/launch_api.exe
+          retention-days: 14
