@@ -130,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python for the fail-closed toolchain checker
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
       - name: Install PyYAML for the toolchain-pin checker
