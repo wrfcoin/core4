@@ -93,6 +93,17 @@ pub(crate) fn bounded_read(path: &Path, cap: usize) -> Result<Vec<u8>> {
 }
 pub(crate) fn secret_file(path: &Path, cap: usize) -> Result<Zeroizing<Vec<u8>>> {
     wrfcoin_shared_protocol::security::key_file::assert_key_file_permissions(path)?;
+    // Windows has no mode bits: require an owner-only DACL instead (the
+    // launcher's operator.token passes), reading the handle that was checked.
+    #[cfg(windows)]
+    {
+        let file = wrfcoin_shared_protocol::security::key_file::open_owner_only_key_file(path)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= cap, "file exceeds bound");
+        Ok(bytes)
+    }
+    #[cfg(not(windows))]
     Ok(Zeroizing::new(bounded_read(path, cap)?))
 }
 
