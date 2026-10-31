@@ -35,6 +35,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - 'tools/cli/WrfcoinCLI/**'
       - 'packaging/windows/**'
       - '.github/workflows/windows-node-build.yml'
   push:
@@ -60,6 +61,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - 'tools/cli/WrfcoinCLI/**'
       - 'packaging/windows/**'
       - '.github/workflows/windows-node-build.yml'
   workflow_dispatch:
@@ -87,15 +89,25 @@ jobs:
       - name: Build release binary
         shell: bash
         run: cargo build --release --locked --bin launch_api --features full-mining,p2p
+      # The operator CLI (bond, receipts, grant request), shipped as wrfcoin.exe.
+      # Plain build (no hsm feature): on Windows its key files are checked for an
+      # owner-only DACL instead of Unix mode 0600.
+      - name: Build the CLI (wrfcoin.exe)
+        shell: bash
+        run: cargo build --release --locked -p wrfcoin_cli --bin wrfcoin
       # launch_api has no --help/--version flag (any run starts a node), so this only
       # proves the binary was produced; the run test is a sync against chain 888.
-      - name: Binary produced
+      - name: Binaries produced
         shell: bash
-        run: ls -l target/release/launch_api.exe
+        run: |
+          ls -l target/release/launch_api.exe target/release/wrfcoin.exe
+          target/release/wrfcoin.exe --version
       - uses: actions/upload-artifact@v4
         with:
           name: wrfcoin-node-windows-x86_64
-          path: target/release/launch_api.exe
+          path: |
+            target/release/launch_api.exe
+            target/release/wrfcoin.exe
           retention-days: 14
 
       # ---- Windows package (packaging/windows) --------------------------------
@@ -113,7 +125,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
           }
           $version = "$((Get-Content VERSION -Raw).Trim())-g$($env:HEAD_SHA.Substring(0, 8))"
-          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" `
+          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" "/DSourceCli=$PWD\target\release\wrfcoin.exe" `
             "/DOutputDir=$PWD\target\installer" packaging\windows\wrfcoin-node.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
           Get-ChildItem target\installer
@@ -135,7 +147,7 @@ jobs:
           $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
           $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
           $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
-          foreach ($f in 'launch_api.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+          foreach ($f in 'launch_api.exe','wrfcoin.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
           }
           foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
@@ -260,6 +272,17 @@ jobs:
             Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
             if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (server key run)' }
 
+            # The installed CLI reads the same user-only key (Windows DACL check, not
+            # Unix 0600) and derives the public key the node logged.
+            $cli = Join-Path $app 'wrfcoin.exe'
+            $info = & $cli --output json node bond key-info --key-file $serverKey | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "wrfcoin node bond key-info exited $LASTEXITCODE" }
+            $cliPub = "$((ConvertFrom-Json $info).data.public_key)".ToLower()
+            if ($cliPub -notmatch '^[0-9a-f]{64}$' -or -not $loaded.Line.ToLower().Contains("public key $cliPub")) {
+              throw "CLI public key '$cliPub' does not match the node's server key line"
+            }
+            Write-Host "wrfcoin.exe reads server.key: public key $cliPub matches the node"
+
             # The node's own ACL check (not the launcher's re-lock): a key copy that
             # BUILTIN\Users can read must stop launch_api.exe at startup.
             $loose = Join-Path $env:RUNNER_TEMP 'loose-server.key'
@@ -276,6 +299,14 @@ jobs:
             $null = $r.Handle
             if (-not $r.WaitForExit(180000)) { $r | Stop-Process -Force; throw 'launch_api kept running with a key file BUILTIN\Users can read' }
             Remove-Item Env:WRFCOIN_SNAPSHOT_SERVER_KEY_FILE, Env:WRFCOIN_OPERATOR_TOKEN
+            # The CLI refuses the same loose copy, naming the SID that can read it.
+            $ErrorActionPreference = 'Continue'
+            $cliErr = & $cli --output json node bond key-info --key-file $loose 2>&1 | Out-String
+            $cliExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($cliExit -eq 0 -or $cliErr -notmatch 'S-1-5-32-545') { throw "wrfcoin.exe did not refuse a Users-readable key file: $cliErr" }
+            Write-Host 'wrfcoin.exe refuses a Users-readable key file'
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
             Remove-Item -LiteralPath $loose -Force
             $err = Get-Content -LiteralPath $errLog -Raw
             Write-Host "loose key run: exit $($r.ExitCode); last lines:"
