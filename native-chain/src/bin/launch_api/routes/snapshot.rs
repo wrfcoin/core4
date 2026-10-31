@@ -202,7 +202,7 @@ pub struct SnapshotServiceReceiptRequest {
     pub receipt: SignedNodeServiceReceipt,
 }
 
-async fn snapshot_export_cut(
+pub(crate) async fn snapshot_export_cut(
     state: &AppState,
     blockchain: &Blockchain,
 ) -> Result<Arc<SnapshotExportCut>, String> {

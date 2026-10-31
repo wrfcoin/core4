@@ -520,6 +520,12 @@ pub enum P2pCommand {
         request_id: request_response::InboundRequestId,
         response: BlockResponse,
     },
+    /// Answer a bonded snapshot fetch the node handed to the application
+    /// ([`crate::bonded_fetch_serve::InboundBondedFetch`]).
+    RespondToBondedFetch {
+        request_id: request_response::InboundRequestId,
+        response: crate::bonded_fetch::BondedFetchResponse,
+    },
     BroadcastWeatherData {
         station_id: String,
         data: Vec<u8>,
@@ -625,9 +631,21 @@ pub struct P2pHandle {
     pub local_peer_id: PeerId,
     pub discovered_peers: DiscoveredPeers,
     pub sync_peers: SyncPeersSurface,
+    /// Admitted bonded snapshot fetches; `Some` only when the node serves them
+    /// (`P2pConfig::serve_bonded_snapshots`).
+    bonded_fetch_rx: Option<mpsc::Receiver<crate::bonded_fetch_serve::InboundBondedFetch>>,
 }
 
 impl P2pHandle {
+    /// Take the queue of admitted bonded snapshot fetches. The taker answers
+    /// each with [`P2pCommand::RespondToBondedFetch`]. If nobody takes it, the
+    /// node answers every fetch `UNAVAILABLE`.
+    pub fn take_bonded_fetch_requests(
+        &mut self,
+    ) -> Option<mpsc::Receiver<crate::bonded_fetch_serve::InboundBondedFetch>> {
+        self.bonded_fetch_rx.take()
+    }
+
     #[cfg(test)]
     pub(crate) async fn quic_blocks_ready_for_test(&self, peer_id: PeerId) -> bool {
         let (reply, response) = tokio::sync::oneshot::channel();
@@ -1329,6 +1347,12 @@ impl P2pNode {
             config.genesis_hash.clone(),
             advertised_version.as_u32(),
         );
+        let (bonded_fetch_tx, bonded_fetch_rx) = if config.serve_bonded_snapshots {
+            let (tx, rx) = mpsc::channel(crate::bonded_fetch_serve::BONDED_FETCH_QUEUE);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let bootstrap_peers_for_redial = config.bootstrap_peers.clone();
         let bootstrap_redial_interval = config.bootstrap_redial_interval;
         let bootstrap_redial_max_backoff = config.bootstrap_redial_max_backoff;
@@ -1357,6 +1381,7 @@ impl P2pNode {
             config.handshake_limits,
             initial_chain_state,
             crate::announce::AnnouncePolicy::from_config(&config),
+            bonded_fetch_tx,
         ));
 
         Ok(P2pHandle {
@@ -1366,6 +1391,7 @@ impl P2pNode {
             local_peer_id,
             discovered_peers: handle_discovered,
             sync_peers: handle_sync_peers,
+            bonded_fetch_rx,
         })
     }
 }
@@ -1432,8 +1458,10 @@ async fn event_loop(
     handshake_limits: crate::handshake_guard::HandshakeLimits,
     initial_chain_state: InitialChainState,
     announce_policy: crate::announce::AnnouncePolicy,
+    bonded_fetch_tx: Option<mpsc::Sender<crate::bonded_fetch_serve::InboundBondedFetch>>,
 ) {
     let tm = TopicManager::new();
+    let mut bonded_fetch = crate::bonded_fetch_serve::BondedFetchServe::new(bonded_fetch_tx);
     // #2114: the self-chosen outbound peer set, and its diversity. Addresses
     // reachable at a configured bootstrap address are attributed to the
     // operator; everything else arrived via Kademlia routing, which is the
@@ -1534,6 +1562,9 @@ async fn event_loop(
             event = swarm.select_next_some() => {
                 use libp2p::swarm::SwarmEvent;
                 match event {
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BondedFetch(event)) => {
+                        bonded_fetch.on_event(event, &mut swarm.behaviour_mut().bonded_fetch, Instant::now());
+                    }
                     SwarmEvent::Behaviour(behaviour_event) => {
                         handle_behaviour_event(
                             behaviour_event,
@@ -2030,6 +2061,9 @@ async fn event_loop(
                             &mut outbound_sync_requests,
                             Instant::now(),
                         );
+                    }
+                    Some(P2pCommand::RespondToBondedFetch { request_id, response }) => {
+                        bonded_fetch.respond(request_id, response, &mut swarm.behaviour_mut().bonded_fetch);
                     }
                     Some(P2pCommand::RespondToBlockSyncRequest { request_id, response }) => {
                         match inbound_sync_requests.remove(&request_id) {
@@ -4047,6 +4081,7 @@ mod tests {
             local_peer_id: PeerId::random(),
             discovered_peers: DiscoveredPeers::new(),
             sync_peers: crate::sync_surface::SyncPeersSurface::new(),
+            bonded_fetch_rx: None,
         };
 
         let stats = handle.stats();
@@ -6215,6 +6250,8 @@ async fn handle_behaviour_event(
         WrfcoinBehaviourEvent::Upnp(upnp::Event::NonRoutableGateway) => {
             debug!("UPnP: gateway found but it is not routable");
         },
+        // The event loop routes these to `BondedFetchServe` before calling here.
+        WrfcoinBehaviourEvent::BondedFetch(_) => {},
     }
 }
 
