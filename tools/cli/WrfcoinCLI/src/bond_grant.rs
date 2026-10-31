@@ -4,9 +4,8 @@ use libp2p_identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{io::Read, path::{Path, PathBuf}, time::Duration};
-use wrfcoin_shared_protocol::crypto::signer::BlockSigner;
-#[cfg(debug_assertions)]
-use wrfcoin_shared_protocol::crypto::{signature::PrivateKey, signer::EnvKeySigner};
+use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey, Signature};
+use wrfcoin_shared_protocol::crypto::signer::{BlockSigner, SignerProvenance};
 use zeroize::Zeroizing;
 
 pub const DOMAIN: &[u8] = b"wrfcoin_faucet_bond_grant_v1";
@@ -56,35 +55,49 @@ impl GrantRequest {
     }
 }
 
-/// Load existing local keys only: bounded, no symlink, regular, current-user mode 0600.
+/// Load existing local keys only: bounded, no symlink, regular, readable only
+/// by the current user (Unix mode 0600 and owner; Windows owner-only DACL).
 fn key_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    #[cfg(not(unix))]
-    { let _ = path; anyhow::bail!("key ownership cannot be enforced on this platform"); }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let mut file = std::fs::OpenOptions::new().read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK).open(path)
-            .map_err(|_| anyhow::anyhow!("key file unavailable"))?;
-        let meta = file.metadata().map_err(|_| anyhow::anyhow!("key file metadata unavailable"))?;
-        // SAFETY: geteuid takes no pointers and has no memory side effects.
-        let uid = unsafe { libc::geteuid() };
-        ensure!(meta.is_file() && meta.mode() & 0o7777 == 0o600 && meta.uid() == uid,
-            "key file must be regular, mode 0600 and owned by current user");
-        let mut bytes = Zeroizing::new(Vec::new());
-        file.by_ref().take(8193).read_to_end(&mut bytes)
-            .map_err(|_| anyhow::anyhow!("key file read failed"))?;
-        ensure!(bytes.len() <= 8192, "key file exceeds bound");
-        Ok(bytes)
+    let mut file = crate::node_operator::open_owned_key_file(path)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.by_ref().take(8193).read_to_end(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("key file read failed"))?;
+    ensure!(bytes.len() <= 8192, "key file exceeds bound");
+    Ok(bytes)
+}
+
+/// The node's software server key (a 64-hex ed25519 seed file, as the Windows
+/// launcher's `-Action ServerKey` writes and `WRFCOIN_SNAPSHOT_SERVER_KEY_FILE`
+/// loads). Release builds accept it for testnet only: [`prepare`] refuses it
+/// unless the node reports `network_id` `testnet`.
+pub struct SeedFileServerSigner {
+    signing: PrivateKey,
+    verifying: PublicKey,
+    provenance: SignerProvenance,
+}
+impl std::fmt::Debug for SeedFileServerSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedFileServerSigner").field("public_key", &self.verifying.to_hex()).finish_non_exhaustive()
     }
 }
-/// Debug builds only: release builds sign with the dedicated bond HSM signer.
-#[cfg(debug_assertions)]
-pub fn server_key(path: &Path) -> Result<EnvKeySigner> {
+impl BlockSigner for SeedFileServerSigner {
+    fn sign(&self, payload: &[u8]) -> Result<Signature> {
+        Ok(self.signing.sign(payload))
+    }
+    fn public_key(&self) -> PublicKey {
+        self.verifying.clone()
+    }
+    fn provenance(&self) -> &SignerProvenance {
+        &self.provenance
+    }
+}
+pub fn server_key(path: &Path) -> Result<SeedFileServerSigner> {
     let bytes = key_bytes(path)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("server seed format refused"))?;
-    let key = PrivateKey::from_hex(text.trim()).map_err(|_| anyhow::anyhow!("server seed format refused"))?;
-    Ok(EnvKeySigner::from_private_key(key, "explicit bond grant seed file"))
+    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("server seed format refused"))?.trim();
+    ensure!(text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()), "server seed format refused");
+    let signing = PrivateKey::from_hex(text).map_err(|_| anyhow::anyhow!("server seed format refused"))?;
+    let verifying = PublicKey::from_private_key(&signing);
+    Ok(SeedFileServerSigner { signing, verifying, provenance: SignerProvenance::KeyFile { path: path.display().to_string() } })
 }
 pub fn peer_key(path: &Path) -> Result<Keypair> {
     let bytes = key_bytes(path)?;
@@ -136,7 +149,12 @@ fn hex_field(value: &str, count: usize, label: &str) -> Result<String> {
     ensure!(value.len() == count && value.bytes().all(|b| b.is_ascii_hexdigit()), "invalid {label}");
     Ok(value.to_ascii_lowercase())
 }
-pub async fn prepare(client: &reqwest::Client, api_url: &str, owner: &str, signer: &dyn BlockSigner, peer: &Keypair) -> Result<GrantRequest> {
+/// The only network a seed-file server key may request a grant on.
+pub const FILE_SIGNER_NETWORK: &str = "testnet";
+
+/// `file_backed_signer`: the signer is a software seed file, which is accepted
+/// only when the node reports [`FILE_SIGNER_NETWORK`] (HSM signers: any network).
+pub async fn prepare(client: &reqwest::Client, api_url: &str, owner: &str, signer: &dyn BlockSigner, peer: &Keypair, file_backed_signer: bool) -> Result<GrantRequest> {
     let owner = owner.trim();
     ensure!(owner.starts_with("0x") || owner.starts_with("0X"), "owner address must have 0x prefix");
     let owner = format!("0x{}", hex_field(owner, 40, "owner address")?);
@@ -144,6 +162,8 @@ pub async fn prepare(client: &reqwest::Client, api_url: &str, owner: &str, signe
     let chain = field(&info, "chain_id")?;
     let network = field(&info, "network_id")?;
     ensure!(network != "unknown", "node network identity unavailable");
+    ensure!(!file_backed_signer || network == FILE_SIGNER_NETWORK,
+        "a server key file is accepted on testnet only; this node reports network {network}");
     let peer_id = field(&info, "local_peer_id")?;
     ensure!(peer.public().to_peer_id().to_string() == peer_id, "peer identity does not match node");
     let tip = info.get("chain_height").and_then(Value::as_u64)

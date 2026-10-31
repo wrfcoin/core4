@@ -156,7 +156,7 @@ the router rule and the firewall rule.
 
 | What | Where |
 |---|---|
-| Program, chain-888 config, launcher | `%LOCALAPPDATA%\Programs\WRFCoin Node` |
+| Program (`launch_api.exe`, `wrfcoin.exe`), chain-888 config, launcher | `%LOCALAPPDATA%\Programs\WRFCoin Node` |
 | Chain database (`WRFCOIN_DATA_DIR`) | `%LOCALAPPDATA%\WRFCoin\data` |
 | Node identity key | `%LOCALAPPDATA%\WRFCoin\data\peer_identity.key` |
 | Local API operator token | `%LOCALAPPDATA%\WRFCoin\operator.token` |
@@ -190,7 +190,13 @@ existing key. Start the node again (Start menu → **Stop WRFCoin Node**, then
 ```
 
 That public key is the `--server-key` of your bond. The node still never
-produces blocks; it now signs the snapshots it serves.
+produces blocks; it now signs the snapshots it serves. The operator CLI that the
+installer puts next to the node prints the same key without starting anything:
+
+```powershell
+$cli = "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin.exe"
+& $cli --output json node bond key-info --key-file "$env:LOCALAPPDATA\WRFCoin\server.key"
+```
 
 Rules the node enforces (it refuses to start otherwise):
 
@@ -206,6 +212,31 @@ Rules the node enforces (it refuses to start otherwise):
 
 Back up `server.key` somewhere only you can read: a new key means a new bond. To
 stop serving as a bonded node, stop the node and move the file out of the folder.
+
+## The operator CLI (wrfcoin.exe)
+
+The installer also puts `wrfcoin.exe`, the WRFCoin operator command line, in
+`%LOCALAPPDATA%\Programs\WRFCoin Node`. You need it only to bond (faucet grant
+request, bond signatures, receipts); the node runs without it. It refuses any key
+or token file that another Windows account can read: the file's owner and every
+allow entry must be you, SYSTEM or Administrators (on Linux the same commands
+require mode 0600). Files in `%LOCALAPPDATA%\WRFCoin` pass; for a key you keep
+elsewhere, restrict it with `icacls <file> /inheritance:r /grant:r "%USERNAME%:F"`.
+
+For example, the faucet bond-grant request, signed with the server key and the
+node's peer identity:
+
+```powershell
+$cli = "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin.exe"
+& $cli --output json node bond grant-request --owner-address 0x<your owner address> `
+  --api-url http://127.0.0.1:8556 `
+  --key-file "$env:LOCALAPPDATA\WRFCoin\server.key" `
+  --p2p-key-file "$env:LOCALAPPDATA\WRFCoin\data\peer_identity.key" `
+  --out "$env:USERPROFILE\Desktop\grant-request.json"
+```
+
+A server key file is accepted for the grant request only when the node reports
+network `testnet`.
 
 ## Uninstall
 
@@ -241,7 +272,8 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 ## For maintainers: how the package is built
 
 `packaging/windows/` holds everything; `.github/workflows/windows-node-build.yml`
-builds `launch_api.exe` (`--features full-mining,p2p`), packages it with Inno
+builds `launch_api.exe` (`--features full-mining,p2p`) and `wrfcoin.exe` (the
+`wrfcoin_cli` crate, plain build), packages them with Inno
 Setup 6, installs it silently on the runner, starts it through its Start-menu
 shortcut (checking it has no visible window), checks `/network/info` reports
 chain 888 with the pinned genesis hash and that `/dashboard` carries the Stop
@@ -250,7 +282,8 @@ shutdown), starts it again and stops it through the dashboard's route
 `POST /node/shutdown` (refused without the operator token and with a wrong one,
 accepted with the installed token, then the same graceful shutdown in `node.log`),
 creates a testnet server key (`-Action ServerKey`), starts with it and checks the
-node logs it, checks that `launch_api.exe` refuses a copy of the key that
+node logs it, checks that `wrfcoin.exe` derives the same public key from it, checks that
+`launch_api.exe` and `wrfcoin.exe` both refuse a copy of the key that
 `BUILTIN\Users` can read, starts it with a `reachable.conf` (checks the `0.0.0.0:9000` listener, the
 announced address on `/network/peer_id` and the dashboard's "Reachable at") and
 checks that a `reachable.conf` with any other key stops the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +

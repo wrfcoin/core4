@@ -46,7 +46,8 @@ pub enum BondCommands {
         /// Backend base URL; POST once to /api/faucet/bond-grant, without retries.
         #[clap(long)]
         submit: Option<String>,
-        /// Mode 0600 file containing a 32-byte ed25519 seed as hex; otherwise use the dedicated bond HSM signer.
+        /// Owner-only file (Unix mode 0600; Windows: only your account) holding the node's
+        /// 32-byte ed25519 server seed as hex. Testnet only. Otherwise the dedicated bond HSM signer.
         #[clap(long)]
         key_file: Option<PathBuf>,
         /// Existing protobuf ed25519 identity; default $WRFCOIN_DATA_DIR/peer_identity.key (./data if unset).
@@ -227,22 +228,16 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
             ensure!(!path.exists(), "output request already exists; inspect before retry");
         }
         let peer = bond_grant::peer_key(&p2p_key_file.clone().unwrap_or_else(bond_grant::default_peer_key_path))?;
+        // A seed file (testnet only, enforced in prepare against the node's
+        // reported network) or the dedicated HSM signer.
         let signer: std::sync::Arc<dyn BlockSigner> = if let Some(path) = key_file {
-            #[cfg(debug_assertions)]
-            {
-                std::sync::Arc::new(bond_grant::server_key(path)?)
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                let _ = path;
-                anyhow::bail!("seed-file signing is only available in debug builds; release builds sign with the HSM via WRFCOIN_HSM_*");
-            }
+            std::sync::Arc::new(bond_grant::server_key(path)?)
         } else {
             // Exactly the dedicated role/PIN resolution used by bond sign --role server.
             resolve_signer().map_err(|_| anyhow::anyhow!("dedicated Node bond signer unavailable"))?.signer
         };
         let client = bond_grant::client()?;
-        let request = bond_grant::prepare(&client, api_url, owner_address, signer.as_ref(), &peer).await?;
+        let request = bond_grant::prepare(&client, api_url, owner_address, signer.as_ref(), &peer, key_file.is_some()).await?;
         if let Some(path) = out {
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
                 .map_err(|_| anyhow::anyhow!("output request file unavailable"))?;
