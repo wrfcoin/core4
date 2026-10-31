@@ -5809,11 +5809,17 @@ mod tests {
 
         let response = test::call_service(&app, test::TestRequest::post().uri(path).to_request()).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN, "not-a-token"] {
+        for (caller, token) in [
+            ("reader", TEST_READER_TOKEN),
+            ("contributor", TEST_CONTRIBUTOR_TOKEN),
+            ("oracle", TEST_ORACLE_TOKEN),
+            ("unknown token", "not-a-token"),
+        ] {
             let response = test::call_service(&app, test::TestRequest::post().uri(path)
                 .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
                 .to_request()).await;
-            assert_eq!(response.status(), StatusCode::FORBIDDEN, "token {token}");
+            // Name the caller's role, never the token, in the failure message.
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "caller: {caller}");
         }
         // GET is not the route.
         let response = test::call_service(&app, test::TestRequest::get().uri(path)
