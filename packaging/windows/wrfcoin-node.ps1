@@ -86,22 +86,32 @@ function Fail([string]$Message) {
 }
 
 function Protect-UserOnly([string]$Path) {
-    # Current user only: no inherited entries (Users, Administrators, SYSTEM).
-    # By SID so it works on non-English Windows and for domain/Microsoft accounts.
-    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $isDir = Test-Path -LiteralPath $Path -PathType Container
-    # Already locked (one explicit entry, for this user, inheritance off): skip,
-    # so a large data folder is not re-walked on every start.
-    $acl = Get-Acl -LiteralPath $Path
-    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-    if ($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $sid `
-            -and -not $rules[0].IsInherited) { return }
-    $grant = if ($isDir) { "*${sid}:(OI)(CI)F" } else { "*${sid}:F" }
-    # icacls reports errors on stderr; under 'Stop', Windows PowerShell 5.1 would
-    # throw on the first stderr line instead of letting us report it.
-    $ErrorActionPreference = 'Continue'
-    $out = & icacls.exe $Path /inheritance:r /grant:r $grant 2>&1
-    if ($LASTEXITCODE -ne 0) { Fail "could not restrict access to ${Path}: $out" }
+    # Exactly one entry: full control for the current user, by SID (works on
+    # non-English Windows and for domain/Microsoft accounts), with inheritance
+    # from the parent cut off. Any other entry - inherited or explicit, such as
+    # SYSTEM or Administrators copied in by a profile's defaults - is dropped by
+    # writing a fresh DACL rather than editing the existing one.
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $isDir = [System.IO.Directory]::Exists($Path)
+    $current = if ($isDir) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
+    $rules = @($current.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    if ($current.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference -eq $sid `
+            -and -not $rules[0].IsInherited) { return }   # already locked: do not re-walk a large tree
+    $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+    $allow = [System.Security.AccessControl.AccessControlType]::Allow
+    $none = [System.Security.AccessControl.PropagationFlags]::None
+    if ($isDir) {
+        $acl = New-Object System.Security.AccessControl.DirectorySecurity
+        $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $full, $inherit, $none, $allow)))
+        [System.IO.Directory]::SetAccessControl($Path, $acl)
+    } else {
+        $acl = New-Object System.Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $full, $allow)))
+        [System.IO.File]::SetAccessControl($Path, $acl)
+    }
 }
 
 function Initialize-UserState {
