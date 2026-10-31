@@ -28,9 +28,16 @@ a **WRFCoin Node** folder to the Start menu.
 - **Start:** Start menu → **WRFCoin Node**. The node starts in the background (no
   window) and your browser opens its status page once it is up. Choosing the
   entry again while the node runs just opens the page again.
-- **Stop:** Start menu → **Stop WRFCoin Node**. This sends the node the same
-  signal as pressing Ctrl+C, waits until it has saved its place and exited, and
-  then says so. The next start resumes from there.
+- **Stop from the status page:** press **Stop node** on the page and confirm. The
+  node disconnects from other nodes, saves its place and exits (the same steps as
+  Ctrl+C); once it no longer answers, the page says "Node stopped. Start it again
+  from Start menu → WRFCoin Node." The button only works on a page opened from the
+  **WRFCoin Node** entry (or after you paste the operator token, below).
+- **Stop from the Start menu:** Start menu → **Stop WRFCoin Node**. This sends the
+  node the same signal as pressing Ctrl+C, waits until it has saved its place and
+  exited, and then says so. It always works, even with the page closed.
+
+The next start resumes from where the node stopped.
 
 The node keeps running after you close the browser. It writes its log to
 `%LOCALAPPDATA%\WRFCoin\logs\node.log` (the previous run's log is `node.log.1`).
@@ -52,9 +59,22 @@ The raw numbers are at `http://127.0.0.1:8556/network/info`: look for
 From an empty folder the node reached about 9,700 blocks in 15 minutes on a laptop.
 The page only answers on this PC (127.0.0.1); nothing is exposed to your network.
 
-The dashboard's host panel asks for an operator token. It is in
-`%LOCALAPPDATA%\WRFCoin\operator.token` (created at install, unique to this PC).
+### The operator token, and how the page gets it
+
+The **Stop node** button and the host panel (CPU, memory, disks) need this
+node's operator token. It is in `%LOCALAPPDATA%\WRFCoin\operator.token`
+(created at install, unique to this PC, readable only by your Windows account).
 You do not need it to watch the sync.
+
+When you open the page with Start menu → **WRFCoin Node**, the launcher hands the
+token over for you: it opens `http://127.0.0.1:8556/dashboard#operator=<token>`.
+The part after `#` is a URL *fragment*: browsers never send it to the node, so it
+appears in no request and no log. The page moves it into that browser tab's
+session storage (gone when the tab closes) and immediately removes it from the
+address bar. The **WRFCoin Node Status** shortcut and a typed or bookmarked URL
+open the page without the token; there, paste the token into the field under
+**Host** (on another computer, or a node you run some other way, paste works the
+same). **Forget** clears it from the tab.
 
 ## Where the data lives
 
@@ -108,8 +128,12 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 builds `launch_api.exe` (`--features full-mining,p2p`), packages it with Inno
 Setup 6, installs it silently on the runner, starts it through its Start-menu
 shortcut (checking it has no visible window), checks `/network/info` reports
-chain 888 with the pinned genesis hash, stops it through the "Stop" shortcut
-(checking `node.log` shows a graceful shutdown), uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+chain 888 with the pinned genesis hash and that `/dashboard` carries the Stop
+button, stops it through the "Stop" shortcut (checking `node.log` shows a graceful
+shutdown), starts it again and stops it through the dashboard's route
+`POST /node/shutdown` (refused without the operator token and with a wrong one,
+accepted with the installed token, then the same graceful shutdown in `node.log`),
+uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the

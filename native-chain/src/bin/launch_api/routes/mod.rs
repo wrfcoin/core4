@@ -1,6 +1,7 @@
 pub mod node_receipts;
 pub mod node_bonds;
 pub mod node_fraud;
+pub mod node_shutdown;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -343,6 +344,8 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         // #3599: the operator status page — one embedded HTML document that
         // renders the routes above in a browser. Carries no data; no token.
         .route("/dashboard", web::get().to(status_page::dashboard))
+        // The page's Stop button: the same graceful shutdown as Ctrl-C. Operator only.
+        .route("/node/shutdown", web::post().to(node_shutdown::shutdown_node))
         // Partition-mode status + operator push (#1217)
         .route(
             "/node/partition-status",
