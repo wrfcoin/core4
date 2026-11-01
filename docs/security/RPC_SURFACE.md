@@ -126,6 +126,7 @@ that exploitation is currently demonstrated.
 | `GET /network/signing-keys/{role}` | `http` | `native-chain/src/bin/launch_api/routes/signing_keys.rs:signing_keys::get_signing_keys_by_role` | `admin` | no | no | global-read |
 | `GET /state/snapshot` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot` | `authenticated` | no | yes | global-read |
 | `GET /state/snapshot/entries` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_entries` | `authenticated` | no | yes | global-read |
+| `GET /state/snapshot/prefix-counts` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_prefix_counts` | `authenticated` | no | yes | global-read |
 | `GET /state/snapshot/proof/{key_hex}` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_proof` | `authenticated` | no | no | global-read |
 | `POST /state/snapshot/verify-inclusion` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::verify_state_snapshot_inclusion` | `authenticated` | no | no | global-write |
 | `GET /state/snapshot/sync-payload` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_snapshot_sync_payload` | `authenticated` | no | yes | global-read |

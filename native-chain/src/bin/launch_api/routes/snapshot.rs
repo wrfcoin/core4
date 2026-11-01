@@ -114,6 +114,19 @@ pub struct SnapshotSummaryResponse {
     pub entry_count: usize,
 }
 
+/// `GET /state/snapshot/prefix-counts`: the summary of one snapshot build plus
+/// how many of its entries fall under each key prefix (see
+/// [`snapshot_key_prefix`]). `counts` is a `BTreeMap`, so it serializes in
+/// byte order of the prefix, and its values sum to `entry_count`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SnapshotPrefixCountsResponse {
+    pub height: u64,
+    pub state_root_hex: String,
+    pub snapshot_root_hex: String,
+    pub entry_count: usize,
+    pub counts: std::collections::BTreeMap<String, usize>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SnapshotEntriesQuery {
     pub offset: Option<usize>,
@@ -545,6 +558,27 @@ pub(crate) fn snapshot_summary(
     blockchain: &Blockchain,
     storage: &Storage,
 ) -> Result<SnapshotSummaryResponse, String> {
+    snapshot_summary_visiting_keys(blockchain, storage, |_| {})
+}
+
+/// The prefix a key counts under in `GET /state/snapshot/prefix-counts`: the
+/// bytes before the first `/` (the whole key when it has none), decoded as
+/// UTF-8 with invalid sequences replaced by U+FFFD. Matches the verifier's
+/// `bytes.fromhex(key_hex).split(b"/")[0]`. Every key this node writes today
+/// has an ASCII prefix (`state`, `meta`, `oracle`, `chain`, ...).
+pub(crate) fn snapshot_key_prefix(key: &[u8]) -> String {
+    let end = key.iter().position(|&b| b == b'/').unwrap_or(key.len());
+    String::from_utf8_lossy(&key[..end]).into_owned()
+}
+
+/// [`snapshot_summary`], also calling `on_key` once per entry key (state
+/// entries, then window blocks) in the same pass, so a caller can derive
+/// per-key facts that agree with the summary's height, roots and count.
+pub(crate) fn snapshot_summary_visiting_keys(
+    blockchain: &Blockchain,
+    storage: &Storage,
+    mut on_key: impl FnMut(&[u8]),
+) -> Result<SnapshotSummaryResponse, String> {
     let state_root_hex = recomputed_state_root_hex(&blockchain.state);
     let stored_root_hex = hex::encode(blockchain.state.state_root.0);
     if stored_root_hex != state_root_hex {
@@ -556,12 +590,15 @@ pub(crate) fn snapshot_summary(
     }
     let mut builder = SnapshotRootBuilder::new();
     for (key, value) in build_snapshot_entries(&blockchain.state)? {
+        on_key(&key);
         builder.push(key, &value);
     }
     for_each_snapshot_chain_block(blockchain, storage, |block| {
         let value = encode_snapshot_value(block)
             .map_err(|e| format!("block {} is not encodable: {e}", block.height))?;
-        builder.push(block_entry_key(block.height), &value);
+        let key = block_entry_key(block.height);
+        on_key(&key);
+        builder.push(key, &value);
         Ok(())
     })?;
     let (snapshot_root_hex, entry_count) = builder.finish();
@@ -632,6 +669,47 @@ pub async fn get_state_snapshot(
         Ok(summary) => HttpResponse::Ok().json(summary),
         Err(e) => {
             log::error!("snapshot export failed: {e} (#3288)");
+            envelope_error(
+                &req,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "SNAPSHOT_EXPORT_FAILED",
+                "this node could not encode its state as a snapshot",
+            )
+        },
+    }
+}
+
+/// `GET /state/snapshot/prefix-counts` — per-key-prefix entry counts of the
+/// entry set `/state/snapshot/entries` pages through, from ONE snapshot build,
+/// so two nodes can be compared at a single height without paging. Same
+/// Reader gate and single-flight build slot as the other snapshot reads.
+pub async fn get_state_snapshot_prefix_counts(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
+        return resp;
+    }
+    // #3551: one full snapshot build at a time, process-wide.
+    let _snapshot_build = snapshot_build_slot().lock().await;
+    let blockchain = state.blockchain.read().await;
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let summary = {
+        let storage = state.storage.read().await;
+        snapshot_summary_visiting_keys(&blockchain, &storage, |key| {
+            *counts.entry(snapshot_key_prefix(key)).or_insert(0) += 1;
+        })
+    };
+    match summary {
+        Ok(summary) => HttpResponse::Ok().json(SnapshotPrefixCountsResponse {
+            height: summary.height,
+            state_root_hex: summary.state_root_hex,
+            snapshot_root_hex: summary.snapshot_root_hex,
+            entry_count: summary.entry_count,
+            counts,
+        }),
+        Err(e) => {
+            log::error!("snapshot prefix counts failed: {e} (#3288)");
             envelope_error(
                 &req,
                 StatusCode::INTERNAL_SERVER_ERROR,
