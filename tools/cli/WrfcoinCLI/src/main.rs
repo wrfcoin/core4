@@ -288,6 +288,13 @@ enum Commands {
         action: StationCommands,
     },
 
+    /// Session (device) keys: keygen, register / revoke a scoped key, and sign
+    /// a transfer with it, so everyday sends never touch the primary key.
+    SessionKey {
+        #[clap(subcommand)]
+        action: commands::session_key::SessionKeyCommands,
+    },
+
     /// Governance participation commands
     Governance {
         #[clap(subcommand)]
@@ -817,6 +824,15 @@ async fn run() -> Result<()> {
                 Ok(data) => emit_success(&context, "ceremony", &data)?,
                 Err(err) => {
                     emit_error(&context, "ceremony", &err)?;
+                    return Err(err);
+                },
+            }
+        },
+        Commands::SessionKey { action } => {
+            match commands::session_key::handle_session_key_command(&action).await {
+                Ok(data) => emit_success(&context, "session-key", &data)?,
+                Err(err) => {
+                    emit_error(&context, "session-key", &err)?;
                     return Err(err);
                 },
             }

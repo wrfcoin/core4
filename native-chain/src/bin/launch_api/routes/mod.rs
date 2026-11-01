@@ -27,6 +27,7 @@ pub mod quality;
 pub mod query_cost;
 pub mod rewards;
 pub mod scarcity;
+pub mod session_keys;
 pub mod schedule_extension;
 pub mod signing_keys;
 pub mod snapshot;
@@ -92,6 +93,16 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             web::post().to(transactions::submit_permissionless_transaction),
         )
         .route("/participation/policy", web::get().to(transactions::get_participation_policy))
+        // Session keys: list an account's grants; admit an owner-signed
+        // register/revoke. Spending uses /transactions/submit.
+        .route(
+            "/accounts/{address}/session-keys",
+            web::get().to(session_keys::list_session_keys),
+        )
+        .route(
+            "/session-keys/submit",
+            web::post().to(session_keys::submit_session_key_action),
+        )
         .route("/addresses/{address}", web::get().to(chain::get_address_compat))
         .route("/prometheus", web::get().to(chain::get_prometheus_metrics))
         .route("/metrics", web::get().to(chain::get_prometheus_metrics))

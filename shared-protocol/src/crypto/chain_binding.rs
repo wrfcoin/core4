@@ -1214,9 +1214,13 @@ impl ConsensusFeature {
     /// - `signing_v2`: a signing version is scheduled as a version step,
     ///   never as a feature name (V5 refuses the name outright).
     /// - `paymaster`: waits on #3169/#3170 plus its wiring (design §3, D4).
-    /// - `social_recovery`, `session_keys`: nothing emits their transitions
-    ///   and their known blockers are open (design §3A items 8–9); each is
-    ///   flipped by the release that wires it.
+    /// - `social_recovery`: nothing emits its transitions and its known
+    ///   blockers are open (design §3A items 8–9); flipped by the release
+    ///   that wires it.
+    /// - `session_keys`: wired (`TransactionType::SessionKeyAction` register /
+    ///   revoke, session-key-authorized transparent transfers); flipping it
+    ///   is a separate owner-approved release step after the determinism
+    ///   differential.
     /// - `slash_evidence_reports` (#3398): the gate is registered ahead of the
     ///   capture/verify/apply slices; flipped by the slice that implements apply.
     ///
@@ -1237,6 +1241,9 @@ impl ConsensusFeature {
             Self::SigningV2
             | Self::Paymaster
             | Self::SocialRecovery
+            // Wired (register/revoke tx type + session-key transfers) and
+            // tested; making it schedulable is a separate owner-approved
+            // release step, after the determinism differential.
             | Self::SessionKeys
             | Self::ForecastSkillBaseline
             // Scheduled by genesis or the per-chain bootstrap, never by an

@@ -150,6 +150,7 @@ async fn extension_scheduled_passkey_is_admitted_and_still_height_gated_downstre
         authority_signature: None,
         passkey_auth: Some(auth.authorize_transfer(&to.to_hex(), AMOUNT, 0)),
         sponsorship: None,
+        session_key_auth: None,
     };
     let passkey_tx = transfer_tx(&passkey_payload, passkey_from, "passkey-3400");
 
@@ -167,6 +168,7 @@ async fn extension_scheduled_passkey_is_admitted_and_still_height_gated_downstre
         authority_signature: None,
         passkey_auth: None,
         sponsorship: None,
+        session_key_auth: None,
     };
     ed_payload.sign_authorization(&ed_sk, 0);
     let ed_tx = transfer_tx(&ed_payload, ed_from, "ed25519-3400");

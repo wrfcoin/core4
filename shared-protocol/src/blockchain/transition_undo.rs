@@ -239,6 +239,7 @@ const PROTOCOL: &[&str] = &[
     // Sponsored first sends: a transfer carrying a sponsorship updates the
     // sponsor's rate-limit record once `paymaster` is active.
     "paymasters",
+    "session_keys",
     "governance",
     "audit_events",
     "oracle_set",

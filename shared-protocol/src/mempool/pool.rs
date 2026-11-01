@@ -494,6 +494,21 @@ impl Mempool {
             let genesis: [u8; 32] = hex::decode(c.genesis_hash)?.try_into().map_err(|_| anyhow!("SP_NODE_BOND_GENESIS"))?;
             p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist).map_err(|_| anyhow!("SP_NODE_BOND_AUTHORIZATION"))?;
         }
+        if tx.tx_type == TransactionType::SessionKeyAction {
+            use crate::accounts::session_keys::{
+                SessionKeyActionPayload, session_keys_active, verify_stateless,
+            };
+            let height = current_height.ok_or_else(|| anyhow!("SP_SESSION_KEYS_HEIGHT_REQUIRED"))?;
+            // Admitted for the block it would be mined in (tip + 1).
+            if !session_keys_active(height.saturating_add(1)) {
+                return Err(anyhow!("SP_SESSION_KEYS_INACTIVE"));
+            }
+            let action = SessionKeyActionPayload::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_SESSION_KEYS_PAYLOAD"))?;
+            let chain_id = &crate::crypto::chain_binding::ChainIdentity::active().chain_id;
+            verify_stateless(&action, chain_id)
+                .map_err(|e| anyhow!("SP_SESSION_KEYS_AUTHORIZATION: {e}"))?;
+        }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Err(anyhow!("SP_SLASH_EVIDENCE_NOT_SUPPORTED"));
         }
@@ -3624,6 +3639,7 @@ mod tests {
             authority_signature: None,
             passkey_auth: None,
             sponsorship: None,
+            session_key_auth: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(

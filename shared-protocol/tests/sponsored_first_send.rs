@@ -85,6 +85,7 @@ fn transfer(k: &Keys, nonce: u64, sponsorship: Option<SponsorAuthorization>, tag
         authority_signature: None,
         passkey_auth: None,
         sponsorship,
+        session_key_auth: None,
     };
     payload.sign_authorization(&k.user, nonce);
     let mut tx = Transaction::new(

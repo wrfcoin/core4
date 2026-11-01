@@ -25,7 +25,8 @@ fn appended_evidence_transaction_discriminant_is_36() {
     assert_eq!(bincode::deserialize::<TransactionType>(&37u32.to_le_bytes()).unwrap(), TransactionType::NodeBondLifecycle);
     assert_eq!(bincode::deserialize::<TransactionType>(&38u32.to_le_bytes()).unwrap(), TransactionType::NodeServiceBatch);
     assert_eq!(bincode::deserialize::<TransactionType>(&39u32.to_le_bytes()).unwrap(), TransactionType::NodeFraudReport);
-    assert!(bincode::deserialize::<TransactionType>(&40u32.to_le_bytes()).is_err());
+    assert_eq!(bincode::deserialize::<TransactionType>(&40u32.to_le_bytes()).unwrap(), TransactionType::SessionKeyAction);
+    assert!(bincode::deserialize::<TransactionType>(&41u32.to_le_bytes()).is_err());
 }
 
 #[test]

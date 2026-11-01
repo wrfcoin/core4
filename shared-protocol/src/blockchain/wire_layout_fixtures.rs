@@ -252,10 +252,11 @@ fn transaction_type_discriminants_are_pinned() {
         (T::NodeBondLifecycle, 37),
         (T::NodeServiceBatch, 38),
         (T::NodeFraudReport, 39),
+        (T::SessionKeyAction, 40),
     ];
     assert_eq!(
         pinned.len(),
-        40,
+        41,
         "TransactionType variant count changed — new variants go at the END \
          (append-only); add the new variant to this table with the next index"
     );

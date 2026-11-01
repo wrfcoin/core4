@@ -3562,8 +3562,13 @@ impl State {
         // refuses every `ApplySessionKeyAction` transition, so this map is
         // provably empty and every historical `expected_roots.json` entry is
         // byte-identical whether this section exists in the code or not.
+        //
+        // v2 (session-key transfers): each record also folds the optional
+        // spend window and its counters. The section has never been emitted
+        // on any chain (the map is empty while the feature is unscheduled),
+        // so the tag bump changes no historical root.
         if !self.session_keys.is_empty() {
-            material.extend_from_slice(b"wrfcoin_session_keys_v1");
+            material.extend_from_slice(b"wrfcoin_session_keys_v2");
             push_u64(&mut material, self.session_keys.len() as u64);
             for (owner, owner_state) in &self.session_keys {
                 push_bytes(&mut material, &owner.0);
@@ -3589,6 +3594,16 @@ impl State {
                     push_u32(&mut material, record.uses_so_far);
                     push_u128(&mut material, record.cumulative_value_used);
                     push_bool(&mut material, record.revoked);
+                    match record.grant.scope.window {
+                        Some(window) => {
+                            push_bool(&mut material, true);
+                            push_u64(&mut material, window.blocks);
+                            push_u128(&mut material, window.max_value);
+                        },
+                        None => push_bool(&mut material, false),
+                    }
+                    push_u64(&mut material, record.window_index);
+                    push_u128(&mut material, record.window_value_used);
                 }
             }
         }
@@ -7709,6 +7724,9 @@ impl State {
             // Node effects derive only from actual carrying transactions in
             // launch extraction; governance metadata cannot add another intent.
             TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => Err(StateError::InvalidTransition),
+            // Session-key register/revoke derive only from launch extraction
+            // (`StateTransition::ApplySessionKeyAction`), never from this sink.
+            TransactionType::SessionKeyAction => Err(StateError::InvalidTransition),
             TransactionType::Transfer => {
                 let payload = tx.parse_transparent_transfer_payload().ok_or_else(|| {
                     StateError::Privacy(
@@ -8103,12 +8121,23 @@ impl State {
         // `current_block`, a WebAuthn P-256 passkey assertion bound to `from`
         // is an equally valid authorization; below activation this is the
         // ed25519 rule exactly as before.
-        if !payload.verify_authorization_at_height_with_view(
+        //
+        // Session keys: once `ConsensusFeature::SessionKeys` is active, and
+        // ONLY when neither owner authorization above verifies, a signature
+        // by a session key registered to `from` authorizes the debit within
+        // that key's scope and limits. Inactive (every chain today) this
+        // branch is never taken, so the arm is the pre-session-key rule
+        // byte for byte; an owner-signed transfer never consumes a session use.
+        let owner_authorized = payload.verify_owner_authorization_at_height_with_view(
             self,
             tx_nonce,
             current_block,
             crate::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
-        ) {
+        );
+        let session_authorized = !owner_authorized
+            && crate::accounts::session_keys::session_keys_active(current_block)
+            && payload.verify_session_key_signature(tx_nonce);
+        if !owner_authorized && !session_authorized {
             return Err(StateError::Privacy(
                 "SP_PRIVACY_TRANSPARENT_TRANSFER_UNAUTHORIZED: transparent transfer requires a valid from-account authorization signature"
                     .to_string(),
@@ -8135,17 +8164,54 @@ impl State {
             },
             _ => None,
         };
-        self.apply_transition(StateTransition::BalanceTransfer {
-            from,
-            to,
-            amount: Balance::new(payload.amount as u128),
-            nonce: Some(tx_nonce),
-            current_block,
-        })?;
-        if let Some(charge) = sponsorship {
-            self.commit_sponsorship(charge)?;
+        // Session keys: charge the key first (all-or-nothing: a key over its
+        // limit or out of scope writes nothing and moves no value), then move
+        // the value. If the move (bad nonce, insufficient balance) or the
+        // sponsorship commit fails, the owner's grants are restored exactly,
+        // so a failed transfer never spends a use or allowance.
+        let original_grants = if session_authorized {
+            let session_key = payload
+                .session_key_auth
+                .as_ref()
+                .and_then(|auth| auth.session_key_address())
+                .ok_or(StateError::InvalidTransition)?;
+            let original = self.session_keys.get(&from).cloned();
+            crate::accounts::session_keys::consume_transfer(
+                &mut self.session_keys,
+                &from,
+                &session_key,
+                &to,
+                payload.amount as u128,
+                current_block,
+            )
+            .map_err(|e| {
+                StateError::Privacy(format!(
+                    "SP_SESSION_KEY_TRANSFER_REFUSED: session key cannot authorize this transfer: {e}"
+                ))
+            })?;
+            Some(original)
+        } else {
+            None
+        };
+        let result = self
+            .apply_transition(StateTransition::BalanceTransfer {
+                from,
+                to,
+                amount: Balance::new(payload.amount as u128),
+                nonce: Some(tx_nonce),
+                current_block,
+            })
+            .and_then(|()| match sponsorship {
+                Some(charge) => self.commit_sponsorship(charge),
+                None => Ok(()),
+            });
+        if result.is_err() {
+            // `consume_transfer` succeeded, so the owner had an entry.
+            if let Some(Some(original)) = original_grants {
+                self.session_keys.insert(from, original);
+            }
         }
-        Ok(())
+        result
     }
 
     /// Every check a sponsorship must pass before its transfer applies,
@@ -10703,7 +10769,7 @@ mod tests {
     /// state-mutating variant back into silent default-allow behavior.
     fn protocol_dispatch_intent(tx_type: TransactionType) -> ProtocolDispatchIntent {
         match tx_type {
-            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => ProtocolDispatchIntent::Refused,
+            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction => ProtocolDispatchIntent::Refused,
             TransactionType::Transfer
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -10787,8 +10853,9 @@ mod tests {
             TransactionType::SlashEvidenceReport,
             TransactionType::NodeBondLifecycle,
             TransactionType::NodeServiceBatch,
+            TransactionType::SessionKeyAction,
         ];
-        assert_eq!(inventory.len(), 39, "update the named dispatch inventory");
+        assert_eq!(inventory.len(), 40, "update the named dispatch inventory");
         assert_eq!(
             protocol_dispatch_intent(TransactionType::SlashEvidenceReport),
             ProtocolDispatchIntent::Refused
@@ -10909,6 +10976,7 @@ mod tests {
                 authority_signature: None,
                 passkey_auth: None,
                 sponsorship: None,
+                session_key_auth: None,
             };
             payload.sign_authorization(&from_key, 0);
             let mut tx = Transaction::new(
@@ -12861,6 +12929,7 @@ mod tests {
                 authority_signature: None,
                 passkey_auth: None,
                 sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
@@ -12917,6 +12986,7 @@ mod tests {
                 authority_signature: None,
                 passkey_auth: None,
                 sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
