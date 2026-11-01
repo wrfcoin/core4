@@ -465,6 +465,7 @@ fn transfer_fee_is_inert_until_scheduled_then_burned_from_sender_or_sponsor() {
             s.apply_transition(StateTransition::ApplySessionKeyAction {
                 action: register.clone(),
                 block_height: H,
+                security_key_auth: None,
             })
             .expect("register the session key at H");
             s.recalculate_state_root();
