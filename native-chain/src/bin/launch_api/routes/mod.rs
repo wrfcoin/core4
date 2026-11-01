@@ -74,6 +74,7 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         // returns is governance-signed, so a caller verifies the artifact
         // rather than trusting this node's answer.
         .route("/network/upgrade", web::get().to(network::get_network_upgrade))
+        .route("/network/producers", web::get().to(network::get_network_producers))
         // Legacy API compatibility routes retained for smoke-envelope validation.
         .route("/blockchain", web::get().to(chain::get_blockchain_compat))
         .route("/chain/blocks", web::get().to(chain::get_chain_blocks))
@@ -357,6 +358,7 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             let _ = c;
         })
         .service(web::resource("/network/snapshot-sync/bonded-endorsement").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(4096)).route(web::post().to(node_receipts::endorse)))
+        .route("/node/bonds", web::get().to(node_bonds::list))
         .service(web::resource("/node/bonds/submit").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(40 * 1024)).route(web::post().to(node_bonds::submit)))
         .service(web::resource("/node/bonds/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::inspect)))
         .service(web::resource("/node/settlement/{epoch}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_receipts::settlement)))

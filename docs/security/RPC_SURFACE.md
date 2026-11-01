@@ -41,6 +41,8 @@ that exploitation is currently demonstrated.
 | `GET /network/info` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_info` | `public` | no | no | global-read |
 | `GET /network/scarcity` | `http` | `native-chain/src/bin/launch_api/routes/scarcity.rs:scarcity::get_scarcity` | `authenticated` | no | no | global-read |
 | `GET /network/upgrade` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_upgrade` | `public` | no | no | global-read |
+| `GET /network/producers` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_producers` | `authenticated` | no | no | global-read (activity scan capped at 2048 in-memory blocks) |
+| `GET /node/bonds` | `http` | `native-chain/src/bin/launch_api/routes/node_bonds.rs:node_bonds::list` | `authenticated` | no | no | global-read (keyset page capped at 200 rows; 404 while the Node feature is unscheduled) |
 | `GET /blockchain` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_blockchain_compat` | `public` | no | no | global-read |
 | `GET /chain/blocks` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_blocks` | `public` | no | no | global-read |
 | `GET /chain/block/{height}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_block_by_height` | `public` | no | no | global-read |
