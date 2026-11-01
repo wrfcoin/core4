@@ -305,10 +305,15 @@ pub async fn get_network_peer_id(state: web::Data<AppState>) -> impl Responder {
             .snapshot_signing_key
             .as_ref()
             .map(|signer| signer.public_key().as_bytes().to_vec());
+        // The configured service id only (routes::snapshot::server_service_id
+        // falls back to host:port, which is never a bond alias). This file is
+        // also compiled alone by tests/network_routes.rs, so no crate::routes.
+        // determinism-ok: operator-facing status read for the dashboard; never a consensus input
+        let service_id = std::env::var("WRFCOIN_SERVICE_ID").ok();
         let bonded = bonded_mode_status(
             wrfcoin_p2p::config::serve_bonded_snapshots_from_env(),
             server_key.as_deref(),
-            &crate::routes::snapshot::server_service_id(),
+            service_id.as_deref().map(str::trim).filter(|v| !v.is_empty()),
         );
         HttpResponse::Ok().json(serde_json::json!({
             "peer_id": peer_id,
@@ -331,7 +336,7 @@ pub async fn get_network_peer_id(state: web::Data<AppState>) -> impl Responder {
 /// alias and the server key are in the bond registration on chain. A node that
 /// does not serve reports only `{"serving": false}`.
 #[cfg(feature = "p2p")]
-fn bonded_mode_status(serving: bool, server_key: Option<&[u8]>, service_id: &str) -> serde_json::Value {
+fn bonded_mode_status(serving: bool, server_key: Option<&[u8]>, service_id: Option<&str>) -> serde_json::Value {
     if !serving {
         return serde_json::json!({ "serving": false });
     }
@@ -348,13 +353,13 @@ mod bonded_mode_status_tests {
 
     #[test]
     fn a_node_that_does_not_serve_reports_only_that() {
-        assert_eq!(bonded_mode_status(false, Some(&[7; 32]), "laptop-1"), serde_json::json!({ "serving": false }));
-        assert_eq!(bonded_mode_status(false, None, "127.0.0.1:8556"), serde_json::json!({ "serving": false }));
+        assert_eq!(bonded_mode_status(false, Some(&[7; 32]), Some("laptop-1")), serde_json::json!({ "serving": false }));
+        assert_eq!(bonded_mode_status(false, None, None), serde_json::json!({ "serving": false }));
     }
 
     #[test]
     fn a_serving_node_names_its_service_id_and_server_key() {
-        let status = bonded_mode_status(true, Some(&[0xab; 32]), "laptop-1");
+        let status = bonded_mode_status(true, Some(&[0xab; 32]), Some("laptop-1"));
         assert_eq!(status["serving"], true);
         assert_eq!(status["service_id"], "laptop-1");
         assert_eq!(status["server_key"], "ab".repeat(32));
@@ -362,9 +367,10 @@ mod bonded_mode_status_tests {
 
     #[test]
     fn a_serving_node_without_a_signer_says_so() {
-        let status = bonded_mode_status(true, None, "laptop-1");
+        let status = bonded_mode_status(true, None, None);
         assert_eq!(status["serving"], true);
         assert!(status["server_key"].is_null());
+        assert!(status["service_id"].is_null());
     }
 }
 
