@@ -8666,7 +8666,7 @@ impl ProofOfPublishing {
                 let p = NodeBondLifecycle::parse(tx)?;
                 let c = crate::governance::schedule_extension::schedule_extension_authority()?.context();
                 let genesis: [u8; 32] = hex::decode(c.genesis_hash).ok()?.try_into().ok()?;
-                p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist).ok()
+                p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist, ctx.height).ok()
             })();
             if valid.is_none() { return Some("SP_NODE_BOND_AUTHORIZATION".into()); }
         }
@@ -26201,6 +26201,7 @@ pub fn auth(
         governance_signature: if online { signature(&a, 99) } else { vec![] },
         payout_key: online.then(|| pk(owner)),
         payout_signature: if online { signature(&a, owner) } else { vec![] },
+        payout_passkey: None,
     }
 }
 pub fn transaction(

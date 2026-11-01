@@ -6914,6 +6914,7 @@ mod tests {
                 governance_signature: if online { signature(&a, 99) } else { vec![] },
                 payout_key: online.then(|| pk(owner)),
                 payout_signature: if online { signature(&a, owner) } else { vec![] },
+                payout_passkey: None,
             }
         }
         pub fn state() -> State {
