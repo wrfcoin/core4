@@ -1,112 +1,16 @@
-//! `GET /network/producers` and `GET /node/bonds`: read-only listings for the
-//! public producers page (backend `/api/network/nodes`).
+//! `GET /node/bonds`: read-only bond listing for the public producers page
+//! (backend `/api/network/nodes`). The `/network/producers` test lives in
+//! main.rs's test module because it appends blocks with `.add_block(`, which
+//! `schedule_extension_node_paths_3277` reserves for reviewed node paths
+//! outside test modules.
 use super::*;
 #[path = "../../../../../shared-protocol/tests/common/node_receipt_fixture.rs"]
 mod fixture;
 
-use wrfcoin_shared_protocol::consensus::producer_set::{ProducerMember, ProducerSetChange};
-
-fn reader_get(uri: &str) -> test::TestRequest {
+pub(super) fn reader_get(uri: &str) -> test::TestRequest {
     test::TestRequest::get()
         .uri(uri)
         .insert_header(("Authorization", format!("Bearer {TEST_READER_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer, never a deployed credential
-}
-
-fn member(id: &str, byte: u8) -> ProducerMember {
-    let key = PrivateKey::from_bytes(&[byte; 32]).unwrap();
-    let public = wrfcoin_shared_protocol::crypto::signature::PublicKey::from_private_key(&key);
-    ProducerMember {
-        producer_id: id.to_string(),
-        payout_address: wrfcoin_shared_protocol::common::types::Address::from_public_key(&public)
-            .to_string(),
-        public_key: public.as_bytes().try_into().unwrap(),
-    }
-}
-
-#[actix_web::test]
-async fn network_producers_lists_active_set_with_bounded_activity() {
-    let state = test_state(None);
-    let app = test::init_service(test_app(state.clone())).await;
-
-    // Reader auth, like the other node read models.
-    let response = test::call_service(
-        &app,
-        test::TestRequest::get().uri("/network/producers").to_request(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-    // Empty history: an honest empty set, not a fabricated roster.
-    let response = test::call_service(&app, reader_get("/network/producers").to_request()).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["producers"], serde_json::json!([]));
-    assert!(body["set_epoch"].is_null());
-    assert!(body["producer_set_hash"].is_null());
-
-    let (alpha, bravo) = (member("alpha", 41), member("bravo", 42));
-    {
-        let mut chain = state.blockchain.write().await;
-        chain.state.producer_set_history = vec![
-            ProducerSetChange::new(0, 0, vec![bravo.clone(), alpha.clone()]),
-            // Scheduled far ahead: must not be reported as the active set.
-            ProducerSetChange::new(1, 1_000, vec![member("charlie", 43)]),
-        ];
-        let mut prev = Hash::default();
-        for (height, key) in [(1, alpha.public_key), (2, bravo.public_key), (3, alpha.public_key)] {
-            let mut block = Block::new(1, prev, Vec::new(), 1, height);
-            block.producer_pubkey = key;
-            block.set_hash(block.calculate_hash());
-            prev = block.hash.unwrap();
-            chain.add_block(block).unwrap();
-        }
-    }
-
-    let response = test::call_service(&app, reader_get("/network/producers").to_request()).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["tip_height"], 3);
-    assert_eq!(body["authorizes_height"], 4);
-    assert_eq!(body["set_epoch"], 0);
-    assert_eq!(body["set_effective_height"], 0);
-    let producers = body["producers"].as_array().unwrap();
-    assert_eq!(producers.len(), 2);
-    // Canonical (producer_id) order regardless of history order.
-    assert_eq!(producers[0]["producer_id"], "alpha");
-    assert_eq!(producers[0]["public_key"], hex::encode(alpha.public_key));
-    assert_eq!(producers[0]["payout_address"], alpha.payout_address);
-    assert_eq!(producers[0]["last_produced_height"], 3);
-    assert_eq!(producers[0]["blocks_in_window"], 2);
-    assert_eq!(producers[1]["producer_id"], "bravo");
-    assert_eq!(producers[1]["last_produced_height"], 2);
-    assert_eq!(producers[1]["blocks_in_window"], 1);
-    assert_eq!(body["activity_window"]["blocks_scanned"], 3);
-    assert_eq!(body["activity_window"]["from_height"], 1);
-    assert_eq!(body["activity_window"]["to_height"], 3);
-
-    // A narrow window only sees the newest block.
-    let response = test::call_service(&app, reader_get("/network/producers?window=1").to_request()).await;
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["activity_window"]["blocks_scanned"], 1);
-    assert_eq!(body["producers"][0]["blocks_in_window"], 1);
-    assert!(body["producers"][1]["last_produced_height"].is_null());
-    assert_eq!(body["producers"][1]["blocks_in_window"], 0);
-
-    // Bounds: 0 clamps up to 1, huge clamps down to the cap.
-    let response = test::call_service(&app, reader_get("/network/producers?window=0").to_request()).await;
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(body["activity_window"]["requested"], 1);
-    let response =
-        test::call_service(&app, reader_get("/network/producers?window=99999999").to_request()).await;
-    let body: serde_json::Value = test::read_body_json(response).await;
-    assert_eq!(
-        body["activity_window"]["requested"],
-        crate::routes::network::MAX_PRODUCER_ACTIVITY_WINDOW
-    );
-
-    // A malformed window is refused, not panicked on.
-    let response = test::call_service(&app, reader_get("/network/producers?window=abc").to_request()).await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[actix_web::test]
