@@ -17,3 +17,4 @@ mod genesis_handshake_disconnect;
 mod preauth_seam;
 mod wire_layout_fixtures;
 mod wire_format_skew_live_2884;
+mod bonded_fetch_node;

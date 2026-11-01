@@ -313,6 +313,13 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .service(web::resource("/network/snapshot-sync/receiver-ingest").guard(actix_web::guard::fn_guard(receipt_consumer_ingest_configured)).app_data(web::JsonConfig::default().limit(node_receipts::MAX_NODE_RECEIVER_SNAPSHOT_INGEST_BYTES)).route(web::post().to(node_receipts::ingest)))
         .service(web::resource("/network/snapshot-sync/receiver-ingest").app_data(web::JsonConfig::default().limit(node_receipts::MAX_NODE_BONDED_SNAPSHOT_INGEST_BYTES)).route(web::post().to(node_receipts::ingest)))
         .service(web::resource("/network/snapshot-sync/bonded-ticket").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(16 * 1024)).route(web::post().to(node_receipts::ticket)))
+        // Receiver side of a P2P bonded fetch (Operator; consumer key signs a fetch-only authorization).
+        .configure(|c| {
+            #[cfg(feature = "p2p")]
+            c.service(web::resource("/network/snapshot-sync/p2p-fetch-auth").app_data(web::JsonConfig::default().limit(1024)).route(web::post().to(node_receipts::fetch_auth)));
+            #[cfg(not(feature = "p2p"))]
+            let _ = c;
+        })
         .service(web::resource("/network/snapshot-sync/bonded-endorsement").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(4096)).route(web::post().to(node_receipts::endorse)))
         .service(web::resource("/node/bonds/submit").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(40 * 1024)).route(web::post().to(node_bonds::submit)))
         .service(web::resource("/node/bonds/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::inspect)))

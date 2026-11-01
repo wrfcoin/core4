@@ -4,6 +4,8 @@ mod helpers;
 #[cfg(feature = "p2p")]
 mod da_challenge_producer;
 #[cfg(feature = "p2p")]
+mod p2p_bonded_fetch;
+#[cfg(feature = "p2p")]
 mod p2p_events;
 #[cfg(feature = "p2p")]
 mod peer_reputation;
@@ -3000,6 +3002,10 @@ async fn main() -> std::io::Result<()> {
         },
     };
 
+    // Admitted P2P bonded snapshot fetches; `Some` only when the operator
+    // opted in with WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS (owner decision 2026-10-31).
+    #[cfg(feature = "p2p")]
+    let mut p2p_bonded_fetch_rx = None;
     #[cfg(feature = "p2p")]
     let (p2p_client, p2p_event_rx, p2p_summary_info, p2p_startup) = {
         if p2p_profile.is_enabled() {
@@ -3067,9 +3073,10 @@ async fn main() -> std::io::Result<()> {
                 )
                 .await
             {
-                    Ok(handle) => {
+                    Ok(mut handle) => {
                         let peer_id = handle.local_peer_id;
                         let peer_id_str = peer_id.to_string();
+                        p2p_bonded_fetch_rx = handle.take_bonded_fetch_requests();
                         let (client, event_rx) = handle.into_parts();
                         if let Some(quic_port) = quic_port {
                             log::info!(
@@ -3628,6 +3635,12 @@ async fn main() -> std::io::Result<()> {
         tokio::sync::RwLock::new(crate::peer_reputation::PeerReputationTracker::new()),
     );
 
+    // Serve P2P bonded snapshot fetches when the node opted in.
+    #[cfg(feature = "p2p")]
+    if let (Some(requests), Some(client)) = (p2p_bonded_fetch_rx, state.p2p.clone()) {
+        p2p_bonded_fetch::spawn_bonded_fetch_server(requests, state.clone(), client);
+    }
+
     // Spawn P2P event consumer to process incoming blocks/transactions from peers.
     #[cfg(feature = "p2p")]
     if let Some(event_rx) = p2p_event_rx {
@@ -4017,6 +4030,9 @@ mod tests {
     mod node_bond_slice6a;
     #[path = "node_receipt_slice3.rs"]
     mod node_receipt_slice3;
+    #[cfg(feature = "p2p")]
+    #[path = "node_receipt_p2p_fetch.rs"]
+    mod node_receipt_p2p_fetch;
     #[path = "node_settlement_slice4.rs"]
     mod node_settlement_slice4;
     #[path = "node_fraud_slice5.rs"]

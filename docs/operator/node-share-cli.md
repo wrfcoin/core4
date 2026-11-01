@@ -65,3 +65,26 @@ That path verifies, installs, archives and obtains dedicated receiver signing.
 Never target a producer or live standby database. S6b supplies receiver scheduling,
 registered ON parity evidence, and outage/restart/reorg procedures; automation
 and deployment are outside this S6a CLI change.
+
+### Fetching over P2P (one forwarded port)
+
+A bonded server that forwards only its P2P port (TCP 9000) can serve the same
+fetch over libp2p. On the server, set `WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`
+(off by default) and `WRFCOIN_SERVICE_ID` to the bond's service alias; its HTTP
+API can stay on `127.0.0.1`. On the consumer, give `--from` the server's P2P
+address ending in its peer id:
+
+```
+wrfcoin snapshot fetch --bonded --auth-stdin --receipt-archive <dir> \
+  --from /dns4/<host>/tcp/9000/p2p/<server peer id> --to http://127.0.0.1:<receiver port> \
+  --trusted-signers <server key>
+```
+
+`--auth-stdin` then needs only `receiver_operator`. The receiver signs a
+fetch-only authorization with its registered consumer key
+(`POST /network/snapshot-sync/p2p-fetch-auth`, Operator); the server answers
+only consumer keys in its current frozen bond roster, sent from the libp2p peer
+the authorization names. The protocol (`/wrfcoin/bonded-snapshot-fetch/1.0.0`,
+`p2p/src/bonded_fetch.rs`) carries the payload, export pages from one pinned
+cut, the ticket and the receipt hand-back, and nothing else. Receipts, tickets
+and claims are the HTTP ones, byte for byte. HTTP serving is unchanged.

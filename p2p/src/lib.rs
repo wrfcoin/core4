@@ -22,6 +22,8 @@
 pub mod announce;
 mod behaviour;
 mod bootstrap_redial;
+pub mod bonded_fetch;
+pub mod bonded_fetch_serve;
 pub mod config;
 pub mod da_challenge;
 pub mod discovered;

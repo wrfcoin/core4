@@ -187,6 +187,15 @@ const UNREGISTERED: &[(&str, &str)] = &[
          preimage (#3094); it signs nothing itself — UpgradeNotice is the signed object",
     ),
     (
+        "BondedFetchAuth",
+        "off-chain request authorization for the P2P bonded snapshot fetch protocol \
+         (p2p/src/bonded_fetch.rs, owner decision 2026-10-31): a registered bond consumer \
+         key signs (server peer id, client peer id, time, nonce) framed by \
+         domain_preimage_bound under its own tag wrfcoin.p2p_bonded_fetch_auth.v1 at V2. \
+         Verified only by the serving node before answering a fetch; never a chain object, \
+         never gossiped, so it carries no registry DOMAIN_TAG by design",
+    ),
+    (
         "ProducerPossessionProof",
         "ceremony-only proof of possession (#3096): a producer key signs the \
          producer_key_pop challenge domain over the ceremony id, the bundle's registration \

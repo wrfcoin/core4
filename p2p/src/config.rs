@@ -456,6 +456,13 @@ pub struct P2pConfig {
     /// from `WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS`; see [`crate::announce`].
     pub announce_non_global_addrs: bool,
 
+    /// Answer the bonded snapshot fetch protocol ([`crate::bonded_fetch`]) on
+    /// the P2P port, so a bonded consumer can fetch this node's signed snapshot
+    /// without reaching its HTTP API. Default `false`: the protocol is then not
+    /// even listed, and requests fail negotiation. Parsed from
+    /// [`SERVE_BONDED_SNAPSHOTS_ENV`].
+    pub serve_bonded_snapshots: bool,
+
     // -- Genesis handshake ----------------------------------------------------
     /// Network identifier sent in the genesis handshake (e.g. "mainnet", "testnet").
     pub network_id: String,
@@ -492,6 +499,10 @@ pub struct P2pConfig {
     /// ends up open while looking configured.
     pub sentry_allowlist: Option<Vec<PeerId>>,
 }
+
+/// Opt-in switch for serving bonded snapshot fetches over P2P (owner decision
+/// 2026-10-31). Off by default: it is new surface on the public port.
+pub const SERVE_BONDED_SNAPSHOTS_ENV: &str = "WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS";
 
 impl Default for P2pConfig {
     fn default() -> Self {
@@ -585,6 +596,7 @@ impl Default for P2pConfig {
                 .and_then(|s| s.parse::<Multiaddr>().ok()),
             only_global_ips: env_bool("WRFCOIN_AUTONAT_ONLY_GLOBAL_IPS", true),
             announce_non_global_addrs: env_bool(crate::announce::ANNOUNCE_NON_GLOBAL_ADDRS_ENV, false),
+            serve_bonded_snapshots: env_bool(SERVE_BONDED_SNAPSHOTS_ENV, false),
             network_id: std::env::var("WRFCOIN_NETWORK_ID")
                 .unwrap_or_else(|_| "mainnet".to_string()),
             chain_id: std::env::var("WRFCOIN_CHAIN_ID")

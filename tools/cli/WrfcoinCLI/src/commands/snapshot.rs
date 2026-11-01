@@ -25,13 +25,23 @@ use wrfcoin_shared_protocol::blockchain::snapshot_sync::{
 
 use crate::cli::commands::ExecutionContext;
 
+/// The bonded-fetch wire protocol, compiled from the node's own source so the
+/// two ends cannot drift (owner decision 2026-10-31: serve over P2P).
+#[allow(dead_code)]
+#[path = "../../../../../p2p/src/bonded_fetch.rs"]
+mod bonded_fetch;
+use bonded_fetch::{BondedFetchAuth, BondedFetchRequest, BondedFetchResponse};
+
 /// Snapshot join: fetch a verified state snapshot into the local node.
 #[derive(Subcommand)]
 pub enum SnapshotCommands {
     /// Fetch a signed snapshot from a trusted node, verify it locally, ingest
     /// it into the local node, and return the service receipt to the server.
     Fetch {
-        /// Base URL of the trusted serving node (e.g. http://seed:8556).
+        /// The trusted serving node: its HTTP API base URL (e.g. http://seed:8556),
+        /// or its P2P address ending in its peer id
+        /// (e.g. /dns4/laptop.example/tcp/9000/p2p/12D3Koo…). The P2P form needs
+        /// --bonded and --to: the receiver signs the fetch authorization.
         #[clap(long)]
         from: String,
         /// Base URL of the local node to ingest into (default: WRFCOIN_API_URL).
@@ -99,17 +109,201 @@ fn user_error(message: impl Into<String>) -> anyhow::Error {
 
 #[derive(Deserialize)]
 struct SnapshotAuth {
+    /// The server's Reader token. Not used, and may be omitted, for a P2P server.
+    #[serde(default)]
     server_reader: String,
     receiver_operator: String,
 }
-fn read_snapshot_auth() -> Result<SnapshotAuth> {
+fn parse_snapshot_auth(bytes: &[u8], needs_server_reader: bool) -> Result<SnapshotAuth> {
+    anyhow::ensure!(bytes.len() <= 16 * 1024, "snapshot credential input exceeds bound");
+    let auth: SnapshotAuth = serde_json::from_slice(bytes).map_err(|_| user_error("invalid snapshot credential input"))?;
+    anyhow::ensure!((!needs_server_reader || !auth.server_reader.trim().is_empty()) && !auth.receiver_operator.trim().is_empty(), "snapshot credentials unavailable");
+    Ok(auth)
+}
+fn read_snapshot_auth(needs_server_reader: bool) -> Result<SnapshotAuth> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::io::stdin().take(16 * 1024 + 1).read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= 16 * 1024, "snapshot credential input exceeds bound");
-    let auth: SnapshotAuth = serde_json::from_slice(&bytes).map_err(|_| user_error("invalid snapshot credential input"))?;
-    anyhow::ensure!(!auth.server_reader.trim().is_empty() && !auth.receiver_operator.trim().is_empty(), "snapshot credentials unavailable");
-    Ok(auth)
+    parse_snapshot_auth(&bytes, needs_server_reader)
+}
+
+/// `--from` names a P2P server when it is a multiaddr (it starts with `/`).
+fn p2p_from(from: &str) -> Result<Option<libp2p::Multiaddr>> {
+    if !from.starts_with('/') {
+        return Ok(None);
+    }
+    let addr: libp2p::Multiaddr = from.parse().map_err(|_| user_error("--from is not a valid P2P multiaddr"))?;
+    bonded_fetch::client::server_peer_id(&addr).map_err(user_error)?;
+    Ok(Some(addr))
+}
+
+/// How long to wait for the P2P server's Noise handshake.
+const P2P_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Busy / rate-limited answers are retried this many times, honoring the
+/// server's hint (capped).
+const P2P_BUSY_RETRIES: usize = 5;
+
+/// A P2P bonded-fetch server, plus the receiver API that signs this run's
+/// fetch authorization with the receiver's registered consumer key.
+struct P2pServer {
+    client: bonded_fetch::client::BondedFetchClient,
+    receiver: ApiClient,
+    auth: Option<BondedFetchAuth>,
+    service_id: Option<String>,
+}
+
+impl P2pServer {
+    async fn authorization(&mut self) -> Result<BondedFetchAuth> {
+        let now = chrono::Utc::now().timestamp();
+        if let Some(auth) = self.auth.as_ref().filter(|a| now.saturating_sub(a.issued_at) < bonded_fetch::AUTH_REFRESH_AFTER_SECS) {
+            return Ok(auth.clone());
+        }
+        let server = self.client.server_peer_id().to_string();
+        let client = self.client.local_peer_id().to_string();
+        let auth: BondedFetchAuth = self.receiver
+            .post("/network/snapshot-sync/p2p-fetch-auth", Some(json!({"server_peer_id": server, "client_peer_id": client})))
+            .await?;
+        anyhow::ensure!(auth.server_peer_id == server && auth.client_peer_id == client, "receiver signed a fetch authorization for other peers");
+        self.auth = Some(auth.clone());
+        Ok(auth)
+    }
+
+    async fn call(&mut self, request: BondedFetchRequest) -> Result<BondedFetchResponse> {
+        for attempt in 0..=P2P_BUSY_RETRIES {
+            let response = self.client.call(request.clone()).await.map_err(user_error)?;
+            match response {
+                BondedFetchResponse::Error { code, retry_after_ms: Some(wait), .. }
+                    if attempt < P2P_BUSY_RETRIES && matches!(code.as_str(), "BUSY" | "RATE_LIMITED") =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(wait.clamp(250, 60_000))).await;
+                },
+                BondedFetchResponse::Error { code, message, .. } => {
+                    return Err(user_error(format!("P2P server refused {}: {code}: {message}", request.label())));
+                },
+                other => return Ok(other),
+            }
+        }
+        Err(user_error("P2P server stayed busy; retry later"))
+    }
+}
+
+/// The serving end of a fetch: the HTTP API (Reader bearer) or P2P.
+enum SnapshotServer {
+    Http(ApiClient),
+    P2p(Box<P2pServer>),
+}
+
+fn unexpected(what: &str) -> anyhow::Error {
+    user_error(format!("P2P server answered {what} with the wrong message"))
+}
+
+impl SnapshotServer {
+    async fn identity(&mut self) -> Result<(ChainIdentity, [u8; 32])> {
+        match self {
+            SnapshotServer::Http(api) => network_identity(api).await,
+            SnapshotServer::P2p(p2p) => match p2p.call(BondedFetchRequest::Info).await? {
+                BondedFetchResponse::Info { chain_id, network_id, genesis_hash, service_id } => {
+                    let identity = ChainIdentity::new(chain_id, network_id);
+                    anyhow::ensure!(identity.chain_id != "unknown" && identity.network_id != "unknown", "target network identity unavailable");
+                    let genesis = super::node_deposit::api_hash(&genesis_hash)
+                        .filter(|hash| *hash != [0; 32])
+                        .ok_or_else(|| user_error("target genesis unavailable"))?;
+                    p2p.service_id = Some(service_id);
+                    Ok((identity, genesis))
+                },
+                _ => Err(unexpected("info")),
+            },
+        }
+    }
+
+    async fn sync_payload(&mut self) -> Result<PayloadResponse> {
+        match self {
+            SnapshotServer::Http(api) => api.get("/state/snapshot/sync-payload", None).await,
+            SnapshotServer::P2p(p2p) => {
+                let auth = p2p.authorization().await?;
+                match p2p.call(BondedFetchRequest::SyncPayload { auth }).await? {
+                    BondedFetchResponse::SyncPayload { payload, signed_payload } => {
+                        Ok(PayloadResponse { payload, signed_payload: Some(signed_payload) })
+                    },
+                    _ => Err(unexpected("sync_payload")),
+                }
+            },
+        }
+    }
+
+    async fn export_page(&mut self, offset: usize, limit: usize, signed: &SnapshotSyncPayload) -> Result<ExportPage> {
+        match self {
+            SnapshotServer::Http(api) => {
+                let offset_s = offset.to_string();
+                let limit_s = limit.to_string();
+                api.get("/state/snapshot/export", Some(&[("offset", offset_s.as_str()), ("limit", limit_s.as_str())])).await
+            },
+            SnapshotServer::P2p(p2p) => {
+                let auth = p2p.authorization().await?;
+                let request = BondedFetchRequest::ExportPage {
+                    auth,
+                    height: signed.height,
+                    snapshot_root_hex: signed.snapshot_root_hex.clone(),
+                    offset: offset as u64,
+                    limit: u32::try_from(limit).unwrap_or(bonded_fetch::MAX_EXPORT_PAGE_ENTRIES),
+                };
+                match p2p.call(request).await? {
+                    BondedFetchResponse::ExportPage { height, snapshot_root_hex, total, next_offset, entries } => Ok(ExportPage {
+                        height,
+                        snapshot_root_hex,
+                        total: usize::try_from(total).map_err(|_| user_error("export total exceeds this platform"))?,
+                        next_offset: next_offset.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+                        entries: entries.into_iter().map(|e| ExportEntry { key_hex: e.key_hex, value_hex: e.value_hex }).collect(),
+                    }),
+                    _ => Err(unexpected("export_page")),
+                }
+            },
+        }
+    }
+
+    async fn bonded_ticket(&mut self, installed: Value) -> Result<Value> {
+        match self {
+            SnapshotServer::Http(api) => api.post("/network/snapshot-sync/bonded-ticket", Some(installed)).await,
+            SnapshotServer::P2p(p2p) => {
+                let receipt = serde_json::from_value(installed["receipt"].clone())?;
+                let manifest = serde_json::from_value(installed["manifest"].clone())?;
+                let auth = p2p.authorization().await?;
+                match p2p.call(BondedFetchRequest::BondedTicket { auth, receipt, manifest }).await? {
+                    BondedFetchResponse::BondedTicket { claim_hex } => Ok(json!({ "claim_hex": claim_hex })),
+                    _ => Err(unexpected("bonded_ticket")),
+                }
+            },
+        }
+    }
+
+    async fn deliver_receipt(&mut self, receipt: &Value) -> Result<Value> {
+        match self {
+            SnapshotServer::Http(api) => api.post::<Value>("/network/snapshot-sync/receipt", Some(json!({ "receipt": receipt }))).await,
+            SnapshotServer::P2p(p2p) => {
+                let receipt = serde_json::from_value(receipt.clone())?;
+                let auth = p2p.authorization().await?;
+                match p2p.call(BondedFetchRequest::Receipt { auth, receipt }).await? {
+                    BondedFetchResponse::ReceiptAck { accepted, recorded_receipts } => {
+                        Ok(json!({ "accepted": accepted, "recorded_receipts": recorded_receipts }))
+                    },
+                    _ => Err(unexpected("receipt")),
+                }
+            },
+        }
+    }
+
+    /// The service id a receipt names this server by when `--server-id` is not
+    /// given: the HTTP authority, or the id the P2P server announced.
+    fn default_server_id(&self, from: &str) -> String {
+        match self {
+            SnapshotServer::P2p(p2p) => p2p.service_id.clone().unwrap_or_default(),
+            SnapshotServer::Http(_) => from
+                .trim_end_matches('/')
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string(),
+        }
+    }
 }
 /// Default and maximum timeout for the receiver ingest POST (#3586).
 const DEFAULT_INGEST_TIMEOUT_SECS: u64 = 30;
@@ -282,8 +476,15 @@ pub async fn handle_snapshot_command(
             receipt_archive,
             ingest_timeout_secs,
         } => {
+            let p2p_addr = p2p_from(from)?;
+            if p2p_addr.is_some() && !*bonded {
+                return Err(user_error("a P2P server serves bonded consumers only; add --bonded"));
+            }
+            if p2p_addr.is_some() && to.is_none() {
+                return Err(user_error("a P2P fetch needs --to: the receiver signs the fetch authorization"));
+            }
             if *auth_stdin && to.is_none() { return Err(user_error("stdin credentials require an explicit receiver URL")); }
-            let auth = if *auth_stdin { Some(read_snapshot_auth()?) } else { None };
+            let auth = if *auth_stdin { Some(read_snapshot_auth(p2p_addr.is_none())?) } else { None };
             if *bonded && (*dry_run || receipt_archive.is_none()) {
                 return Err(user_error("bonded fetch requires actual installation and --receipt-archive").into());
             }
@@ -292,11 +493,23 @@ pub async fn handle_snapshot_command(
                 .map(|s| s.trim().to_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let server = client_with_role(from, auth.as_ref().map(|a| a.server_reader.as_str()))?;
-            let source_identity = network_identity(&server).await?;
+            let mut server = match &p2p_addr {
+                None => SnapshotServer::Http(client_with_role(from, auth.as_ref().map(|a| a.server_reader.as_str()))?),
+                Some(addr) => {
+                    let receiver = match to {
+                        Some(url) => client_with_role(url, auth.as_ref().map(|a| a.receiver_operator.as_str()))?,
+                        None => ApiClient::new(ApiConfig::default())?,
+                    };
+                    let client = bonded_fetch::client::BondedFetchClient::connect(addr.clone(), P2P_CONNECT_TIMEOUT)
+                        .await
+                        .map_err(user_error)?;
+                    SnapshotServer::P2p(Box::new(P2pServer { client, receiver, auth: None, service_id: None }))
+                },
+            };
+            let source_identity = server.identity().await?;
 
             // 1. The signed payload — refused unless trusted.
-            let payload: PayloadResponse = server.get("/state/snapshot/sync-payload", None).await?;
+            let payload: PayloadResponse = server.sync_payload().await?;
             let signed = payload.signed_payload.ok_or_else(|| {
                 user_error("serving node returned an unsigned snapshot payload; refusing")
             })?;
@@ -315,14 +528,7 @@ pub async fn handle_snapshot_command(
             let mut offset = 0usize;
             let mut entries: Vec<(String, String)> = Vec::new();
             loop {
-                let offset_s = offset.to_string();
-                let limit_s = page_size.to_string();
-                let page: ExportPage = server
-                    .get(
-                        "/state/snapshot/export",
-                        Some(&[("offset", offset_s.as_str()), ("limit", limit_s.as_str())]),
-                    )
-                    .await?;
+                let page: ExportPage = server.export_page(offset, page_size, &signed.payload).await?;
                 if page.height != signed.payload.height
                     || page.snapshot_root_hex != signed.payload.snapshot_root_hex
                 {
@@ -371,12 +577,7 @@ pub async fn handle_snapshot_command(
                 "snapshot source/receiver chain/genesis mismatch");
             // A fresh receiver's unknown genesis is checked by ingest against
             // its independent pin before carried authority or state is installed.
-            let server_id = server_id.clone().unwrap_or_else(|| {
-                from.trim_end_matches('/')
-                    .trim_start_matches("http://")
-                    .trim_start_matches("https://")
-                    .to_string()
-            });
+            let server_id = server_id.clone().unwrap_or_else(|| server.default_server_id(from));
             let ingest_body = json!({
                 "signed_payload": signed,
                 "entries": entries.iter().map(|(k, v)| json!({"key_hex": k, "value_hex": v})).collect::<Vec<_>>(),
@@ -406,7 +607,7 @@ pub async fn handle_snapshot_command(
                     archive_public_receipt(directory, "installed", &installed)?;
                 }
                 if *bonded {
-                    let ticket: Value = server.post("/network/snapshot-sync/bonded-ticket", Some(installed)).await?;
+                    let ticket: Value = server.bonded_ticket(installed).await?;
                     let partial = json!({"claim_hex":bounded_claim_hex(&ticket)?});
                     let endorsed: Value = local.post("/network/snapshot-sync/bonded-endorsement", Some(partial)).await?;
                     let claim_hex = bounded_claim_hex(&endorsed)?;
@@ -421,13 +622,7 @@ pub async fn handle_snapshot_command(
             }
             // 5. Hand the receipt back to the server, when the local node issued one.
             let receipt_status = match ingest.get("receipt").filter(|r| !r.is_null()) {
-                Some(receipt) => match server
-                    .post::<Value>(
-                        "/network/snapshot-sync/receipt",
-                        Some(json!({ "receipt": receipt })),
-                    )
-                    .await
-                {
+                Some(receipt) => match server.deliver_receipt(receipt).await {
                     Ok(ack) => json!({ "delivered": true, "server_ack": ack }),
                     Err(err) => json!({ "delivered": false, "error": err.to_string() }),
                 },
@@ -476,6 +671,31 @@ mod tests {
             .map(|(k, v)| (hex::encode(k), hex::encode(v)))
             .collect();
         (signed, entries, signer_id)
+    }
+
+    #[test]
+    fn from_selects_p2p_only_for_a_multiaddr_naming_the_server_peer() {
+        assert!(p2p_from("http://seed:8556").unwrap().is_none());
+        assert!(p2p_from("https://seed.example").unwrap().is_none());
+        let peer = libp2p::identity::Keypair::generate_ed25519().public().to_peer_id();
+        let addr = p2p_from(&format!("/dns4/laptop.example/tcp/9000/p2p/{peer}")).unwrap().unwrap();
+        assert_eq!(bonded_fetch::client::server_peer_id(&addr).unwrap(), peer);
+        assert!(p2p_from(&format!("/ip4/203.0.113.7/tcp/9000/p2p/{peer}")).unwrap().is_some());
+        // A P2P address without the peer id cannot authenticate the server.
+        assert!(p2p_from("/ip4/203.0.113.7/tcp/9000").is_err());
+        assert!(p2p_from("/not-a-multiaddr").is_err());
+    }
+
+    #[test]
+    fn stdin_credentials_need_the_server_reader_only_for_http() {
+        let both = br#"{"server_reader":"r","receiver_operator":"o"}"#;
+        let receiver_only = br#"{"receiver_operator":"o"}"#;
+        assert!(parse_snapshot_auth(both, true).is_ok());
+        assert!(parse_snapshot_auth(receiver_only, true).is_err());
+        assert_eq!(parse_snapshot_auth(receiver_only, false).unwrap().receiver_operator, "o");
+        assert!(parse_snapshot_auth(br#"{"server_reader":"r"}"#, false).is_err());
+        assert!(parse_snapshot_auth(br#"{"server_reader":"r","receiver_operator":" "}"#, false).is_err());
+        assert!(parse_snapshot_auth(&vec![b' '; 16 * 1024 + 1], false).is_err());
     }
 
     #[test]

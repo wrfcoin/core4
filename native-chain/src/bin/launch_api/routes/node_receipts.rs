@@ -14,7 +14,7 @@ use wrfcoin_shared_protocol::{
     crypto::chain_binding::ChainIdentity,
 };
 
-fn identity() -> Option<ChainIdentity> {
+pub(crate) fn identity() -> Option<ChainIdentity> {
     let c =
         wrfcoin_shared_protocol::governance::schedule_extension::schedule_extension_authority()?
             .context();
@@ -352,6 +352,74 @@ pub async fn submit(
         );
     }
     HttpResponse::Accepted().json(serde_json::json!({"tx_id":id,"admitted":true,"included":false}))
+}
+
+/// `POST /network/snapshot-sync/p2p-fetch-auth` body.
+#[cfg(feature = "p2p")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchAuthRequest {
+    pub server_peer_id: String,
+    pub client_peer_id: String,
+}
+
+/// Receiver side of a P2P bonded fetch: this node's signer (the consumer key
+/// its bond registered) authorizes one CLI libp2p peer to fetch from one
+/// serving peer. The signature is under its own domain tag and can only ever
+/// open the bonded-fetch protocol; it is never a chain object. Operator only,
+/// and deliberately not behind the Node-service guard, because a fresh
+/// receiver has not installed the snapshot that activates that feature yet.
+#[cfg(feature = "p2p")]
+pub async fn fetch_auth(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Json<FetchAuthRequest>,
+) -> impl Responder {
+    use wrfcoin_p2p::bonded_fetch::{BondedFetchAuth, MAX_PEER_ID_CHARS};
+    if let Err(response) = require_role(&req, &state, ApiRole::Operator) {
+        return response;
+    }
+    let peer_ok = |p: &str| {
+        p.len() <= MAX_PEER_ID_CHARS && p.parse::<libp2p::PeerId>().is_ok()
+    };
+    if !peer_ok(&body.server_peer_id) || !peer_ok(&body.client_peer_id) {
+        return envelope_error(&req, StatusCode::BAD_REQUEST, "BAD_REQUEST", "server_peer_id and client_peer_id must be libp2p peer ids");
+    }
+    let Some(signer) = state.snapshot_signing_key.as_ref() else {
+        return envelope_error(
+            &req,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NODE_RECEIVER_SIGNER_UNAVAILABLE",
+            "registered receiver signer unavailable",
+        );
+    };
+    let Ok(consumer_key) = <[u8; 32]>::try_from(signer.public_key().as_bytes()) else {
+        return envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "NODE_RECEIVER_SIGNER_UNAVAILABLE", "receiver signer key is not ed25519");
+    };
+    // determinism-ok: off-chain authorization timestamp, never a consensus input.
+    let issued_at = chrono::Utc::now().timestamp();
+    // determinism-ok: off-chain authorization nonce, never a consensus input.
+    let nonce: [u8; 16] = rand::random();
+    let preimage = BondedFetchAuth::signing_preimage(
+        ChainIdentity::active(),
+        &consumer_key,
+        &body.server_peer_id,
+        &body.client_peer_id,
+        issued_at,
+        &nonce,
+    );
+    let height = state.blockchain.read().await.height;
+    match signer.sign_at_height(&preimage, height) {
+        Ok(signature) => HttpResponse::Ok().json(BondedFetchAuth {
+            consumer_key: hex::encode(consumer_key),
+            server_peer_id: body.server_peer_id.clone(),
+            client_peer_id: body.client_peer_id.clone(),
+            issued_at,
+            nonce: hex::encode(nonce),
+            signature: signature.to_hex(),
+        }),
+        Err(_) => envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "NODE_RECEIVER_SIGNER_UNAVAILABLE", "receiver signer refused"),
+    }
 }
 
 /// Bounded experimental ingestion for the signed state plus required block
