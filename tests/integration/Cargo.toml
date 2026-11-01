@@ -23,6 +23,10 @@ name = "passkey_feature_parity_2169"
 path = "passkey_feature_parity_2169.rs"
 
 [[test]]
+name = "passkey_bond_payout_parity"
+path = "passkey_bond_payout_parity.rs"
+
+[[test]]
 name = "security_key_feature_parity"
 path = "security_key_feature_parity.rs"
 

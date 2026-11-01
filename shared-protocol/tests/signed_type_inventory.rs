@@ -127,7 +127,8 @@ const UNREGISTERED: &[(&str, &str)] = &[
         "NodeBondLifecycle",
         "transport signature container (Node S2): owner, governance and payout keys sign \
          the registered NodeBondAuthorization; dedicated online keys sign the registered \
-         role-bound NodeBondPossession. The container is never a signing preimage",
+         role-bound NodeBondPossession; a passkey payout (payout_passkey) asserts over the \
+         registered NodeBondPayoutPasskeyApproval. The container is never a signing preimage",
     ),
     (
         "NodeReceiptSubmission",
@@ -1170,6 +1171,12 @@ const SIGNED_VIA_ENVELOPE: &[(&str, &str)] = &[
     (
         "NodeBondPossession",
         "signed by its detached S1 signature container under the registered V2 domain",
+    ),
+    (
+        "NodeBondPayoutPasskeyApproval",
+        "WebAuthn challenge subject (passkey_bond_payout): the payout wallet's P-256 \
+         assertion in NodeBondLifecycle.payout_passkey signs authenticatorData || \
+         SHA-256(clientDataJSON) whose challenge is SHA3 of this subject's V2 preimage",
     ),
     (
         "SnapshotSyncPayload",
