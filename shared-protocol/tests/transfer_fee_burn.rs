@@ -16,6 +16,9 @@
 //! owns its process (same discipline as `sponsored_first_send`).
 
 use wrfcoin_shared_protocol::accounts::paymaster::{SponsorAuthorization, sponsorship_active};
+use wrfcoin_shared_protocol::accounts::session_keys::{
+    MethodId, SessionKeyAction, SessionKeyGrant, SessionScope, session_key_register_message,
+};
 use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
 use wrfcoin_shared_protocol::blockchain::transaction::{
     Transaction, TransactionInput, TransactionOutput, TransactionType, TransparentTransferPayload,
@@ -26,7 +29,7 @@ use wrfcoin_shared_protocol::consensus::transfer_fee::{
     TRANSFER_FEE_V1_BASE_UNITS, transfer_fee_at, transfer_fee_scheduled, transfer_fee_to_declare,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
-    ConsensusFeature, GENESIS_ACTIVATION_SCHEDULE_KEY, SigningProtocolVersion,
+    ChainIdentity, ConsensusFeature, GENESIS_ACTIVATION_SCHEDULE_KEY, SigningProtocolVersion,
     install_activation_table, install_feature_schedule, resolve_activation_schedule,
     resolve_feature_schedule, try_feature_schedule,
 };
@@ -104,6 +107,7 @@ fn transfer_of(
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        session_key_auth: None,
         sponsorship,
     };
     payload.sign_authorization(&k.user, nonce);
@@ -227,8 +231,9 @@ fn transfer_fee_is_inert_until_scheduled_then_burned_from_sender_or_sponsor() {
 
     // ── Phase 2: schedule paymaster and transfer_fee_burn at the SAME H ────
     let raw = format!(
-        "0:v1,{H}:{},{H}:{}",
+        "0:v1,{H}:{},{H}:{},{H}:{}",
         ConsensusFeature::Paymaster.name(),
+        ConsensusFeature::SessionKeys.name(),
         ConsensusFeature::TransferFeeBurn.name()
     );
     let metadata = [(GENESIS_ACTIVATION_SCHEDULE_KEY, raw.as_str())];
@@ -394,6 +399,125 @@ fn transfer_fee_is_inert_until_scheduled_then_burned_from_sender_or_sponsor() {
     apply_at(&mut newcomer, &first, H).expect("no fee wall for a sponsored first send");
     assert_eq!(bal(&newcomer, &k.user_addr), 0);
     assert_eq!(newcomer.supply_authorized_burning, FEE as u128);
+
+    // Session-key transfers (#97): the sender's balance pays the fee; the
+    // key's limits count the AMOUNT only, never the burned fee.
+    {
+        let mut rng = StdRng::seed_from_u64(0x5e55_fee0);
+        let owner_sk = PrivateKey::generate(&mut rng);
+        let owner = Address::from_public_key(&PublicKey::from_private_key(&owner_sk));
+        let session_sk = PrivateKey::generate(&mut rng);
+        let session_key = Address::from_public_key(&PublicKey::from_private_key(&session_sk));
+        let grant = SessionKeyGrant {
+            public_key: PublicKey::from_private_key(&session_sk),
+            scope: SessionScope {
+                allowed_methods: vec![MethodId("transfer".into())],
+                allowed_targets: vec![k.to],
+                max_value_per_use: u128::from(AMOUNT),
+                max_total_value: 2 * u128::from(AMOUNT),
+                window: None,
+            },
+            valid_from: H,
+            valid_until: H + 1_000,
+            max_uses: None,
+        };
+        let chain_id = ChainIdentity::active().chain_id.clone();
+        let message = session_key_register_message(&chain_id, &owner, 0, &grant);
+        let register = SessionKeyAction::Register {
+            owner,
+            registration_nonce: 0,
+            grant,
+            owner_public_key: PublicKey::from_private_key(&owner_sk).to_hex(),
+            owner_signature: owner_sk.sign(&message).to_hex(),
+            session_signature: session_sk.sign(&message).to_hex(),
+        };
+        let session_send = |nonce: u64, tag: &str| {
+            let mut payload = TransparentTransferPayload {
+                from: owner.to_hex(),
+                to: k.to.to_hex(),
+                amount: AMOUNT,
+                transparent_opt_out: true,
+                opt_out_audit_tag: None,
+                auth_pubkey: None,
+                auth_signature: None,
+                authority: None,
+                authority_signature: None,
+                passkey_auth: None,
+                session_key_auth: None,
+                sponsorship: None,
+            };
+            payload.sign_session_key_authorization(&session_sk, nonce);
+            let mut tx = transfer(&k, nonce, FEE, tag);
+            tx.sender_address = owner;
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        let record = |s: &State| {
+            let r = &s.session_keys[&owner].records[&session_key];
+            (r.uses_so_far, r.cumulative_value_used)
+        };
+        let setup = |funds: u128| {
+            let mut s = fresh_state(&k, USER_FUNDS);
+            s.create_account(owner, Balance::new(funds));
+            s.supply_baseline_initialized = false;
+            s.initialize_supply_baseline().unwrap();
+            s.apply_transition(StateTransition::ApplySessionKeyAction {
+                action: register.clone(),
+                block_height: H,
+            })
+            .expect("register the session key at H");
+            s.recalculate_state_root();
+            s
+        };
+
+        // Amount fits, amount + fee does not: refused, the key spends nothing.
+        let short = setup(u128::from(AMOUNT) + u128::from(FEE) - 1);
+        assert_eq!(record(&short), (0, 0));
+        let mut copy = short.clone();
+        apply_at(&mut copy, &session_send(0, "sk-short"), H + 1).expect_err("cannot cover the fee");
+        assert_eq!(
+            record(&copy),
+            (0, 0),
+            "a refused send spends no use or allowance"
+        );
+        assert_eq!(bal(&copy, &owner), bal(&short, &owner));
+        assert_eq!(
+            copy.supply_authorized_burning,
+            short.supply_authorized_burning
+        );
+
+        // Under-declared fee: refused before the key is charged.
+        let mut copy = short.clone();
+        let mut under = session_send(0, "sk-under");
+        under.fee = 0;
+        under.set_id();
+        let err = apply_at(&mut copy, &under, H + 1).expect_err("under-fee");
+        assert!(err.contains("SP_TRANSFER_FEE_BELOW_MINIMUM"), "{err}");
+        assert_eq!(record(&copy), (0, 0));
+
+        // Two sends exactly exhaust the 2*AMOUNT lifetime limit even though
+        // the owner also paid two fees: the limit counts the amount only.
+        let funds = 100 * u128::from(AMOUNT);
+        let mut s = setup(funds);
+        let burned = s.supply_authorized_burning;
+        apply_at(&mut s, &session_send(0, "sk-1"), H + 1).expect("session send 1");
+        apply_at(&mut s, &session_send(1, "sk-2"), H + 2).expect("session send 2");
+        assert_eq!(
+            record(&s),
+            (2, 2 * u128::from(AMOUNT)),
+            "limits count amount only"
+        );
+        assert_eq!(
+            bal(&s, &owner),
+            funds - 2 * u128::from(AMOUNT) - 2 * u128::from(FEE)
+        );
+        assert_eq!(s.supply_authorized_burning, burned + 2 * u128::from(FEE));
+        assert_supply_conserved(&mut s);
+        let err =
+            apply_at(&mut s.clone(), &session_send(2, "sk-3"), H + 3).expect_err("lifetime spent");
+        assert!(err.contains("SP_SESSION_KEY_TRANSFER_REFUSED"), "{err}");
+    }
 
     // Rewards and internal balance moves are not charged: the fee lives only
     // in the transparent-transfer arm.

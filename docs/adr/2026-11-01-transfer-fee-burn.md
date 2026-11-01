@@ -58,6 +58,7 @@ registered feature: core4#50 is docs only and registers none.
 | Without a sponsorship, the sender's spendable balance and balance must each cover `amount + fee`; the fee is debited after the transfer, both or neither apply | `check_sender_covers_amount_and_fee`, `burn_transfer_fee` |
 | With a sponsorship `paymaster` accepts at that height, the sponsor's signed `fee` must be `>=` the transfer fee (`SP_TRANSFER_FEE_SPONSOR_BELOW_MINIMUM`); the sponsor pays its signed fee (burned) and the sender pays no fee | `apply_transparent_transfer` + core4#96's `commit_sponsorship` |
 | The fee is credited to nobody and added to `supply_authorized_burning`; INV-SUPPLY-1 reads it as an authorized burn | `burn_transfer_fee` |
+| A transfer authorized by a session key (#97) pays the fee from the sender's balance like any other. The key's limits (per use, window, lifetime) count the **amount only**, never the fee. The fee pre-check runs before the key is charged, and a failure anywhere after it (transfer, sponsorship, burn) restores the key's grants, so a refused send spends no use or allowance | `apply_transparent_transfer` session-key path |
 
 **Why the protocol fee and not `tx.fee`.** The sender's authorization signs `from|to|amount|nonce`
 only. `tx.fee` is outside it, so any relayer or peer could raise `tx.fee` on a copy of a transfer.
@@ -77,6 +78,12 @@ under the fee it was mined with. A step must lie inside the sponsor fee bounds
 reserves held now (sinks ADR §1, §5). A burn lowers that sum, so it frees headroom under the cap, which
 is what lets issuance continue as a perpetual tail. The `supply_authorized_burning` journal is not in
 the state root (`state.rs`, INV-SUPPLY-1 notes); the balances it explains are.
+
+**Why session-key limits count the amount only.** The owner sets a key's limits in WRF to cap what the
+key may send. The fee is a protocol charge the chain sets per height; counting it would let a later fee
+step shrink every existing key's real allowance without the owner signing anything, and a key with a
+per-use limit equal to its usual send amount would stop working the day the fee switches on. The fee is
+small (0.00005 WRF), so the extra loss a leaked key can cause through fees is bounded by its use count.
 
 ## Which transactions pay
 
@@ -127,7 +134,7 @@ same transfer with declared fees 0, 1, 4_999, 5_000, 50_000 and `u64::MAX` and g
   boundary (H-1 free, H charged); admission at tip+1; under-fee refusal leaves state untouched; amount
   + fee exact fit and one-unit short; over-declaring burns only the protocol fee; supply journal,
   `issuance_committed_supply` and INV-SUPPLY-1; sponsor pays, sponsor below minimum refused,
-  undeclared sponsored transfer refused, sponsored newcomer with exactly the amount; rewards and
+  undeclared sponsored transfer refused, sponsored newcomer with exactly the amount; session-key sends pay the fee from the owner and their limits count the amount only (two sends exhaust a 2-x-amount lifetime limit while two fees burn; a send that cannot cover the fee spends no use); rewards and
   internal moves burn nothing; property test over amounts and declared fees.
 - `native-chain/tests/transfer_fee_burn_parity.rs` (two child processes, gate off and on at H = 3 with
   `paymaster`): the real producer, the P2P applier and WAL replay agree on root, balances and burn
@@ -163,5 +170,6 @@ without the other.
 - Strict wallets: refuse a submit that omits `fee` once active, instead of declaring the chain fee for
   it? Recommend: no (lenient) for testnet; the response says what was charged, and the CLI already
   sends `fee`.
+- Session keys: should the fee count against a key's spending limits? Recommend: no, amount only (above).
 - Should faucet drips be exempt? Recommend: no. It is 0.00005 WRF per drip, and an exemption would be a
   privileged sender rule in consensus.

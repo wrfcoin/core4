@@ -99,6 +99,7 @@ fn transfer(
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        session_key_auth: None,
         sponsorship,
     };
     payload.sign_authorization(from, nonce);
