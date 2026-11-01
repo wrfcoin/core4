@@ -1031,6 +1031,14 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_bond_payout"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_bond_payout_vectors"
     }
   ],
   "external_coverage": [
