@@ -2146,7 +2146,7 @@ async fn main() -> std::io::Result<()> {
     );
 
     if declared_identity.chain_id == "777" {
-        log::warn!("This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets. https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html");
+        log::warn!("This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets. https://wrfcoin.com/testnet-disclaimer.html");
     }
 
     // #2712 fail-closed oracle-governance allowlist declaration.
@@ -13135,6 +13135,8 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert!(body["node_version"].is_string());
+        // The public disclaimer page served by wrfcoin.com (frontend public/testnet-disclaimer.html).
+        assert_eq!(body["disclaimer_url"], "https://wrfcoin.com/testnet-disclaimer.html");
         // Release builds stamp the short commit; local and test builds report null.
         assert!(body["node_build"].is_null() || body["node_build"].is_string());
         assert!(body["sync_status"].is_string());
