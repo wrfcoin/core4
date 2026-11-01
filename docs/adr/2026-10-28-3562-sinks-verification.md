@@ -360,12 +360,13 @@ Defined as value that reaches the protocol without belonging to anyone, all on c
 | Paymaster sponsored spend | Burned (`state.rs:5882`) | unchanged |
 | Node-share fraud forfeiture | Moved to a non-spendable protocol account, still counted as supply (tokenomics ADR §1.4) | **Burn** at forfeiture |
 | Sink clawback from program bonds (§3.5) | — | **Burn** |
-| Transaction fees | Producer keeps all | **Burn 50%** of each fee (a base-fee burn); the producer keeps 50% |
+| Transfer fees | Producer keeps all | **Burned transfer fee** (core4 #101, `transfer_fee_burn`): a fixed protocol fee on each transparent transfer goes to nobody and is journalled as a burn. Its own feature, not part of F5 |
 | Private-analysis / compute fees (paper §5.5 sinks funding, §5.6 burns) | No fee split exists. `COMPUTATIONAL_FEE_ACTIVATION_HEIGHT` (PoP:167) is `0`, so the computational-fee model is already active, but it is a gate (a fee-less weather tx must carry a valid compute receipt), not a fee split | **Burn 50%, sink slice 50%** of any protocol-charged analysis/compute fee, once such a fee is defined; the compute-receipt gate is the hook that exists today |
 | Stale-wallet balances (§6.2) | — | **Burn** |
 
-The 50% fee burn is the recommended value: enough that heavy chain use funds the tail, while
-producers still earn on fees. A fee burn changes producer economics and is root-affecting.
+The fee burn is the burned transfer fee of core4 #101 (`transfer_fee_burn`, unscheduled), which
+replaces the 50% fee split this draft first proposed. It is root-affecting and is scheduled on its own
+feature, so F5 below covers only forfeiture and clawback.
 
 ### 6.2 Stale wallets
 
@@ -408,7 +409,7 @@ Each is a new `ConsensusFeature` appended at the **end** of the enum and of `KNO
 | F2 | `sink_emission_slice` | 6-role partition with the O6-e tables (§4.1), `EMISSION_ROLE_COUNT` = 6, Sink appended last | yes | F1 |
 | F3 | `sink_claim_settlement` | `SinkClaim` tx, outcome-id terminal markers, audit selection, auditor receipts, maturity payout, clawback | yes | F1, F2 |
 | F4 | `sink_share_governance` | governed `sink_share_bps` with the step limits of §4.4 | yes | F2 |
-| F5 | `protocol_inflow_burn` | fee burn split; forfeiture and clawback burn | yes | — |
+| F5 | `protocol_inflow_burn` | forfeiture and clawback burn only (the fee burn is `transfer_fee_burn`, core4 #101) | yes | — |
 | F6 | `account_activity_tracking` | per-account last-signed-activity timestamp; `KeepAlive` tx | yes | — |
 | F7 | `stale_wallet_burn` | dormant flag at 9 y, sweep at 10 y | yes | F6, activated ≥ 10 y of F6 history to have any effect |
 | F8 | `emission_headroom_tail` | Option B emission (§5) | yes | owner ratification of §5 |
@@ -452,7 +453,8 @@ proof of clean-up through a registered program, view sinks), per #3562's accepta
    *Recommended: yes, the owner's own O6-e example.*
 8. **Growth limits:** +250 bps per change, ≥ 4 epochs apart, ceiling 1,500 bps until re-ratified?
    *Recommended: yes.*
-9. **Fee burn:** 50% of transaction fees burned, producer keeps 50%? *Recommended: yes.*
+9. **Fee burn:** decided: the burned transfer fee of core4 #101 (`transfer_fee_burn`) instead of a
+   50% fee split; F5 is forfeiture and clawback only.
 10. **Forfeiture:** burn node-share fraud forfeitures instead of holding them in a protocol account?
     *Recommended: yes.*
 11. **Stale wallets:** activity = any signed transaction (not receipts); period = 10 years of
