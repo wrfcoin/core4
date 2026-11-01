@@ -175,6 +175,7 @@ fn transfer_tx(
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
     };
     payload.sign_authorization(key, nonce);
     let mut value = serde_json::to_value(&payload).unwrap();

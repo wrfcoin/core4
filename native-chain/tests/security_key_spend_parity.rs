@@ -146,6 +146,7 @@ fn transfer(tag: &str, amount: u64, nonce: u64, with_key: bool) -> Transaction {
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
     };
     payload.sign_authorization(&key, nonce);
     let mut value = serde_json::to_value(&payload).unwrap();
