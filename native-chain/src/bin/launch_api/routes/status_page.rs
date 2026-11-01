@@ -59,6 +59,7 @@ mod tests {
     const NAVIGATION_LINKS: &[&str] = &[
         "https://wrfcoin.com/downloads",
         "https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md",
+        "https://github.com/wrfcoin/core4/blob/main/docs/operator/windows-node.md#open-your-port-optional",
     ];
 
     /// The page with its allowlisted navigation links removed, after checking
@@ -258,8 +259,8 @@ mod tests {
             .and_then(|rest| rest.find("</section>").map(|end| &rest[..end]))
             .expect("the page has a What's next section");
         let rungs = [
-            "Sync node <span class=\"pill ok\">You are here</span>",
-            "Bonded node <span class=\"pill info\">Preview</span>",
+            "Sync node <span class=\"pill ok\" id=\"pill-sync\">You are here</span>",
+            "Bonded node <span class=\"pill info\" id=\"pill-bonded\">Preview</span>",
             "Attester (oracle) <span class=\"pill\">Coming</span>",
             "Block producer <span class=\"pill\">Coming</span>",
         ];
@@ -288,6 +289,49 @@ mod tests {
         for forbidden in ["guarantee", "apy", "profit", "per day", "per month", "you will earn", "you'll earn"] {
             assert!(!lower.contains(forbidden), "the ladder must make no income claim ({forbidden:?})");
         }
+    }
+
+    /// Bonded mode (#99 P2P serving, opted into through the Windows launcher's
+    /// reachable.conf): the page reads it from `/network/peer_id`, says Sync-only
+    /// or Bonded with the service id, warns about a bonded node without a server
+    /// key or an external address, and moves "You are here" up the ladder. The
+    /// "Open your port (TCP 9000)" guide is linked from the bonded rung, sits
+    /// outside the ladder, and names only the one port.
+    #[::core::prelude::v1::test]
+    fn the_page_shows_bonded_mode_and_the_open_port_guide() {
+        for text in [
+            "<div class=\"fact wide mode\"><dt>Mode</dt><dd id=\"fact-mode\">",
+            "peerInfo.bonded",
+            "bonded.serving === true",
+            "'Sync-only'",
+            "'Bonded' + (id ? ' (' + id + ')' : '')",
+            "'Bonded, no server key'",
+            "'Bonded, port not set'",
+            "$('pill-bonded').textContent = serving ? 'You are here' : 'Preview';",
+            "<a href=\"#open-port\" id=\"open-port-link\">Open your port (TCP 9000)</a>",
+        ] {
+            assert!(STATUS_PAGE_HTML.contains(text), "bonded mode must carry {text:?}");
+        }
+        let guide = STATUS_PAGE_HTML
+            .find("id=\"open-port\"")
+            .map(|start| &STATUS_PAGE_HTML[start..])
+            .and_then(|rest| rest.find("</details>").map(|end| &rest[..end]))
+            .expect("the page has an Open your port guide");
+        for text in [
+            "<summary>Open your port (TCP 9000)</summary>",
+            "-Protocol TCP -LocalPort 9000",
+            "WRFCOIN_P2P_HOST=0.0.0.0",
+            "WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000",
+            "WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1",
+            "WRFCOIN_SERVICE_ID=",
+            "never reachable from outside",
+        ] {
+            assert!(guide.contains(text), "the Open your port guide must say {text:?}");
+        }
+        assert!(!guide.contains("8556"), "the guide opens only TCP 9000, never the API port");
+        // The bonded rung links to the guide, which sits after the ladder.
+        let ladder_end = STATUS_PAGE_HTML.find("id=\"whats-next\"").unwrap();
+        assert!(STATUS_PAGE_HTML.find("id=\"open-port\"").unwrap() > ladder_end);
     }
 
     /// The Stop button: Operator token required, plain-words confirm, the

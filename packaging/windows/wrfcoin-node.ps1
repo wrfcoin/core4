@@ -41,6 +41,17 @@
   a malformed value stops the start with a message. chain-888.conf itself is
   still checked as the chain-888 sync-only config. See docs/operator/
   windows-node.md, "Open your port".
+
+  Bonded mode (optional, testnet): the same reachable.conf may also set
+    WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1   serve bonded snapshot fetches over
+                              P2P (exactly 1; remove the line to turn it off)
+    WRFCOIN_SERVICE_ID=<alias>              the bond's service alias, 1-128 of
+                              A-Z a-z 0-9 . _ - (starting with a letter or digit)
+  Bonded mode is all or nothing: the start stops with a message unless both
+  lines are there together with a non-loopback WRFCOIN_P2P_HOST, a
+  WRFCOIN_P2P_EXTERNAL_ADDR and server.key (-Action ServerKey). The node stays
+  sync-only (WRFCOIN_SYNC_ONLY=1): it never makes blocks, and the server key
+  still signs the snapshots it serves. See windows-node.md, "Bonded mode".
   -Quiet      never show a message box (installer, CI).
 
   Per-user state lives in %LOCALAPPDATA%\WRFCoin:
@@ -87,8 +98,9 @@ $LauncherLog = Join-Path $LogDir 'launcher.log'
 $TokenFile = Join-Path $Root 'operator.token'
 $ServerKeyFile = Join-Path $Root 'server.key'
 $ReachableConfig = Join-Path $Root 'reachable.conf'
-# The only chain-888.conf keys a user may override (case-sensitive).
-$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR')
+# The only chain-888.conf keys a user may override (case-sensitive). The last
+# two switch on bonded mode and are checked together by Resolve-NodeMode.
+$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID')
 $StopWaitSeconds = 120
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
@@ -220,6 +232,10 @@ function Test-ReachableValue([string]$Key, [string]$Value) {
             if ($Matches[1] -ceq 'ip4') { return (Test-Ipv4 $hostPart) }
             return ($hostPart.Length -le 253 -and $hostPart -match '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$')
         }
+        # Opt-in only: '1' turns it on; to turn it off, remove the line.
+        'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS' { return ($Value -ceq '1') }
+        # The bond's service alias (chain limit 128 bytes), plain ASCII only.
+        'WRFCOIN_SERVICE_ID' { return ($Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') }
     }
     return $false
 }
@@ -246,6 +262,33 @@ function Read-ReachableConfig {
         $pairs[$key] = $value
     }
     return $pairs
+}
+
+function Resolve-NodeMode($Reach) {
+    # 'sync' (the default) or 'bonded'. Bonded mode is an explicit opt-in and
+    # all or nothing: a half-configured bonded node would start, look fine and
+    # never be paid, so every missing piece stops the start instead.
+    $serve = $Reach.Contains('WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS')
+    if (-not $serve) {
+        if ($Reach.Contains('WRFCOIN_SERVICE_ID')) {
+            Fail "${ReachableConfig}: WRFCOIN_SERVICE_ID is only used in bonded mode. Add WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1 or remove it"
+        }
+        return 'sync'
+    }
+    if (-not $Reach.Contains('WRFCOIN_SERVICE_ID')) {
+        Fail "${ReachableConfig}: bonded mode needs WRFCOIN_SERVICE_ID=<your bond's service alias>"
+    }
+    $p2pHost = if ($Reach.Contains('WRFCOIN_P2P_HOST')) { [string]$Reach['WRFCOIN_P2P_HOST'] } else { '' }
+    if ($p2pHost -eq '' -or $p2pHost.StartsWith('127.')) {
+        Fail "${ReachableConfig}: bonded mode needs WRFCOIN_P2P_HOST=0.0.0.0 so other nodes can connect (see Open your port)"
+    }
+    if (-not $Reach.Contains('WRFCOIN_P2P_EXTERNAL_ADDR')) {
+        Fail "${ReachableConfig}: bonded mode needs WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/9000 (see Open your port)"
+    }
+    if (-not (Test-Path -LiteralPath $ServerKeyFile)) {
+        Fail "bonded mode needs the server key ${ServerKeyFile}: run wrfcoin-node.ps1 -Action ServerKey first"
+    }
+    return 'bonded'
 }
 
 function Get-NodeProcess {
@@ -283,6 +326,7 @@ function Start-Node {
     if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
 
     $reach = Read-ReachableConfig
+    $mode = Resolve-NodeMode $reach
     foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
     foreach ($key in $reach.Keys) { [Environment]::SetEnvironmentVariable($key, $reach[$key], 'Process') }
     [Environment]::SetEnvironmentVariable('WRFCOIN_DATA_DIR', $DataDir, 'Process')
@@ -290,6 +334,9 @@ function Start-Node {
     if (Test-Path -LiteralPath $ServerKeyFile) {
         # Locked to this user by Initialize-UserState; the node checks it again.
         [Environment]::SetEnvironmentVariable('WRFCOIN_SNAPSHOT_SERVER_KEY_FILE', $ServerKeyFile, 'Process')
+    }
+    if ($mode -eq 'bonded') {
+        Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) Start: bonded mode, service id $($reach['WRFCOIN_SERVICE_ID'])"
     }
 
     if (Test-Path -LiteralPath $LogFile) { Move-Item -LiteralPath $LogFile -Destination "$LogFile.1" -Force }

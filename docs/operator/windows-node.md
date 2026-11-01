@@ -133,7 +133,8 @@ WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000
 (With a dynamic-DNS name: `WRFCOIN_P2P_EXTERNAL_ADDR=/dns4/yourname.example.org/tcp/9000`.)
 The first line makes the node listen on your network instead of only on this PC;
 the second is the address it tells other nodes to dial. The file may contain only
-these two settings (and `#` comment lines): anything else, a typo or a malformed
+these two settings, the two bonded-mode settings (see [Bonded mode](#bonded-mode-testnet))
+and `#` comment lines: anything else, a typo or a malformed
 address stops the start with a message saying which line is wrong, and
 `launch_api.exe` settings from the installed `chain-888.conf` stay as they are.
 Restart the node (Start menu → **Stop WRFCoin Node**, then **WRFCoin Node**).
@@ -211,7 +212,60 @@ Rules the node enforces (it refuses to start otherwise):
   stops: the token is the default signer, so pick one.
 
 Back up `server.key` somewhere only you can read: a new key means a new bond. To
-stop serving as a bonded node, stop the node and move the file out of the folder.
+stop serving as a bonded node, turn bonded mode off (below), or stop the node and
+move the file out of the folder.
+
+## Bonded mode (testnet)
+
+A bonded node answers other bonded nodes' snapshot fetches over its P2P port and
+is paid for an epoch when one of them fetched from it and the receipt was
+submitted in time. Bonded mode is **off** unless you switch it on, and it is all
+or nothing. You need, in this order:
+
+1. your port open: [Open your port](#open-your-port-optional), steps 1-4, so
+   `reachable.conf` already has `WRFCOIN_P2P_HOST=0.0.0.0` and your
+   `WRFCOIN_P2P_EXTERNAL_ADDR`;
+2. a server key: [Server key for bonding](#server-key-for-bonding-testnet-only);
+3. your bond's **service alias**: the `--service-alias` of `wrfcoin node bond
+   deposit`. Receipts name this node by it, so it must be the same string.
+
+Then add two lines to `%LOCALAPPDATA%\WRFCoin\reachable.conf`:
+
+```
+WRFCOIN_P2P_HOST=0.0.0.0
+WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000
+WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1
+WRFCOIN_SERVICE_ID=tony-laptop
+```
+
+and restart the node (Start menu → **Stop WRFCoin Node**, then **WRFCoin Node**).
+
+The launcher checks the whole set before it starts anything. It refuses to start,
+with a message saying what is missing, when:
+
+- `WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS` is anything but `1` (to turn bonded mode
+  off, delete the line; `0` or `true` is refused, so a typo never looks like "on");
+- `WRFCOIN_SERVICE_ID` is missing, or is not 1-128 characters of `A-Z a-z 0-9 . _ -`
+  starting with a letter or digit, or is set without bonded mode;
+- `WRFCOIN_P2P_HOST` is missing or a `127.x` address, or `WRFCOIN_P2P_EXTERNAL_ADDR`
+  is missing (other nodes could not reach you);
+- `server.key` does not exist.
+
+The node stays a **sync-only** node in bonded mode (`WRFCOIN_SYNC_ONLY=1` from
+`chain-888.conf`): it never makes blocks and needs no block-producer key. The
+server key still loads (it is resolved before the sync-only check) and signs the
+snapshots and tickets the node serves.
+
+**Check it.**
+
+- The status page shows **Mode: Bonded (tony-laptop)** and the ladder marks
+  **Bonded node: You are here**. "Bonded, no server key" or "Bonded, port not
+  set" means a piece is missing.
+- `node.log` has `Serving bonded snapshot fetches over P2P` and the
+  `TESTNET software server key active` line with your server key.
+- `http://127.0.0.1:8556/network/peer_id` shows
+  `"bonded":{"serving":true,"service_id":"tony-laptop","server_key":"<64 hex>"}`;
+  `server_key` must be the `--server-key` of your bond.
 
 ## The operator CLI (wrfcoin.exe)
 
@@ -305,8 +359,10 @@ creates a testnet server key (`-Action ServerKey`), starts with it and checks th
 node logs it, checks that `wrfcoin.exe` derives the same public key from it, checks that
 `launch_api.exe` and `wrfcoin.exe` both refuse a copy of the key that
 `BUILTIN\Users` can read, starts it with a `reachable.conf` (checks the `0.0.0.0:9000` listener, the
-announced address on `/network/peer_id` and the dashboard's "Reachable at") and
-checks that a `reachable.conf` with any other key stops the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+announced address on `/network/peer_id` and the dashboard's "Reachable at"),
+starts it in bonded mode (checks `node.log` and the `bonded` status on
+`/network/peer_id`, server key equal to the CLI's), checks that a bonded
+`reachable.conf` without a service id and one with any other key stop the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the
@@ -325,5 +381,8 @@ after quoted JSON are handled) and the `wrfcoin-node` service of
 flag), and refuses any missing, placeholder or malformed pin. Regenerate and
 commit it whenever the cut pins change. The launcher `wrfcoin-node.ps1` adds the
 two per-user values, `WRFCOIN_DATA_DIR` and `WRFCOIN_OPERATOR_TOKEN`, and the
-optional `reachable.conf` overrides, limited to `WRFCOIN_P2P_HOST` and
-`WRFCOIN_P2P_EXTERNAL_ADDR`.
+optional `reachable.conf` overrides, limited to `WRFCOIN_P2P_HOST`,
+`WRFCOIN_P2P_EXTERNAL_ADDR` and the bonded-mode pair
+`WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS`/`WRFCOIN_SERVICE_ID` (checked together by
+`Resolve-NodeMode`; `packaging/windows/test_launcher_bonded.py` runs the
+launcher's own parser against good and bad files wherever PowerShell exists).
