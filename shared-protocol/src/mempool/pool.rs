@@ -463,6 +463,23 @@ impl Mempool {
         // them. Junk reveals with no valid commit are evicted at assembly, as
         // on main.
 
+        // Security-key wallets: admit a `SecurityKeyAction` only on a chain
+        // that schedules `security_key_spend` (block validation and the
+        // governance sink enforce the exact height and the State checks), and
+        // only when it is well formed and signed by the account's own key — a
+        // cheap stateless spam filter before it can be relayed.
+        if tx.tx_type == TransactionType::SecurityKeyAction {
+            if !crate::accounts::security_key::security_key_scheduled() {
+                return Err(anyhow!("SP_SECURITY_KEY_INACTIVE: security_key_spend is not scheduled on this chain"));
+            }
+            let payload = tx
+                .parse_security_key_action_payload()
+                .ok_or_else(|| anyhow!("SP_SECURITY_KEY_ACTION_PAYLOAD_INVALID"))?;
+            if !crate::accounts::security_key::owner_signature_valid(&payload) {
+                return Err(anyhow!("SP_SECURITY_KEY_ACTION_AUTHORIZATION"));
+            }
+        }
+
         let tx_size = self.check_transaction_admission_cost(&tx)?;
 
         // Admission checks authorization only. Provability (`responsible()`), the challenge deadline and duplicates

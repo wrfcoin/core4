@@ -456,6 +456,19 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["generation"].as_u64().expect("generation"),
             )
         },
+        "security_key_action_v1" => {
+            use wrfcoin_shared_protocol::accounts::security_key::{SecurityKeyActionBody, action_message};
+            let account: Address = s("account").parse().expect("account address");
+            assert_eq!(s("action"), "begin_escape", "golden action body");
+            action_message(
+                s("chain_id"),
+                s("network_id"),
+                &account,
+                input["nonce"].as_u64().expect("nonce"),
+                &SecurityKeyActionBody::BeginEscape,
+            )
+            .expect("begin_escape encodes")
+        },
         // #3345 / #3347 owner ledger (owner rulings 2026-09-27): one kind per
         // domain tag; the sender/acceptor pairs share a body and differ only
         // in the tag.

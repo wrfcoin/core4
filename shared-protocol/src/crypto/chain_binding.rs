@@ -1140,6 +1140,19 @@ pub enum ConsensusFeature {
     /// the SAME height as `paymaster`, so no newcomer meets a fee before a
     /// sponsor can pay it. Inactive, every path is byte-identical to before.
     TransferFeeBurn,
+    /// Security-key wallets (`shared-protocol/src/accounts/security_key.rs`,
+    /// design `docs/design/security-key-wallets.md`): a passphrase account may
+    /// register a FIDO2 / WebAuthn P-256 key, after which every debit needs the
+    /// ed25519 signature AND a key assertion, with a phrase-only time-locked
+    /// escape. Rides on `account_authorization_dispatch` (both must be active).
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED. Live-schedulable (the binary accepts an extension naming
+    /// it); scheduling is the owner's signature after the determinism
+    /// differential. Inactive: no `SecurityKeyAction` is valid, no rule can be
+    /// stored, `security_key_auth` members are ignored, and verify pricing is
+    /// unchanged, so blocks and `state_root` are byte-identical.
+    SecurityKeySpend,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1183,6 +1196,7 @@ impl ConsensusFeature {
         Self::StreakReplayNodeService,
         Self::StationCoordinatesFixedPoint,
         Self::TransferFeeBurn,
+        Self::SecurityKeySpend,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1215,6 +1229,7 @@ impl ConsensusFeature {
             Self::StreakReplayNodeService => "streak_replay_node_service",
             Self::StationCoordinatesFixedPoint => "station_coordinates_fixed_point",
             Self::TransferFeeBurn => "transfer_fee_burn",
+            Self::SecurityKeySpend => "security_key_spend",
         }
     }
 
@@ -1296,7 +1311,10 @@ impl ConsensusFeature {
             | Self::StationOwnerConsent
             | Self::StationActiveRewardGate
             | Self::StationOwnerActions
-            | Self::StationRegistrationNonce => true,
+            | Self::StationRegistrationNonce
+            // Wired end to end (actions, debit seam, pricing, admission); the
+            // binary accepts a schedule, the owner decides when.
+            | Self::SecurityKeySpend => true,
         }
     }
 
@@ -1321,6 +1339,8 @@ impl ConsensusFeature {
             Self::StationCoordinatesFixedPoint => true,
             // State apply, mempool admission and the submit route read it.
             Self::TransferFeeBurn => true,
+            // Security-key wallets: actions, the debit seam and pricing read it.
+            Self::SecurityKeySpend => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2867,6 +2887,8 @@ mod tests {
         let other = "cd".repeat(32);
         let mut expected = S4_SCHEDULABLE.to_vec();
         expected.push("node_share_settlement");
+        // Security-key wallets: the binary accepts a schedule; the owner signs it.
+        expected.push("security_key_spend");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -2902,6 +2924,7 @@ mod tests {
         // In `ALL` order: the faucet binding precedes #3270's feature.
         expected.insert(7, "faucet_sink_binding");
         expected.push("node_share_settlement");
+        expected.push("security_key_spend");
         assert_eq!(schedulable, expected);
     }
 

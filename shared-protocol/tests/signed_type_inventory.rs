@@ -117,6 +117,13 @@ const MIN_PRODUCTION_RUST_SOURCE_FILES: usize = 400;
 ///   the issue named in the reason rather than silently dropped.
 const UNREGISTERED: &[(&str, &str)] = &[
     (
+        "SecurityKeyAssertionWire",
+        "WebAuthn P-256 assertion, not an ed25519 signed object: the authenticator signs \
+         authenticatorData || SHA-256(clientDataJSON) whose challenge is SHA3 of a preimage \
+         under wrfcoin.security_key_action.v1 (golden case security_key_action_v1) or \
+         wrfcoin.security_key_spend.v1 over the pinned debit preimages",
+    ),
+    (
         "NodeBondLifecycle",
         "transport signature container (Node S2): owner, governance and payout keys sign \
          the registered NodeBondAuthorization; dedicated online keys sign the registered \
@@ -714,6 +721,11 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         rust_type: "SessionKeyAction",
         domain_tag: "wrfcoin.session_key_use.v1",
         golden_kind: "session_key_use_v2",
+    },
+    AuthSurface {
+        rust_type: "SecurityKeyActionPayload",
+        domain_tag: "wrfcoin.security_key_action.v1",
+        golden_kind: "security_key_action_v1",
     },
     AuthSurface {
         rust_type: "DeclareAuthorization",

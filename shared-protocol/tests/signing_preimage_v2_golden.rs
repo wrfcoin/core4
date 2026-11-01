@@ -1169,6 +1169,39 @@ fn build_declare_authorization_case(
     })
 }
 
+/// Security-key wallets (`security_key_spend`): the phrase key signs
+/// `security_key::action_message`; registered keys sign SHA3 of the same bytes.
+/// `begin_escape` is the phrase-only action, so it is the one with no key in
+/// the body; the tampered twin moves the action nonce.
+fn build_security_key_action_case(seed: u64) -> Value {
+    use wrfcoin_shared_protocol::accounts::security_key::{SecurityKeyActionBody, action_message};
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let nonce = 3u64;
+    let preimage = action_message(
+        &identity().chain_id,
+        &identity().network_id,
+        &account,
+        nonce,
+        &SecurityKeyActionBody::BeginEscape,
+    )
+    .expect("begin_escape encodes");
+    let signature = sk.sign(&preimage);
+    json!({
+        "kind": "security_key_action_v1",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.security_key_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": identity().chain_id, "network_id": identity().network_id, "account": account.to_hex(), "action": "begin_escape", "nonce": nonce },
+        "tampered_input": { "chain_id": identity().chain_id, "network_id": identity().network_id, "account": account.to_hex(), "action": "begin_escape", "nonce": nonce + 1 },
+        "tamper_note": "nonce 3 -> 4",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // #3345 / #3347 station owner ledger (owner rulings 2026-09-27). One case per
 // domain tag. Each tampered twin flips a field that decides WHOSE station or
@@ -1500,6 +1533,7 @@ fn build_all_cases() -> Vec<Value> {
         "declare_authorization_signer_is_sender_v2",
         900_121,
     ));
+    cases.push(build_security_key_action_case(900_140));
     cases.extend(build_station_owner_transfer_cases());
     cases.extend(build_station_owner_recovery_filing_cases());
     cases.push(build_station_owner_recovery_cancel_case());

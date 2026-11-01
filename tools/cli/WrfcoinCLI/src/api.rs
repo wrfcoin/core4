@@ -916,20 +916,17 @@ impl ApiClient {
         auth_signature: &str,
         fee: Option<u64>,
     ) -> Result<SubmitAccepted> {
-        let mut body = json!({
-            "from": from,
-            "to": to,
-            "amount": amount,
-            "nonce": nonce.to_string(),
-            "transparent_opt_out": true,
-            "transparent_opt_out_reason": "cli",
-            "auth_pubkey": auth_pubkey,
-            "auth_signature": auth_signature,
-        });
-        if let Some(fee) = fee {
-            body["fee"] = json!(fee);
-        }
-        self.request_once("POST", "/transactions/submit", Some(body)).await
+        self.submit_transparent_transfer_with_security_key(
+            from,
+            to,
+            amount,
+            nonce,
+            auth_pubkey,
+            auth_signature,
+            fee,
+            None,
+        )
+        .await
     }
 
     /// The burned transfer fee a send would pay in the next block, from the
@@ -943,6 +940,53 @@ impl ApiClient {
     pub async fn get_transfer_fee(&self) -> Result<Option<u64>> {
         let info: Value = self.request_once("GET", "/network/info", None).await?;
         Ok(parse_transfer_fee(&info))
+    }
+
+    /// [`Self::submit_transparent_transfer`] carrying the account's
+    /// security-key assertion (`security_key_spend`) when it has one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_transparent_transfer_with_security_key(
+        &self,
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+        auth_pubkey: &str,
+        auth_signature: &str,
+        fee: Option<u64>,
+        security_key_auth: Option<
+            &wrfcoin_shared_protocol::accounts::security_key::SecurityKeyAssertionWire,
+        >,
+    ) -> Result<SubmitAccepted> {
+        let mut body = json!({
+            "from": from,
+            "to": to,
+            "amount": amount,
+            "nonce": nonce.to_string(),
+            "transparent_opt_out": true,
+            "transparent_opt_out_reason": "cli",
+            "auth_pubkey": auth_pubkey,
+            "auth_signature": auth_signature,
+        });
+        if let Some(fee) = fee {
+            body["fee"] = json!(fee);
+        }
+        if let Some(proof) = security_key_auth {
+            body["security_key_auth"] = serde_json::to_value(proof)?;
+        }
+        self.request_once("POST", "/transactions/submit", Some(body)).await
+    }
+
+    /// `GET /accounts/{address}/security-key` (`security_key_spend`).
+    pub async fn get_security_key_status(&self, address: &str) -> Result<Value> {
+        self.request_once("GET", &format!("/accounts/{address}/security-key"), None)
+            .await
+    }
+
+    /// `POST /accounts/security-key/actions` (`security_key_spend`).
+    pub async fn submit_security_key_action(&self, payload: Value) -> Result<Value> {
+        self.request_once("POST", "/accounts/security-key/actions", Some(payload))
+            .await
     }
 
     /// Address history is intentionally node-backed. Until the node serves

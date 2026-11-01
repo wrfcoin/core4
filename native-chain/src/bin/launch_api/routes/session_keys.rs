@@ -200,6 +200,34 @@ pub async fn submit_session_key_action(
             format!("session key action does not verify: {err}"),
         );
     }
+    // `security_key_spend`: registering a session key on a protected account
+    // needs the security key too (same check the apply arm runs at tip+1).
+    if let SessionKeyAction::Register { owner, registration_nonce, grant, .. } = &payload.action {
+        let message = wrfcoin_shared_protocol::accounts::session_keys::session_key_register_message(
+            chain_id, owner, *registration_nonce, grant,
+        );
+        let gate = {
+            let chain = state.blockchain.read().await;
+            wrfcoin_shared_protocol::accounts::security_key::delegation_gate(
+                &chain.state.authorization_declarations,
+                owner,
+                &message,
+                payload.security_key_auth.as_ref(),
+                chain.height.saturating_add(1),
+            )
+        };
+        if let Err(err) = gate {
+            if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                return resp;
+            }
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "SECURITY_KEY_REQUIRED",
+                format!("this account requires its security key to register a session key: {err}"),
+            );
+        }
+    }
     let payload_value = match serde_json::to_value(&payload) {
         Ok(value) => value,
         Err(_) => {

@@ -122,6 +122,10 @@ pub enum WalletCommands {
         pair: String,
     },
 
+    /// Require a FIDO2 security key (YubiKey) to send from this wallet
+    #[clap(subcommand)]
+    SecurityKey(super::security_key::SecurityKeyCommands),
+
     /// Stream wallet balance and activity continuously
     Watch {
         /// Refresh interval in seconds

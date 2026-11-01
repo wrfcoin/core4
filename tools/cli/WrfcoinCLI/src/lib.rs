@@ -27,6 +27,7 @@ pub mod forecast_submission;
 pub mod output;
 pub mod node_operator;
 pub mod security;
+pub mod security_key;
 pub mod websocket;
 pub mod why_report;
 

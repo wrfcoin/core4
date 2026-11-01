@@ -2537,7 +2537,8 @@ impl State {
                 | TransactionType::ConfidentialTransfer
                 | TransactionType::ShieldedDeposit
                 | TransactionType::ShieldedWithdrawal
-                | TransactionType::RewardClaim => {
+                | TransactionType::RewardClaim
+                | TransactionType::SecurityKeyAction => {
                     let transition = StateTransition::ProcessGovernanceTransaction {
                         tx: tx.clone(),
                         current_block,
@@ -3623,6 +3624,24 @@ impl State {
                             crate::accounts::authorization::AuthorizationRule::SignerIsSender => push_u64(&mut material, 0),
                             crate::accounts::authorization::AuthorizationRule::SmartAccount { program } => { push_u64(&mut material, 1); push_bytes(&mut material, program); },
                             crate::accounts::authorization::AuthorizationRule::Delegated { program, valid_until } => { push_u64(&mut material, 2); push_bytes(&mut material, program); push_optional_u64(&mut material, valid_until.map(|v| v.into_inner())); },
+                            // `security_key_spend`: storable only once the
+                            // feature is active, so absent from every
+                            // pre-activation root.
+                            crate::accounts::authorization::AuthorizationRule::SignerPlusSecurityKey { policy } => {
+                                push_u64(&mut material, 3);
+                                push_u64(&mut material, policy.keys.len() as u64);
+                                for key in &policy.keys {
+                                    push_bytes(&mut material, &key.public_key_p256);
+                                    push_bytes(&mut material, &key.rp_id_hash);
+                                    push_bytes(&mut material, &key.credential_id);
+                                }
+                                push_u64(&mut material, policy.escape_delay_blocks);
+                                push_bool(&mut material, policy.pending_escape.is_some());
+                                if let Some(escape) = &policy.pending_escape {
+                                    push_u64(&mut material, escape.initiated_at_height);
+                                    push_u64(&mut material, escape.executable_at_height);
+                                }
+                            },
                         }
                     }
                 }
@@ -5679,12 +5698,43 @@ impl State {
                     self.move_recovered_account(account, public_key)?;
                 }
             },
-            StateTransition::ApplySessionKeyAction { action, block_height } => {
+            StateTransition::ApplySessionKeyAction { action, block_height, security_key_auth } => {
                 if !crate::crypto::chain_binding::feature_active(
                     crate::crypto::chain_binding::ConsensusFeature::SessionKeys,
                     block_height,
                 ) {
                     return Err(StateError::InvalidTransition);
+                }
+                // `security_key_spend`: a session key is a delegated spender,
+                // so on an account whose security-key rule is in force it can
+                // only be registered with the key co-signing (otherwise a
+                // phrase-only thief could register one and spend around the
+                // key). Revocation stays phrase-only: it only removes power.
+                if let crate::accounts::session_keys::SessionKeyAction::Register {
+                    owner,
+                    registration_nonce,
+                    grant,
+                    ..
+                } = &action
+                {
+                    let message = crate::accounts::session_keys::session_key_register_message(
+                        &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                        owner,
+                        *registration_nonce,
+                        grant,
+                    );
+                    crate::accounts::security_key::delegation_gate(
+                        &self.authorization_declarations,
+                        owner,
+                        &message,
+                        security_key_auth.as_ref(),
+                        block_height,
+                    )
+                    .map_err(|e| {
+                        StateError::Governance(format!(
+                            "SP_SECURITY_KEY_REQUIRED: session key registration on a security-key account: {e}"
+                        ))
+                    })?;
                 }
                 crate::accounts::session_keys::apply(
                     &mut self.session_keys,
@@ -7734,7 +7784,42 @@ impl State {
                             .to_string(),
                     )
                 })?;
-                self.apply_transparent_transfer(payload, tx.nonce, tx.fee, current_block)
+                let security_key = tx.security_key_spend_proof();
+                self.apply_transparent_transfer(payload, tx.nonce, tx.fee, current_block, security_key.as_ref())
+            },
+            // Security-key wallets: one signed action against the account's
+            // declaration (`accounts::security_key::apply_action`). Refused
+            // below `security_key_spend`, so pre-activation state is untouched.
+            TransactionType::SecurityKeyAction => {
+                if !crate::accounts::security_key::security_key_active(current_block) {
+                    return Err(StateError::InvalidTransition);
+                }
+                let payload = tx.parse_security_key_action_payload().ok_or_else(|| {
+                    StateError::Governance(
+                        "SP_SECURITY_KEY_ACTION_PAYLOAD_INVALID: invalid security key action payload"
+                            .to_string(),
+                    )
+                })?;
+                let identity = crate::crypto::chain_binding::ChainIdentity::active();
+                crate::accounts::security_key::apply_action(
+                    &mut self.authorization_declarations,
+                    &payload,
+                    current_block,
+                    &identity.chain_id,
+                    &identity.network_id,
+                )
+                .map_err(|e| {
+                    StateError::Governance(format!("SP_SECURITY_KEY_ACTION_REJECTED: {e}"))
+                })?;
+                // Turning the rule on revokes every session key the account
+                // registered while it was off: none of them was co-signed by
+                // the security key, and any of them could be a thief's.
+                if matches!(payload.action, crate::accounts::security_key::SecurityKeyActionBody::Enable { .. }) {
+                    if let Ok(account) = payload.account.trim().parse::<Address>() {
+                        crate::accounts::session_keys::revoke_all(&mut self.session_keys, &account);
+                    }
+                }
+                Ok(())
             },
             TransactionType::GovernanceProposal => {
                 let payload = tx.parse_governance_proposal_payload().ok_or_else(|| {
@@ -8099,6 +8184,7 @@ impl State {
         tx_nonce: u64,
         declared_fee: u64,
         current_block: u64,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
     ) -> Result<(), StateError> {
         if !payload.transparent_opt_out {
             return Err(StateError::Privacy(
@@ -8123,17 +8209,25 @@ impl State {
         // is an equally valid authorization; below activation this is the
         // ed25519 rule exactly as before.
         //
+        // `security_key_spend`: an account whose declared rule requires a
+        // security key also needs the transaction's `security_key_auth`
+        // assertion for the OWNER path; for every other account it is ignored.
+        //
         // Session keys: once `ConsensusFeature::SessionKeys` is active, and
         // ONLY when neither owner authorization above verifies, a signature
         // by a session key registered to `from` authorizes the debit within
         // that key's scope and limits. Inactive (every chain today) this
         // branch is never taken, so the arm is the pre-session-key rule
         // byte for byte; an owner-signed transfer never consumes a session use.
-        let owner_authorized = payload.verify_owner_authorization_at_height_with_view(
+        // A protected account's session keys were all co-signed by its
+        // security key (registration gate + revoke-on-enable in the
+        // `ApplySessionKeyAction` and `SecurityKeyAction` arms).
+        let owner_authorized = payload.verify_owner_authorization_at_height_with_view_and_security_key(
             self,
             tx_nonce,
             current_block,
             crate::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
+            security_key,
         );
         let session_authorized = !owner_authorized
             && crate::accounts::session_keys::session_keys_active(current_block)
@@ -10590,6 +10684,12 @@ pub enum StateTransition {
     ApplySessionKeyAction {
         action: crate::accounts::session_keys::SessionKeyAction,
         block_height: u64,
+        /// `security_key_spend`: the owner's security-key assertion over the
+        /// registration, read from the carrying transaction's
+        /// `security_key_auth` member. Required to REGISTER a session key on an
+        /// account whose security-key rule is in force; ignored otherwise.
+        #[serde(default)]
+        security_key_auth: Option<crate::accounts::security_key::SecurityKeyAssertionWire>,
     },
     /// Signed AA declaration state transition (#2168); not extracted from
     /// transactions until the feature's explicit scheduling work.
@@ -10865,7 +10965,8 @@ mod tests {
             | TransactionType::ShieldedWithdrawal
             | TransactionType::Layer2BatchSubmit
             | TransactionType::RewardClaim
-            | TransactionType::SlashingReport => ProtocolDispatchIntent::AppliesState,
+            | TransactionType::SlashingReport
+            | TransactionType::SecurityKeyAction => ProtocolDispatchIntent::AppliesState,
             TransactionType::Regular
             | TransactionType::Coinbase
             | TransactionType::Stake

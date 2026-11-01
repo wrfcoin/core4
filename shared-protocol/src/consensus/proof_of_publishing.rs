@@ -3567,6 +3567,7 @@ impl ProofOfPublishing {
             regular_transactions,
             feature_active(ConsensusFeature::VerifyUnitPricing, next_height)
                 .then_some(&VerifyPricing::CALIBRATED),
+            next_height,
         );
 
         // Build the recent-timestamp window the SAME way the sync verifier sees
@@ -3948,9 +3949,10 @@ impl ProofOfPublishing {
         // Feature-scheduled: below the activation this is not evaluated at all
         // and block contents are byte-identical to a binary without it.
         if feature_active(ConsensusFeature::VerifyUnitPricing, block.height) {
-            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget(
+            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget_at_height(
                 block.transactions.iter(),
                 &crate::consensus::verify_cost::VerifyPricing::CALIBRATED,
+                block.height,
             ) {
                 return Err(Self::refuse(
                     "SP_CONS_VERIFY_BUDGET",
@@ -4153,6 +4155,7 @@ impl ProofOfPublishing {
         oracle_attestations: Vec<Transaction>,
         regular_transactions: Vec<Transaction>,
         verify_pricing: Option<&VerifyPricing>,
+        block_height: u64,
     ) -> Vec<Transaction> {
         // #2700: bound what this node PACKS by `MAX_BLOCK_SIZE`.
         //
@@ -4195,7 +4198,7 @@ impl ProofOfPublishing {
             }
             if let Some(pricing) = verify_pricing {
                 let candidate_units = packed_verify_units
-                    .saturating_add(pricing.units(&tx.verify_work()));
+                    .saturating_add(pricing.units(&tx.verify_work_at_height(block_height)));
                 if candidate_units.0 > pricing.block_verify_budget {
                     // Unlike the byte ceiling, skip an expensive transaction and
                     // keep looking: a later cheap transaction may still fit. The
@@ -6239,7 +6242,11 @@ impl ProofOfPublishing {
             TransactionType::SessionKeyAction => {
                 let action = crate::accounts::session_keys::SessionKeyActionPayload::parse(tx)
                     .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
-                Ok(Some(StateTransition::ApplySessionKeyAction { action, block_height }))
+                Ok(Some(StateTransition::ApplySessionKeyAction {
+                    action,
+                    block_height,
+                    security_key_auth: tx.security_key_spend_proof(),
+                }))
             },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
@@ -7738,9 +7745,10 @@ impl ProofOfPublishing {
         // runs after the expensive work would price nothing. Counting is cheap
         // and derived from the transaction bytes, so every node agrees.
         if feature_active(ConsensusFeature::VerifyUnitPricing, block.height) {
-            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget(
+            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget_at_height(
                 block.transactions.iter(),
                 &crate::consensus::verify_cost::VerifyPricing::CALIBRATED,
+                block.height,
             ) {
                 warn!("Rejecting block at height {}: {exceeded}", block.height);
                 return Ok(false);
@@ -8594,6 +8602,17 @@ impl ProofOfPublishing {
         // authorization model. Re-enabling this surface requires a from-bound
         // proposer authorization (the `verify_transparent_transfer_authorization`
         // shape); this only makes the unauthenticated surface unreachable.
+        // Security-key wallets: a `SecurityKeyAction` is only valid from the
+        // `security_key_spend` activation. Below it, a block carrying one is
+        // invalid on every node (an older binary cannot even decode the type),
+        // so no pre-activation block can contain one. From activation the
+        // action is checked against State by the governance sink, which drops
+        // an invalid action at assembly.
+        if tx.tx_type == TransactionType::SecurityKeyAction
+            && !crate::accounts::security_key::security_key_active(ctx.height)
+        {
+            return Some("SP_SECURITY_KEY_INACTIVE".into());
+        }
         if tx.tx_type == TransactionType::NodeFraudReport {
             if !feature_active(ConsensusFeature::NodeShareSettlement, ctx.height) { return Some("SP_NODE_FRAUD_INACTIVE".into()); }
             acc.node_fraud_report_count += 1;
@@ -11783,6 +11802,7 @@ mod tests {
             vec![],
             oversized.clone(),
             None,
+            0,
         );
 
         let packed: usize = assembled.iter().map(|t| t.size()).sum();
@@ -11814,6 +11834,7 @@ mod tests {
             vec![],
             small.clone(),
             None,
+            0,
         );
         assert_eq!(
             small_assembled.len(),
@@ -11863,6 +11884,7 @@ mod tests {
             vec![],
             vec![regular_a.clone(), regular_b.clone()],
             None,
+            0,
         );
 
         assert_eq!(assembled.len(), 7);

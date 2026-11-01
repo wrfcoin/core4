@@ -95,6 +95,10 @@ impl State {
                     || tx
                         .parse_slashing_report_payload()
                         .is_some_and(|p| identity(&p.validator_id))
+                    // Security-key action: same fence as DeclareAuthorization.
+                    || tx
+                        .parse_security_key_action_payload()
+                        .is_some_and(|p| identity(&p.account))
             },
             ApplyAccountRecovery {
                 account, action, ..

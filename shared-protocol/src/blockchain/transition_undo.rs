@@ -241,6 +241,11 @@ const PROTOCOL: &[&str] = &[
     "paymasters",
     "session_keys",
     "governance",
+    // `SecurityKeyAction` (security_key_spend) writes the account's
+    // declaration through the governance sink, and `enable` revokes the
+    // account's session keys.
+    "authorization_declarations",
+    "session_keys",
     "audit_events",
     "oracle_set",
     "oracle_quorum",
