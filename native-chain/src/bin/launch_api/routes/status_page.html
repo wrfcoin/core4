@@ -542,7 +542,7 @@ function fmtInt(n) {
   if (typeof n !== 'number' || !isFinite(n)) return null;
   return Math.round(n).toLocaleString('en-US');
 }
-// "v0.3.0 (68f6d291)": the build commit is only known for release builds.
+// "v0.4.0 (68f6d291)": the build commit is only known for release builds.
 function versionLabel(version, info) {
   const build = info && typeof info.node_build === 'string' && /^[0-9a-f]{7,40}$/.test(info.node_build) ? info.node_build : null;
   return 'v' + version + (build ? ' (' + build + ')' : '');
