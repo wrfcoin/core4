@@ -170,6 +170,11 @@ pub enum TransactionType {
     /// block assembly rather than faulting a block. A block carrying one below
     /// the feature's activation height is invalid.
     SecurityKeyAction,
+    /// Owner-signed send-allowlist action
+    /// (`accounts::send_allowlist::SignedSendAllowlistAction` in `data`),
+    /// append-only index 42. Refused everywhere below the unscheduled
+    /// `ConsensusFeature::SendAllowlist` activation.
+    SendAllowlist,
 }
 
 impl fmt::Display for TransactionType {
@@ -215,6 +220,7 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeServiceBatch => write!(f, "NodeServiceBatch"),
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
             TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
+            TransactionType::SendAllowlist => write!(f, "SendAllowlist"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
             TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }

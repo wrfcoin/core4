@@ -732,6 +732,11 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         domain_tag: "wrfcoin.declare_authorization.v1",
         golden_kind: "declare_authorization_v2",
     },
+    AuthSurface {
+        rust_type: "SignedSendAllowlistAction",
+        domain_tag: "wrfcoin.send_allowlist_action.v1",
+        golden_kind: "send_allowlist_action_v2",
+    },
     // #3345 / #3347 owner ledger: extracted by the ONE shared constructor
     // `Transaction::station_owner_ledger_transition` (unscheduled features).
     AuthSurface {

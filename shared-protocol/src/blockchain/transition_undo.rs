@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 77],
+    records: [Option<Undo>; 78],
 }
 
 impl TransitionUndo {
@@ -94,6 +94,7 @@ impl TransitionUndo {
             node_receipt_registry: _,
             node_settlement: _,
             node_fraud: _,
+            send_allowlists: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -184,6 +185,7 @@ impl TransitionUndo {
             capture!(node_receipt_registry),
             capture!(node_settlement),
             capture!(node_fraud),
+            capture!(send_allowlists),
         ];
         Self { records }
     }
@@ -273,6 +275,7 @@ const PROTOCOL: &[&str] = &[
     "quality_policy_event_archive",
     "archived_quality_policy_event_count",
     "archived_quality_policy_event_through_event_id",
+    "send_allowlists",
 ];
 const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger"];
 const NODE: &[&str] = &[
@@ -356,7 +359,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             &["mining_pools"]
         },
         RecordGenesisEmissionConfig { .. } => &["genesis_emission_config"],
-        ApplyAccountRecovery { .. } => &["account_recovery"],
+        ApplyAccountRecovery { .. } => &["account_recovery", "send_allowlists"],
         ApplySessionKeyAction { .. } => &["session_keys"],
         DeclareAuthorization { .. } => &["authorization_declarations"],
         ApplyPaymasterAction { .. } => &["paymasters"],

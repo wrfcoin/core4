@@ -1202,6 +1202,38 @@ fn build_security_key_action_case(seed: u64) -> Value {
     })
 }
 
+/// Send allowlist (`accounts::send_allowlist`): one owner-signed action whose
+/// list is non-empty, so the address encoding is pinned too.
+fn build_send_allowlist_action_case() -> Value {
+    use wrfcoin_shared_protocol::accounts::send_allowlist::{
+        SendAllowlistAction, send_allowlist_action_message,
+    };
+    let seed = 900_140u64;
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let nonce = 7u64;
+    let action = SendAllowlistAction::Enable {
+        add_delay_blocks: 2_244,
+        allowed: vec![Address([0xAA; 20]), Address([0xBB; 20])],
+    };
+    let preimage = send_allowlist_action_message(&identity().chain_id, &account, &action, nonce);
+    let signature = sk.sign(&preimage);
+    let action_json = serde_json::to_value(&action).expect("action serializes");
+    json!({
+        "kind": "send_allowlist_action_v2",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.send_allowlist_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": identity().chain_id, "account": account.to_hex(), "action": action_json, "nonce": nonce },
+        "tampered_input": { "chain_id": identity().chain_id, "account": account.to_hex(), "action": action_json, "nonce": nonce + 1 },
+        "tamper_note": "action nonce 7 -> 8",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // #3345 / #3347 station owner ledger (owner rulings 2026-09-27). One case per
 // domain tag. Each tampered twin flips a field that decides WHOSE station or
@@ -1543,6 +1575,7 @@ fn build_all_cases() -> Vec<Value> {
     cases.push(build_station_owner_action_case("reactivate", "deactivate", 900_138));
     cases.push(build_station_registration_authorization_v2_case());
     cases.push(build_sponsored_send_authorization_case());
+    cases.push(build_send_allowlist_action_case());
     cases
 }
 

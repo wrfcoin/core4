@@ -8625,6 +8625,25 @@ impl ProofOfPublishing {
             })();
             if valid.is_none() { return Some("SP_NODE_FRAUD_AUTHORIZATION".into()); }
         }
+        // Send allowlist: below the unscheduled activation a block carrying
+        // the type is invalid on every node (an older binary cannot even
+        // decode it), and from activation the owner signature must verify.
+        // Stateful rules (nonce, delays, cooldown) are apply's: a stale action
+        // is dropped at assembly and fails a peer's apply, like a Transfer.
+        if tx.tx_type == TransactionType::SendAllowlist {
+            if !feature_active(ConsensusFeature::SendAllowlist, ctx.height) {
+                return Some("SP_SEND_ALLOWLIST_INACTIVE".into());
+            }
+            let valid = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(tx)
+                .is_some_and(|signed| {
+                    signed
+                        .verify(&crate::crypto::chain_binding::ChainIdentity::active().chain_id)
+                        .is_ok()
+                });
+            if !valid {
+                return Some("SP_SEND_ALLOWLIST_AUTHORIZATION".into());
+            }
+        }
         if tx.tx_type == TransactionType::NodeServiceBatch {
             use crate::consensus::node_receipt_registry::*;
             if !feature_active(ConsensusFeature::NodeShareSettlement, ctx.height) { return Some("SP_NODE_RECEIPT_INACTIVE".into()); }

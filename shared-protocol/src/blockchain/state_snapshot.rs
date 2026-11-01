@@ -492,7 +492,10 @@ pub fn export_state_entries(state: &State) -> Result<Vec<(Vec<u8>, Vec<u8>)>, St
         (if state.node_fraud.is_some() { NODE_FRAUD_SNAPSHOT_FORMAT_VERSION } else if state.node_settlement.is_some() { NODE_SETTLEMENT_SNAPSHOT_FORMAT_VERSION } else if state.node_receipt_registry.is_some() { NODE_RECEIPT_SNAPSHOT_FORMAT_VERSION } else if state.node_bond_registry.is_some() { NODE_BOND_SNAPSHOT_FORMAT_VERSION } else { SNAPSHOT_FORMAT_VERSION }).to_string().into_bytes(),
     )];
     for (name, value) in state_fields(state)? {
-        if is_node_local(&name) || (name == "node_bond_registry" && state.node_bond_registry.is_none()) || (name == "node_receipt_registry" && state.node_receipt_registry.is_none()) || (name == "node_settlement" && state.node_settlement.is_none()) || (name == "node_fraud" && state.node_fraud.is_none()) {
+        if is_node_local(&name) || (name == "node_bond_registry" && state.node_bond_registry.is_none()) || (name == "node_receipt_registry" && state.node_receipt_registry.is_none()) || (name == "node_settlement" && state.node_settlement.is_none()) || (name == "node_fraud" && state.node_fraud.is_none())
+            // Send allowlist: absent while empty (always, pre-activation), so a
+            // snapshot is byte-identical to one from a binary without it.
+            || (name == "send_allowlists" && state.send_allowlists.is_empty()) {
             continue;
         }
         match value {
@@ -608,6 +611,9 @@ pub fn import_state_entries(
         } else if name == "node_receipt_registry" && version != Some(b"4".as_slice()) && version != Some(b"5".as_slice()) && version != Some(b"6".as_slice()) {
             if carried.contains_key(name) { return Err(malformed(name, "receipt marker in legacy snapshot".into())); }
             Value::Null
+        } else if name == "send_allowlists" && !carried.contains_key(name) {
+            // Omitted by the exporter while empty; any format version.
+            Value::Map(Vec::new())
         } else if is_node_local(name) {
             (*local_value).clone()
         } else {
@@ -1076,6 +1082,7 @@ mod tests {
         s.node_receipt_registry = Some(crate::consensus::node_receipt_registry::NodeReceiptRegistry { block_height:5, ..Default::default() });
         s.node_settlement = Some(crate::consensus::node_settlement::NodeSettlement { last_finalized_height:Some(5), ..Default::default() });
         s.node_fraud = Some(crate::consensus::node_fraud::NodeFraudState { block_height:5, ..Default::default() });
+        s.send_allowlists.insert(a(9), crate::accounts::send_allowlist::AccountSendAllowlist { action_nonce: 3, policy: None });
         s
     }
 

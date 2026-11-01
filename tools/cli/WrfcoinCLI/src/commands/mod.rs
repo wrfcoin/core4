@@ -29,6 +29,7 @@ pub mod session_key;
 pub mod setup;
 pub mod snapshot;
 pub mod station;
+pub mod send_allowlist;
 pub mod station_owner;
 pub mod station_owner_exchange;
 pub mod storage;

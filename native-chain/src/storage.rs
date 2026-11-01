@@ -124,9 +124,11 @@ pub const CHECKPOINT_ENVELOPE_MAGIC: [u8; 8] = *b"WRFCKPT\0";
 /// (#3345 / #3347); version12 appends the optional Node registry/layout marker.
 /// Version13 appends the optional bonded receipt registry.
 /// Version14 freezes the S3 receipt layout and adds unminted Node settlement.
+/// Version15 appends Node sanctions. Version16 appends the send-allowlist map
+/// (written only when non-empty; an empty map keeps the format-15 writer).
 /// Version-3 through version-11 checkpoints
 /// migrate through registered, frozen layouts before decoding.
-pub const CHECKPOINT_FORMAT_VERSION: u32 = 15;
+pub const CHECKPOINT_FORMAT_VERSION: u32 = 16;
 
 /// Maximum number of decoded blocks [`Storage::scan_persisted_blocks`] holds in
 /// memory at once.
@@ -1810,17 +1812,22 @@ fn decode_state_checkpoint_migrating(
             // A deployed v10 row with no owner entries needs no rewrite.
             // Preserve stored map ordering: migration appended defaults to
             // the original payload, so do not reserialize the decoded State.
-            let compatible = if state.node_receipt_registry.is_none() {
+            // A migration from an older format never invents a send
+            // allowlist: the appended map is empty (its u64 zero length).
+            let v15_body = &migrated[header_len..migrated.len() - 8];
+            let compatible = if !state.send_allowlists.is_empty() {
+                migrated.clone()
+            } else if state.node_receipt_registry.is_none() {
                 // Each absent appended Option occupies one byte. Preserve all
                 // prior bytes, including historical map iteration order.
                 // Receipt, settlement, and fraud each append an absent Option tag.
-                let v12_body = &migrated[header_len..migrated.len() - 3];
+                let v12_body = &v15_body[..v15_body.len() - 3];
                 if state.node_bond_registry.is_none() {
                     let v11_body = &v12_body[..v12_body.len() - 1];
                     if state.station_owner_ledger.is_empty() { migrations::envelope(10, &v11_body[..v11_body.len() - 8]) }
                     else { migrations::envelope(11, v11_body) }
                 } else { migrations::envelope(12, v12_body) }
-            } else { migrated };
+            } else { migrations::envelope(15, v15_body) };
             let writer_version = u32::from_le_bytes(compatible[8..12].try_into().expect("version"));
             let pending = (found != writer_version).then_some(MigratedCheckpoint {
                 height,

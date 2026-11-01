@@ -564,6 +564,24 @@ pub async fn submit_transaction_compat(
         (TransactionType::Transfer, value, "transparent_opt_out")
     };
 
+    // Send allowlist: refuse here, with a clear code, a transparent transfer
+    // the sender's policy will refuse at apply. Advisory only: consensus
+    // (`BalanceTransfer`) is the authority whatever app built the transfer.
+    if tx_type == TransactionType::Transfer {
+        let refusal = {
+            let chain = state.blockchain.read().await;
+            super::send_allowlist::transfer_refusal(&chain.state, from, to, chain.height.saturating_add(1))
+        };
+        if let Some(message) = refusal {
+            return envelope_error(
+                &req,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "SEND_ALLOWLIST_DESTINATION_REFUSED",
+                message,
+            );
+        }
+    }
+
     // Deduplicate only after the caller has proved authorization. Recording
     // an unsigned or forged request here earlier let an attacker reserve a
     // victim's from+nonce for the full permissionless replay TTL (#3258).

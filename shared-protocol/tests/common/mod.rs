@@ -441,6 +441,20 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["use_index"].as_u64().expect("use_index") as u32,
             )
         },
+        "send_allowlist_action_v2" => {
+            use wrfcoin_shared_protocol::accounts::send_allowlist::{
+                SendAllowlistAction, send_allowlist_action_message,
+            };
+            let account: Address = s("account").parse().expect("account address");
+            let action: SendAllowlistAction =
+                serde_json::from_value(input["action"].clone()).expect("send allowlist action");
+            send_allowlist_action_message(
+                s("chain_id"),
+                &account,
+                &action,
+                input["nonce"].as_u64().expect("nonce"),
+            )
+        },
         "declare_authorization_v2" | "declare_authorization_signer_is_sender_v2" => {
             let account: Address = s("account").parse().expect("account address");
             let authorization = match s("authorization") {

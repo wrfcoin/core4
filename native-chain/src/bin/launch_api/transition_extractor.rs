@@ -345,6 +345,8 @@ pub fn extract_transitions(
             // the same governance sink; a direct transition here would apply
             // them twice.
             | TransactionType::SecurityKeyAction
+            // Send-allowlist actions use the same governance-routed sink.
+            | TransactionType::SendAllowlist
             // Governance proposal/vote/etc. were already governance-routed.
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
