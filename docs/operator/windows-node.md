@@ -295,10 +295,10 @@ network `testnet`.
 ## Which version am I running? Updating
 
 The status page shows the version under **Node version**, for example
-`v0.3.0 (68f6d291)`: the version number, then the commit the installer was built
+`v0.4.0 (68f6d291)`: the version number, then the commit the installer was built
 from. The same pair is in the installer's file name
-(`wrfcoin-node-0.3.0-g68f6d291-windows-x86_64-setup.exe`) and in Settings → Apps →
-**WRFCoin Node**. Each Windows preview raises the version: preview 3 is 0.3.0.
+(`wrfcoin-node-0.4.0-g68f6d291-windows-x86_64-setup.exe`) and in Settings → Apps →
+**WRFCoin Node**. Each Windows preview raises the version: preview 4 is 0.4.0.
 
 **Check for updates** under the version opens wrfcoin.com/downloads, which lists the
 newest installer with its version and SHA-256. The status page itself never

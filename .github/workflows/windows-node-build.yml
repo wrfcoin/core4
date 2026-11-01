@@ -91,7 +91,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         # The node reports this short commit as node_build (/network/info, dashboard
-        # "v0.3.0 (68f6d291)"), matching the installer's <VERSION>-g<commit> name.
+        # "v0.4.0 (68f6d291)"), matching the installer's <VERSION>-g<commit> name.
         run: WRFCOIN_BUILD_COMMIT="${HEAD_SHA:0:8}" cargo build --release --locked --bin launch_api --features full-mining,p2p
       # The operator CLI (bond, receipts, grant request), shipped as wrfcoin.exe.
       # Plain build (no hsm feature): on Windows its key files are checked for an
