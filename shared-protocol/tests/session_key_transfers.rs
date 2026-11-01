@@ -111,7 +111,7 @@ fn revoke_action(k: &Keys, registration_nonce: u64) -> SessionKeyAction {
 fn action_tx(action: SessionKeyAction, tag: &str) -> Transaction {
     let mut tx = base_tx(tag, "0x00");
     tx.tx_type = TransactionType::SessionKeyAction;
-    tx.data = Some(serde_json::to_string(&SessionKeyActionPayload { action }).unwrap());
+    tx.data = Some(serde_json::to_string(&SessionKeyActionPayload { action, security_key_auth: None }).unwrap());
     tx.set_id();
     tx
 }
@@ -180,7 +180,7 @@ fn apply_transfer(state: &mut State, tx: &Transaction, h: u64) -> Result<(), Str
 
 fn apply_action(state: &mut State, action: SessionKeyAction, h: u64) -> Result<(), String> {
     state
-        .apply_transition(StateTransition::ApplySessionKeyAction { action, block_height: h })
+        .apply_transition(StateTransition::ApplySessionKeyAction { action, block_height: h, security_key_auth: None })
         .map_err(|e| e.to_string())
 }
 

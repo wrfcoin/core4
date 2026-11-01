@@ -751,6 +751,7 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
                 owner_signature: String::new(),
             },
             block_height: fixture::A,
+            security_key_auth: None,
         },
         54 => StateTransition::BeginNodeServiceBlock {
             block_height: fixture::A + 1,

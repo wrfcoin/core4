@@ -424,6 +424,30 @@ pub fn verify_spend(
     proof.verify(key, &spend_challenge(account, debit_message))
 }
 
+/// Gate for granting spending power to someone else (a session key) on an
+/// account protected by a security key: while the account's rule is in force
+/// at `height`, the grant's own signed preimage (`grant_message`, which carries
+/// its own domain tag) must be co-signed by a registered key, exactly like a
+/// spend. Accounts without an enforced rule, and every height below
+/// [`security_key_active`], pass unchanged.
+pub fn delegation_gate(
+    declarations: &BTreeMap<Address, AccountAuthorizationDeclaration>,
+    account: &Address,
+    grant_message: &[u8],
+    proof: Option<&SecurityKeyAssertionWire>,
+    height: u64,
+) -> Result<(), SecurityKeyError> {
+    if !security_key_active(height) {
+        return Ok(());
+    }
+    match declarations.get(account).and_then(stored_policy) {
+        Some(policy) if policy.enforced_at(height) => {
+            verify_spend(policy, account, grant_message, proof)
+        },
+        _ => Ok(()),
+    }
+}
+
 /// Read the optional `security_key_auth` member of a transaction's JSON data.
 /// Lenient like `passkey_auth`: anything that is not a well-formed assertion
 /// reads as absent, so it can never make a payload unparseable.

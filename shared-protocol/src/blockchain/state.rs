@@ -5698,12 +5698,43 @@ impl State {
                     self.move_recovered_account(account, public_key)?;
                 }
             },
-            StateTransition::ApplySessionKeyAction { action, block_height } => {
+            StateTransition::ApplySessionKeyAction { action, block_height, security_key_auth } => {
                 if !crate::crypto::chain_binding::feature_active(
                     crate::crypto::chain_binding::ConsensusFeature::SessionKeys,
                     block_height,
                 ) {
                     return Err(StateError::InvalidTransition);
+                }
+                // `security_key_spend`: a session key is a delegated spender,
+                // so on an account whose security-key rule is in force it can
+                // only be registered with the key co-signing (otherwise a
+                // phrase-only thief could register one and spend around the
+                // key). Revocation stays phrase-only: it only removes power.
+                if let crate::accounts::session_keys::SessionKeyAction::Register {
+                    owner,
+                    registration_nonce,
+                    grant,
+                    ..
+                } = &action
+                {
+                    let message = crate::accounts::session_keys::session_key_register_message(
+                        &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                        owner,
+                        *registration_nonce,
+                        grant,
+                    );
+                    crate::accounts::security_key::delegation_gate(
+                        &self.authorization_declarations,
+                        owner,
+                        &message,
+                        security_key_auth.as_ref(),
+                        block_height,
+                    )
+                    .map_err(|e| {
+                        StateError::Governance(format!(
+                            "SP_SECURITY_KEY_REQUIRED: session key registration on a security-key account: {e}"
+                        ))
+                    })?;
                 }
                 crate::accounts::session_keys::apply(
                     &mut self.session_keys,
@@ -7779,7 +7810,16 @@ impl State {
                 )
                 .map_err(|e| {
                     StateError::Governance(format!("SP_SECURITY_KEY_ACTION_REJECTED: {e}"))
-                })
+                })?;
+                // Turning the rule on revokes every session key the account
+                // registered while it was off: none of them was co-signed by
+                // the security key, and any of them could be a thief's.
+                if matches!(payload.action, crate::accounts::security_key::SecurityKeyActionBody::Enable { .. }) {
+                    if let Ok(account) = payload.account.trim().parse::<Address>() {
+                        crate::accounts::session_keys::revoke_all(&mut self.session_keys, &account);
+                    }
+                }
+                Ok(())
             },
             TransactionType::GovernanceProposal => {
                 let payload = tx.parse_governance_proposal_payload().ok_or_else(|| {
@@ -10644,6 +10684,12 @@ pub enum StateTransition {
     ApplySessionKeyAction {
         action: crate::accounts::session_keys::SessionKeyAction,
         block_height: u64,
+        /// `security_key_spend`: the owner's security-key assertion over the
+        /// registration, read from the carrying transaction's
+        /// `security_key_auth` member. Required to REGISTER a session key on an
+        /// account whose security-key rule is in force; ignored otherwise.
+        #[serde(default)]
+        security_key_auth: Option<crate::accounts::security_key::SecurityKeyAssertionWire>,
     },
     /// Signed AA declaration state transition (#2168); not extracted from
     /// transactions until the feature's explicit scheduling work.

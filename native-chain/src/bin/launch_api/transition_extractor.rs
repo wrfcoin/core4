@@ -70,7 +70,11 @@ pub fn extract_transitions(
             // on `ConsensusFeature::SessionKeys` and fails closed.
             TransactionType::SessionKeyAction => {
                 if let Some(action) = wrfcoin_shared_protocol::accounts::session_keys::SessionKeyActionPayload::parse(tx) {
-                    let transition = StateTransition::ApplySessionKeyAction { action, block_height };
+                    let transition = StateTransition::ApplySessionKeyAction {
+                        action,
+                        block_height,
+                        security_key_auth: tx.security_key_spend_proof(),
+                    };
                     launch_transitions.push(transition.clone()); transitions.push(transition);
                 }
             },

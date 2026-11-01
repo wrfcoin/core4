@@ -58,6 +58,7 @@ fn install() {
         FeatureSchedule::from_entries(vec![
             (ConsensusFeature::AccountAuthorizationDispatch.name().to_string(), DISPATCH),
             (ConsensusFeature::SecurityKeySpend.name().to_string(), H),
+            (ConsensusFeature::SessionKeys.name().to_string(), H),
         ])
         .expect("schedule"),
     );
@@ -176,6 +177,7 @@ fn transfer_tx(
         authority_signature: None,
         passkey_auth: None,
         sponsorship: None,
+        session_key_auth: None,
     };
     payload.sign_authorization(key, nonce);
     let mut value = serde_json::to_value(&payload).unwrap();
@@ -741,4 +743,150 @@ fn spend_pricing_is_unchanged_below_h_and_adds_one_p256_from_h() {
     // An action is always charged the maximum.
     let action = action_tx(&signed_action(&key, 0, enable(&yk), &[&yk]));
     assert_eq!(action.verify_work().ecdsa, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Session keys (core4#97) cannot route around the security key
+// ---------------------------------------------------------------------------
+
+mod session_keys_vs_security_key {
+    use super::*;
+    use wrfcoin_shared_protocol::accounts::session_keys::{
+        MethodId, SessionKeyAction, SessionKeyGrant, SessionScope, session_key_register_message,
+    };
+
+    fn session_grant(session: &PrivateKey) -> SessionKeyGrant {
+        SessionKeyGrant {
+            public_key: PublicKey::from_private_key(session),
+            scope: SessionScope {
+                allowed_methods: vec![MethodId("transfer".into())],
+                allowed_targets: vec![TO],
+                max_value_per_use: 500,
+                max_total_value: 1_000,
+                window: None,
+            },
+            valid_from: H,
+            valid_until: H + 10_000,
+            max_uses: None,
+        }
+    }
+
+    fn register(owner_key: &PrivateKey, session: &PrivateKey, nonce: u64) -> (SessionKeyAction, Vec<u8>) {
+        let owner = Address::from_public_key(&PublicKey::from_private_key(owner_key));
+        let grant = session_grant(session);
+        let message = session_key_register_message(&ids().0, &owner, nonce, &grant);
+        let action = SessionKeyAction::Register {
+            owner,
+            registration_nonce: nonce,
+            grant,
+            owner_public_key: PublicKey::from_private_key(owner_key).to_hex(),
+            owner_signature: owner_key.sign(&message).to_hex(),
+            session_signature: session.sign(&message).to_hex(),
+        };
+        (action, message)
+    }
+
+    fn apply_register(
+        state: &mut State,
+        action: SessionKeyAction,
+        proof: Option<SecurityKeyAssertionWire>,
+        height: u64,
+    ) -> bool {
+        state
+            .apply_transition(StateTransition::ApplySessionKeyAction {
+                action,
+                block_height: height,
+                security_key_auth: proof,
+            })
+            .is_ok()
+    }
+
+    fn session_send(owner: &Address, session: &PrivateKey, amount: u64, nonce: u64) -> Transaction {
+        let mut payload = TransparentTransferPayload {
+            from: owner.to_string(),
+            to: TO.to_string(),
+            amount,
+            transparent_opt_out: true,
+            opt_out_audit_tag: None,
+            auth_pubkey: None,
+            auth_signature: None,
+            authority: None,
+            authority_signature: None,
+            passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
+        };
+        payload.sign_session_key_authorization(session, nonce);
+        let mut tx = Transaction::new(vec![], vec![]);
+        tx.tx_type = TransactionType::Transfer;
+        tx.nonce = nonce;
+        tx.data = Some(serde_json::to_string(&payload).unwrap());
+        tx.set_id();
+        tx
+    }
+
+    /// The core4#97 x #103 gap: a phrase-only thief registers a session key on
+    /// a protected account and spends with it. Registration needs the key.
+    #[test]
+    fn a_phrase_only_thief_cannot_register_a_session_key_on_a_protected_account() {
+        install();
+        let yk = yubikey(0x1A);
+        let (key, account, mut state) = protected(30, &yk);
+        let thief_session = owner(31).0;
+        let (action, message) = register(&key, &thief_session, 0);
+        // Phrase only (owner + session signatures, no security key): refused.
+        assert!(!apply_register(&mut state, action.clone(), None, H + 1));
+        assert!(state.session_keys.get(&account).is_none_or(|o| o.records.is_empty()));
+        // A stranger's key: refused.
+        let stranger = yubikey(0x1B);
+        let forged = assertion(&stranger, &spend_challenge(&account, &message));
+        assert!(!apply_register(&mut state, action.clone(), Some(forged), H + 1));
+        // An assertion over a different message (a spend challenge): refused.
+        let wrong = assertion(&yk, &spend_challenge(&account, b"not the registration"));
+        assert!(!apply_register(&mut state, action.clone(), Some(wrong), H + 1));
+        // So the session send that would have bypassed the key fails.
+        assert!(!send(&mut state, session_send(&account, &thief_session, 100, 0), H + 2));
+        assert_eq!(balance(&state, &account), 1_000);
+
+        // The owner WITH the key can delegate on purpose.
+        let good = assertion(&yk, &spend_challenge(&account, &message));
+        assert!(apply_register(&mut state, action, Some(good), H + 1));
+        assert!(send(&mut state, session_send(&account, &thief_session, 100, 0), H + 2));
+        assert_eq!(balance(&state, &account), 900);
+    }
+
+    /// Session keys registered while the rule was off (a thief's, planted
+    /// before the owner enabled the key) are revoked by `enable`.
+    #[test]
+    fn enabling_the_key_revokes_session_keys_registered_without_it() {
+        install();
+        let (key, _, account) = owner(32);
+        let mut state = funded(account);
+        let planted = owner(33).0;
+        let (action, _) = register(&key, &planted, 0);
+        assert!(apply_register(&mut state, action, None, H), "rule off: phrase-only registration is the #97 behaviour");
+        // Before enable the planted key spends.
+        assert!(send(&mut state, session_send(&account, &planted, 50, 0), H + 1));
+        let yk = yubikey(0x1C);
+        assert!(apply_via_state(&mut state, &signed_action(&key, 0, enable(&yk), &[&yk]), H + 2));
+        let records = &state.session_keys.get(&account).unwrap().records;
+        assert!(!records.is_empty() && records.values().all(|r| r.revoked), "enable revokes every existing session key");
+        assert!(!send(&mut state, session_send(&account, &planted, 50, 1), H + 3));
+        assert_eq!(balance(&state, &account), 950);
+    }
+
+    /// The gate is inert for an unprotected account and after a matured escape.
+    #[test]
+    fn the_registration_gate_only_binds_while_the_rule_is_enforced() {
+        install();
+        let yk = yubikey(0x1D);
+        let (key, account, mut state) = protected(34, &yk);
+        assert!(apply_via_state(&mut state, &signed_action(&key, 1, SecurityKeyActionBody::BeginEscape, &[]), H + 1));
+        let matured = H + 1 + ESCAPE_DELAY_MIN_BLOCKS;
+        let session = owner(35).0;
+        let (action, _) = register(&key, &session, 0);
+        assert!(!apply_register(&mut state, action.clone(), None, matured - 1));
+        assert!(apply_register(&mut state, action, None, matured), "escape matured: rule off, #97 behaviour");
+        let _ = account;
+    }
 }

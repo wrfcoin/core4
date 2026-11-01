@@ -65,7 +65,7 @@ submit time so the user gets `SECURITY_KEY_REQUIRED` instead of a silent drop.
 
 ## Turning it on, changing it, turning it off
 
-New transaction type `SecurityKeyAction` (appended, bincode index 40), routed through the governance sink like
+New transaction type `SecurityKeyAction` (appended, bincode index 41, after session keys' `SessionKeyAction` at 40), routed through the governance sink like
 `Transfer` (so an invalid action is dropped at assembly, never a block fault). Its `data` is:
 
 ```
@@ -108,6 +108,22 @@ With two keys a lost key is replaced immediately with the other (`remove_key` + 
 Like `passkey_p256_auth`, the chain does not store a per-credential WebAuthn counter: replay is already prevented
 by the account nonce in the challenge, and storing a counter would make every spend write declaration state. Clone
 detection is therefore not enforced on chain (same as passkey wallets).
+
+## Session keys (core4#97) cannot route around the key
+
+A session key is a delegated spender, and a session-key transfer is authorized by the session key, not by the
+owner path. Without a guard, a phrase-only thief could register a session key and spend with it. So:
+
+- **Registering** a session key on an account whose security-key rule is in force needs a security-key assertion
+  over the registration preimage (`session_key_register_message`, which carries its own domain tag), with the
+  spend challenge: `SHA3-256(len||"wrfcoin.security_key_spend.v1" || len||account || len||register_message)`.
+  It travels as `security_key_auth` in the `SessionKeyActionPayload` (absent from the JSON when unused) and in
+  `StateTransition::ApplySessionKeyAction`; the apply arm refuses without it (`security_key::delegation_gate`), so
+  the producer prunes the action. Revoking stays phrase-only (it only removes power).
+- **`enable` revokes every session key** the account already holds: none of them was co-signed by the key, and any
+  of them could be a thief's. Records are kept, so session nonces never reset.
+- Session keys registered WITH the key keep working on a protected account: that is deliberate, scoped delegation.
+- After a matured escape the rule is off and #97 behaviour applies again; a later `enable` revokes again.
 
 ## Fee and size
 

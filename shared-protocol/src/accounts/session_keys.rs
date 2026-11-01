@@ -244,6 +244,11 @@ pub const MAX_SESSION_KEY_ACTION_PAYLOAD_BYTES: usize = 16 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct SessionKeyActionPayload {
     pub action: SessionKeyAction,
+    /// `security_key_spend`: the owner's security-key assertion over a
+    /// `Register`, required while the owner's security-key rule is in force
+    /// (`security_key::delegation_gate`). Absent from the JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_key_auth: Option<crate::accounts::security_key::SecurityKeyAssertionWire>,
 }
 
 impl SessionKeyActionPayload {
@@ -501,6 +506,17 @@ fn check_scope(
 /// entry point consensus code calls — see
 /// `StateTransition::ApplySessionKeyAction` in `blockchain/state.rs`, whose
 /// match arm is exactly a call into this function.
+/// Revoke every session key `owner` holds (security-key wallets: enabling
+/// the key requirement revokes keys registered without it). Records stay, so
+/// `next_nonce` never resets and an old registration cannot be replayed.
+pub fn revoke_all(states: &mut BTreeMap<Address, OwnerSessionKeys>, owner: &Address) {
+    if let Some(owner_state) = states.get_mut(owner) {
+        for record in owner_state.records.values_mut() {
+            record.revoked = true;
+        }
+    }
+}
+
 pub fn apply(
     states: &mut BTreeMap<Address, OwnerSessionKeys>,
     action: SessionKeyAction,
@@ -2020,7 +2036,7 @@ mod tests {
             owner_signature: owner_sk.sign(&register).to_hex(),
             session_signature: session_sk.sign(&register).to_hex(),
         };
-        let body = serde_json::to_string(&SessionKeyActionPayload { action }).unwrap();
+        let body = serde_json::to_string(&SessionKeyActionPayload { action, security_key_auth: None }).unwrap();
         assert_eq!(owner.to_hex(), "0xa07ffc5e1799c00f3ac9fa7bbf1db75a25aaf4d0");
         assert_eq!(hex::encode(&register), REGISTER_PREIMAGE_HEX);
         assert_eq!(hex::encode(&transfer), TRANSFER_PREIMAGE_HEX);

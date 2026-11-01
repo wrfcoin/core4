@@ -206,7 +206,7 @@ fn sign_register(
         session_signature: session_key.sign(&message).to_hex(),
     };
     verify_stateless(&action, chain_id).map_err(|e| anyhow!("self-check failed: {e}"))?;
-    Ok(SessionKeyActionPayload { action })
+    Ok(SessionKeyActionPayload { action, security_key_auth: None })
 }
 
 pub async fn handle_session_key_command(command: &SessionKeyCommands) -> Result<Value> {
@@ -274,6 +274,7 @@ pub async fn handle_session_key_command(command: &SessionKeyCommands) -> Result<
                     owner_public_key: owner_pk.to_hex(),
                     owner_signature: signature.to_hex(),
                 },
+                security_key_auth: None,
             };
             write_json(out, &serde_json::to_value(&payload)?)?;
             Ok(json!({ "artifact": out.display().to_string(), "route": "POST /session-keys/submit" }))

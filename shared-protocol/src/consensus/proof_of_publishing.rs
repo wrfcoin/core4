@@ -6242,7 +6242,11 @@ impl ProofOfPublishing {
             TransactionType::SessionKeyAction => {
                 let action = crate::accounts::session_keys::SessionKeyActionPayload::parse(tx)
                     .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
-                Ok(Some(StateTransition::ApplySessionKeyAction { action, block_height }))
+                Ok(Some(StateTransition::ApplySessionKeyAction {
+                    action,
+                    block_height,
+                    security_key_auth: tx.security_key_spend_proof(),
+                }))
             },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
