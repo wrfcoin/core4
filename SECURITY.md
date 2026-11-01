@@ -15,23 +15,12 @@ reaches the people who can act on it.
 Encrypt if you are able to; if you do not have a key for us, send an unencrypted message asking for
 one rather than posting details anywhere public.
 
+**Or use GitHub private vulnerability reporting:** the **Report a vulnerability** button on this
+repository's [Security tab](https://github.com/wrfcoin/core4/security/advisories/new). Reports there
+are visible only to you and the maintainers.
+
 **Please do not open a public GitHub issue for a security report.** Issues in this repository are
-world-readable once the repository is public, and a security issue filed there is a disclosure, not a
-report.
-
-> **Note for maintainers:** this repository is currently private, so GitHub's *"Report a
-> vulnerability"* button (private vulnerability reporting) is not available to outside researchers.
-> **Enable private vulnerability reporting at the same time the repository is made public**, and add
-> it here as a second channel. Until then, email is the only private route.
-
-> **Reporting domain — resolved 2026-08-04.** `security@wrfcoin.com` is the single security contact.
-> Every `security@wrfcoin.org` reference in this repository was moved to `.com`, and the RFC 2606
-> `example.com` placeholders were removed.
->
-> `wrfcoin.org` is a Google Workspace domain alias of `wrfcoin.com`, so both already delivered to the
-> same mailbox — those addresses were inconsistent, not broken. The mailbox is verified working:
-> inbound from an external non-Google sender delivers, and outbound passes SPF, DKIM (`d=wrfcoin.com`,
-> 2048-bit) and DMARC.
+world-readable, and a security issue filed there is a disclosure, not a report.
 
 ### What to include
 
