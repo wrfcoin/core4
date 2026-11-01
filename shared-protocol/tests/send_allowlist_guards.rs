@@ -69,6 +69,7 @@ fn transfer_tx(from: &PrivateKey, to: Address, amount: u64, nonce: u64) -> Trans
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        session_key_auth: None,
         sponsorship: None,
     };
     payload.sign_authorization(from, nonce);
@@ -175,6 +176,7 @@ fn send_allowlist_guards_time_locks_and_layout() {
                 session_signature: String::new(),
             },
             block_height: H,
+            security_key_auth: None,
         }),
         "SP_SEND_ALLOWLIST_DESTINATION_REFUSED",
     );

@@ -620,6 +620,10 @@ pub const fn value_movement(tx_type: TransactionType) -> ValueMovement {
         // Spend shielded notes, not the transparent account balance; a note is
         // not attributable to an account, so there is nothing to bind.
         T::ConfidentialTransfer | T::ShieldedWithdrawal | T::RewardClaim => V::NotADebit,
+        // Register/revoke a session key (#97) or a security key (#103): no value
+        // moves. The spends they authorize are ordinary `Transfer`s and reach
+        // the `BalanceTransfer` guard like any other signer.
+        T::SessionKeyAction | T::SecurityKeyAction => V::NotADebit,
         // Credits, protocol records, or types with no state-machine effect on
         // account balances in this binary (the transition extractor and
         // `apply_protocol_transaction` emit nothing that debits for them).

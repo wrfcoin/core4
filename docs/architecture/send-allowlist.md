@@ -40,7 +40,7 @@ authorization succeeded. It follows the `recovery.rs` shape: block heights, time
 owner-cancellable changes, domain-separated owner signatures, a cooldown against griefing, and state that
 is byte-absent before activation.
 
-The action travels as a new appended transaction type, `TransactionType::SendAllowlist` (index 40), applied
+The action travels as a new appended transaction type, `TransactionType::SendAllowlist` (index 42; `ConsensusFeature` ordinal 28), applied
 through the same shared sink as `Transfer` (`ProcessGovernanceTransaction` → `apply_protocol_transaction`),
 so producer, P2P applier and WAL replay run one code path.
 
@@ -51,7 +51,7 @@ until classified). Guards live in the apply arms, so every emitter of a transiti
 
 | Type / transition | Class | Rule while a policy is in force |
 |---|---|---|
-| `Transfer` → `BalanceTransfer` (ed25519, passkey or authority-signed) | to destination | Refused unless `to` is the account itself, allowed, or a matured addition |
+| `Transfer` → `BalanceTransfer` (ed25519, passkey, session-key (#97), security-key (#103), sponsored or authority-signed) | to destination | Refused unless `to` is the account itself, allowed, or a matured addition |
 | `ShieldedDeposit` → `ApplyShieldedDeposit` | unlistable | Refused (destination hidden by design; also disabled chain-wide, #1762) |
 | `GovernanceProposal` → `CreateGovernanceProposal` | unlistable | Refused (deposit is held, never refunded; also disabled chain-wide, #2024) |
 | `NodeBondLifecycle` Deposit / Update | per action | Refused unless `payout_account` is permitted (it receives the bond's rewards) |
@@ -63,8 +63,10 @@ until classified). Guards live in the apply arms, so every emitter of a transiti
 | `ConfidentialTransfer`, `ShieldedWithdrawal`, `RewardClaim` | not a debit | Allowed: they spend shielded notes, not the transparent balance |
 | Rewards, coinbase, slashing, receipts, votes, registrations, data/NFT/bridge/treasury types | not a debit | Allowed: credits, protocol-initiated, or no balance effect in this binary |
 
-Fees: the account model does not debit `tx.fee` today, so there is no fee path to a non-listed producer.
-If fees are ever charged, they need a cap while a policy is on (see DECISIONS).
+Fees: with `transfer_fee_burn` (#101) a permitted send still pays the protocol fee, which is burned (credited to
+nobody) and set by the chain, not by the sender. A refused send debits nothing, not even the fee, and a refused
+session-key send spends none of the key's allowance (`tests/send_allowlist_interactions.rs`). A fee cap for protected
+accounts is a follow-up for the fee release (owner decision).
 
 Account recovery (`move_recovered_account`, unscheduled): the policy moves with the funds to the new owner
 address; if that address had its own entry, the recovered policy wins and the larger nonce is kept.

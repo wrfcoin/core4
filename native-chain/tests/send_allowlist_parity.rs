@@ -77,6 +77,7 @@ fn transfer(from: &PrivateKey, to: Address, amount: u64, nonce: u64, tag: &str) 
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        session_key_auth: None,
         sponsorship: None,
     };
     payload.sign_authorization(from, nonce);

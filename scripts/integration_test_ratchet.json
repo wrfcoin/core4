@@ -1027,6 +1027,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_guards"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "send_allowlist_interactions"
     }
   ],
   "external_coverage": [
