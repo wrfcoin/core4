@@ -81,6 +81,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "station_coordinates_fixed_point",
     "transfer_fee_burn",
     "security_key_spend",
+    "send_allowlist",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -311,7 +312,8 @@ mod tests {
                 "streak_replay_node_service",
                 "station_coordinates_fixed_point",
                 "transfer_fee_burn",
-                "security_key_spend"
+                "security_key_spend",
+                "send_allowlist"
             ]
         );
     }

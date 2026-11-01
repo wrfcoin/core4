@@ -101,6 +101,7 @@ that exploitation is currently demonstrated.
 | `GET /transactions/station/registrations` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::list_station_registrations` | `admin` | no | no (O(1) registry ceiling, bounded page selection) | global-read |
 | `GET /transactions/station/registrations/{station_id}` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::get_station_registration` | `authenticated` | no | no | global-read |
 | `GET /transactions/station/registrations/{station_id}/owner-ledger` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::get_station_owner_ledger` | `authenticated` | no | no | global-read |
+| `GET /accounts/{address}/send-allowlist` | `http` | `native-chain/src/bin/launch_api/routes/send_allowlist.rs:send_allowlist::show` | `authenticated` | no | no | global-read |
 | `POST /transactions/station/owner-actions` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::submit_station_owner_transactions` | `authenticated` | yes | no | global-write |
 | `GET /transactions/contributions/status` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_contribution_statuses` | `authenticated` | no | no | global-read |
 | `GET /transactions/contributions/{station_id}/observations` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_station_observations` | `authenticated` | no | yes | global-read |

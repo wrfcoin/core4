@@ -529,6 +529,23 @@ impl Mempool {
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Err(anyhow!("SP_SLASH_EVIDENCE_NOT_SUPPORTED"));
         }
+        // Send allowlist: refused until the feature is active at the next
+        // height; then only a well-formed, owner-signed action is admitted.
+        // Nonce and time-lock rules are state's (apply refuses, assembly drops).
+        if tx.tx_type == TransactionType::SendAllowlist {
+            let height = current_height.ok_or_else(|| anyhow!("SP_SEND_ALLOWLIST_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::feature_active(
+                crate::crypto::chain_binding::ConsensusFeature::SendAllowlist,
+                height.saturating_add(1),
+            ) {
+                return Err(anyhow!("SP_SEND_ALLOWLIST_INACTIVE"));
+            }
+            let signed = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_SEND_ALLOWLIST_PAYLOAD"))?;
+            signed
+                .verify(&crate::crypto::chain_binding::ChainIdentity::active().chain_id)
+                .map_err(|e| anyhow!("SP_SEND_ALLOWLIST_AUTHORIZATION: {e}"))?;
+        }
 
         // #3277 S4: live feature-schedule extensions. ADMISSION POLICY, not
         // validity: a block carrying an extension this refuses is still valid

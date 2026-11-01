@@ -1153,6 +1153,21 @@ pub enum ConsensusFeature {
     /// stored, `security_key_auth` members are ignored, and verify pricing is
     /// unchanged, so blocks and `state_root` are byte-identical.
     SecurityKeySpend,
+    /// Chain-enforced send allowlist (`accounts::send_allowlist`). From its
+    /// activation an account may turn on a policy under which every value
+    /// movement out of it to an address not on its list is refused at apply
+    /// (`BalanceTransfer`, `CreateGovernanceProposal`, `ApplyShieldedDeposit`,
+    /// paymaster `Stake`, session-key `Use`, node-bond `Deposit`/`Update`
+    /// payout), with time-locked, owner-cancellable additions and turn-off.
+    /// Below activation `TransactionType::SendAllowlist` is refused by mempool
+    /// admission, the block classifier and apply, so `State::send_allowlists`
+    /// is empty and every value path is byte-identical.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED: it appears in no genesis, default schedule or cut pin.
+    /// The binary accepts a live schedule extension naming it; scheduling is
+    /// the owner's signature only.
+    SendAllowlist,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1197,6 +1212,7 @@ impl ConsensusFeature {
         Self::StationCoordinatesFixedPoint,
         Self::TransferFeeBurn,
         Self::SecurityKeySpend,
+        Self::SendAllowlist,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1230,6 +1246,7 @@ impl ConsensusFeature {
             Self::StationCoordinatesFixedPoint => "station_coordinates_fixed_point",
             Self::TransferFeeBurn => "transfer_fee_burn",
             Self::SecurityKeySpend => "security_key_spend",
+            Self::SendAllowlist => "send_allowlist",
         }
     }
 
@@ -1314,7 +1331,10 @@ impl ConsensusFeature {
             | Self::StationRegistrationNonce
             // Wired end to end (actions, debit seam, pricing, admission); the
             // binary accepts a schedule, the owner decides when.
-            | Self::SecurityKeySpend => true,
+            | Self::SecurityKeySpend
+            // Wired end to end (admission, block classifier, apply, guards,
+            // checkpoint/snapshot layout); scheduling is the owner's signature.
+            | Self::SendAllowlist => true,
         }
     }
 
@@ -1341,6 +1361,8 @@ impl ConsensusFeature {
             Self::TransferFeeBurn => true,
             // Security-key wallets: actions, the debit seam and pricing read it.
             Self::SecurityKeySpend => true,
+            // Send allowlist: admission, classifier and apply read it.
+            Self::SendAllowlist => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2889,6 +2911,8 @@ mod tests {
         expected.push("node_share_settlement");
         // Security-key wallets: the binary accepts a schedule; the owner signs it.
         expected.push("security_key_spend");
+        // Appended after it in `ALL`: the binary accepts scheduling it.
+        expected.push("send_allowlist");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -2925,6 +2949,8 @@ mod tests {
         expected.insert(7, "faucet_sink_binding");
         expected.push("node_share_settlement");
         expected.push("security_key_spend");
+        // Appended after it in `ALL`: the binary accepts scheduling it.
+        expected.push("send_allowlist");
         assert_eq!(schedulable, expected);
     }
 

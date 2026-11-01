@@ -3,6 +3,7 @@ pub mod node_bonds;
 pub mod node_fraud;
 pub mod security_key;
 pub mod node_shutdown;
+pub mod send_allowlist;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -218,6 +219,15 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .route(
             "/transactions/station/owner-actions",
             web::post().to(station::submit_station_owner_transactions),
+        )
+        .service(
+            web::resource("/accounts/send-allowlist/submit")
+                .app_data(web::JsonConfig::default().limit(send_allowlist::MAX_SEND_ALLOWLIST_JSON_BYTES))
+                .route(web::post().to(send_allowlist::submit)),
+        )
+        .route(
+            "/accounts/{address}/send-allowlist",
+            web::get().to(send_allowlist::show),
         )
         .route(
             "/transactions/oracle/registrations",

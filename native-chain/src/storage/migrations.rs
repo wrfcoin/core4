@@ -105,6 +105,7 @@ pub static MIGRATIONS: &[&dyn CheckpointMigration] = &[
     &MigrationV12ToV13,
     &MigrationV13ToV14,
     &MigrationV14ToV15,
+    &MigrationV15ToV16,
 ];
 
 /// The registered migration that reads `version`, if any.
@@ -538,7 +539,24 @@ impl CheckpointMigration for MigrationV14ToV15 {
             return Err(MigrationError::Decode { version:14, error:"activated incomplete Node S4 cannot migrate into sanctions".into() });
         }
         let mut migrated = body.to_vec(); migrated.push(0);
-        let _: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version:15, error:e.to_string() })?;
+        let _: legacy::state_v15::State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version:15, error:e.to_string() })?;
+        Ok(migrated)
+    }
+}
+
+/// Format 16 appends the send-allowlist map (`ConsensusFeature::SendAllowlist`).
+/// A format-15 checkpoint predates the feature, so the map is empty: append
+/// exactly its u64 zero length. No policy is invented.
+pub struct MigrationV15ToV16;
+impl CheckpointMigration for MigrationV15ToV16 {
+    fn from_version(&self) -> u32 { 15 }
+    fn to_version(&self) -> u32 { 16 }
+    fn migrate(&self, body: &[u8]) -> Result<Vec<u8>, MigrationError> {
+        let _: legacy::state_v15::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 15, error: e.to_string() })?;
+        let mut migrated = body.to_vec();
+        migrated.extend_from_slice(&0u64.to_le_bytes());
+        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 16, error: e.to_string() })?;
+        debug_assert!(current.send_allowlists.is_empty());
         Ok(migrated)
     }
 }
@@ -548,6 +566,16 @@ impl CheckpointMigration for MigrationV14ToV15 {
 /// validation prevents an accidental field reorder from silently truncating.
 pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error> {
     let mut payload = bincode::serialize(state)?;
+    // Format 16: any send-allowlist entry needs the full current layout.
+    if !state.send_allowlists.is_empty() {
+        return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
+    }
+    // Empty (always, before `send_allowlist` activates): write exactly the
+    // format-15 bytes and let the existing chain pick the deployed version.
+    let suffix = 0u64.to_le_bytes();
+    assert!(payload.ends_with(&suffix), "empty send allowlists must be the final field");
+    payload.truncate(payload.len() - suffix.len());
+    let _: legacy::state_v15::State = decode_exact(&payload)?;
     if state.node_fraud.is_none() {
         if state.node_settlement.is_some() { return Err(Box::new(bincode::ErrorKind::Custom("incomplete Node sanctions marker".into()))); }
         assert_eq!(payload.pop(), Some(0), "absent Node sanctions must be final");
@@ -560,7 +588,7 @@ pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error
         assert_eq!(payload.pop(), Some(0), "absent Node settlement must be final");
         let _: legacy::state_v13::State = decode_exact(&payload)?;
     }
-    let version = if state.node_settlement.is_some() { CHECKPOINT_FORMAT_VERSION } else {
+    let version = if state.node_settlement.is_some() { 15 } else {
         assert_eq!(payload.pop(), Some(0), "absent Node receipt store must be final");
         let _: legacy::state_v12::State = decode_exact(&payload)?;
         if state.node_bond_registry.is_some() { 12 } else {
@@ -618,6 +646,7 @@ mod tests {
             appended_station_block_time(),
             appended_owner_ledger(),
             vec![0, 0, 0, 0],
+            vec![0; 8],
         ]
         .concat()
     }
@@ -796,6 +825,7 @@ mod tests {
                 appended_station_block_time().as_slice(),
                 appended_owner_ledger().as_slice(),
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
+                &[0; 8], // empty send-allowlist map (format 16)
             ].concat()
         );
     }
@@ -832,6 +862,7 @@ mod tests {
                 appended_station_block_time().as_slice(),
                 appended_owner_ledger().as_slice(),
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
+                &[0; 8], // empty send-allowlist map (format 16)
             ]
             .concat()
         );
@@ -911,7 +942,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8]]
                 .concat()
                 .as_slice()
         );
@@ -938,7 +969,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 12]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 20]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -968,14 +999,14 @@ mod tests {
         assert_eq!(&body(&v11)[..body(&v10).len()], body(&v10));
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
-        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(15));
-        assert_eq!(&body(&golden(15))[body(&v11).len()..], &[0, 0, 0, 0]);
+        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(16));
+        assert_eq!(&body(&golden(16))[body(&v11).len()..], &[0; 12]);
     }
 
     #[test]
     fn v13_off_migrates_exactly_and_prior_node_activation_is_refused() {
         let v13=golden(13);
-        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(15));
+        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(16));
         for receipt_marker in [false,true] {
             // Independent frozen suffix: bond Option tag/body, then the S3
             // receipt Option tag and its original three-field empty body.
@@ -996,6 +1027,33 @@ mod tests {
             assert_eq!(frozen.node_receipt_registry.is_some(),receipt_marker);
             assert!(matches!(migrate_to_current(13,&bytes),Err(MigrationError::Decode {version:13,..})));
         }
+    }
+
+    #[test]
+    fn v15_golden_appends_only_the_empty_send_allowlist_map() {
+        let v15 = golden(15);
+        let _: legacy::state_v15::State = decode_exact(body(&v15)).unwrap();
+        let migrated = migrate_to_current(15, body(&v15)).unwrap();
+        assert_eq!(migrated, golden(16));
+        assert_eq!(&body(&migrated)[..body(&v15).len()], body(&v15));
+        assert_eq!(&body(&migrated)[body(&v15).len()..], &[0; 8]);
+        let state: State = decode_exact(body(&migrated)).unwrap();
+        assert!(state.send_allowlists.is_empty());
+        // Empty map: the writer never emits format 16 (byte-identical to the
+        // deployed writer). A non-empty map: format 16, full layout.
+        let written = encode_compatible(&state).unwrap();
+        assert_ne!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+        let mut with_policy = state.clone();
+        with_policy.send_allowlists.insert(
+            Address([7; 20]),
+            wrfcoin_shared_protocol::accounts::send_allowlist::AccountSendAllowlist::default(),
+        );
+        let written = encode_compatible(&with_policy).unwrap();
+        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+        let back: State = decode_exact(body(&written)).unwrap();
+        assert_eq!(back.send_allowlists, with_policy.send_allowlists);
+        // A format-15 body cannot be mislabelled as 16 or vice versa.
+        assert!(migrate_to_current(15, body(&migrated)).is_err());
     }
 
     #[test]

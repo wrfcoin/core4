@@ -6775,6 +6775,11 @@ mod tests {
             field!("node_receipt_registry", |s| field_json(
                 &s.node_receipt_registry.as_ref().map(|r| r.canonical_body())
             )),
+            // Address-keyed: compared as an ordered entry list. Parity:
+            // native-chain/tests/send_allowlist_parity.rs (producer, applier, WAL).
+            field!("send_allowlists", |s| field_json(
+                &s.send_allowlists.iter().collect::<Vec<_>>()
+            )),
         ]
     }
 
@@ -9571,6 +9576,9 @@ mod tests {
             "node_receipt_registry",
             "node_settlement",
             "node_fraud",
+            // Producer/applier/WAL parity with a populated policy:
+            // native-chain/tests/send_allowlist_parity.rs.
+            "send_allowlists",
         ]
         .into_iter()
         .collect();

@@ -1019,6 +1019,18 @@
         "owning_issue": 3398,
         "covers": "Gate-OFF report submissions refuse without changing serialized state or root bytes; fixture roots and block hashes match unchanged main staking goldens."
       }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "send_allowlist_parity"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "send_allowlist_guards"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "send_allowlist_interactions"
     }
   ],
   "external_coverage": [

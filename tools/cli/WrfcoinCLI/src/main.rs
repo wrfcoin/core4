@@ -295,6 +295,13 @@ enum Commands {
         action: commands::session_key::SessionKeyCommands,
     },
 
+    /// Chain-enforced send allowlist: enable, add (time-locked), remove,
+    /// cancel, disable (time-locked), show
+    SendAllowlist {
+        #[clap(subcommand)]
+        action: commands::send_allowlist::SendAllowlistCommands,
+    },
+
     /// Governance participation commands
     Governance {
         #[clap(subcommand)]
@@ -845,6 +852,15 @@ async fn run() -> Result<()> {
                 Ok(data) => emit_success(&context, "session-key", &data)?,
                 Err(err) => {
                     emit_error(&context, "session-key", &err)?;
+                    return Err(err);
+                },
+            }
+        },
+        Commands::SendAllowlist { action } => {
+            match commands::send_allowlist::handle_send_allowlist_command(&action).await {
+                Ok(data) => emit_success(&context, "send-allowlist", &data)?,
+                Err(err) => {
+                    emit_error(&context, "send-allowlist", &err)?;
                     return Err(err);
                 },
             }
