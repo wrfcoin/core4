@@ -305,6 +305,26 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /state/snapshot/prefix-counts:
+    get:
+      tags: [blockchain]
+      summary: Count snapshot entries per key prefix
+      description: >-
+        Count the canonical snapshot entries that /state/snapshot/entries pages
+        through, grouped by key prefix, from one snapshot build. Height, roots
+        and entry_count match /state/snapshot for the same state, so two nodes
+        can be compared at one height without paging. Requires a Reader token.
+      operationId: getStateSnapshotPrefixCounts
+      responses:
+        '200':
+          description: Per-prefix entry counts retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSnapshotPrefixCounts'
+        '401':
+          description: Missing or invalid Reader token
+
   /state/snapshot/proof/{key_hex}:
     get:
       tags: [blockchain]
@@ -971,6 +991,33 @@ components:
           type: integer
           description: Total number of canonical snapshot entries
       required: [height, state_root_hex, snapshot_root_hex, entry_count]
+
+    StateSnapshotPrefixCounts:
+      type: object
+      properties:
+        height:
+          type: integer
+          format: uint64
+          description: Chain height the snapshot was built from
+        state_root_hex:
+          type: string
+          description: Hex-encoded state root committed by the node
+        snapshot_root_hex:
+          type: string
+          description: Hex-encoded Merkle root of the canonical snapshot entry set
+        entry_count:
+          type: integer
+          description: Total number of canonical snapshot entries (the sum of counts)
+        counts:
+          type: object
+          description: >-
+            Entries per key prefix, sorted by prefix. A prefix is the key bytes
+            before the first '/' (the whole key if it has none), decoded as UTF-8
+            with invalid bytes replaced by U+FFFD.
+          additionalProperties:
+            type: integer
+          example: {chain: 1, meta: 3, state: 12}
+      required: [height, state_root_hex, snapshot_root_hex, entry_count, counts]
 
     SnapshotEntry:
       type: object

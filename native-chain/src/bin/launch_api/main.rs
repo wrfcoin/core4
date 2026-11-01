@@ -4030,6 +4030,8 @@ mod tests {
     mod node_bond_slice6a;
     #[path = "producers_bonds_list.rs"]
     mod producers_bonds_list;
+    #[path = "snapshot_prefix_counts.rs"]
+    mod snapshot_prefix_counts;
 
     /// `GET /network/producers` (see tests/producers_bonds_list.rs for `/node/bonds`).
     mod network_producers_route {
@@ -9078,6 +9080,7 @@ mod tests {
             // #1839: snapshot endpoints now require Reader auth
             "/state/snapshot",
             "/state/snapshot/entries",
+            "/state/snapshot/prefix-counts",
             "/state/snapshot/sync-payload",
             // #1841: per-address stake status now requires Reader auth
             "/transactions/stake/0x1111111111111111111111111111111111111111",

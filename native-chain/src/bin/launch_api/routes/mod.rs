@@ -327,6 +327,10 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             web::get().to(snapshot::get_state_snapshot_entries),
         )
         .route(
+            "/state/snapshot/prefix-counts",
+            web::get().to(snapshot::get_state_snapshot_prefix_counts),
+        )
+        .route(
             "/state/snapshot/proof/{key_hex}",
             web::get().to(snapshot::get_state_snapshot_proof),
         )
