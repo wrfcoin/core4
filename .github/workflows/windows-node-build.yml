@@ -200,7 +200,14 @@ jobs:
             if ($node[0].MainWindowHandle -ne 0) { throw 'the node has a visible window' }
 
             $cfg = @{}; Get-Content (Join-Path $app 'chain-888.conf') | ForEach-Object { $k, $v = $_ -split '=', 2; $cfg[$k] = $v }
-            $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 10
+            # A fresh node reports genesis_hash "unknown" until its first blocks arrive from the seed. The launcher returns
+            # as soon as the API answers, so wait (up to 3 min) for the node to see the chain, then compare strictly.
+            $until = (Get-Date).AddMinutes(3)
+            do {
+              $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 10
+              if ("$($info.genesis_hash)" -ne 'unknown') { break }
+              Start-Sleep 5
+            } while ((Get-Date) -lt $until)
             $info | ConvertTo-Json -Depth 4
             if ("$($info.chain_id)" -ne '888') { throw "chain_id $($info.chain_id)" }
             if (("$($info.genesis_hash)".ToLower() -replace '^0x', '') -ne $cfg['WRFCOIN_GENESIS_HASH']) { throw "genesis_hash $($info.genesis_hash)" }
