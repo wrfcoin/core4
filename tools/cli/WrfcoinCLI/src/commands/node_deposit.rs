@@ -27,8 +27,16 @@ pub struct DepositArgs {
     pub owner_key: String,
     #[clap(long)]
     pub payout_address: String,
+    /// Ed25519 public key of the payout account. Omit it when the payout
+    /// account is a passkey wallet: the payout then approves with a WebAuthn
+    /// assertion (`--payout-passkey-assertion`, needs `passkey_bond_payout`).
     #[clap(long)]
-    pub payout_key: String,
+    pub payout_key: Option<String>,
+    /// JSON file holding the passkey payout account's assertion over this
+    /// Deposit's challenge (the `payout_passkey` object, or a lifecycle /
+    /// transaction carrying it). Verified locally before the owner signs.
+    #[clap(long, conflicts_with = "payout_key")]
+    pub payout_passkey_assertion: Option<PathBuf>,
     #[clap(long)]
     pub server_key: String,
     #[clap(long)]
@@ -101,12 +109,14 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
     let owner_key = id(&args.owner_key)?;
     let owner = Address::from_public_key(&PublicKey::from_bytes(&owner_key)?);
     let payout: Address = args.payout_address.parse()?;
-    let payout_key = id(&args.payout_key)?;
+    let payout_key = args.payout_key.as_deref().map(id).transpose()?;
     ensure!(payout != owner, "payout must differ from hot bond owner");
-    ensure!(
-        Address::from_public_key(&PublicKey::from_bytes(&payout_key)?) == payout,
-        "payout public key/address mismatch"
-    );
+    if let Some(payout_key) = payout_key {
+        ensure!(
+            Address::from_public_key(&PublicKey::from_bytes(&payout_key)?) == payout,
+            "payout public key/address mismatch"
+        );
+    }
     let governance_key = id(&args.governance_key)?;
     ensure!(
         governance_key != owner_key,
@@ -115,7 +125,7 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
     let server_key = id(&args.server_key)?;
     let consumer_key = id(&args.consumer_key)?;
     ensure!(
-        payout_key != server_key && payout_key != consumer_key,
+        payout_key != Some(server_key) && payout_key != Some(consumer_key),
         "payout key must differ from dedicated node role keys"
     );
     ensure!(
@@ -159,8 +169,9 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
         owner_key,
         governance_key: Some(governance_key),
         governance_signature: vec![],
-        payout_key: Some(payout_key),
+        payout_key,
         payout_signature: vec![],
+        payout_passkey: None,
     };
     let mut tx = Transaction::new(
         vec![TransactionInput {
@@ -263,9 +274,14 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
         if let Some(out) = out {
             super::node_receipt::durable_packet(out, &expected)?;
         }
-        return Ok(
-            json!({"dry_run":true,"transaction":expected,"tx_id":expected.id.map(|id|id.to_hex()),"validated_for_carrying_height":carrying,"effective_epoch":payload.signed.authorization.effective_epoch,"submitted":false,"included":false}),
-        );
+        let mut plan = json!({"dry_run":true,"transaction":expected,"tx_id":expected.id.map(|id|id.to_hex()),"validated_for_carrying_height":carrying,"effective_epoch":payload.signed.authorization.effective_epoch,"submitted":false,"included":false});
+        if payload.payout_key.is_none() {
+            // Passkey payout: the challenge the payout wallet signs.
+            let identity = ChainIdentity::new(&args.chain_id, &args.network_id);
+            plan["payout_passkey_challenge"] =
+                super::node_bond::payout_challenge_json(&payload.signed.authorization, &identity);
+        }
+        return Ok(plan);
     }
     let out = out.ok_or_else(|| anyhow::anyhow!("--out required for durable Deposit"))?;
     let approvals = args.approvals_file.as_ref().ok_or_else(|| {
@@ -312,10 +328,24 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
         .sign_lifecycle(OperatorRole::Owner, &p.signed.authorization, &identity)?
         .as_bytes()
         .to_vec();
-    p.verify(
+    if let Some(path) = &args.payout_passkey_assertion {
+        p.payout_passkey = Some(super::node_bond::read_payout_passkey(
+            path,
+            &p.signed.authorization,
+            &identity,
+        )?);
+    }
+    ensure!(
+        p.payout_key.is_some() || p.payout_passkey.is_some(),
+        "passkey payout approval required: pass --payout-passkey-assertion or include payout_passkey in the approvals packet"
+    );
+    // Offline check as the chain will verify it; a passkey approval is only
+    // accepted by nodes once passkey_bond_payout is active.
+    p.verify_with_passkey_payout(
         &identity,
         &id(&args.genesis_hash)?,
         &[args.governance_key.to_ascii_lowercase()],
+        p.payout_passkey.is_some(),
     )?;
     tx.data = Some(serde_json::to_string(&p)?);
     // Lifecycle approvals bind the authorization, not the outer timestamp.
@@ -422,7 +452,8 @@ mod tests {
             deployment_id: deployment,
             owner_key: hexpk(1),
             payout_address: key(2).address().to_string(),
-            payout_key: hexpk(2),
+            payout_key: Some(hexpk(2)),
+            payout_passkey_assertion: None,
             server_key: hexpk(3),
             consumer_key: hexpk(4),
             governance_key: hexpk(5),
@@ -445,6 +476,31 @@ mod tests {
             .unwrap();
         assert_eq!(out["dry_run"], true);
         assert_eq!(out["validated_for_carrying_height"], 48002);
+        assert!(out.get("payout_passkey_challenge").is_none());
+        // Passkey payout: no --payout-key; the plan carries the challenge.
+        let wallet = wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator::new(
+            &[0x3c; 32],
+            "wrfcoin.com",
+        );
+        let ed_payout = args.payout_address.clone();
+        args.payout_key = None;
+        args.payout_address = wallet.account().to_string();
+        let out = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(handle(&args))
+            .unwrap();
+        let tx: Transaction = serde_json::from_value(out["transaction"].clone()).unwrap();
+        let plan = NodeBondLifecycle::parse(&tx).unwrap();
+        assert_eq!(plan.payout_key, None);
+        assert_eq!(
+            out["payout_passkey_challenge"]["challenge_hex"],
+            hex::encode(node_bond_payout_passkey_challenge(
+                &plan.signed.authorization,
+                &ChainIdentity::new("777", "testnet")
+            ))
+        );
+        args.payout_key = Some(hexpk(2));
+        args.payout_address = ed_payout;
         // An explicit 888 selection cannot silently sign against this 777 API.
         args.chain_id = "888".into();
         let error = tokio::runtime::Runtime::new().unwrap().block_on(handle(&args)).unwrap_err();

@@ -503,13 +503,15 @@ impl Mempool {
         }
         if tx.tx_type == TransactionType::NodeBondLifecycle {
             use crate::consensus::node_bond_registry::NodeBondLifecycle;
-            if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, current_height.ok_or_else(|| anyhow!("SP_NODE_BOND_HEIGHT_REQUIRED"))?) {
+            let height = current_height.ok_or_else(|| anyhow!("SP_NODE_BOND_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, height) {
                 return Err(anyhow!("SP_NODE_BOND_INACTIVE"));
             }
             let p = NodeBondLifecycle::parse(&tx).ok_or_else(|| anyhow!("SP_NODE_BOND_PAYLOAD"))?;
             let c = crate::governance::schedule_extension::schedule_extension_authority().ok_or_else(|| anyhow!("SP_NODE_BOND_AUTHORITY"))?.context();
             let genesis: [u8; 32] = hex::decode(c.genesis_hash)?.try_into().map_err(|_| anyhow!("SP_NODE_BOND_GENESIS"))?;
-            p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist).map_err(|_| anyhow!("SP_NODE_BOND_AUTHORIZATION"))?;
+            // Admitted for the block it would be mined in (tip + 1).
+            p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist, height.saturating_add(1)).map_err(|_| anyhow!("SP_NODE_BOND_AUTHORIZATION"))?;
         }
         if tx.tx_type == TransactionType::SessionKeyAction {
             use crate::accounts::session_keys::{

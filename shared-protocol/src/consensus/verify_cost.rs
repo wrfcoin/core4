@@ -429,6 +429,7 @@ impl VerifyCost for Transaction {
     /// `security_key_auth` member is charged one P-256 verification (the State
     /// check verifies it against one named key). Below activation this is
     /// exactly `verify_work`, so pre-activation budgets are byte-identical.
+    /// The same holds for `passkey_bond_payout` (below).
     fn verify_work_at_height(&self, height: u64) -> VerifyWork {
         let mut work = self.verify_work();
         if matches!(
@@ -436,6 +437,19 @@ impl VerifyCost for Transaction {
             TransactionType::Transfer | TransactionType::Stake | TransactionType::Unstake
         ) && crate::accounts::security_key::security_key_active(height)
             && self.security_key_spend_proof().is_some()
+        {
+            work.ecdsa = work.ecdsa.saturating_add(1);
+        }
+        // `passkey_bond_payout`: from activation a node-bond lifecycle carrying
+        // a well-formed `payout_passkey` member is charged one P-256
+        // verification (the payout approval). Detected with the same lenient
+        // parse consensus uses. Fail-expensive: charged whenever the member is
+        // present, even where verification refuses it. Below activation the
+        // member is ignored and the price is exactly `verify_work`.
+        if self.tx_type == TransactionType::NodeBondLifecycle
+            && crate::consensus::node_bond_registry::passkey_bond_payout_active(height)
+            && crate::consensus::node_bond_registry::NodeBondLifecycle::parse(self)
+                .is_some_and(|p| p.payout_passkey.is_some())
         {
             work.ecdsa = work.ecdsa.saturating_add(1);
         }

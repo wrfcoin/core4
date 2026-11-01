@@ -13,7 +13,11 @@ use wrfcoin_cli::{
 use wrfcoin_shared_protocol::{
     blockchain::transaction::Transaction,
     common::types::Address,
-    consensus::{node_bond_registry::NodeBondLifecycle, node_share_contracts::*},
+    accounts::passkey::PasskeyAuthorization,
+    consensus::{
+        node_bond_registry::{NodeBondLifecycle, verify_payout_passkey},
+        node_share_contracts::*,
+    },
     crypto::{
         chain_binding::{ChainIdentity, SigningProtocolVersion},
         domain_signing::DomainSeparated,
@@ -78,6 +82,32 @@ pub enum BondCommands {
         #[clap(long)]
         out: PathBuf,
     },
+    /// Print the 32-byte WebAuthn challenge a passkey payout wallet signs for
+    /// an unsigned Deposit/Update packet (`passkey_bond_payout`). Offline.
+    PayoutChallenge {
+        #[clap(long)]
+        transaction_file: PathBuf,
+        #[clap(long)]
+        chain_id: String,
+        #[clap(long)]
+        network_id: String,
+    },
+    /// Attach a passkey payout wallet's assertion to a Deposit/Update packet
+    /// whose payout_key is empty, after verifying it locally against the
+    /// packet's challenge and payout account. Offline; writes a new file.
+    AttachPayoutPasskey {
+        #[clap(long)]
+        transaction_file: PathBuf,
+        /// The `payout_passkey` object (or a lifecycle/transaction carrying it).
+        #[clap(long)]
+        payout_passkey_assertion: PathBuf,
+        #[clap(long)]
+        chain_id: String,
+        #[clap(long)]
+        network_id: String,
+        #[clap(long)]
+        out: PathBuf,
+    },
     /// Submit a fully signed registration and 250 WRF bond deposit.
     RegisterBond {
         #[clap(long)]
@@ -119,6 +149,70 @@ fn read_transaction(path: &Path) -> Result<Transaction> {
     serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("public Node transaction format refused"))
 }
+/// The passkey payout challenge for `a`, as the approval page consumes it.
+pub(crate) fn payout_challenge_json(a: &NodeBondAuthorization, identity: &ChainIdentity) -> Value {
+    let challenge = node_bond_payout_passkey_challenge(a, identity);
+    json!({
+        "challenge_hex": hex::encode(challenge),
+        "challenge_base64url": wrfcoin_shared_protocol::accounts::passkey::base64url_nopad(&challenge),
+        "payout_account": a.payout_account.to_hex(),
+        "deployment_id": hex::encode(a.deployment_id),
+        "action": format!("{:?}", a.action),
+        "expected_nonce": a.expected_nonce,
+        "effective_epoch": a.effective_epoch,
+        "chain_id": identity.chain_id,
+        "network_id": identity.network_id,
+    })
+}
+
+/// Read a passkey payout approval: a bare `payout_passkey` object, or a
+/// lifecycle / transaction carrying one. Verified against `a` before use.
+pub(crate) fn read_payout_passkey(
+    path: &Path,
+    a: &NodeBondAuthorization,
+    identity: &ChainIdentity,
+) -> Result<PasskeyAuthorization> {
+    let bytes = super::node_receipt::bounded_read(path, 40 * 1024)?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("passkey payout assertion file refused"))?;
+    let lifecycle = value
+        .get("data")
+        .and_then(Value::as_str)
+        .and_then(|data| serde_json::from_str::<Value>(data).ok())
+        .unwrap_or(value);
+    let candidate = lifecycle.get("payout_passkey").cloned().unwrap_or(lifecycle);
+    let approval: PasskeyAuthorization = serde_json::from_value(candidate)
+        .map_err(|_| anyhow::anyhow!("passkey payout assertion format refused"))?;
+    verify_payout_passkey(a, &approval, identity).map_err(|_| {
+        anyhow::anyhow!(
+            "passkey payout assertion does not verify for this packet's payout account and challenge"
+        )
+    })?;
+    Ok(approval)
+}
+
+/// Attach a verified passkey payout approval to an online lifecycle packet.
+fn attach_payout_passkey(
+    tx: &mut Transaction,
+    path: &Path,
+    identity: &ChainIdentity,
+) -> Result<()> {
+    let mut p = NodeBondLifecycle::parse(tx)
+        .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
+    ensure!(
+        matches!(p.signed.authorization.action, NodeBondAction::Deposit | NodeBondAction::Update),
+        "only Deposit/Update carry a payout approval"
+    );
+    ensure!(
+        p.payout_key.is_none() && p.payout_signature.is_empty(),
+        "packet names an ed25519 payout key; reassemble without --payout-key for a passkey payout"
+    );
+    p.payout_passkey = Some(read_payout_passkey(path, &p.signed.authorization, identity)?);
+    tx.data = Some(serde_json::to_string(&p)?);
+    tx.set_id();
+    Ok(())
+}
+
 fn public_id(value: &str) -> Result<String> {
     ensure!(value.len() == 64, "expected a 32-byte hex identifier");
     Ok(hex::encode(hex::decode(value)?))
@@ -259,6 +353,34 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
     if let BondCommands::Deposit(args) = command {
         return super::node_deposit::handle(args).await;
     }
+    if let BondCommands::PayoutChallenge { transaction_file, chain_id, network_id } = command {
+        let tx = read_transaction(transaction_file)?;
+        let p = NodeBondLifecycle::parse(&tx)
+            .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
+        let a = &p.signed.authorization;
+        ensure!(
+            matches!(a.action, NodeBondAction::Deposit | NodeBondAction::Update),
+            "only Deposit/Update carry a payout approval"
+        );
+        return Ok(payout_challenge_json(a, &ChainIdentity::new(chain_id, network_id)));
+    }
+    if let BondCommands::AttachPayoutPasskey {
+        transaction_file,
+        payout_passkey_assertion,
+        chain_id,
+        network_id,
+        out,
+    } = command
+    {
+        let mut tx = read_transaction(transaction_file)?;
+        ensure!(!out.exists(), "output packet already exists; inspect before retry");
+        attach_payout_passkey(&mut tx, payout_passkey_assertion, &ChainIdentity::new(chain_id, network_id))?;
+        let bytes = serde_json::to_vec_pretty(&tx)?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(out)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        return Ok(json!({"attached":true,"included":false,"output":out.display().to_string()}));
+    }
     if let BondCommands::Sign {
         transaction_file,
         key_file,
@@ -354,7 +476,12 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         BondCommands::Receipt { receipt_id } => Ok(api
             .get(&format!("/node/receipts/{}", public_id(receipt_id)?), None)
             .await?),
-        BondCommands::Sign { .. } | BondCommands::Deposit(_) | BondCommands::KeyInfo { .. } | BondCommands::GrantRequest { .. } => {
+        BondCommands::Sign { .. }
+        | BondCommands::Deposit(_)
+        | BondCommands::KeyInfo { .. }
+        | BondCommands::GrantRequest { .. }
+        | BondCommands::PayoutChallenge { .. }
+        | BondCommands::AttachPayoutPasskey { .. } => {
             unreachable!()
         },
     }
@@ -426,20 +553,21 @@ mod tests {
         }
         let signed = NodeBondLifecycle::parse(&tx).unwrap();
         signed
-            .verify(&identity, &[7; 32], &[hex::encode(fixture::pk(99))])
+            .verify(&identity, &[7; 32], &[hex::encode(fixture::pk(99))], 0)
             .unwrap();
         assert!(
             signed
                 .verify(
                     &ChainIdentity::new("1", "mainnet"),
                     &[7; 32],
-                    &[hex::encode(fixture::pk(99))]
+                    &[hex::encode(fixture::pk(99))],
+                    0
                 )
                 .is_err()
         );
         assert!(
             signed
-                .verify(&identity, &[8; 32], &[hex::encode(fixture::pk(99))])
+                .verify(&identity, &[8; 32], &[hex::encode(fixture::pk(99))], 0)
                 .is_err()
         );
     }
@@ -467,10 +595,53 @@ mod tests {
             .unwrap();
             NodeBondLifecycle::parse(&tx)
                 .unwrap()
-                .verify(&ChainIdentity::new("777", "testnet"), &[7; 32], &[])
+                .verify(&ChainIdentity::new("777", "testnet"), &[7; 32], &[], 0)
                 .unwrap();
         }
     }
+    #[test]
+    fn passkey_payout_challenge_attach_and_offline_verify() {
+        use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;
+        let identity = ChainIdentity::new("777", "testnet");
+        let wallet = SoftwareAuthenticator::new(&[0x3c; 32], "wrfcoin.com");
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.signed.authorization.payout_account = wallet.account();
+        fixture::resign(&mut p, 10);
+        p.payout_key = None;
+        p.payout_signature.clear();
+        let mut tx = packet(&p);
+
+        let shown = payout_challenge_json(&p.signed.authorization, &identity);
+        let challenge = node_bond_payout_passkey_challenge(&p.signed.authorization, &identity);
+        assert_eq!(shown["challenge_hex"], hex::encode(challenge));
+        assert_eq!(shown["payout_account"], wallet.account().to_hex());
+
+        let dir = std::env::temp_dir().join(format!("wrfcoin-passkey-payout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A wrong wallet's assertion is refused before anything is written.
+        let other = SoftwareAuthenticator::new(&[0x4d; 32], "wrfcoin.com");
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, serde_json::to_vec(&other.authorization_for(&other.assert(&challenge))).unwrap()).unwrap();
+        let before = tx.clone();
+        assert!(attach_payout_passkey(&mut tx, &bad, &identity).is_err());
+        assert_eq!(tx.data, before.data);
+        // The right wallet, wrapped the way the approval page may emit it.
+        let good = dir.join("good.json");
+        let approval = wallet.authorization_for(&wallet.assert(&challenge));
+        std::fs::write(&good, serde_json::to_vec(&json!({"payout_passkey": approval})).unwrap()).unwrap();
+        attach_payout_passkey(&mut tx, &good, &identity).unwrap();
+        let attached = NodeBondLifecycle::parse(&tx).unwrap();
+        assert_eq!(attached.payout_passkey.as_ref(), Some(&approval));
+        let keys = [hex::encode(fixture::pk(99))];
+        attached.verify_with_passkey_payout(&identity, &[7; 32], &keys, true).unwrap();
+        // A binary without the feature (or below activation) refuses it.
+        assert!(attached.verify_with_passkey_payout(&identity, &[7; 32], &keys, false).is_err());
+        // An ed25519-payout packet cannot also take a passkey approval.
+        let mut ed = packet(&fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1));
+        assert!(attach_payout_passkey(&mut ed, &good, &identity).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn public_identifier_cannot_inject_a_route() {
         assert!(public_id("../receipts/submit").is_err());

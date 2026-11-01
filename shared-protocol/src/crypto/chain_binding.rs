@@ -1168,6 +1168,22 @@ pub enum ConsensusFeature {
     /// The binary accepts a live schedule extension naming it; scheduling is
     /// the owner's signature only.
     SendAllowlist,
+    /// Passkey node-bond payout (`consensus::node_bond_registry`). From its
+    /// activation a node-bond `Deposit`/`Update` may carry the payout
+    /// account's approval as a WebAuthn P-256 assertion (`payout_passkey`)
+    /// from the passkey account named as `payout_account`, instead of an
+    /// ed25519 `payout_key` signature. The assertion's challenge commits to
+    /// the full bond authorization under its own domain
+    /// (`wrfcoin.node_bond_payout_passkey.v1`). Below activation the member is
+    /// ignored exactly as a binary without it ignores the unknown JSON member,
+    /// and verify pricing is unchanged, so blocks and `state_root` are
+    /// byte-identical.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED: it appears in no genesis, default schedule or cut pin.
+    /// The binary accepts a live schedule extension naming it; scheduling is
+    /// the owner's signature only.
+    PasskeyBondPayout,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1213,6 +1229,7 @@ impl ConsensusFeature {
         Self::TransferFeeBurn,
         Self::SecurityKeySpend,
         Self::SendAllowlist,
+        Self::PasskeyBondPayout,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1247,6 +1264,7 @@ impl ConsensusFeature {
             Self::TransferFeeBurn => "transfer_fee_burn",
             Self::SecurityKeySpend => "security_key_spend",
             Self::SendAllowlist => "send_allowlist",
+            Self::PasskeyBondPayout => "passkey_bond_payout",
         }
     }
 
@@ -1334,7 +1352,10 @@ impl ConsensusFeature {
             | Self::SecurityKeySpend
             // Wired end to end (admission, block classifier, apply, guards,
             // checkpoint/snapshot layout); scheduling is the owner's signature.
-            | Self::SendAllowlist => true,
+            | Self::SendAllowlist
+            // Wired end to end (admission, apply, pricing, CLI); scheduling is
+            // the owner's signature.
+            | Self::PasskeyBondPayout => true,
         }
     }
 
@@ -1363,6 +1384,8 @@ impl ConsensusFeature {
             Self::SecurityKeySpend => true,
             // Send allowlist: admission, classifier and apply read it.
             Self::SendAllowlist => true,
+            // Passkey bond payout: lifecycle verify and pricing read it.
+            Self::PasskeyBondPayout => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2913,6 +2936,7 @@ mod tests {
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
+        expected.push("passkey_bond_payout");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -2951,6 +2975,7 @@ mod tests {
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
+        expected.push("passkey_bond_payout");
         assert_eq!(schedulable, expected);
     }
 

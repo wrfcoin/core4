@@ -82,6 +82,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "transfer_fee_burn",
     "security_key_spend",
     "send_allowlist",
+    "passkey_bond_payout",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -313,7 +314,8 @@ mod tests {
                 "station_coordinates_fixed_point",
                 "transfer_fee_burn",
                 "security_key_spend",
-                "send_allowlist"
+                "send_allowlist",
+                "passkey_bond_payout"
             ]
         );
     }
