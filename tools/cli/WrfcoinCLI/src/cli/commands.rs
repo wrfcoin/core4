@@ -1027,6 +1027,10 @@ pub async fn handle_wallet_command(
                 .read()
                 .await
                 .sign_transparent_transfer(to, amount_units, nonce)?;
+            // Burned transfer fee: declared when the node reports one in
+            // force; otherwise omitted, and the node declares its own.
+            let fee = client.get_transfer_fee().await;
+            let fee_units = fee.as_ref().ok().copied().flatten();
             let accepted = client
                 .submit_transparent_transfer(
                     &from,
@@ -1035,6 +1039,7 @@ pub async fn handle_wallet_command(
                     nonce,
                     &auth_pubkey,
                     &auth_signature,
+                    fee_units,
                 )
                 .await?;
             Ok(json!({
@@ -1047,6 +1052,7 @@ pub async fn handle_wallet_command(
                 "from": from,
                 "to": to,
                 "amount": wrfcoin_cli::output::format_wrf_units(amount_units),
+                "network_fee": crate::commands::send_interactive::network_fee_label(&fee),
                 "status": "submitted",
                 "tx_id": accepted.tx_id,
             }))

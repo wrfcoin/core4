@@ -244,6 +244,19 @@ pub struct AddressInfo {
     pub nonce: Option<String>,
 }
 
+/// The fee in force at the next block, from a `/network/info` body (bare or
+/// wrapped in `data`). `None` when absent, inactive or zero.
+pub fn parse_transfer_fee(info: &Value) -> Option<u64> {
+    let fee = info.get("transfer_fee").or_else(|| info.get("data")?.get("transfer_fee"))?;
+    if fee.get("active").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    fee.get("base_units")
+        .and_then(Value::as_str)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|units| *units > 0)
+}
+
 /// Acceptance receipt returned by `POST /transactions/submit`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmitAccepted {
@@ -888,6 +901,11 @@ impl ApiClient {
     }
 
     /// Submit one client-authorized transparent transfer to the node.
+    ///
+    /// `fee` is the burned network fee the user was shown (base units). It is
+    /// sent only when known, so a node that charges none receives exactly the
+    /// body it always did; the node refuses a value below the chain's fee
+    /// (`FEE_BELOW_MINIMUM`) and debits exactly the chain's fee otherwise.
     pub async fn submit_transparent_transfer(
         &self,
         from: &str,
@@ -896,22 +914,35 @@ impl ApiClient {
         nonce: u64,
         auth_pubkey: &str,
         auth_signature: &str,
+        fee: Option<u64>,
     ) -> Result<SubmitAccepted> {
-        self.request_once(
-            "POST",
-            "/transactions/submit",
-            Some(json!({
-                "from": from,
-                "to": to,
-                "amount": amount,
-                "nonce": nonce.to_string(),
-                "transparent_opt_out": true,
-                "transparent_opt_out_reason": "cli",
-                "auth_pubkey": auth_pubkey,
-                "auth_signature": auth_signature,
-            })),
-        )
-        .await
+        let mut body = json!({
+            "from": from,
+            "to": to,
+            "amount": amount,
+            "nonce": nonce.to_string(),
+            "transparent_opt_out": true,
+            "transparent_opt_out_reason": "cli",
+            "auth_pubkey": auth_pubkey,
+            "auth_signature": auth_signature,
+        });
+        if let Some(fee) = fee {
+            body["fee"] = json!(fee);
+        }
+        self.request_once("POST", "/transactions/submit", Some(body)).await
+    }
+
+    /// The burned transfer fee a send would pay in the next block, from the
+    /// node's `/network/info` `transfer_fee` object. One attempt, no retry:
+    /// this only feeds the preview.
+    ///
+    /// - `Ok(None)`: the node charges no fee (or predates the fee and does
+    ///   not report one, which also means it charges none).
+    /// - `Ok(Some(units))`: the fee is in force at the next block.
+    /// - `Err`: the node could not be asked; the caller must not claim "no fee".
+    pub async fn get_transfer_fee(&self) -> Result<Option<u64>> {
+        let info: Value = self.request_once("GET", "/network/info", None).await?;
+        Ok(parse_transfer_fee(&info))
     }
 
     /// Address history is intentionally node-backed. Until the node serves
@@ -1481,6 +1512,23 @@ mod bearer_token_redaction_tests {
 #[cfg(test)]
 mod service_target_tests {
     use super::*;
+
+    #[test]
+    fn parse_transfer_fee_reads_only_an_active_positive_fee() {
+        let active = json!({"transfer_fee": {"active": true, "base_units": "5000"}});
+        assert_eq!(parse_transfer_fee(&active), Some(5_000));
+        let wrapped = json!({"data": {"transfer_fee": {"active": true, "base_units": "5000"}}});
+        assert_eq!(parse_transfer_fee(&wrapped), Some(5_000));
+        for none in [
+            json!({}),
+            json!({"transfer_fee": {"active": false, "base_units": "5000"}}),
+            json!({"transfer_fee": {"active": true, "base_units": "0"}}),
+            json!({"transfer_fee": {"active": true, "base_units": 5000}}),
+            json!({"transfer_fee": {"active": true, "base_units": "-1"}}),
+        ] {
+            assert_eq!(parse_transfer_fee(&none), None, "{none}");
+        }
+    }
     use std::sync::Mutex;
 
     // Env-var tests mutate process state; serialize them.

@@ -1124,6 +1124,22 @@ pub enum ConsensusFeature {
     /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
     /// UNSCHEDULED and NOT live-schedulable; activation is an owner decision.
     StationCoordinatesFixedPoint,
+    /// Owner GO 2026-11-01: every transparent transfer pays a small protocol
+    /// fee that is BURNED (`consensus::transfer_fee`). From its activation a
+    /// transparent `Transfer` must declare `tx.fee >=` the fee in force at
+    /// that height ([`crate::consensus::transfer_fee::transfer_fee_at`]); the
+    /// fee is debited from the sender, or from the sponsor when a valid
+    /// `paymaster` sponsorship pays it, and added to
+    /// `State::supply_authorized_burning`. The amount debited is the protocol
+    /// fee, never the unsigned `tx.fee`, so nobody but the chain sets what a
+    /// sender loses. Rewards, receipts, attestations, node pay and governance
+    /// transactions are untouched.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED and NOT live-schedulable; it is meant to be scheduled at
+    /// the SAME height as `paymaster`, so no newcomer meets a fee before a
+    /// sponsor can pay it. Inactive, every path is byte-identical to before.
+    TransferFeeBurn,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1166,6 +1182,7 @@ impl ConsensusFeature {
         Self::DeviceSubmissionLimit,
         Self::StreakReplayNodeService,
         Self::StationCoordinatesFixedPoint,
+        Self::TransferFeeBurn,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1197,6 +1214,7 @@ impl ConsensusFeature {
             Self::DeviceSubmissionLimit => "device_submission_limit",
             Self::StreakReplayNodeService => "streak_replay_node_service",
             Self::StationCoordinatesFixedPoint => "station_coordinates_fixed_point",
+            Self::TransferFeeBurn => "transfer_fee_burn",
         }
     }
 
@@ -1262,7 +1280,10 @@ impl ConsensusFeature {
             // #3591: wired and tested; scheduling is a separate owner step.
             | Self::StreakReplayNodeService
             // #3336: wired and tested; scheduling is a separate owner step.
-            | Self::StationCoordinatesFixedPoint => false,
+            | Self::StationCoordinatesFixedPoint
+            // Transfer fee burn: wired and tested; scheduled together with
+            // `paymaster` in one owner-signed release, never alone.
+            | Self::TransferFeeBurn => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1298,6 +1319,8 @@ impl ConsensusFeature {
             Self::StreakReplayNodeService => true,
             // #3336: station_registration_step and the preimage read it.
             Self::StationCoordinatesFixedPoint => true,
+            // State apply, mempool admission and the submit route read it.
+            Self::TransferFeeBurn => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -2863,6 +2886,7 @@ mod tests {
             ConsensusFeature::DeviceSubmissionLimit,
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
+            ConsensusFeature::TransferFeeBurn,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }

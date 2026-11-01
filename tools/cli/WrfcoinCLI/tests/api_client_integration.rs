@@ -209,6 +209,7 @@ async fn wallet_send_posts_exactly_once_to_node_submit_route() -> anyhow::Result
             7,
             "abcd",
             "1234",
+            None,
         )
         .await?;
     assert!(accepted.accepted);

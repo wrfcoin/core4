@@ -5,7 +5,7 @@ use crate::helpers::{
     build_transparent_opt_out_payload, enforce_contribution_commit_rate_limit,
     enforce_legacy_authenticated_submit_rate_limit, enforce_legacy_submit_rate_limit,
     enforce_permissionless_replay_protection, enforce_permissionless_submit_rate_limit,
-    enqueue_protocol_transaction, enqueue_protocol_transaction_with_nonce, envelope_error,
+    enqueue_protocol_transaction, enqueue_protocol_transaction_with_nonce_and_fee, envelope_error,
     envelope_success, feature_disabled_envelope_with_hint, refuse_seen_permissionless_replay_key,
     release_permissionless_replay_key, require_forecaster_bound_to_bearer, require_role,
     submit_protocol_transaction, validate_commit_hash, validate_nonce, validate_participant_id,
@@ -80,6 +80,14 @@ pub struct LegacyTransactionSubmitRequest {
     /// key's on-chain scope and limits so an over-limit send fails fast.
     #[serde(default)]
     pub session_key_auth: Option<wrfcoin_shared_protocol::blockchain::transaction::SessionKeyTransferAuth>,
+    /// The network fee the wallet showed the user, in base units (burned
+    /// transfer fee, `transfer_fee_burn`). Optional: when absent the node
+    /// declares the fee the chain requires. Once the fee is in force at the
+    /// next block, a value below it is refused with `FEE_BELOW_MINIMUM` before
+    /// any replay or rate state changes. The chain debits exactly its own fee,
+    /// never more, whatever is declared here.
+    #[serde(default)]
+    pub fee: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,6 +241,45 @@ pub async fn submit_transaction_compat(
             "set transparent_opt_out=true with auth_pubkey/auth_signature (#1727); \
              confidential transfers are tracked in #2080; backend wallet replacement is #1165",
         );
+    }
+
+    // Burned transfer fee (`transfer_fee_burn`): what the transfer would pay
+    // in the block it is mined in (tip+1). Refused before replay/rate-limit
+    // state changes, like an unavailable feature (#3235), when the wallet
+    // declared less than the chain requires. `declared_fee` is 0 on a chain
+    // that schedules no fee, so the envelope is unchanged there.
+    let next_height = state.blockchain.read().await.height.saturating_add(1);
+    let required_fee = wrfcoin_shared_protocol::consensus::transfer_fee::transfer_fee_at(next_height);
+    let declared_fee =
+        wrfcoin_shared_protocol::consensus::transfer_fee::transfer_fee_to_declare(next_height);
+    if let Some(required) = required_fee {
+        let format_wrf = wrfcoin_shared_protocol::consensus::transfer_fee::format_wrf;
+        if let Some(offered) = body.fee.filter(|offered| *offered < required) {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "FEE_BELOW_MINIMUM",
+                format!(
+                    "this transfer costs a network fee of {} WRF ({required} base units), which \
+                     is burned; the request offered {offered} base units. Send fee >= {required}, \
+                     or attach a sponsorship that pays it",
+                    format_wrf(required)
+                ),
+            );
+        }
+        if let Some(sponsorship) = body.sponsorship.as_ref().filter(|s| s.fee < required) {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "FEE_BELOW_MINIMUM",
+                format!(
+                    "the sponsorship pays {} base units; the network fee is {} WRF ({required} \
+                     base units, burned)",
+                    sponsorship.fee,
+                    format_wrf(required)
+                ),
+            );
+        }
     }
 
     let (tx_type, payload_value, privacy_mode) = {
@@ -483,12 +530,13 @@ pub async fn submit_transaction_compat(
             Err(resp) => return resp,
         };
 
-    let accepted = match enqueue_protocol_transaction_with_nonce(
+    let accepted = match enqueue_protocol_transaction_with_nonce_and_fee(
         state.clone(),
         tx_type,
         from,
         payload_value,
         nonce_u64,
+        declared_fee,
     )
     .await
     {
@@ -517,6 +565,16 @@ pub async fn submit_transaction_compat(
             "privacy_mode": privacy_mode,
             "transparent_opt_out": transparent_opt_out,
             "sponsored": body.sponsorship.is_some(),
+            // Burned transfer fee: what this transfer declares and, once the
+            // fee is in force at the next block, who pays it. Base units as a
+            // decimal string, like `amount`.
+            "fee": declared_fee.to_string(),
+            "fee_burned": required_fee.is_some(),
+            "fee_paid_by": match (required_fee, body.sponsorship.is_some()) {
+                (None, _) => serde_json::Value::Null,
+                (Some(_), true) => serde_json::json!("sponsor"),
+                (Some(_), false) => serde_json::json!("sender"),
+            },
             "default_privacy_mode": "feature_disabled",
             "transparent_mode_note": "supported transfers require transparent_opt_out=true with from-account authorization (#1727)",
         }),

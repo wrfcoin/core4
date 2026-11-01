@@ -783,10 +783,16 @@ async fn wallet_send_dry_run_preview_shows_no_network_fee() {
         .expect(1).create_async().await;
     let estimate = server.mock("GET", Matcher::Regex("^/transactions/estimate-fee".to_string()))
         .expect(0).create_async().await;
+    // A node that predates the burned transfer fee reports no `transfer_fee`.
+    let info = server.mock("GET", "/network/info")
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(r#"{"network_id":"testnet","chain_height":10}"#)
+        .expect(1).create_async().await;
     let submit = server.mock("POST", "/transactions/submit").expect(0).create_async().await;
     let (ok, stdout, stderr) = run_wrfcoin(
         &["--json", "wallet", "send", "--to", "0x2222222222222222222222222222222222222222", "--amount", "1", "--dry-run"],
         &home, Some(&server.url()));
+    info.assert_async().await;
     assert!(ok, "dry run failed\nstdout={stdout}\nstderr={stderr}");
     let out: Value = serde_json::from_str(&stdout).expect("dry-run json");
     let preview = &out["data"]["preview"];
@@ -800,6 +806,39 @@ async fn wallet_send_dry_run_preview_shows_no_network_fee() {
     assert!(!stdout.contains("HIGH_FEE"), "fee warning survived: {stdout}");
     account.assert_async().await;
     estimate.assert_async().await;
+    submit.assert_async().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_send_dry_run_preview_shows_the_burned_transfer_fee_when_active() {
+    // Once the node reports `transfer_fee_burn` in force at the next block,
+    // the preview shows the burned fee and subtracts it from what remains.
+    let home = temp_home("wallet-send-preview-burned-fee");
+    let (ok, stdout, stderr) = run_wrfcoin(&["--json", "wallet", "new-address"], &home, None);
+    assert!(ok, "wallet creation failed: {stdout} {stderr}");
+    let address = wallet_primary(&home);
+    let mut server = Server::new_async().await;
+    let account = server.mock("GET", format!("/addresses/{address}").as_str())
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(format!(r#"{{"data":{{"address":"{address}","balance":"300000000","spendable_balance":"300000000","stake_locked":"0","earned_balance_total":"0","nonce":"0"}}}}"#))
+        .expect(1).create_async().await;
+    let info = server.mock("GET", "/network/info")
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(r#"{"network_id":"testnet","chain_height":10,"transfer_fee":{"feature":"transfer_fee_burn","active":true,"scheduled":true,"next_height":11,"base_units":"5000","wrf":"0.00005","burned":true,"sponsorable":true}}"#)
+        .expect(1).create_async().await;
+    let submit = server.mock("POST", "/transactions/submit").expect(0).create_async().await;
+    let (ok, stdout, stderr) = run_wrfcoin(
+        &["--json", "wallet", "send", "--to", "0x2222222222222222222222222222222222222222", "--amount", "1", "--dry-run"],
+        &home, Some(&server.url()));
+    assert!(ok, "dry run failed\nstdout={stdout}\nstderr={stderr}");
+    let out: Value = serde_json::from_str(&stdout).expect("dry-run json");
+    let preview = &out["data"]["preview"];
+    assert_eq!(preview["amount"], 100_000_000u64);
+    assert_eq!(preview["network_fee"], "0.00005000 WRF (burned)");
+    assert_eq!(preview["network_fee_base_units"], 5_000u64);
+    assert_eq!(preview["remaining_balance"], 200_000_000u64 - 5_000);
+    account.assert_async().await;
+    info.assert_async().await;
     submit.assert_async().await;
 }
 

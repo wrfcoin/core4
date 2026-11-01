@@ -416,6 +416,10 @@
     },
     {
       "package": "wrfcoin-native-chain",
+      "target": "transfer_fee_burn_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
       "target": "upgrade_notice_runtime"
     },
     {
@@ -505,6 +509,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "session_key_transfers"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "transfer_fee_burn"
     },
     {
       "package": "wrfcoin-shared-protocol",

@@ -10265,6 +10265,137 @@ mod tests {
         refresh_feature_schedule_extensions(Vec::new());
     }
 
+    /// Burned transfer fee: `/transactions/submit` declares the chain's fee
+    /// on the envelope it builds, refuses a wallet that offers less once the
+    /// fee is in force at tip+1 (before any replay/rate state), and
+    /// `/network/info` tells wallets what a send costs.
+    #[actix_web::test]
+    async fn transactions_submit_declares_and_enforces_the_transfer_fee_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::consensus::transfer_fee::TRANSFER_FEE_V1_BASE_UNITS as FEE;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_declares_and_enforces_the_transfer_fee_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x1101110111011101110111011101110111011101",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 6_000;
+        let _env = crate::helpers::test_env::lock();
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x4444444444444444444444444444444444444444";
+        let amount = 42u64;
+        // One sender per submit: the per-`from` submit budget (#3337) is not
+        // what this test exercises.
+        let body = |nonce: u64, fee: Option<u64>| {
+            let (user_sk, user_pk_hex) = keypair(0x1101_10 + nonce);
+            let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
+            let mut body = json!({
+                "from": from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "auth_pubkey": user_pk_hex,
+                "auth_signature": user_sk
+                    .sign(&transparent_transfer_authorization_message(&from, to, amount, nonce))
+                    .to_string(),
+            });
+            if let Some(fee) = fee {
+                body["fee"] = json!(fee);
+            }
+            body
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+        let pending_fees = |state: &web::Data<AppState>| {
+            let state = state.clone();
+            async move {
+                let mut fees: Vec<u64> = state
+                    .mempool
+                    .read()
+                    .await
+                    .get_transactions()
+                    .iter()
+                    .map(|tx| tx.fee)
+                    .collect();
+                fees.sort_unstable();
+                fees
+            }
+        };
+
+        // Unscheduled: no fee declared, none charged, and info says so.
+        refresh_feature_schedule_extensions(Vec::new());
+        let resp = test::call_service(&app, submit(body(0, Some(1)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_eq!(json_body["data"]["fee"], "0", "{json_body}");
+        assert_eq!(json_body["data"]["fee_burned"], false);
+        assert_eq!(pending_fees(&state).await, vec![0], "envelope unchanged");
+        let resp = test::call_service(&app, test::TestRequest::get().uri("/network/info").to_request()).await;
+        let info: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(info["transfer_fee"]["active"], false, "{info}");
+        assert_eq!(info["transfer_fee"]["base_units"], "0");
+
+        // Scheduled at H; tip H-2, so the next block H-1 charges nothing, but
+        // the envelope already declares the fee so a late mine is not refused.
+        refresh_feature_schedule_extensions(vec![(ConsensusFeature::TransferFeeBurn.name().to_string(), H)]);
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(body(1, Some(0)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "below activation a low offer is fine: {json_body}");
+        assert_eq!(json_body["data"]["fee"], FEE.to_string());
+        assert_eq!(json_body["data"]["fee_burned"], false);
+        assert_eq!(pending_fees(&state).await, vec![0, FEE]);
+
+        // Tip H-1: the next block charges the fee.
+        state.blockchain.write().await.height = H - 1;
+        let size_before = state.mempool.read().await.size();
+        let resp = test::call_service(&app, submit(body(2, Some(FEE - 1)))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&json_body);
+        assert_eq!(json_body["error"]["code"], "FEE_BELOW_MINIMUM", "{json_body}");
+        assert!(json_body["error"]["message"].as_str().unwrap().contains("0.00005 WRF"), "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), size_before, "nothing enqueued");
+        // The refused nonce was not reserved: the same nonce is accepted with
+        // the fee, and an absent `fee` accepts the chain's fee.
+        let resp = test::call_service(&app, submit(body(2, Some(FEE)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_eq!(json_body["data"]["fee"], FEE.to_string());
+        assert_eq!(json_body["data"]["fee_burned"], true);
+        assert_eq!(json_body["data"]["fee_paid_by"], "sender");
+        let resp = test::call_service(&app, submit(body(3, None))).await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(pending_fees(&state).await, vec![0, FEE, FEE, FEE]);
+
+        let resp = test::call_service(&app, test::TestRequest::get().uri("/network/info").to_request()).await;
+        let info: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(info["transfer_fee"]["active"], true, "{info}");
+        assert_eq!(info["transfer_fee"]["base_units"], FEE.to_string());
+        assert_eq!(info["transfer_fee"]["wrf"], "0.00005");
+        assert_eq!(info["transfer_fee"]["burned"], true);
+
+        refresh_feature_schedule_extensions(Vec::new());
+    }
+
     #[actix_web::test]
     async fn legacy_submit_rate_limit_helper_enforces_current_window() {
         let state = test_state(None);
@@ -11006,7 +11137,7 @@ mod tests {
         let refuse = at("refuse_seen_permissionless_replay_key(&req, &state, &replay_key)");
         let limit = at("enforce_legacy_authenticated_submit_rate_limit(&req, &state, from)");
         let reserve = at("enforce_permissionless_replay_protection(&req, &state, &replay_key)");
-        let enqueue = at("enqueue_protocol_transaction_with_nonce(");
+        let enqueue = at("enqueue_protocol_transaction_with_nonce_and_fee(");
         assert!(
             refuse < limit && limit < reserve && reserve < enqueue,
             "order must be: read-only replay refusal, rate limit, durable reservation, enqueue"
