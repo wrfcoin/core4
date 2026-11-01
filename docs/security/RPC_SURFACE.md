@@ -53,6 +53,7 @@ that exploitation is currently demonstrated.
 | `GET /participation/policy` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_participation_policy` | `public` | no | no | global-read |
 | `GET /accounts/{address}/session-keys` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::list_session_keys` | `authenticated` | no | no | global-read |
 | `POST /session-keys/submit` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::submit_session_key_action` | `authenticated` | yes | no | global-write + legacy-submit (failed authorization) |
+| `GET /accounts/{address}/security-key` | `http` | `native-chain/src/bin/launch_api/routes/security_key.rs:security_key::get_security_key_status` | `public` | no | no | global-read |
 | `GET /addresses/{address}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_compat` | `authenticated` | no | no | global-read |
 | `GET /prometheus` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |
 | `GET /metrics` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |
@@ -437,3 +438,15 @@ token), mutates state (mempool admission and gossip), no unbounded work (40 KiB 
 per-token limit 30 requests/minute (429). It is **not mounted** (404) unless
 `WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1` (default off) and `NodeShareSettlement` is active. A non-forking
 change: it admits a transaction type the mempool and `apply` already handle.
+
+## Security-key wallet action route (`security_key_spend`)
+
+`POST /accounts/security-key/actions` (`routes/security_key.rs:security_key::submit_security_key_action`) is
+registered through a `web::resource(..)` (32 KiB JSON limit), which the table scanner (`.route(` only) does not
+see. Classification: `authenticated` (Contributor token), mutates state (mempool admission of a
+`SecurityKeyAction`), bounded work (one ed25519 and at most two P-256 verifications in a State dry-run at tip+1;
+failed attempts charge the caller's legacy-submit budget). It answers 503 `FEATURE_NOT_ACTIVE` until
+`security_key_spend` is active at the next block. Non-forking: it only admits a transaction the mempool and the
+governance sink already handle, and consensus re-checks it at the inclusion height. The read
+`GET /accounts/{address}/security-key` is in the table above. `/transactions/submit` and `/session-keys/submit`
+also accept an optional `security_key_auth` assertion (no new route).
