@@ -13,7 +13,9 @@ mod fixture;
 
 use fixture::{A, address, advance, apply, pk, resign};
 use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;
-use wrfcoin_shared_protocol::accounts::passkey::{FLAG_USER_PRESENT, P256Signature, PasskeyAuthorization};
+use wrfcoin_shared_protocol::accounts::passkey::{
+    FLAG_USER_PRESENT, P256Signature, PasskeyAuthorization,
+};
 use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
 use wrfcoin_shared_protocol::common::types::Balance;
 use wrfcoin_shared_protocol::consensus::node_bond_registry::{
@@ -54,11 +56,13 @@ fn state() -> State {
         vec![hex::encode(pk(99))],
     );
     let mut s = State::new();
-    s.genesis_emission_config = Some(wrfcoin_shared_protocol::crypto::chain_binding::GenesisEmissionConfig {
-        chain_id: "777".into(),
-        faucet_address: None,
-        ..Default::default()
-    });
+    s.genesis_emission_config = Some(
+        wrfcoin_shared_protocol::crypto::chain_binding::GenesisEmissionConfig {
+            chain_id: "777".into(),
+            faucet_address: None,
+            ..Default::default()
+        },
+    );
     s.feature_schedule_extensions.push(AppliedExtension {
         sequence: 0,
         carried_at_height: 0,
@@ -70,8 +74,11 @@ fn state() -> State {
     });
     s.create_account(address(10), Balance::new(u128::from(NODE_BOND_UNITS) * 3));
     s.create_account(address(20), Balance::new(u128::from(NODE_BOND_UNITS) * 3));
-    s.apply_transition(StateTransition::BeginNodeServiceBlock { block_height: A, parent_hash: [2; 32] })
-        .unwrap();
+    s.apply_transition(StateTransition::BeginNodeServiceBlock {
+        block_height: A,
+        parent_hash: [2; 32],
+    })
+    .unwrap();
     s.apply_block_finalization(A);
     s
 }
@@ -90,7 +97,9 @@ fn to_passkey_account(mut p: NodeBondLifecycle, auth: &SoftwareAuthenticator) ->
 }
 
 fn owner_of(p: &NodeBondLifecycle) -> u8 {
-    (10..=40).find(|b| address(*b) == p.signed.authorization.owner_account).unwrap()
+    (10..=40)
+        .find(|b| address(*b) == p.signed.authorization.owner_account)
+        .unwrap()
 }
 
 fn approve(p: &NodeBondLifecycle, auth: &SoftwareAuthenticator) -> PasskeyAuthorization {
@@ -99,7 +108,13 @@ fn approve(p: &NodeBondLifecycle, auth: &SoftwareAuthenticator) -> PasskeyAuthor
 }
 
 /// Passkey-only payout approval: no ed25519 payout key or signature.
-fn passkey_payload(owner: u8, id: u8, nonce: u64, action: NodeBondAction, epoch: u64) -> NodeBondLifecycle {
+fn passkey_payload(
+    owner: u8,
+    id: u8,
+    nonce: u64,
+    action: NodeBondAction,
+    epoch: u64,
+) -> NodeBondLifecycle {
     let auth = authenticator();
     let mut p = to_passkey_account(fixture::auth(owner, id, nonce, action, epoch), &auth);
     p.payout_key = None;
@@ -109,7 +124,8 @@ fn passkey_payload(owner: u8, id: u8, nonce: u64, action: NodeBondAction, epoch:
 }
 
 fn verify_at(p: &NodeBondLifecycle, height: u64) -> bool {
-    p.verify(&identity(), &[7; 32], &[hex::encode(pk(99))], height).is_ok()
+    p.verify(&identity(), &[7; 32], &[hex::encode(pk(99))], height)
+        .is_ok()
 }
 
 fn root(s: &mut State) -> wrfcoin_shared_protocol::common::types::Hash {
@@ -128,7 +144,10 @@ fn feature_is_registered_appended_unscheduled_by_default_and_schedulable() {
     assert_eq!(bincode::serialize(&f).unwrap(), 29u32.to_le_bytes());
     assert!(f.schedulable(None));
     assert!(f.has_behaviour());
-    assert!(wrfcoin_shared_protocol::crypto::protocol_support::KNOWN_FEATURES.contains(&"passkey_bond_payout"));
+    assert!(
+        wrfcoin_shared_protocol::crypto::protocol_support::KNOWN_FEATURES
+            .contains(&"passkey_bond_payout")
+    );
     assert!(!FeatureSchedule::default().active(f, u64::MAX));
     assert!(!feature_active(f, A) && !passkey_bond_payout_active(A));
     assert!(feature_active(f, P) && passkey_bond_payout_active(P));
@@ -164,7 +183,11 @@ fn pre_activation_the_member_is_ignored_and_state_is_byte_identical() {
     let parsed: NodeBondLifecycle = serde_json::from_value(json).unwrap();
     assert_eq!(parsed, plain);
     // Absent members are never serialized: existing JSON is byte-identical.
-    assert!(!serde_json::to_string(&plain).unwrap().contains("payout_passkey"));
+    assert!(
+        !serde_json::to_string(&plain)
+            .unwrap()
+            .contains("payout_passkey")
+    );
 }
 
 #[test]
@@ -177,7 +200,12 @@ fn active_a_passkey_payout_deposit_is_accepted_and_binds_the_passkey_account() {
     let r = &s.node_bond_registry.as_ref().unwrap().registrations[&[1; 32]];
     assert_eq!(r.binding.payout_account, authenticator().account());
     // The stored binding is the plain authorization: no passkey material in state.
-    assert_eq!(r.binding, passkey_payload(10, 1, 0, NodeBondAction::Deposit, 1).signed.authorization);
+    assert_eq!(
+        r.binding,
+        passkey_payload(10, 1, 0, NodeBondAction::Deposit, 1)
+            .signed
+            .authorization
+    );
 }
 
 #[test]
@@ -238,8 +266,10 @@ fn active_assertions_bound_elsewhere_are_refused() {
 
     // An assertion over a different chain identity.
     let mut p = good.clone();
-    let challenge =
-        node_bond_payout_passkey_challenge(&p.signed.authorization, &ChainIdentity::new("888", "testnet"));
+    let challenge = node_bond_payout_passkey_challenge(
+        &p.signed.authorization,
+        &ChainIdentity::new("888", "testnet"),
+    );
     p.payout_passkey = Some(auth.authorization_for(&auth.assert(&challenge)));
     assert!(!verify_at(&p, P));
 
@@ -255,7 +285,10 @@ fn active_high_s_and_missing_user_verification_are_refused() {
     let mut p = passkey_payload(10, 1, 0, NodeBondAction::Deposit, 1);
     let challenge = node_bond_payout_passkey_challenge(&p.signed.authorization, &identity());
     let mut assertion = auth.assert(&challenge);
-    let high = P256Signature::from_der(&assertion.signature).unwrap().malleable_twin().unwrap();
+    let high = P256Signature::from_der(&assertion.signature)
+        .unwrap()
+        .malleable_twin()
+        .unwrap();
     assertion.signature = high.to_der_bytes();
     p.payout_passkey = Some(auth.authorization_for(&assertion));
     assert!(!verify_at(&p, P));
@@ -274,14 +307,22 @@ fn exit_and_withdraw_refuse_a_passkey_member_only_once_active() {
         assert!(verify_at(&p, P));
         p.payout_passkey = Some(approve(&p, &authenticator()));
         assert!(verify_at(&p, A), "{action:?}: ignored before activation");
-        assert!(!verify_at(&p, P), "{action:?}: surplus approval refused once active");
+        assert!(
+            !verify_at(&p, P),
+            "{action:?}: surplus approval refused once active"
+        );
     }
 }
 
 #[test]
 fn an_ordinary_payout_bond_switches_to_a_passkey_payout_via_update() {
     let mut s = state();
-    apply(&mut s, fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1), A).unwrap();
+    apply(
+        &mut s,
+        fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1),
+        A,
+    )
+    .unwrap();
     let e1 = A + node_epoch_blocks();
     advance(&mut s, e1);
     // Update to the passkey account, approved by the passkey (governance,
@@ -291,7 +332,10 @@ fn an_ordinary_payout_bond_switches_to_a_passkey_payout_via_update() {
     apply(&mut s, update.clone(), e1).unwrap();
     let r = &s.node_bond_registry.as_ref().unwrap().registrations[&[1; 32]];
     assert_eq!(r.binding.payout_account, address(10));
-    assert_eq!(r.pending_binding.as_ref().unwrap().payout_account, authenticator().account());
+    assert_eq!(
+        r.pending_binding.as_ref().unwrap().payout_account,
+        authenticator().account()
+    );
     advance(&mut s, e1 + node_epoch_blocks());
     let r = &s.node_bond_registry.as_ref().unwrap().registrations[&[1; 32]];
     assert_eq!(r.binding.payout_account, authenticator().account());
@@ -308,11 +352,18 @@ fn passkey_payout_pricing_is_gated_by_activation() {
     let p = passkey_payload(10, 1, 0, NodeBondAction::Deposit, 1);
     let tx = fixture::transaction(&p, 1_000_000);
     let base = tx.verify_work();
-    assert_eq!(tx.verify_work_at_height(A), base, "pre-activation price unchanged");
+    assert_eq!(
+        tx.verify_work_at_height(A),
+        base,
+        "pre-activation price unchanged"
+    );
     let active = tx.verify_work_at_height(P);
     assert_eq!(active.ecdsa, base.ecdsa + 1);
     assert_eq!(active.ed25519, base.ed25519);
     // No member: never charged.
-    let plain = fixture::transaction(&fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1), 1_000_000);
+    let plain = fixture::transaction(
+        &fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1),
+        1_000_000,
+    );
     assert_eq!(plain.verify_work_at_height(P), plain.verify_work());
 }

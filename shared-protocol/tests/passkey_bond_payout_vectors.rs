@@ -90,8 +90,18 @@ fn cases() -> Vec<Case> {
         ..base.clone()
     };
     vec![
-        Case { name: "deposit_888_testnet", chain_id: "888", network_id: "testnet", authorization: base },
-        Case { name: "update_888_testnet", chain_id: "888", network_id: "testnet", authorization: update },
+        Case {
+            name: "deposit_888_testnet",
+            chain_id: "888",
+            network_id: "testnet",
+            authorization: base,
+        },
+        Case {
+            name: "update_888_testnet",
+            chain_id: "888",
+            network_id: "testnet",
+            authorization: update,
+        },
     ]
 }
 
@@ -167,11 +177,18 @@ fn build() -> Value {
         let auth_preimage = a.signing_preimage_for(&identity, SigningProtocolVersion::V2);
         assert_eq!(
             auth_preimage,
-            independent_v2_preimage(NodeBondAuthorization::DOMAIN_TAG, case.chain_id, case.network_id, &body)
+            independent_v2_preimage(
+                NodeBondAuthorization::DOMAIN_TAG,
+                case.chain_id,
+                case.network_id,
+                &body
+            )
         );
         let auth_hash: [u8; 32] = Sha3_256::digest(&auth_preimage).into();
         assert_eq!(auth_hash, node_contract_digest(a, &identity));
-        let approval = NodeBondPayoutPasskeyApproval { authorization_preimage_hash: auth_hash };
+        let approval = NodeBondPayoutPasskeyApproval {
+            authorization_preimage_hash: auth_hash,
+        };
         let mut approval_body = Vec::new();
         lp(&mut approval_body, &auth_hash);
         assert_eq!(approval.canonical_body(), approval_body);
@@ -256,7 +273,12 @@ fn fixture_lifecycles_parse_and_example_assertions_bind_only_their_case() {
         let unsigned: NodeBondLifecycle =
             serde_json::from_str(case["unsigned_lifecycle_json"].as_str().unwrap()).unwrap();
         // An absent payout_passkey is not serialized at all.
-        assert!(!case["unsigned_lifecycle_json"].as_str().unwrap().contains("payout_passkey"));
+        assert!(
+            !case["unsigned_lifecycle_json"]
+                .as_str()
+                .unwrap()
+                .contains("payout_passkey")
+        );
         let a = &unsigned.signed.authorization;
         assert_eq!(
             hex::encode(node_bond_payout_passkey_challenge(a, &identity)),
@@ -270,7 +292,9 @@ fn fixture_lifecycles_parse_and_example_assertions_bind_only_their_case() {
         assert!(verify_payout_passkey(a, &example, &ChainIdentity::new("777", "testnet")).is_err());
         assert!(verify_payout_passkey(a, &example, &ChainIdentity::new("888", "mainnet")).is_err());
         let other: NodeBondLifecycle = serde_json::from_str(
-            cases[(i + 1) % cases.len()]["unsigned_lifecycle_json"].as_str().unwrap(),
+            cases[(i + 1) % cases.len()]["unsigned_lifecycle_json"]
+                .as_str()
+                .unwrap(),
         )
         .unwrap();
         assert!(verify_payout_passkey(&other.signed.authorization, &example, &identity).is_err());
