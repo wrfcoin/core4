@@ -139,7 +139,7 @@ jobs:
         run: |
           sha256sum -- *-setup.exe > SHA256SUMS
           cat SHA256SUMS
-      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, reachable.conf, uninstall
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, reachable.conf, bonded mode, uninstall
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -334,6 +334,35 @@ jobs:
             if (-not $dash.Content.Contains('id="fact-reach"') -or -not $dash.Content.Contains("peer: '/network/peer_id'")) { throw 'dashboard has no "Reachable at" fact' }
             Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
             if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (reachable run)' }
+
+            # Bonded mode: the same file plus the opt-in pair. The node stays
+            # sync-only, serves bonded fetches over P2P with the server key, and
+            # /network/peer_id (the dashboard's "Mode") reports it.
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`nWRFCOIN_SERVICE_ID=ci-bonded-1`r`n")
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start in bonded mode' }
+            $peer = Invoke-RestMethod http://127.0.0.1:8556/network/peer_id -TimeoutSec 10
+            $peer.bonded | ConvertTo-Json
+            if ($peer.bonded.serving -ne $true) { throw 'bonded mode: /network/peer_id does not report serving' }
+            if ("$($peer.bonded.service_id)" -ne 'ci-bonded-1') { throw "bonded mode: service_id is '$($peer.bonded.service_id)'" }
+            if ("$($peer.bonded.server_key)".ToLower() -ne $cliPub) { throw "bonded mode: server_key '$($peer.bonded.server_key)' is not the server.key public key" }
+            if (-not (Select-String -Path $nodeLog -Pattern 'Serving bonded snapshot fetches over P2P' -Quiet)) { throw 'node.log does not show bonded P2P serving' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'non-producing: block production disabled' -Quiet)) { throw 'node.log does not show the non-producing (sync-only) role in bonded mode' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'Start: bonded mode, service id ci-bonded-1' -Quiet)) { throw 'launcher.log does not record bonded mode' }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            foreach ($text in 'id="fact-mode"', 'id="open-port"', 'Open your port (TCP 9000)') {
+              if (-not $dash.Content.Contains($text)) { throw "dashboard is missing $text" }
+            }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (bonded run)' }
+            # Half-configured bonded mode never starts.
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`n")
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'the launcher started bonded mode without WRFCOIN_SERVICE_ID' }
+            $global:LASTEXITCODE = 0   # the refusal was expected
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused bonded reachable.conf still started the node' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'bonded mode needs WRFCOIN_SERVICE_ID' -Quiet)) { throw 'launcher.log does not explain the missing service id' }
+            Write-Host 'bonded mode: serving over P2P with the server key, reported on /network/peer_id and the dashboard; half-configured file refused'
             [System.IO.File]::WriteAllText($reach, "WRFCOIN_API_HOST=0.0.0.0`r`n")
             $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet

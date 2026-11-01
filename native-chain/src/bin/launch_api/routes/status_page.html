@@ -179,7 +179,7 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .fact dd { margin: 2px 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact dd.mono { font-size: 0.9375rem; }
 .fact .update-link { display: block; margin-top: 2px; font-size: 0.8125rem; font-weight: 500; }
-.fact.reach { grid-column: span 2; }
+.fact.reach, .fact.mode { grid-column: span 2; }
 @media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
 .hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .hero.down { border-color: rgba(239, 68, 68, 0.5); }
@@ -209,6 +209,19 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .rung h3 { margin: 0; font-size: 1rem; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-xs) var(--s-sm); }
 .rung p { margin: 0; color: var(--text-2); font-size: 0.875rem; }
 .rung .links { display: flex; flex-wrap: wrap; gap: var(--s-xs) var(--s-md); font-size: 0.875rem; }
+/* Open your port: the short guide under the ladder, collapsed until asked for. */
+.guide { grid-template-columns: minmax(0, 1fr); }
+.guide > *, .guide-steps li { min-width: 0; }
+.guide code { overflow-wrap: anywhere; }
+.guide summary { cursor: pointer; font-size: 1.125rem; font-weight: 600; list-style-position: inside; }
+.guide summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
+.guide[open] summary { margin-bottom: var(--s-sm); }
+.guide-steps { margin: 0; padding-left: 1.25rem; display: grid; gap: var(--s-sm); color: var(--text-2); font-size: 0.875rem; max-width: 80ch; }
+.guide-steps li::marker { color: var(--text); font-weight: 600; }
+.guide-steps b { color: var(--text); font-weight: 600; }
+.guide pre { margin: var(--s-xs) 0 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--s-sm) var(--s-md); overflow-x: auto; font-family: var(--mono); font-size: 0.8125rem; color: var(--text); white-space: pre; }
+.guide p { margin: 0; color: var(--text-2); font-size: 0.875rem; max-width: 80ch; }
+.fact dd.warn { color: var(--warning); }
 .next-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
@@ -243,10 +256,11 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div class="fact"><dt>Chain</dt><dd id="fact-chain">—</dd></div>
       <div class="fact wide"><dt>Genesis</dt><dd class="mono" id="fact-genesis">—</dd></div>
       <div class="fact wide reach"><dt>Reachable at</dt><dd class="mono" id="fact-reach">—</dd></div>
+      <div class="fact wide mode"><dt>Mode</dt><dd id="fact-mode">—</dd></div>
       <div class="fact"><dt>Node version</dt><dd><span id="fact-version">—</span> <span class="update-link"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Check for updates</a></span></dd></div>
       <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
     </dl>
-    <p class="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
+    <p class="hero-note" id="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
     <div class="control" id="stop-control">
       <div class="control-text">
         <p class="control-title">Stop the node</p>
@@ -262,19 +276,19 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <p>Nodes take on more over time. You climb by reliable time on the rung below, not by computer power.</p>
     </div>
     <ol class="ladder">
-      <li class="rung here">
+      <li class="rung here" id="rung-sync">
         <span class="num" aria-hidden="true">1</span>
         <div class="rung-body">
-          <h3>Sync node <span class="pill ok">You are here</span></h3>
+          <h3>Sync node <span class="pill ok" id="pill-sync">You are here</span></h3>
           <p>Keeps its own checked copy of the chain and shares blocks with other nodes. Leave it running: time online is what counts for the next step. A sync node is not paid.</p>
         </div>
       </li>
-      <li class="rung">
+      <li class="rung" id="rung-bonded">
         <span class="num" aria-hidden="true">2</span>
         <div class="rung-body">
-          <h3>Bonded node <span class="pill info">Preview</span></h3>
+          <h3>Bonded node <span class="pill info" id="pill-bonded">Preview</span></h3>
           <p>Locks a 250.36 WRF bond and serves chain snapshots to new nodes, and is paid each epoch (about 11 hours) for that service. Newcomers can get the bond once, as a faucet bond grant, after their node has been a visible peer for 24 hours. Needs a P2P address other nodes can reach.</p>
-          <p class="links"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Bonded node guide</a><a href="https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md" target="_blank" rel="noopener noreferrer">Join the testnet</a></p>
+          <p class="links"><a href="#open-port" id="open-port-link">Open your port (TCP 9000)</a><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Bonded node guide</a><a href="https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md" target="_blank" rel="noopener noreferrer">Join the testnet</a></p>
         </div>
       </li>
       <li class="rung">
@@ -294,6 +308,27 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
     </ol>
     <p class="next-note">Nothing here happens by itself, and this page promises no income. Steps marked Coming are not open yet.</p>
   </section>
+
+  <details class="next guide" id="open-port">
+    <summary>Open your port (TCP 9000)</summary>
+    <p>A bonded node must be reachable by other nodes. You open exactly one port, <b>TCP 9000</b> (the node's peer-to-peer port). This page and the node's API stay on this computer (127.0.0.1) and are never reachable from outside.</p>
+    <ol class="guide-steps">
+      <li><b>Give this PC a fixed address</b> on your network: in your router, reserve its current address (often called "DHCP reservation"). PowerShell shows the address: <code class="mono">Get-NetIPAddress -AddressFamily IPv4</code>.</li>
+      <li><b>Forward TCP 9000 on your router</b> to that address, port 9000. One rule, nothing else. Note the router's public (WAN) address.</li>
+      <li><b>Allow it in Windows Firewall.</b> In PowerShell as administrator:
+        <pre>New-NetFirewallRule -DisplayName 'WRFCoin node P2P (TCP 9000)' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9000 -Program "$env:LOCALAPPDATA\Programs\WRFCoin Node\launch_api.exe" -Profile Any</pre>
+        If you once answered Cancel to the firewall prompt, remove that block rule first (the full guide shows how).</li>
+      <li><b>Tell the node.</b> Create <code class="mono">%LOCALAPPDATA%\WRFCoin\reachable.conf</code> with your public address in the second line:
+        <pre>WRFCOIN_P2P_HOST=0.0.0.0
+WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000</pre></li>
+      <li><b>Bonded mode (testnet).</b> Once you have a server key (<code class="mono">wrfcoin-node.ps1 -Action ServerKey</code>) and your bond's service alias, add two lines to the same file:
+        <pre>WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1
+WRFCOIN_SERVICE_ID=&lt;your bond's service alias&gt;</pre>
+        The node refuses to start if any piece is missing, so a half-set-up node never runs.</li>
+    </ol>
+    <p>Restart the node (Start menu: Stop WRFCoin Node, then WRFCoin Node). <b>Reachable at</b> above then shows your address, and <b>Mode</b> shows Bonded. Check from outside your network (a phone on mobile data): <code class="mono">Test-NetConnection &lt;your address&gt; -Port 9000</code>. To close the port, delete <code class="mono">reachable.conf</code>, restart, and remove the router and firewall rules.</p>
+    <p class="links"><a href="https://github.com/wrfcoin/core4/blob/main/docs/operator/windows-node.md#open-your-port-optional" target="_blank" rel="noopener noreferrer">Full guide: Open your port and bonded mode</a></p>
+  </details>
 
   <h2 class="details-title">Details for operators</h2>
   <main class="grid">
@@ -914,11 +949,55 @@ function renderHero() {
   const ext = peerInfo && typeof peerInfo.external_addr === 'string' ? peerInfo.external_addr.replace(/\/p2p\/[^/]+$/, '') : null;
   $('fact-reach').textContent = ext || (peerInfo ? 'outbound only (no open port)' : '—');
   $('fact-reach').title = ext ? ext + ': the address other nodes are told to dial (reachable.conf, WRFCOIN_P2P_EXTERNAL_ADDR)' : '';
+  renderMode(peerInfo, ext);
   const version = (info && info.node_version) || (last.health && last.health.version) || null;
   $('fact-version').textContent = version ? versionLabel(version, info) : '—';
   const bpm = blocksPerMinute();
   $('fact-bpm').textContent = bpm === null ? 'measuring' : bpm.toFixed(1);
 }
+
+// ---------- mode: sync-only or bonded ----------
+const SYNC_NOTE = $('hero-note').textContent;
+const BONDED_NOTE = 'Bonded mode: besides syncing, this node serves signed chain snapshots to other bonded nodes over its open port. '
+  + 'It is paid only for an epoch in which another bonded node fetched a snapshot from it and the receipt was submitted in time; this page shows no balances.';
+// /network/peer_id says whether the node serves bonded snapshot fetches
+// (WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS), under which service id, and with which
+// server key. No answer: the mode is not known, and the ladder stays as built.
+function renderMode(peerInfo, ext) {
+  const bonded = peerInfo && peerInfo.bonded && typeof peerInfo.bonded === 'object' ? peerInfo.bonded : null;
+  const mode = $('fact-mode');
+  const serving = !!(bonded && bonded.serving === true);
+  const key = serving && typeof bonded.server_key === 'string' ? bonded.server_key : null;
+  const id = serving && typeof bonded.service_id === 'string' ? bonded.service_id : '';
+  mode.className = '';
+  if (!bonded) {
+    mode.textContent = '—';
+    mode.title = '';
+  } else if (!serving) {
+    mode.textContent = 'Sync-only';
+    mode.title = 'Bonded mode is off (reachable.conf: WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS)';
+  } else if (!key) {
+    mode.textContent = 'Bonded, no server key';
+    mode.className = 'warn';
+    mode.title = 'This node serves bonded fetches but has no server key, so every fetch is refused. Create server.key and restart.';
+  } else if (!ext) {
+    mode.textContent = 'Bonded, port not set';
+    mode.className = 'warn';
+    mode.title = 'Bonded mode is on but no external address is set; other nodes cannot dial this one.';
+  } else {
+    mode.textContent = 'Bonded' + (id ? ' (' + id + ')' : '');
+    mode.title = 'Service id ' + id + '; server key ' + key;
+  }
+  $('hero-note').textContent = serving ? BONDED_NOTE : SYNC_NOTE;
+  $('rung-sync').className = serving ? 'rung' : 'rung here';
+  $('pill-sync').className = serving ? 'pill' : 'pill ok';
+  $('pill-sync').textContent = serving ? 'Done' : 'You are here';
+  $('rung-bonded').className = serving ? 'rung here' : 'rung';
+  $('pill-bonded').className = serving ? 'pill ok' : 'pill info';
+  $('pill-bonded').textContent = serving ? 'You are here' : 'Preview';
+}
+$('open-port-link').addEventListener('click', () => { $('open-port').open = true; });
+if ((location.hash || '').indexOf('#open-port') === 0) $('open-port').open = true;
 
 // ---------- stop ----------
 function renderStop() {

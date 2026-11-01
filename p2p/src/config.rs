@@ -504,6 +504,13 @@ pub struct P2pConfig {
 /// 2026-10-31). Off by default: it is new surface on the public port.
 pub const SERVE_BONDED_SNAPSHOTS_ENV: &str = "WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS";
 
+/// [`SERVE_BONDED_SNAPSHOTS_ENV`] parsed exactly as [`P2pConfig`] parses it, so
+/// a status read (the node dashboard's "bonded mode") reports what the P2P node
+/// was configured with, not a second guess at the spelling.
+pub fn serve_bonded_snapshots_from_env() -> bool {
+    env_bool(SERVE_BONDED_SNAPSHOTS_ENV, false)
+}
+
 impl Default for P2pConfig {
     fn default() -> Self {
         let quic_enabled = env_bool("WRFCOIN_P2P_QUIC_ENABLED", false);
@@ -596,7 +603,7 @@ impl Default for P2pConfig {
                 .and_then(|s| s.parse::<Multiaddr>().ok()),
             only_global_ips: env_bool("WRFCOIN_AUTONAT_ONLY_GLOBAL_IPS", true),
             announce_non_global_addrs: env_bool(crate::announce::ANNOUNCE_NON_GLOBAL_ADDRS_ENV, false),
-            serve_bonded_snapshots: env_bool(SERVE_BONDED_SNAPSHOTS_ENV, false),
+            serve_bonded_snapshots: serve_bonded_snapshots_from_env(),
             network_id: std::env::var("WRFCOIN_NETWORK_ID")
                 .unwrap_or_else(|_| "mainnet".to_string()),
             chain_id: std::env::var("WRFCOIN_CHAIN_ID")

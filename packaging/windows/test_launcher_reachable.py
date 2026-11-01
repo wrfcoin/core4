@@ -1,8 +1,8 @@
 """Source checks on wrfcoin-node.ps1's per-user reachable.conf (no PowerShell needed).
 
 %LOCALAPPDATA%\\WRFCoin\\reachable.conf lets a user open a P2P port without
-editing the installed chain-888.conf. It may set only WRFCOIN_P2P_HOST and
-WRFCOIN_P2P_EXTERNAL_ADDR. The behaviour is exercised on a real Windows runner
+editing the installed chain-888.conf. It may set only WRFCOIN_P2P_HOST,
+WRFCOIN_P2P_EXTERNAL_ADDR and the two bonded-mode keys (test_launcher_bonded.py). The behaviour is exercised on a real Windows runner
 by windows-node-build.yml; these checks pin the allow-list and the order.
 """
 
@@ -22,11 +22,19 @@ def function_body(name: str) -> str:
 
 
 class ReachableConfig(unittest.TestCase):
-    def test_allow_list_is_exactly_the_two_p2p_keys(self) -> None:
+    def test_allow_list_is_exactly_the_p2p_and_bonded_mode_keys(self) -> None:
         match = re.search(r"\$ReachableKeys = @\(([^)]*)\)", LAUNCHER)
         self.assertIsNotNone(match)
         keys = re.findall(r"'([A-Z0-9_]+)'", match.group(1))
-        self.assertEqual(keys, ["WRFCOIN_P2P_HOST", "WRFCOIN_P2P_EXTERNAL_ADDR"])
+        self.assertEqual(
+            keys,
+            [
+                "WRFCOIN_P2P_HOST",
+                "WRFCOIN_P2P_EXTERNAL_ADDR",
+                "WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS",
+                "WRFCOIN_SERVICE_ID",
+            ],
+        )
 
     def test_reader_refuses_other_keys_duplicates_and_bad_values(self) -> None:
         body = function_body("Read-ReachableConfig")
