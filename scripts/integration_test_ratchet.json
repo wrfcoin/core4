@@ -810,6 +810,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "security_key_fee_burn"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "security_key_spend"
     },
     {
