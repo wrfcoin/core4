@@ -789,7 +789,7 @@ jobs:
             --test cut_composition_lifecycle_2498 \
             -- --test-threads=1 --nocapture 2>&1 | tee "$report"
           grep -F \
-            'test one_chain_survives_genesis_wal_reduction_and_peer_sync_2557 ... ok' \
+            'test gated::one_chain_survives_genesis_wal_reduction_and_peer_sync_2557 ... ok' \
             "$report" >/dev/null
           grep -F \
             'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
