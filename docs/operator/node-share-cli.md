@@ -33,6 +33,19 @@ debug build, or build with `--features hsm` and configure
 HSM-key fallback. HSM PIN input uses the hidden terminal prompt; credential
 variables carrying PIN values are refused. Do not pass keys or PINs in argv.
 
+## Deposit timing
+
+`wrfcoin node bond deposit` takes epoch timing from the node it talks to, because
+a node's epoch length comes from its chain's genesis and the CLI does not read
+genesis. It writes `effective_epoch` as the node's reported epoch + 1. The dry run
+prints `effective_epoch`, `node_epoch`, `node_epoch_blocks`, `epoch_close_height`
+and `blocks_left_in_epoch`, so compare them before collecting approvals.
+
+All five approvals and the submission must land before `epoch_close_height`. In
+the next epoch, approvals no longer match: reassemble and reapprove. The CLI
+refuses rather than guesses when the reported epoch fits no known epoch length
+(512 or 1,024 blocks), and when the tip is within 3 blocks of the epoch's end.
+
 ## Authenticated submission and inspection
 
 After owner-authorized activation, use the normal CLI API credential configuration:

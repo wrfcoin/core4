@@ -11,9 +11,7 @@ use wrfcoin_shared_protocol::{
     blockchain::transaction::{Transaction, TransactionInput, TransactionOutput, TransactionType},
     common::types::Address,
     consensus::{
-        node_bond_registry::{
-            NODE_BOND_UNITS, NodeBondLifecycle, epoch_at, node_bond_escrow_address,
-        },
+        node_bond_registry::{NODE_BOND_UNITS, NodeBondLifecycle, node_bond_escrow_address},
         node_share_contracts::*,
     },
     crypto::{chain_binding::ChainIdentity, hash::hash_bytes, signature::PublicKey},
@@ -97,6 +95,88 @@ fn number(v: &Value) -> Result<u64> {
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .ok_or_else(|| anyhow::anyhow!("canonical height/nonce unavailable"))
 }
+
+/// The node-epoch lengths a chain can have: the protocol default, or the
+/// shorter length a chain records in its genesis. Only the node knows which one
+/// this chain uses; `node_epoch_blocks()` is the default in this process,
+/// because the genesis-derived authority is installed in nodes, never here.
+const KNOWN_NODE_EPOCH_BLOCKS: [u64; 2] = [512, NODE_EPOCH_BLOCKS];
+/// Refuse this close to an epoch's end: a Deposit included in the next epoch
+/// is refused, and it takes more than a few blocks to reach inclusion.
+const EPOCH_END_MARGIN_BLOCKS: u64 = 3;
+
+/// The node's own epoch at its own tip, checked against the known lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeEpoch {
+    height: u64,
+    epoch: u64,
+    /// `None` only in early epoch 0, where every known length still fits.
+    epoch_blocks: Option<u64>,
+    /// Last height of `epoch`; the earliest close when the length is open.
+    close_height: u64,
+}
+
+impl NodeEpoch {
+    /// Trust only what the node reported, and refuse unless it is coherent. A
+    /// transaction carried inside `epoch` must name `epoch + 1`, so the margin
+    /// also guarantees every candidate length agrees on the carrying epoch.
+    fn from_node(activation: u64, height: u64, epoch: u64) -> Result<Self> {
+        let offset = height
+            .checked_sub(activation)
+            .ok_or_else(|| anyhow::anyhow!("Deposit refused before activation height"))?;
+        let mut fits = KNOWN_NODE_EPOCH_BLOCKS
+            .into_iter()
+            .filter(|length| offset / length == epoch);
+        let shortest = fits.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "node reports epoch {epoch} at height {height} (activation {activation}), \
+                 which fits no known epoch length; refusing to guess an effective epoch"
+            )
+        })?;
+        let epoch_blocks = fits.next().is_none().then_some(shortest);
+        let close_height = epoch
+            .checked_add(1)
+            .and_then(|next| next.checked_mul(shortest))
+            .and_then(|span| span.checked_add(activation))
+            .map(|end| end - 1)
+            .ok_or_else(|| anyhow::anyhow!("epoch overflow"))?;
+        let view = Self {
+            height,
+            epoch,
+            epoch_blocks,
+            close_height,
+        };
+        ensure!(
+            view.blocks_left() >= EPOCH_END_MARGIN_BLOCKS,
+            "too close to the end of epoch {epoch} (closes at height {close_height}, tip {height}); \
+             wait for the next epoch and reassemble"
+        );
+        Ok(view)
+    }
+    /// Blocks after the next one (the carrying block) still inside this epoch.
+    fn blocks_left(&self) -> u64 {
+        self.close_height
+            .saturating_sub(self.height.saturating_add(1))
+    }
+    fn effective_epoch(&self) -> Result<u64> {
+        self.epoch
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("epoch overflow"))
+    }
+}
+
+fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
+    ensure!(
+        number(&registration["activation_height"])? == activation,
+        "canonical activation height mismatch"
+    );
+    NodeEpoch::from_node(
+        activation,
+        number(&registration["height"])?,
+        number(&registration["epoch"])?,
+    )
+}
+
 fn normalized(tx: &Transaction) -> Result<Value> {
     let mut v = serde_json::to_value(tx)?;
     for field in ["id", "timestamp", "data"] {
@@ -105,7 +185,7 @@ fn normalized(tx: &Transaction) -> Result<Value> {
     Ok(v)
 }
 
-fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction> {
+fn unsigned(args: &DepositArgs, nonce: u64, effective_epoch: u64) -> Result<Transaction> {
     let owner_key = id(&args.owner_key)?;
     let owner = Address::from_public_key(&PublicKey::from_bytes(&owner_key)?);
     let payout: Address = args.payout_address.parse()?;
@@ -136,8 +216,6 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
         !args.service_alias.is_empty() && args.service_alias.len() <= MAX_NODE_ALIAS_BYTES,
         "service alias refused"
     );
-    let epoch = epoch_at(args.activation_height, carrying)
-        .ok_or_else(|| anyhow::anyhow!("Deposit refused before activation height"))?;
     let deployment = id(&args.deployment_id)?;
     let escrow = node_bond_escrow_address(&deployment);
     ensure!(
@@ -158,9 +236,7 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
                 action: NodeBondAction::Deposit,
                 amount_units: NODE_BOND_UNITS,
                 expected_nonce: nonce,
-                effective_epoch: epoch
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("epoch overflow"))?,
+                effective_epoch,
             },
             owner_signature: vec![],
             server_signature: vec![],
@@ -203,7 +279,7 @@ fn unsigned(args: &DepositArgs, nonce: u64, carrying: u64) -> Result<Transaction
 
 pub async fn handle(args: &DepositArgs) -> Result<Value> {
     // Cheap public input checks precede any key or credential/network operation.
-    let _ = unsigned(args, 0, args.activation_height)?;
+    let _ = unsigned(args, 0, 1)?;
     let owner = Address::from_public_key(&PublicKey::from_bytes(&id(&args.owner_key)?)?);
     let out = args.out.as_ref();
     if let Some(out) = out {
@@ -248,33 +324,26 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
     );
     let path = format!("/node/bonds/{}", hex::encode(id(&args.deployment_id)?));
     let registration = api.receipt_request("GET", &path, None).await?;
-    ensure!(
-        number(&registration["activation_height"])? == args.activation_height,
-        "canonical activation height mismatch"
-    );
+    let epoch = node_epoch(&registration, args.activation_height)?;
     ensure!(
         registration["status"] == "UNKNOWN" && registration["registration"].is_null(),
         "deployment already registered or unavailable"
     );
-    let height = number(&registration["height"])?;
-    ensure!(
-        height >= args.activation_height,
-        "Deposit refused before activation height"
-    );
-    let carrying = height
+    let carrying = epoch
+        .height
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("height overflow"))?;
     let account = api
         .receipt_request("GET", &format!("/addresses/{owner}"), None)
         .await?;
     let nonce = number(&account["nonce"])?;
-    let expected = unsigned(args, nonce, carrying)?;
+    let expected = unsigned(args, nonce, epoch.effective_epoch()?)?;
     let payload = NodeBondLifecycle::parse(&expected).unwrap();
     if args.dry_run {
         if let Some(out) = out {
             super::node_receipt::durable_packet(out, &expected)?;
         }
-        let mut plan = json!({"dry_run":true,"transaction":expected,"tx_id":expected.id.map(|id|id.to_hex()),"validated_for_carrying_height":carrying,"effective_epoch":payload.signed.authorization.effective_epoch,"submitted":false,"included":false});
+        let mut plan = json!({"dry_run":true,"transaction":expected,"tx_id":expected.id.map(|id|id.to_hex()),"validated_for_carrying_height":carrying,"effective_epoch":payload.signed.authorization.effective_epoch,"node_height":epoch.height,"node_epoch":epoch.epoch,"node_epoch_blocks":epoch.epoch_blocks,"epoch_close_height":epoch.close_height,"blocks_left_in_epoch":epoch.blocks_left(),"submitted":false,"included":false});
         if payload.payout_key.is_none() {
             // Passkey payout: the challenge the payout wallet signs.
             let identity = ChainIdentity::new(&args.chain_id, &args.network_id);
@@ -303,12 +372,10 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
         "approvals do not match current nonce, epoch or Deposit plan; reassemble and reapprove"
     );
     // Refuse a changed inclusion epoch/nonce before saving or POSTing the signature.
-    let fresh = api.receipt_request("GET", "/blockchain", None).await?;
-    let next = number(&fresh["height"])?
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("height overflow"))?;
+    let fresh = api.receipt_request("GET", &path, None).await?;
     ensure!(
-        epoch_at(args.activation_height, next) == epoch_at(args.activation_height, carrying),
+        node_epoch(&fresh, args.activation_height)?.effective_epoch()?
+            == p.signed.authorization.effective_epoch,
         "inclusion epoch changed; reassemble and obtain new role approvals"
     );
     let fresh_account = api
@@ -405,6 +472,190 @@ mod tests {
         assert!(id(&format!("0x{bare}")).is_err());
     }
 
+    #[test]
+    fn node_epoch_takes_the_nodes_epoch_and_refuses_what_it_cannot_explain() {
+        // This process never installs the chain authority: the local default
+        // would say epoch 12 here, on a chain whose node says 24.
+        assert_eq!(node_epoch_blocks(), 1_024);
+        let live = NodeEpoch::from_node(2, 12_321, 24).unwrap();
+        assert_eq!(live.effective_epoch().unwrap(), 25);
+        assert_eq!(live.epoch_blocks, Some(512));
+        assert_eq!(live.close_height, 12_801);
+        assert_eq!(live.blocks_left(), 479);
+        // A default-length chain past epoch 0 keeps working.
+        let default = NodeEpoch::from_node(2, 12_321, 12).unwrap();
+        assert_eq!(default.effective_epoch().unwrap(), 13);
+        assert_eq!(default.epoch_blocks, Some(1_024));
+        assert_eq!(default.close_height, 13_313);
+        // Early epoch 0: both lengths fit, epoch 1 is right for both, and the
+        // earliest possible close is what counts.
+        let early = NodeEpoch::from_node(2, 100, 0).unwrap();
+        assert_eq!(early.effective_epoch().unwrap(), 1);
+        assert_eq!(early.epoch_blocks, None);
+        assert_eq!(early.close_height, 513);
+        // Epoch 0 past 512 blocks can only be the longer length.
+        assert_eq!(
+            NodeEpoch::from_node(2, 600, 0).unwrap().epoch_blocks,
+            Some(1_024)
+        );
+        // A reported epoch that no known length explains is refused.
+        for bad in [13, 23, 25, 0] {
+            let error = NodeEpoch::from_node(2, 12_321, bad)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("fits no known epoch length"), "{error}");
+        }
+        assert!(NodeEpoch::from_node(2, 1, 0).is_err());
+    }
+
+    #[test]
+    fn node_epoch_refuses_near_the_epoch_end_including_when_the_length_is_open() {
+        // Carrying block 12_798 leaves 3 more in the epoch: the last allowed tip.
+        assert_eq!(
+            NodeEpoch::from_node(2, 12_797, 24).unwrap().blocks_left(),
+            3
+        );
+        for tip in [12_798, 12_799, 12_800, 12_801] {
+            let error = NodeEpoch::from_node(2, tip, 24).unwrap_err().to_string();
+            assert!(
+                error.contains("too close to the end of epoch 24"),
+                "{error}"
+            );
+        }
+        // Tip 513 with the length open: carrying 514 is epoch 1 on a 512-block
+        // chain and epoch 0 on a 1024-block chain, so it must not assemble.
+        for tip in [510, 511, 512, 513] {
+            assert!(NodeEpoch::from_node(2, tip, 0).is_err());
+        }
+        assert!(NodeEpoch::from_node(2, 509, 0).is_ok());
+    }
+
+    fn bond_view(deployment: &str, height: u64, activation: u64, epoch: u64) -> String {
+        json!({"height":height.to_string(),"activation_height":activation.to_string(),
+            "epoch":epoch.to_string(),"deployment_id":deployment,
+            "status":"UNKNOWN","principal_base_units":null,"jailed":null,"registration":null})
+        .to_string()
+    }
+
+    /// A 512-block chain, far past epoch 0, with the wire shapes a live node
+    /// serves: the assembled Deposit must name the node's epoch + 1, the dry run
+    /// must print both, a node that disagrees must be refused, and approvals
+    /// over a stale epoch must be refused before any owner key is needed.
+    #[test]
+    fn deposit_on_a_512_block_chain_past_epoch_zero_uses_the_nodes_epoch() {
+        let key = |n: u8| OperatorKey::from_seed(&[n; 32]).unwrap();
+        let hexpk = |n: u8| hex::encode(key(n).public_key().as_bytes());
+        let owner = key(11).address();
+        let dir = std::env::temp_dir().join(format!("wrfcoin-deposit-512-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        std::fs::write(&token, "synthetic-deposit-cli-bearer").unwrap(); // secret-leak-ok: fixed synthetic bearer for mock server only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let genesis = hex::encode([8u8; 32]);
+        let deployment = hex::encode([10u8; 32]);
+        let envelope = |data: Value| {
+            json!({"ok":true,"data":data,"error":null,"meta":{"request_id":"r"}}).to_string()
+        };
+        let _n = mockito::mock("GET", "/network/info")
+            .with_body(json!({"network_id":"testnet","chain_id":"888","genesis_hash":format!("0x{genesis}"),
+                "peer_count":0,"sync_status":"synced","chain_height":12321}).to_string())
+            .create();
+        let _b = mockito::mock("GET", "/blockchain")
+            .with_body(envelope(
+                json!({"height":12321,"tip":"x","accounts":1,"nfts":0,"pending_transactions":0}),
+            ))
+            .create();
+        let _a = mockito::mock("GET", format!("/addresses/{owner}").as_str())
+            .with_body(envelope(
+                json!({"address":owner.to_string(),"balance":"1","nonce":"0"}),
+            ))
+            .create();
+        let bonds = format!("/node/bonds/{deployment}");
+        let mut args = DepositArgs {
+            deployment_id: deployment.clone(),
+            owner_key: hexpk(11),
+            payout_address: key(12).address().to_string(),
+            payout_key: Some(hexpk(12)),
+            payout_passkey_assertion: None,
+            server_key: hexpk(13),
+            consumer_key: hexpk(14),
+            governance_key: hexpk(15),
+            service_alias: "node-b".into(),
+            genesis_hash: genesis,
+            chain_id: "888".into(),
+            network_id: "testnet".into(),
+            activation_height: 2,
+            api_url: mockito::server_url(),
+            operator_token_file: token,
+            key_file: None,
+            approvals_file: None,
+            fee: 1_000_000,
+            out: None,
+            dry_run: true,
+        };
+        let run = |args: &DepositArgs| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(handle(args))
+        };
+        let plan = {
+            let _r = mockito::mock("GET", bonds.as_str())
+                .with_body(bond_view(&deployment, 12_321, 2, 24))
+                .create();
+            run(&args).unwrap()
+        };
+        assert_eq!(plan["node_epoch"], 24);
+        assert_eq!(plan["effective_epoch"], 25);
+        assert_eq!(plan["node_epoch_blocks"], 512);
+        assert_eq!(plan["epoch_close_height"], 12_801);
+        assert_eq!(plan["blocks_left_in_epoch"], 479);
+        let tx: Transaction = serde_json::from_value(plan["transaction"].clone()).unwrap();
+        let lifecycle = NodeBondLifecycle::parse(&tx).unwrap();
+        assert_eq!(lifecycle.signed.authorization.effective_epoch, 25);
+        // No passkey: the serialized payload has no new member.
+        assert!(!tx.data.as_deref().unwrap().contains("payout_passkey"));
+
+        // The epoch the default length would compute is not what a node says here.
+        {
+            let _r = mockito::mock("GET", bonds.as_str())
+                .with_body(bond_view(&deployment, 12_321, 2, 13))
+                .create();
+            let error = run(&args).unwrap_err().to_string();
+            assert!(error.contains("fits no known epoch length"), "{error}");
+        }
+        // Too close to the end of the epoch.
+        {
+            let _r = mockito::mock("GET", bonds.as_str())
+                .with_body(bond_view(&deployment, 12_799, 2, 24))
+                .create();
+            let error = run(&args).unwrap_err().to_string();
+            assert!(
+                error.contains("too close to the end of epoch 24"),
+                "{error}"
+            );
+        }
+        // Approvals made in epoch 24 cannot be submitted in epoch 25; this is
+        // refused before an owner key is even read.
+        let approvals = dir.join("approvals.json");
+        std::fs::write(&approvals, serde_json::to_vec(&tx).unwrap()).unwrap();
+        args.dry_run = false;
+        args.approvals_file = Some(approvals);
+        args.out = Some(dir.join("signed.json"));
+        {
+            let _r = mockito::mock("GET", bonds.as_str())
+                .with_body(bond_view(&deployment, 12_900, 2, 25))
+                .create();
+            let error = run(&args).unwrap_err().to_string();
+            assert!(error.contains("approvals do not match"), "{error}");
+        }
+        assert!(!dir.join("signed.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Dry-run against a mock that serves the exact launch_api wire shapes:
     /// `/network/info` bare JSON with 0x genesis (routes/network.rs
     /// get_network_info), `/blockchain` + `/addresses/{a}` in the LawBook
@@ -478,10 +729,11 @@ mod tests {
         assert_eq!(out["validated_for_carrying_height"], 48002);
         assert!(out.get("payout_passkey_challenge").is_none());
         // Passkey payout: no --payout-key; the plan carries the challenge.
-        let wallet = wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator::new(
-            &[0x3c; 32],
-            "wrfcoin.com",
-        );
+        let wallet =
+            wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator::new(
+                &[0x3c; 32],
+                "wrfcoin.com",
+            );
         let ed_payout = args.payout_address.clone();
         args.payout_key = None;
         args.payout_address = wallet.account().to_string();
@@ -503,7 +755,10 @@ mod tests {
         args.payout_address = ed_payout;
         // An explicit 888 selection cannot silently sign against this 777 API.
         args.chain_id = "888".into();
-        let error = tokio::runtime::Runtime::new().unwrap().block_on(handle(&args)).unwrap_err();
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(handle(&args))
+            .unwrap_err();
         assert!(error.to_string().contains("API chain/genesis mismatch"));
         std::fs::remove_dir_all(dir).unwrap();
     }
