@@ -93,7 +93,8 @@ pub struct NetworkStats {
     /// workstation node) was invisible outside debug logs.
     pub outgoing_dial_failures: u64,
     /// Genesis handshakes republished when a peer subscribed to the handshake
-    /// topic, closing the publish/subscribe race (#2544).
+    /// topic, closing the publish/subscribe race (#2544), or when a recently
+    /// connected peer was due a retry (`handshake_redelivery`).
     pub genesis_handshake_republished: u64,
     /// Outbound dial candidates refused for concentrating the outbound peer set
     /// in one IPv4 `/24` (#2114).

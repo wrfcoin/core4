@@ -31,6 +31,7 @@ pub mod sync_surface;
 pub mod error;
 pub mod genesis_handshake;
 pub mod handshake_guard;
+mod handshake_redelivery;
 pub mod message;
 pub mod metrics;
 pub mod node;
