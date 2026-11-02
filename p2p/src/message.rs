@@ -757,7 +757,7 @@ pub fn limit_for(kind: MessageKind) -> MessageLimit {
     //
     // Reference points: gossip carries one `NewBlock` per new block (bulk
     // history moves over the `block_sync` request/response protocol, not
-    // here), one `GenesisHandshake` per connection, and one `FinalityVote` per
+    // here), a few `GenesisHandshake` per connection, and one `FinalityVote` per
     // validator per height. Each ceiling below is one to two orders of
     // magnitude above that.
     let max_per_window = match kind {
@@ -772,8 +772,9 @@ pub fn limit_for(kind: MessageKind) -> MessageLimit {
         MessageKind::ForecastTaskResultV2 => 64,
         MessageKind::DaChallenge => 64,
         MessageKind::DaChallengeResponse => 64,
-        // Published once per connection establishment (#2544), so a peer
-        // sending these repeatedly is doing something other than handshaking.
+        // Published a few times per connection establishment (#2544,
+        // `handshake_redelivery`), so a peer sending these well past that is
+        // doing something other than handshaking.
         MessageKind::GenesisHandshake => 16,
         MessageKind::FinalityVote => 128,
         MessageKind::FinalityCertificate => 64,

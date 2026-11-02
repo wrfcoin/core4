@@ -1477,6 +1477,10 @@ async fn event_loop(
     // #2116: peers connected but not yet proven to be on our chain.
     let mut unproven_peers = crate::handshake_guard::UnprovenPeers::new(handshake_limits);
     let mut unproven_sweep_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut handshake_redelivery = crate::handshake_redelivery::HandshakeRedelivery::default();
+    let mut handshake_redelivery_tick =
+        tokio::time::interval(std::time::Duration::from_secs(1));
+    handshake_redelivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sync_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     sync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_broadcasts = PendingBroadcasts::default();
@@ -1715,6 +1719,7 @@ async fn event_loop(
                             if is_first_connection {
                                 metrics.set_connected_peers(peer_manager.connected_count());
                                 let _ = event_tx.send(P2pEvent::PeerConnected(peer_id)).await;
+                                handshake_redelivery.peer_connected(peer_id, Instant::now());
                                 publish_message(
                                     &mut swarm,
                                     &tm,
@@ -1750,6 +1755,7 @@ async fn event_loop(
                             // #2116: stop tracking a peer that is gone.
                             unproven_peers.remove(&peer_id);
                             metrics.set_unproven_peers(unproven_peers.len());
+                            handshake_redelivery.peer_disconnected(&peer_id);
                             sync_manager.remove_peer(&peer_id);
                             status_announced_peers.remove(&peer_id);
                             pre_proof_statuses.remove(&peer_id);
@@ -1886,6 +1892,20 @@ async fn event_loop(
                 // that OOM'd the node in #2077. Evicting expired windows makes
                 // the bound hold without depending on a disconnect event.
                 verify_budget.evict_expired(Instant::now());
+            }
+
+            _ = handshake_redelivery_tick.tick() => {
+                redeliver_genesis_handshake(
+                    &mut handshake_redelivery,
+                    &mut swarm,
+                    &tm,
+                    &metrics,
+                    &mut pending_broadcasts,
+                    &local_handshake,
+                    advertised_status,
+                    inline_data_max,
+                    Instant::now(),
+                );
             }
 
             _ = unproven_sweep_tick.tick() => {
@@ -6643,6 +6663,61 @@ fn publish_message(
             error!("Failed to serialize {kind:?} message: {err}");
         },
     }
+}
+
+/// Publish our handshake and chain status again if a recently connected peer is
+/// due a retry. See [`crate::handshake_redelivery`] for why the first sends can
+/// miss it.
+#[allow(clippy::too_many_arguments)]
+fn redeliver_genesis_handshake(
+    redelivery: &mut crate::handshake_redelivery::HandshakeRedelivery,
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &Arc<MetricsCollector>,
+    pending: &mut PendingBroadcasts,
+    local_handshake: &crate::genesis_handshake::GenesisHandshakeMessage,
+    advertised_status: AdvertisedChainStatus,
+    inline_data_max: usize,
+    now: Instant,
+) {
+    if !redelivery.should_publish(now) {
+        return;
+    }
+    // Read before publishing: this is the membership the publish goes out to.
+    let topic = tm.genesis_handshake_hash();
+    let mesh: FxHashSet<PeerId> = swarm
+        .behaviour()
+        .gossipsub
+        .mesh_peers(&topic)
+        .copied()
+        .collect();
+    metrics
+        .genesis_handshake_republished
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    publish_message(
+        swarm,
+        tm,
+        metrics,
+        pending,
+        WrfcoinMessage::GenesisHandshake {
+            network_id: local_handshake.network_id.clone(),
+            chain_id: local_handshake.chain_id.clone(),
+            genesis_hash: local_handshake.genesis_hash.clone(),
+            protocol_version: local_handshake.protocol_version,
+        },
+        inline_data_max,
+        now,
+    );
+    publish_message(
+        swarm,
+        tm,
+        metrics,
+        pending,
+        advertised_status.message(),
+        inline_data_max,
+        now,
+    );
+    redelivery.record_publish(now, |peer| mesh.contains(peer));
 }
 
 fn retry_pending_broadcasts(

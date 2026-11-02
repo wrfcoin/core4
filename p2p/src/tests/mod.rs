@@ -14,6 +14,7 @@ mod multi_node;
 mod e2e_pipeline;
 mod nat_traversal;
 mod genesis_handshake_disconnect;
+mod handshake_redelivery;
 mod preauth_seam;
 mod wire_layout_fixtures;
 mod wire_format_skew_live_2884;
