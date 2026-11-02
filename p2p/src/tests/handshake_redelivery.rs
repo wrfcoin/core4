@@ -105,7 +105,7 @@ async fn seed_with_full_mesh() -> (P2pClient, Multiaddr, Vec<P2pClient>) {
 /// Returns how long it took.
 async fn newcomer_reaches_seed(
     newcomer: &mut crate::node::P2pHandle,
-    seed: PeerId,
+    hub: PeerId,
     bound: Duration,
 ) -> Option<Duration> {
     let started = Instant::now();
@@ -114,11 +114,11 @@ async fn newcomer_reaches_seed(
             match newcomer.event_rx.recv().await {
                 Some(P2pEvent::PeerChainStatus {
                     peer_id, height, ..
-                }) if peer_id == seed && height == SEED_HEIGHT => {
+                }) if peer_id == hub && height == SEED_HEIGHT => {
                     return started.elapsed();
                 },
                 Some(P2pEvent::PeerConnected(peer_id)) => assert_eq!(
-                    peer_id, seed,
+                    peer_id, hub,
                     "precondition: the newcomer must be connected to the seed alone"
                 ),
                 Some(_) => {},
@@ -135,8 +135,8 @@ async fn newcomer_to_a_full_mesh_seed_receives_handshake_and_reaches_peer_chains
     let _guard = super::helpers::serialize_multi_node_test();
     let _ = env_logger::builder().is_test(true).try_init();
 
-    let (seed, seed_addr, fillers) = seed_with_full_mesh().await;
-    let seed_peer = seed.local_peer_id;
+    let (hub, seed_addr, fillers) = seed_with_full_mesh().await;
+    let seed_peer = hub.local_peer_id;
 
     // A newcomer behind NAT reaches the seed and nobody else. Without this the
     // fillers discover it over Kademlia on loopback and hand it the seed's
@@ -165,7 +165,7 @@ async fn newcomer_to_a_full_mesh_seed_receives_handshake_and_reaches_peer_chains
         "the newcomer never received the seed's genesis handshake within \
          {DELIVERY_BOUND:?}, while connected to it (connected: {}, seed mesh: {:?})",
         stats.connected_peers,
-        seed.stats().mesh_peers_by_topic.get("blocks"),
+        hub.stats().mesh_peers_by_topic.get("blocks"),
     );
     assert!(
         reached.is_some(),
