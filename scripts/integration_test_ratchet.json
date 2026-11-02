@@ -1089,22 +1089,22 @@
     {
       "package": "wrfcoin-execution-engine",
       "target": "basic_docker",
-      "reason": "bollard client against the live Docker daemon (core4#2893); the persistent build runner is not in the docker group and cannot open /var/run/docker.sock, an owner-only fix (infra#881)."
+      "reason": "bollard client against the live Docker daemon (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "e2e_pipeline_no_mocks",
-      "reason": "#![cfg(feature = \"docker-tests\")]; a real DockerRunner (bollard) against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; a real DockerRunner (bollard) against the Docker daemon (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "tdd_2_1_docker_harness",
-      "reason": "#![cfg(feature = \"docker-tests\")]; Docker-based WRF execution harness, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; Docker-based WRF execution harness (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "wrf_nano_dry_run",
-      "reason": "#![cfg(feature = \"docker-tests\")]; DockerRunner::new() against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; DockerRunner::new() against the Docker daemon (core4#2893)."
     }
   ],
   "zero_test_exceptions": [

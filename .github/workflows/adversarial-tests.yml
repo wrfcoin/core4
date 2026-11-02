@@ -74,7 +74,7 @@ jobs:
   # and the checker itself must be sound. No cargo build, so it costs seconds.
   corpus-guard:
     name: Adversarial corpus guard (fail-closed)
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -91,7 +91,7 @@ jobs:
     name: Run Adversarial Tests
     if: github.event_name != 'pull_request'
     needs: corpus-guard
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
@@ -200,7 +200,7 @@ jobs:
     name: Adversarial terminal guard
     needs: [corpus-guard, adversarial-suite]
     if: always()
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Reject skipped required gates
