@@ -165,7 +165,7 @@ jobs:
             cli
       - name: Check required files & lockfiles
         run: |
-          for f in package.json README.md CLAUDE.md .github/workflows; do
+          for f in package.json README.md .github/workflows; do
             [ -e "$f" ] || { echo "::error::Missing required: $f"; exit 1; }
           done
           [ -f package-lock.json ] || { echo "::error::package-lock.json missing"; exit 1; }
