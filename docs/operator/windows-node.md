@@ -11,17 +11,37 @@ and an internet connection. No administrator rights are needed.
 ## Install
 
 1. Download `wrfcoin-node-<version>-windows-x86_64-setup.exe` and its `SHA256SUMS`.
-   Optional check, in PowerShell from the download folder:
+   Check the file before you run it, in PowerShell from the download folder:
    `Get-FileHash .\wrfcoin-node-*-setup.exe -Algorithm SHA256` must print the hash
-   in `SHA256SUMS`.
-2. Run the installer. **It is not code-signed yet**, so Windows SmartScreen shows
-   "Windows protected your PC". Click **More info**, then **Run anyway**.
+   in `SHA256SUMS`. If it does not match, delete the file and do not run it.
+2. Run the installer. **It is not code-signed yet**, so Windows SmartScreen may show
+   "Windows protected your PC". If the hash matched, click **More info**, then
+   **Run anyway**. See [If Windows warns you](#if-windows-warns-you).
 3. Click through the wizard. You can tick "Start the WRFCoin node when I sign in to
    Windows" (off by default). On the last page, leave "Start the WRFCoin node now"
    ticked.
 
 The installer puts the program in `%LOCALAPPDATA%\Programs\WRFCoin Node` and adds
 a **WRFCoin Node** folder to the Start menu.
+
+### If Windows warns you
+
+The installer is not code-signed yet, so SmartScreen may warn and Microsoft
+Defender may flag it. Defender has flagged previews as
+`Trojan:Win32/Bearfoos.A!ml`, an automated detection that we believe is a false
+alarm. A matching SHA-256 proves you have the exact file we published. It does
+not prove the file is harmless, so whether to run it is your call.
+
+If Defender quarantines or removes the installer:
+
+1. Leave it in quarantine. **Do not add an antivirus exclusion and do not turn
+   Defender off.**
+2. Update Defender (Windows Security → Virus & threat protection → Protection
+   updates → **Check for updates**), download the installer again and check its
+   hash.
+3. If Defender still flags it, stop and wait for a newer build. You can tell us
+   at [testnet support](https://github.com/wrfcoin/testnet-support/issues), with
+   the detection name and the file's SHA-256.
 
 ## Start and stop
 
@@ -336,7 +356,8 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
   use **Check for updates**. A later version can learn the newest version from
   the seed over P2P.
 - **Code signing.** The installer and `launch_api.exe` are unsigned, hence the
-  SmartScreen warning.
+  SmartScreen warning and the Defender flag (see
+  [If Windows warns you](#if-windows-warns-you)).
 - **Windows Service / tray icon.** The node runs in the background only while you
   are signed in, and there is no tray icon. A service would run it without a window and before sign-in; it needs
   a service host (the node binary does not speak the Service Control Manager
