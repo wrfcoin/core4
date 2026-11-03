@@ -21,6 +21,8 @@ use crate::routes::quality::{
     build_trust_reward_cache_entry, reward_multipliers_from_policy,
     should_include_trust_impact_block,
 };
+use super::query_cost;
+use wrfcoin_native_chain::security::query_cost::{QueryCost, page_size};
 use crate::state::{AppState, TrustRewardCacheEntry};
 use wrfcoin_native_chain::blockchain::state::TrustWeightingPolicy;
 use wrfcoin_native_chain::blockchain::block::Block;
@@ -644,6 +646,9 @@ pub async fn get_chain_block_by_height(
 
 const DEFAULT_ADDRESS_TX_LIMIT: usize = 20;
 const MAX_ADDRESS_TX_LIMIT: usize = 100;
+const DEFAULT_ADDRESS_CREDIT_LIMIT: u32 = 50;
+/// Far longer than any commit id; a longer cursor cannot name a record.
+const MAX_CREDIT_CURSOR_LEN: usize = 256;
 const DEFAULT_PENDING_TX_LIMIT: usize = 50;
 const MAX_PENDING_TX_LIMIT: usize = 200;
 
@@ -651,6 +656,12 @@ const MAX_PENDING_TX_LIMIT: usize = 200;
 pub struct AddressTransactionsQuery {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub credit_limit: Option<usize>,
+    pub credit_after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddressCreditsQuery {
     pub credit_limit: Option<usize>,
     pub credit_after: Option<String>,
 }
@@ -731,7 +742,6 @@ fn paid_credit_page(
     Option<String>,
 ) {
     use std::ops::Bound::{Excluded, Unbounded};
-    use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
     // Bound examined records BEFORE filtering. Sparse beneficiary matches
     // must not turn a page into a full-state scan. Empty pages still advance.
     let mut page: Vec<_> = chain
@@ -750,11 +760,7 @@ fn paid_credit_page(
     let records = page
         .into_iter()
         .filter(|(id, record)| {
-            record.address == address
-                && record.provenance_class == ContributionProvenanceClass::Real
-                && record.amount.into_inner() > 0
-                && record.commit_id() == Some(id.as_str())
-                && chain.state.finalized_contribution_rewards.contains(*id)
+            crate::state::reward_index::is_paid_credit(&chain.state, address, id, record)
         })
         .map(|(_, record)| record.clone())
         .collect();
@@ -941,6 +947,78 @@ pub async fn get_address_transactions(
             "credit_limit": credit_limit,
             "credit_next_cursor": credit_next_cursor,
             "credit_order": "commit_id_ascending",
+        }),
+    )
+}
+
+/// GET /addresses/{address}/credits: one address's paid credits, a full page at
+/// a time. Same rows, order and cursor as `credit_events` on the transactions
+/// route, read through the API-only index in `crate::reward_index`.
+pub async fn get_address_credits(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    path: web::Path<String>,
+    query: web::Query<AddressCreditsQuery>,
+) -> impl Responder {
+    if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
+        return resp;
+    }
+    let address: Address = match path.into_inner().parse() {
+        Ok(address) => address,
+        Err(_) => {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "address must be a valid hex address",
+            );
+        },
+    };
+    let after = query.credit_after.as_deref();
+    if after.is_some_and(|cursor| cursor.len() > MAX_CREDIT_CURSOR_LEN) {
+        return envelope_error(
+            &req,
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "credit_after is too long",
+        );
+    }
+    // #2137: a page above the ceiling is refused, not clamped.
+    let cost = QueryCost {
+        max_page_size: query_cost::query_cost().max_page_size.min(MAX_ADDRESS_TX_LIMIT as u32),
+        ..*query_cost::query_cost()
+    };
+    let requested = query.credit_limit.map(|limit| limit.min(u32::MAX as usize) as u32);
+    let credit_limit = match page_size(requested, DEFAULT_ADDRESS_CREDIT_LIMIT, &cost) {
+        Ok(limit) => limit as usize,
+        Err(e) => return query_cost::page_rejected(&req, e),
+    };
+    let Some(index) = state.reward_address_index.published() else {
+        return envelope_error(
+            &req,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "REWARD_INDEX_WARMING",
+            "The reward index is still being built; retry shortly",
+        );
+    };
+    let page = {
+        let blockchain = state.blockchain.read().await;
+        index.page(&blockchain.state, address, credit_limit, after)
+    };
+    // Allocate credit JSON after dropping the chain read guard.
+    let credit_events: Vec<_> = page.records.into_iter().map(paid_credit_summary).collect();
+    envelope_success(
+        &req,
+        StatusCode::OK,
+        json!({
+            "address": address.to_string(),
+            "credit_events": credit_events,
+            "credit_limit": credit_limit,
+            "credit_next_cursor": page.next_cursor,
+            "credit_order": "commit_id_ascending",
+            "credit_keys_examined": page.keys_examined,
+            "credit_keys_examined_limit": crate::state::reward_index::MAX_KEYS_EXAMINED_PER_READ,
+            "index_height": index.height(),
         }),
     )
 }
