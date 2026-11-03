@@ -23,6 +23,7 @@ use wrfcoin_shared_protocol::{
         domain_signing::DomainSeparated,
         signer::{BlockSigner, SharedKeyFallback, SignerEnv, load_block_signer_for},
     },
+    governance::schedule_extension::bond_admission_keys,
 };
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -31,6 +32,8 @@ pub enum BondSignerRole {
     Server,
     Consumer,
     Governance,
+    /// The pinned bond admission key co-signing a Deposit or Update.
+    Admission,
     Payout,
 }
 
@@ -263,6 +266,18 @@ fn sign_packet(
             );
             a.signing_preimage_for(identity, SigningProtocolVersion::V2)
         },
+        BondSignerRole::Admission => {
+            // Deposit and Update only, and only a key this binary pins for
+            // the packet's chain: never the role a governance key signs under.
+            ensure!(
+                online
+                    && p.governance_key == Some(key)
+                    && bond_admission_keys(&hex::encode(a.genesis_hash))
+                        .contains(&hex::encode(key)),
+                "admission signer mismatch"
+            );
+            a.signing_preimage_for(identity, SigningProtocolVersion::V2)
+        },
         BondSignerRole::Payout => {
             ensure!(
                 online
@@ -278,7 +293,9 @@ fn sign_packet(
         BondSignerRole::Owner => p.signed.owner_signature = signature,
         BondSignerRole::Server => p.signed.server_signature = signature,
         BondSignerRole::Consumer => p.signed.consumer_signature = signature,
-        BondSignerRole::Governance => p.governance_signature = signature,
+        BondSignerRole::Governance | BondSignerRole::Admission => {
+            p.governance_signature = signature
+        },
         BondSignerRole::Payout => p.payout_signature = signature,
     }
     tx.data = Some(serde_json::to_string(&p)?);
@@ -599,6 +616,52 @@ mod tests {
                 .unwrap();
         }
     }
+    /// `--role admission` signs a Deposit or Update for a key pinned on the
+    /// packet's chain, and nothing else. The packet verifies as an admission
+    /// co-sign, not as a governance one.
+    #[test]
+    fn admission_role_signs_only_online_actions_for_a_pinned_key() {
+        use wrfcoin_shared_protocol::governance::schedule_extension::install_bond_admission_pin_for_tests;
+        install_bond_admission_pin_for_tests(&hex::encode([7u8; 32]), vec![hex::encode(fixture::pk(60))]);
+        let identity = ChainIdentity::new("777", "testnet");
+        let admission = EnvKeySigner::from_private_key(fixture::key(60), "synthetic-admission");
+
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.governance_key = Some(fixture::pk(60));
+        p.governance_signature.clear();
+        let mut tx = packet(&p);
+        sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).unwrap();
+        let signed = NodeBondLifecycle::parse(&tx).unwrap();
+        let cosigner = [hex::encode(fixture::pk(60))];
+        signed.verify_with_gates(&identity, &[7; 32], &[], &cosigner, false).unwrap();
+        assert!(signed.verify_with_gates(&identity, &[7; 32], &[], &[], false).is_err());
+
+        // A key the packet names but this binary does not pin for the chain.
+        let unpinned = EnvKeySigner::from_private_key(fixture::key(61), "synthetic-unpinned");
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.governance_key = Some(fixture::pk(61));
+        let mut tx = packet(&p);
+        assert!(sign_packet(&mut tx, BondSignerRole::Admission, &identity, &unpinned).is_err());
+
+        // The right key on another chain's packet.
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.signed.authorization.genesis_hash = [8; 32];
+        p.governance_key = Some(fixture::pk(60));
+        let mut tx = packet(&p);
+        assert!(sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).is_err());
+
+        // Exit and Withdraw take no co-sign of any kind.
+        for action in [NodeBondAction::Exit, NodeBondAction::Withdraw] {
+            let mut p = fixture::auth(10, 1, 1, action, 2);
+            p.governance_key = Some(fixture::pk(60));
+            let mut tx = packet(&p);
+            assert!(
+                sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).is_err(),
+                "{action:?}"
+            );
+        }
+    }
+
     #[test]
     fn passkey_payout_challenge_attach_and_offline_verify() {
         use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;

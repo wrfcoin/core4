@@ -172,6 +172,10 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
     if parsed.features.iter().any(|(name, _)| name == "schedule_extension" || name == "node_share_settlement") {
         genesis_schedule_governance_keys(block)?;
     }
+    if parsed.features.iter().any(|(name, _)| name == ConsensusFeature::BondAdmissionKey.name())
+        && !ConsensusFeature::BondAdmissionKey.schedulable(Some(&block.calculate_hash().to_hex())) {
+        return Err("bond_admission_key needs a pinned key for this genesis".into());
+    }
     for key in [GENESIS_NODE_EPOCH_KEY, GENESIS_NODE_CHALLENGE_KEY] {
         if block.metadata.get(key).is_some_and(|value| value != "512") {
             return Err("new testnet node timing must be 512 blocks when recorded".into());
@@ -1184,6 +1188,20 @@ pub enum ConsensusFeature {
     /// The binary accepts a live schedule extension naming it; scheduling is
     /// the owner's signature only.
     PasskeyBondPayout,
+    /// Pinned bond admission key (`consensus::node_bond_registry`). From its
+    /// activation a node-bond `Deposit`/`Update` may be co-signed by a key
+    /// compiled into `schedule_extension::BOND_ADMISSION_KEY_PINS` for this
+    /// chain instance, as well as by the genesis governance keys. No other
+    /// action or authority reads that table. Below activation, and on a chain
+    /// with no pinned key, validation is exactly what it was without this
+    /// feature. It adds no state, wire member or price, so blocks and
+    /// `state_root` are byte-identical.
+    ///
+    /// Appended LAST so earlier enum wire ordinals are unchanged. Ships
+    /// UNSCHEDULED: it appears in no genesis, default schedule or cut pin, and
+    /// the binary refuses to schedule it on a chain with no pinned key.
+    /// Scheduling is the owner's signature only.
+    BondAdmissionKey,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1230,6 +1248,7 @@ impl ConsensusFeature {
         Self::SecurityKeySpend,
         Self::SendAllowlist,
         Self::PasskeyBondPayout,
+        Self::BondAdmissionKey,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1265,6 +1284,7 @@ impl ConsensusFeature {
             Self::SecurityKeySpend => "security_key_spend",
             Self::SendAllowlist => "send_allowlist",
             Self::PasskeyBondPayout => "passkey_bond_payout",
+            Self::BondAdmissionKey => "bond_admission_key",
         }
     }
 
@@ -1301,8 +1321,14 @@ impl ConsensusFeature {
     ///   key's proof of possession (the sign CLI and library signers).
     /// - `schedule_extension`: the gate itself comes only from genesis or
     ///   [`LEGACY_CHAIN_BOOTSTRAP`]; never schedulable by an extension.
+    /// - `bond_admission_key`: schedulable ONLY on a chain instance with a
+    ///   key in `schedule_extension::BOND_ADMISSION_KEY_PINS`; refused on
+    ///   every other chain and on a node with no block-1 hash.
     pub fn schedulable(self, node_genesis_hash: Option<&str>) -> bool {
         match self {
+            Self::BondAdmissionKey => node_genesis_hash.is_some_and(|genesis| {
+                !crate::governance::schedule_extension::bond_admission_keys(genesis).is_empty()
+            }),
             Self::FaucetSinkBinding => {
                 faucet_binding_row_for(self.name(), node_genesis_hash).is_ok()
             },
@@ -1386,6 +1412,8 @@ impl ConsensusFeature {
             Self::SendAllowlist => true,
             // Passkey bond payout: lifecycle verify and pricing read it.
             Self::PasskeyBondPayout => true,
+            // Bond admission key: lifecycle verify and the role-key check read it.
+            Self::BondAdmissionKey => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch

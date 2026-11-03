@@ -693,6 +693,12 @@ fn build_activation_schedule(activate: &[String]) -> Result<Option<String>> {
             .with_context(|| format!("--activate {raw:?}: height is not an unsigned integer"))?;
         entries.push((height, feature.trim().to_string()));
     }
+    // Its key is pinned by this block 1's own hash, which does not exist yet.
+    crate::commands::governance::check_held_feature_names(
+        entries.iter().map(|(_, feature)| feature.as_str()),
+        &[("bond_admission_key", "its key is pinned by genesis hash, so a schedule extension activates it")],
+        "write the genesis schedule",
+    )?;
     // core4#3299: the same hold as the signed extension. Refused here, before
     // anything is written, so no genesis artifact can activate a held feature.
     crate::commands::governance::check_held_feature_names(
@@ -1339,6 +1345,14 @@ mod tests {
     /// core4#3299: the genesis schedule refuses a held feature (alone or among
     /// others) before anything is written, with the same reason as the signed
     /// extension; an unheld schedule is unchanged.
+    #[test]
+    fn genesis_activate_refuses_bond_admission_key() {
+        let err = build_activation_schedule(&["bond_admission_key@25000".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("scheduling of `bond_admission_key` is held"), "{err}");
+    }
+
     #[test]
     fn genesis_activate_refuses_a_held_feature_3299() {
         for activate in [

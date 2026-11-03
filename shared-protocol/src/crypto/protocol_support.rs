@@ -83,6 +83,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "security_key_spend",
     "send_allowlist",
     "passkey_bond_payout",
+    "bond_admission_key",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -170,10 +171,22 @@ pub fn upgrade_required_in_schedule_with(raw: &str, known: &[&str]) -> Option<Up
 /// EFFECTIVE schedule, genesis ∪ applied extensions (#3277 S3) — whose feature
 /// is not in [`KNOWN_FEATURES`]. Entries are sorted by height then name, so
 /// the first unknown one is the lowest.
+///
+/// `bond_admission_key` counts as implemented only on a chain instance this
+/// binary pins a key for. A binary without the key cannot validate blocks its
+/// peers accept, so it stops cleanly at the activation instead of refusing them.
 pub fn upgrade_required_in_feature_schedule(
     schedule: &crate::crypto::chain_binding::FeatureSchedule,
 ) -> Option<UpgradeRequired> {
-    upgrade_required_in_feature_schedule_with(schedule, KNOWN_FEATURES)
+    use crate::crypto::chain_binding::ConsensusFeature;
+    use crate::governance::schedule_extension::schedule_extension_authority;
+    let admission = ConsensusFeature::BondAdmissionKey;
+    if admission.schedulable(schedule_extension_authority().map(|a| a.genesis_hash())) {
+        return upgrade_required_in_feature_schedule_with(schedule, KNOWN_FEATURES);
+    }
+    let known: Vec<&str> =
+        KNOWN_FEATURES.iter().copied().filter(|name| *name != admission.name()).collect();
+    upgrade_required_in_feature_schedule_with(schedule, &known)
 }
 
 /// [`upgrade_required_in_feature_schedule`] over an explicit known list.
@@ -315,7 +328,8 @@ mod tests {
                 "transfer_fee_burn",
                 "security_key_spend",
                 "send_allowlist",
-                "passkey_bond_payout"
+                "passkey_bond_payout",
+                "bond_admission_key"
             ]
         );
     }
