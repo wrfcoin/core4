@@ -281,6 +281,9 @@ jobs:
         id: eslint
         continue-on-error: true
         run: npm run lint
+      # Checks JS/TS only (package.json `format:check`). Known red: existing JS/TS
+      # files still need one mechanical reformat, kept out of this gate's scope
+      # change so it can be reviewed by itself.
       - name: Prettier
         id: prettier
         continue-on-error: true
