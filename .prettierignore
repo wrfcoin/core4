@@ -35,3 +35,8 @@ mkdocs.yml
 # fix or retire them rather than formatting around them.
 tests/security/CompleteBridgeSecurityPipeline.integration.test.cjs
 tests/unit/smart-contracts/legacy/SecureVotingSystemIntegration.test.js
+
+# Byte-sensitive test data: fixtures, golden vectors and the fuzz corpus must
+# never be reformatted, even by a direct `prettier --write .`.
+**/fixtures/
+fuzz/corpus/
