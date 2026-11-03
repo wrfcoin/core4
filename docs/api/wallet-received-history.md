@@ -56,6 +56,27 @@ separate paid-rewards section without inventing settlement dates. Cursors are
 positions in the current canonical state, not frozen snapshot handles; clients
 should reset pagination on refresh/reorg.
 
+## Credits by address
+
+`GET /addresses/{address}/credits` requires the Reader role and returns the same
+credit rows, order and cursor as `credit_events` above, but a full page of this
+address's credits rather than whatever fell in the next chain-wide records.
+`credit_limit` defaults to 50; 0 or above 100 is refused, not clamped. `credit_after` is the same
+exclusive commit ID cursor (at most 256 bytes), so a walk can move from one route
+to the other. `credit_next_cursor` is null only when no further paid credit is
+known. A page can be short with a cursor if the read reached
+`credit_keys_examined_limit` (1000 keys checked); follow the cursor as usual.
+
+The route reads an in-memory index that lives outside consensus and is rebuilt
+from state: at startup, and within about 10 seconds of the tip moving
+(`index_height` is the height it was built from). Until the first build ends the
+route answers `503 REWARD_INDEX_WARMING`; the transactions route keeps working.
+Every row is re-checked against current state when read, so the amount and paid
+status are current, and a rollback or snapshot sync cannot show a row state does
+not hold. A new credit can be missing until the next rebuild. A credit paid during
+a walk with a commit ID behind the cursor appears on the next walk from the start,
+as with the transactions route.
+
 The response is still incomplete as general wallet history. Achievement,
 coinbase and implicit settlement attribution are excluded until a confirmed-paid
 event source exists. Consumers must retain an incomplete-history notice and

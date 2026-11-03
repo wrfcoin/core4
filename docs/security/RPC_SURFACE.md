@@ -47,6 +47,7 @@ that exploitation is currently demonstrated.
 | `GET /chain/blocks` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_blocks` | `public` | no | no | global-read |
 | `GET /chain/block/{height}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_block_by_height` | `public` | no | no | global-read |
 | `GET /addresses/{address}/transactions` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_transactions` | `authenticated` | no | no | global-read |
+| `GET /addresses/{address}/credits` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_credits` | `authenticated` | no | no | global-read (page above 100 rows refused; at most 1000 index keys checked per read) |
 | `GET /mempool/pending` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_mempool_pending` | `authenticated` | no | no | global-read |
 | `GET /chain/header/{height}` | `http` | `native-chain/src/bin/launch_api/routes/light.rs:light::get_chain_header` | `public` | no | no | global-read |
 | `GET /da/chunk/{height}/{index}` | `http` | `native-chain/src/bin/launch_api/routes/light.rs:light::get_da_chunk` | `public` | no | no | global-read |
