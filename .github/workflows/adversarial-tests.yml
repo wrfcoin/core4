@@ -162,17 +162,19 @@ jobs:
       # matched libtest names and ok/FAILED strings, so two runs whose state_root
       # genuinely differed compared EQUAL and printed "determinism verified", exit 0.
       # Each leg now also emits its own roots, and those are compared byte-for-byte.
+      # One test thread: libtest prints results as tests finish, so with several threads
+      # the order changes between legs and the ordered comparison fails on timing alone.
       - name: Determinism run 1
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture 2>&1 | tee det-run1.txt
+          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture --test-threads=1 2>&1 | tee det-run1.txt
           cargo run --locked -q -p test_server --example emit_roots > roots-run1.json
       - name: Determinism run 2
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture 2>&1 | tee det-run2.txt
+          cargo test --locked -p wrfcoin-native-chain --test wal_replay_finalization_determinism_1980 -- --nocapture --test-threads=1 2>&1 | tee det-run2.txt
           cargo run --locked -q -p test_server --example emit_roots > roots-run2.json
       - name: Compare determinism artifact (identities AND raw state roots)
         # --require-anchor is intentionally NOT passed: the committed
