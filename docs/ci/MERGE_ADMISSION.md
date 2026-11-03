@@ -58,7 +58,7 @@ still apply; strict is not enabled there.
 A required context must fire on every PR and evaluate main on push, execute with a named runner
 and nonzero steps, refuse skipped/missing/failed obligations, and have observed negative controls.
 Availability and latency must be measured rather than inferred from runner labels. These four
-currently run on `[self-hosted, node-host]`; this contract does not change runner placement.
+run on GitHub-hosted runners.
 Repository-input admission is a short Python job but depends on heavy integration-ratchet evidence
 on relevant inputs. Rust workflows outside that dependency remain advisory review evidence.
 
