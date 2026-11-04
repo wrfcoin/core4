@@ -27,6 +27,13 @@ The signer is resolved through the production BlockSigner loader, and must
 match the role's public key in the packet. Wrong-key or online exit signing is
 refused before signing. Output files must be new; existing files are preserved.
 
+From `bond_admission_key`'s activation, the co-signer on a Deposit or Update may
+be a bond admission key instead of a governance key. Assemble with
+`wrfcoin node bond deposit --governance-key <admission public key>
+--admission-cosign` and sign with `--role admission`. Both refuse a key this
+binary does not pin for the packet's genesis, so no packet can be built before a
+key is pinned. An admission key can only co-sign these two actions.
+
 Configure the dedicated signer using `WRFCOIN_NODE_BOND_SIGNER_KEY_FILE` in a
 debug build, or build with `--features hsm` and configure
 `WRFCOIN_HSM_NODE_BOND_KEY_LABEL` plus the public-key label. There is no shared

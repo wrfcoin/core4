@@ -15,6 +15,7 @@ use wrfcoin_shared_protocol::{
         node_share_contracts::*,
     },
     crypto::{chain_binding::ChainIdentity, hash::hash_bytes, signature::PublicKey},
+    governance::schedule_extension::bond_admission_keys,
 };
 
 #[derive(Args)]
@@ -39,8 +40,14 @@ pub struct DepositArgs {
     pub server_key: String,
     #[clap(long)]
     pub consumer_key: String,
+    /// Public key of the co-signer: a genesis governance key, or with
+    /// `--admission-cosign` a pinned bond admission key.
     #[clap(long)]
     pub governance_key: String,
+    /// The co-signer is a bond admission key (`bond_admission_key`): refuse
+    /// unless `--governance-key` is pinned for `--genesis-hash` in this binary.
+    #[clap(long)]
+    pub admission_cosign: bool,
     #[clap(long)]
     pub service_alias: String,
     #[clap(long)]
@@ -198,6 +205,13 @@ fn unsigned(args: &DepositArgs, nonce: u64, effective_epoch: u64) -> Result<Tran
         );
     }
     let governance_key = id(&args.governance_key)?;
+    if args.admission_cosign {
+        ensure!(
+            bond_admission_keys(&hex::encode(id(&args.genesis_hash)?))
+                .contains(&hex::encode(governance_key)),
+            "--governance-key is not a bond admission key pinned for this genesis"
+        );
+    }
     ensure!(
         governance_key != owner_key,
         "governance key must differ from hot bond owner"
@@ -408,10 +422,19 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
     );
     // Offline check as the chain will verify it; a passkey approval is only
     // accepted by nodes once passkey_bond_payout is active.
-    p.verify_with_passkey_payout(
+    // An admission co-sign is checked as the admission key it is, and only
+    // nodes with bond_admission_key active accept it.
+    let cosigner = [args.governance_key.to_ascii_lowercase()];
+    let (governance_keys, admission_keys): (&[String], &[String]) = if args.admission_cosign {
+        (&[], &cosigner)
+    } else {
+        (&cosigner, &[])
+    };
+    p.verify_with_gates(
         &identity,
         &id(&args.genesis_hash)?,
-        &[args.governance_key.to_ascii_lowercase()],
+        governance_keys,
+        admission_keys,
         p.payout_passkey.is_some(),
     )?;
     tx.data = Some(serde_json::to_string(&p)?);
@@ -584,6 +607,7 @@ mod tests {
             server_key: hexpk(13),
             consumer_key: hexpk(14),
             governance_key: hexpk(15),
+            admission_cosign: false,
             service_alias: "node-b".into(),
             genesis_hash: genesis,
             chain_id: "888".into(),
@@ -708,6 +732,7 @@ mod tests {
             server_key: hexpk(3),
             consumer_key: hexpk(4),
             governance_key: hexpk(5),
+            admission_cosign: false,
             service_alias: "node-a".into(),
             genesis_hash: genesis,
             chain_id: "777".into(),
@@ -753,6 +778,15 @@ mod tests {
         );
         args.payout_key = Some(hexpk(2));
         args.payout_address = ed_payout;
+        // An admission co-sign needs a key this binary pins for the genesis,
+        // refused before any key, credential or network use.
+        args.admission_cosign = true;
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(handle(&args))
+            .unwrap_err();
+        assert!(error.to_string().contains("not a bond admission key"), "{error}");
+        args.admission_cosign = false;
         // An explicit 888 selection cannot silently sign against this 777 API.
         args.chain_id = "888".into();
         let error = tokio::runtime::Runtime::new()

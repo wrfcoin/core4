@@ -19,6 +19,10 @@
     },
     {
       "package": "test_server",
+      "target": "bond_admission_key_parity"
+    },
+    {
+      "package": "test_server",
       "target": "security_key_feature_parity"
     },
     {
@@ -1043,6 +1047,14 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "passkey_bond_payout_vectors"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key_unpinned"
     }
   ],
   "external_coverage": [

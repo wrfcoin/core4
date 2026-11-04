@@ -957,7 +957,20 @@ pub fn held_feature(name: &str) -> Option<&'static str> {
         .map(|(_, until)| *until)
 }
 
+/// What a `bond_admission_key` entry waits on while its chain has no pin.
+const BOND_ADMISSION_KEY_HOLD: &str =
+    "a key pinned for this chain instance in BOND_ADMISSION_KEY_PINS";
+
 fn check_held_features(extension: &FeatureScheduleExtension) -> Result<(), ScheduleExtensionError> {
+    if let Some(entry) = extension.entries.iter().find(|entry| {
+        entry.feature == ConsensusFeature::BondAdmissionKey.name()
+            && !ConsensusFeature::BondAdmissionKey.schedulable(Some(&extension.genesis_hash))
+    }) {
+        return Err(ScheduleExtensionError::FeatureHeld {
+            feature: entry.feature.clone(),
+            until: BOND_ADMISSION_KEY_HOLD,
+        });
+    }
     match extension
         .entries
         .iter()
@@ -1148,6 +1161,55 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
     genesis_hash: "6ad436386cfc6c746146f6ef2f9d32ddb7a93f18efd3635606abd27c9ca17db8", // pragma: allowlist secret -- public genesis hash
     keys: &["e7bec166ad446314d26fb7526bfa8cec1b363b438440262fb001f7b04b20bf00"], // pragma: allowlist secret -- public governance KEY (ed25519 public key)
 }];
+
+/// The compiled-in `bond_admission_key` pins: for each chain instance, the
+/// keys that may co-sign a node-bond `Deposit` or `Update` once the feature is
+/// active. Nothing else reads this table: these keys are not governance keys
+/// and authorize no other action.
+///
+/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
+/// the library signers), and if a block schedules it anyway the admission path
+/// accepts nothing. To set one, a reviewed consensus PR appends a row before
+/// the release that carries it and before any schedule is signed, with the
+/// chain's block-1 hash and the public keys only, and updates
+/// `bond_admission_pins_are_immutable` to match.
+///
+/// **IMMUTABLE once a chain may have used it**, like
+/// [`SCHEDULE_EXTENSION_GOVERNANCE_PINS`]: replay re-verifies historical bond
+/// transactions against this table, so a key is never removed or replaced, and
+/// nodes that disagree on the table disagree on block validity. Adding a key
+/// means every producer upgrades together.
+pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[];
+
+#[cfg(any(test, feature = "test-support"))]
+static TEST_BOND_ADMISSION_PIN: std::sync::OnceLock<(String, Vec<String>)> =
+    std::sync::OnceLock::new();
+
+/// Tests only: pin `keys` for `genesis_hash` in this process. Compiled only
+/// into test builds (`test-support` is a dev-dependency feature), so a shipped
+/// binary reads [`BOND_ADMISSION_KEY_PINS`] and nothing else. First install wins.
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_bond_admission_pin_for_tests(genesis_hash: &str, keys: Vec<String>) {
+    let _ = TEST_BOND_ADMISSION_PIN.get_or_init(|| (genesis_hash.to_string(), keys));
+}
+
+/// The lowercase hex admission keys pinned for the chain whose block-1 hash is
+/// `genesis_hash`; empty when none is. Answers whether or not the feature is
+/// active: consensus callers gate it on the carrying height.
+pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some((genesis, keys)) = TEST_BOND_ADMISSION_PIN.get() {
+        if genesis == genesis_hash {
+            return keys.clone();
+        }
+    }
+    BOND_ADMISSION_KEY_PINS
+        .iter()
+        .find(|pin| pin.genesis_hash == genesis_hash)
+        .map(|pin| pin.keys.iter().map(|key| key.to_string()).collect())
+        .unwrap_or_default()
+}
 
 static AUTHORITY: std::sync::OnceLock<ScheduleExtensionAuthority> = std::sync::OnceLock::new();
 
@@ -1395,6 +1457,51 @@ mod tests {
         let row = crate::crypto::chain_binding::legacy_chain_bootstrap_for(LIVE_777_BLOCK1);
         assert_eq!(row.len(), 1);
         assert_eq!(row[0].genesis_hash, SCHEDULE_EXTENSION_GOVERNANCE_PINS[0].genesis_hash);
+    }
+
+    /// The bond admission table today: no chain has a key. The row that sets
+    /// one changes this test in the same reviewed PR, and it then pins the
+    /// table byte for byte like `governance_pins_are_immutable_3277`.
+    #[test]
+    fn bond_admission_pins_are_immutable() {
+        assert_eq!(BOND_ADMISSION_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        for pin in BOND_ADMISSION_KEY_PINS {
+            assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
+            assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message
+            for key in pin.keys {
+                assert_eq!(*key, key.to_ascii_lowercase());
+                PublicKey::from_hex(key).expect("a pinned key is a valid ed25519 public key");
+                assert!(
+                    SCHEDULE_EXTENSION_GOVERNANCE_PINS.iter().all(|g| !g.keys.contains(key)),
+                    "an admission key must not be a governance key"
+                );
+            }
+        }
+    }
+
+    /// With no pinned key the feature is refused by admission and by every
+    /// plain signer, on every chain instance.
+    #[test]
+    fn bond_admission_key_is_refused_with_no_pinned_key() {
+        let governance = key(32);
+        let named = FeatureScheduleExtension {
+            entries: vec![ScheduleEntry::new("bond_admission_key", TIP + MIN_RUNUP_BLOCKS)],
+            ..extension()
+        };
+        for node in [None, Some(GENESIS), Some(OTHER_GENESIS)] {
+            assert_eq!(
+                check_admission_policy(&named, node),
+                Err(ScheduleExtensionError::FeatureNotSchedulable {
+                    feature: "bond_admission_key".into()
+                }),
+                "{node:?}"
+            );
+        }
+        let held = Err(ScheduleExtensionError::FeatureHeld {
+            feature: "bond_admission_key".into(),
+            until: BOND_ADMISSION_KEY_HOLD,
+        });
+        assert_eq!(sign_feature_schedule_extension_with_key(&named, &governance), held);
     }
 
     /// #3277 S4 T8 (policy half): known and schedulable names only, and no

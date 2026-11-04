@@ -124,6 +124,20 @@ pub fn passkey_bond_payout_active(height: u64) -> bool {
     feature_active(ConsensusFeature::PasskeyBondPayout, height)
 }
 
+/// Whether [`ConsensusFeature::BondAdmissionKey`] is in force at `height`.
+pub fn bond_admission_key_active(height: u64) -> bool {
+    feature_active(ConsensusFeature::BondAdmissionKey, height)
+}
+
+/// The admission keys in force on the chain `genesis` at `height`: none before
+/// activation, and none on a chain with no pinned key.
+fn admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
+    if !bond_admission_key_active(height) {
+        return Vec::new();
+    }
+    crate::governance::schedule_extension::bond_admission_keys(&hex::encode(genesis))
+}
+
 /// Verify a passkey payout approval for `a`: the credential must derive
 /// `a.payout_account`, and the assertion must pass full WebAuthn verification
 /// (type, challenge, RP ID hash, user presence AND verification, counter,
@@ -258,7 +272,8 @@ impl NodeBondLifecycle {
         Some(parsed)
     }
     /// `height` is the carrying height (the block's, or tip + 1 at
-    /// admission); it only decides whether `passkey_bond_payout` is active.
+    /// admission); it only decides whether `passkey_bond_payout` and
+    /// `bond_admission_key` are active.
     pub fn verify(
         &self,
         identity: &ChainIdentity,
@@ -266,10 +281,11 @@ impl NodeBondLifecycle {
         governance_keys: &[String],
         height: u64,
     ) -> Result<(), StateError> {
-        self.verify_with_passkey_payout(
+        self.verify_with_gates(
             identity,
             genesis,
             governance_keys,
+            &admission_keys_at(genesis, height),
             passkey_bond_payout_active(height),
         )
     }
@@ -283,6 +299,21 @@ impl NodeBondLifecycle {
         identity: &ChainIdentity,
         genesis: &[u8; 32],
         governance_keys: &[String],
+        passkey_payout_active: bool,
+    ) -> Result<(), StateError> {
+        self.verify_with_gates(identity, genesis, governance_keys, &[], passkey_payout_active)
+    }
+
+    /// [`Self::verify`] with both gates given explicitly. `admission_keys` may
+    /// co-sign a `Deposit` or `Update` alongside `governance_keys`; an `Exit`
+    /// or `Withdraw` refuses any co-sign at all. Consensus callers use
+    /// [`Self::verify`]; this form is for offline tooling.
+    pub fn verify_with_gates(
+        &self,
+        identity: &ChainIdentity,
+        genesis: &[u8; 32],
+        governance_keys: &[String],
+        admission_keys: &[String],
         passkey_payout_active: bool,
     ) -> Result<(), StateError> {
         let a = &self.signed.authorization;
@@ -305,6 +336,7 @@ impl NodeBondLifecycle {
             let governance_key = self.governance_key.as_ref().ok_or_else(refused)?;
             if !governance_keys
                 .iter()
+                .chain(admission_keys)
                 .any(|key| key == &hex::encode(governance_key))
             {
                 return Err(refused());
@@ -743,10 +775,12 @@ pub(crate) fn apply_lifecycle(
     }
     if matches!(a.action, NodeBondAction::Deposit | NodeBondAction::Update) {
         let role_keys = state.signing_keys.all_registered_public_keys();
+        let admission_keys = admission_keys_at(genesis, height);
         let mut forbidden: Vec<[u8; 32]> = role_keys
             .iter()
             .chain(state.oracle_set.iter())
             .chain(governance_keys.iter())
+            .chain(admission_keys.iter())
             .filter_map(|k| hex::decode(k).ok()?.try_into().ok())
             .collect();
         for change in &state.producer_set_history {
