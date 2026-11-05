@@ -97,7 +97,7 @@ pub(crate) fn api_hash(value: &str) -> Option<[u8; 32]> {
         .unwrap_or(value);
     id(bare).ok()
 }
-fn number(v: &Value) -> Result<u64> {
+pub(crate) fn number(v: &Value) -> Result<u64> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .ok_or_else(|| anyhow::anyhow!("canonical height/nonce unavailable"))
@@ -114,13 +114,13 @@ const EPOCH_END_MARGIN_BLOCKS: u64 = 3;
 
 /// The node's own epoch at its own tip, checked against the known lengths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NodeEpoch {
-    height: u64,
-    epoch: u64,
+pub(crate) struct NodeEpoch {
+    pub(crate) height: u64,
+    pub(crate) epoch: u64,
     /// `None` only in early epoch 0, where every known length still fits.
-    epoch_blocks: Option<u64>,
+    pub(crate) epoch_blocks: Option<u64>,
     /// Last height of `epoch`; the earliest close when the length is open.
-    close_height: u64,
+    pub(crate) close_height: u64,
 }
 
 impl NodeEpoch {
@@ -130,7 +130,7 @@ impl NodeEpoch {
     fn from_node(activation: u64, height: u64, epoch: u64) -> Result<Self> {
         let offset = height
             .checked_sub(activation)
-            .ok_or_else(|| anyhow::anyhow!("Deposit refused before activation height"))?;
+            .ok_or_else(|| anyhow::anyhow!("bond lifecycle refused before activation height"))?;
         let mut fits = KNOWN_NODE_EPOCH_BLOCKS
             .into_iter()
             .filter(|length| offset / length == epoch);
@@ -161,18 +161,18 @@ impl NodeEpoch {
         Ok(view)
     }
     /// Blocks after the next one (the carrying block) still inside this epoch.
-    fn blocks_left(&self) -> u64 {
+    pub(crate) fn blocks_left(&self) -> u64 {
         self.close_height
             .saturating_sub(self.height.saturating_add(1))
     }
-    fn effective_epoch(&self) -> Result<u64> {
+    pub(crate) fn effective_epoch(&self) -> Result<u64> {
         self.epoch
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("epoch overflow"))
     }
 }
 
-fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
+pub(crate) fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
     ensure!(
         number(&registration["activation_height"])? == activation,
         "canonical activation height mismatch"
@@ -184,7 +184,7 @@ fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
     )
 }
 
-fn normalized(tx: &Transaction) -> Result<Value> {
+pub(crate) fn normalized(tx: &Transaction) -> Result<Value> {
     let mut v = serde_json::to_value(tx)?;
     for field in ["id", "timestamp", "data"] {
         v.as_object_mut().unwrap().remove(field);
@@ -291,6 +291,47 @@ fn unsigned(args: &DepositArgs, nonce: u64, effective_epoch: u64) -> Result<Tran
     Ok(tx)
 }
 
+/// Operator-token API client for a public node URL; no credentials in the URL.
+pub(crate) fn operator_api(api_url: &str, operator_token_file: &std::path::Path) -> Result<ApiClient> {
+    let url = url::Url::parse(api_url).map_err(|_| anyhow::anyhow!("public API URL refused"))?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "public API URL refused"
+    );
+    let secret = super::node_receipt::secret_file(operator_token_file, 16 * 1024)?;
+    let token = std::str::from_utf8(&secret)
+        .map_err(|_| anyhow::anyhow!("operator credential refused"))?
+        .trim();
+    let available = !token.is_empty();
+    ensure!(available, "operator credential unavailable"); // secret-leak-ok: boolean presence and fixed error only.
+    ApiClient::new_without_redirects(ApiConfig {
+        base_url: api_url.trim_end_matches('/').into(),
+        bearer_token: Some(token.to_owned()),
+        ..ApiConfig::default()
+    })
+}
+
+/// Refuse unless the node serves exactly the chain, network and genesis named.
+pub(crate) async fn check_network(
+    api: &ApiClient,
+    chain_id: &str,
+    network_id: &str,
+    genesis_hash: &str,
+) -> Result<()> {
+    let network = api.receipt_request("GET", "/network/info", None).await?;
+    ensure!(
+        network["chain_id"].as_str() == Some(chain_id)
+            && network["network_id"].as_str() == Some(network_id)
+            && network["genesis_hash"].as_str().and_then(api_hash) == Some(id(genesis_hash)?),
+        "API chain/genesis mismatch"
+    );
+    Ok(())
+}
+
 pub async fn handle(args: &DepositArgs) -> Result<Value> {
     // Cheap public input checks precede any key or credential/network operation.
     let _ = unsigned(args, 0, 1)?;
@@ -302,34 +343,8 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
             "packet already exists; inspect canonical inclusion before explicit retry"
         );
     }
-    let url =
-        url::Url::parse(&args.api_url).map_err(|_| anyhow::anyhow!("public API URL refused"))?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        "public API URL refused"
-    );
-    let secret = super::node_receipt::secret_file(&args.operator_token_file, 16 * 1024)?;
-    let token = std::str::from_utf8(&secret)
-        .map_err(|_| anyhow::anyhow!("operator credential refused"))?
-        .trim();
-    let available = !token.is_empty();
-    ensure!(available, "operator credential unavailable"); // secret-leak-ok: boolean presence and fixed error only.
-    let api = ApiClient::new_without_redirects(ApiConfig {
-        base_url: args.api_url.trim_end_matches('/').into(),
-        bearer_token: Some(token.to_owned()),
-        ..ApiConfig::default()
-    })?;
-    let network = api.receipt_request("GET", "/network/info", None).await?;
-    ensure!(
-        network["chain_id"].as_str() == Some(args.chain_id.as_str())
-            && network["network_id"].as_str() == Some(args.network_id.as_str())
-            && network["genesis_hash"].as_str().and_then(api_hash) == Some(id(&args.genesis_hash)?),
-        "API chain/genesis mismatch"
-    );
+    let api = operator_api(&args.api_url, &args.operator_token_file)?;
+    check_network(&api, &args.chain_id, &args.network_id, &args.genesis_hash).await?;
     let tip = api.receipt_request("GET", "/blockchain", None).await?;
     ensure!(
         number(&tip["height"])? >= args.activation_height,
