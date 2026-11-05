@@ -63,6 +63,10 @@ pub enum BondCommands {
     },
     /// Assemble a keyless Deposit plan, then authorize and submit the approved packet once.
     Deposit(super::node_deposit::DepositArgs),
+    /// Assemble a keyless Update moving a registered bond's payout account
+    /// (amount 0, other fields from the node's bond), then authorize and
+    /// submit the approved packet once.
+    Update(super::node_bond_update::UpdateArgs),
     /// Read the canonical public owner address/key without signing or an API request.
     KeyInfo {
         #[clap(long)]
@@ -113,6 +117,11 @@ pub enum BondCommands {
     },
     /// Submit a fully signed registration and 250 WRF bond deposit.
     RegisterBond {
+        #[clap(long)]
+        transaction_file: PathBuf,
+    },
+    /// Submit a fully signed Update (e.g. a new payout account).
+    SubmitUpdate {
         #[clap(long)]
         transaction_file: PathBuf,
     },
@@ -195,7 +204,7 @@ pub(crate) fn read_payout_passkey(
 }
 
 /// Attach a verified passkey payout approval to an online lifecycle packet.
-fn attach_payout_passkey(
+pub(crate) fn attach_payout_passkey(
     tx: &mut Transaction,
     path: &Path,
     identity: &ChainIdentity,
@@ -222,7 +231,7 @@ fn public_id(value: &str) -> Result<String> {
 }
 
 /// Subject bytes and signer-key binding are checked before any signature.
-fn sign_packet(
+pub(crate) fn sign_packet(
     tx: &mut Transaction,
     role: BondSignerRole,
     identity: &ChainIdentity,
@@ -332,6 +341,26 @@ fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedS
         .ok_or_else(|| anyhow::anyhow!("dedicated Node bond signer unavailable"))
 }
 
+/// The packet a submit command sends, refused unless its lifecycle action is
+/// the one the command names (Deposit, Update, Exit or Withdraw).
+pub(crate) fn submittable(command: &BondCommands, transaction_file: &Path) -> Result<Transaction> {
+    let tx = read_transaction(transaction_file)?;
+    let p = NodeBondLifecycle::parse(&tx)
+        .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
+    let expected = match command {
+        BondCommands::RegisterBond { .. } => NodeBondAction::Deposit,
+        BondCommands::SubmitUpdate { .. } => NodeBondAction::Update,
+        BondCommands::Exit { .. } => NodeBondAction::Exit,
+        BondCommands::Withdraw { .. } => NodeBondAction::Withdraw,
+        _ => anyhow::bail!("not a submit command"),
+    };
+    ensure!(
+        p.signed.authorization.action == expected,
+        "lifecycle action mismatch"
+    );
+    Ok(tx)
+}
+
 pub async fn handle(command: &BondCommands) -> Result<Value> {
     if let BondCommands::GrantRequest { owner_address, api_url, out, submit, key_file, p2p_key_file } = command {
         use wrfcoin_cli::bond_grant;
@@ -369,6 +398,9 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
     }
     if let BondCommands::Deposit(args) = command {
         return super::node_deposit::handle(args).await;
+    }
+    if let BondCommands::Update(args) = command {
+        return super::node_bond_update::handle(args).await;
     }
     if let BondCommands::PayoutChallenge { transaction_file, chain_id, network_id } = command {
         let tx = read_transaction(transaction_file)?;
@@ -463,23 +495,21 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         file.sync_all()?;
         return Ok(json!({"signed":true,"included":false,"output":out.display().to_string()}));
     }
+    if let BondCommands::RegisterBond { transaction_file }
+    | BondCommands::SubmitUpdate { transaction_file }
+    | BondCommands::Exit { transaction_file }
+    | BondCommands::Withdraw { transaction_file } = command
+    {
+        // Refuse a packet of the wrong action before any client is built.
+        submittable(command, transaction_file)?;
+    }
     let api = ApiClient::new(ApiConfig::default())?;
     match command {
         BondCommands::RegisterBond { transaction_file }
+        | BondCommands::SubmitUpdate { transaction_file }
         | BondCommands::Exit { transaction_file }
         | BondCommands::Withdraw { transaction_file } => {
-            let tx = read_transaction(transaction_file)?;
-            let p = NodeBondLifecycle::parse(&tx)
-                .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
-            let expected = match command {
-                BondCommands::RegisterBond { .. } => NodeBondAction::Deposit,
-                BondCommands::Exit { .. } => NodeBondAction::Exit,
-                _ => NodeBondAction::Withdraw,
-            };
-            ensure!(
-                p.signed.authorization.action == expected,
-                "lifecycle action mismatch"
-            );
+            let tx = submittable(command, transaction_file)?;
             Ok(api
                 .post("/node/bonds/submit", Some(serde_json::to_value(tx)?))
                 .await?)
@@ -495,6 +525,7 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
             .await?),
         BondCommands::Sign { .. }
         | BondCommands::Deposit(_)
+        | BondCommands::Update(_)
         | BondCommands::KeyInfo { .. }
         | BondCommands::GrantRequest { .. }
         | BondCommands::PayoutChallenge { .. }
@@ -506,7 +537,7 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
 
 #[cfg(test)]
 #[path = "../../../../../shared-protocol/tests/common/node_bond_fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 
 #[cfg(test)]
 mod tests {
