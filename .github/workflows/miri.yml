@@ -1,8 +1,8 @@
 name: Miri
 
 # Miri detects undefined behaviour that safe-Rust review does not catch once unsafe, FFI or
-# hand-rolled serialization are involved (#2106). It is an interpreter: expect hours, not
-# minutes.
+# hand-rolled serialization are involved (#2106). It is an interpreter: the scoped legs below
+# take minutes, a whole-crate run takes hours.
 #
 # THERE IS DELIBERATELY NO `pull_request` TRIGGER, and adding one would be a mistake.
 #
@@ -26,9 +26,9 @@ name: Miri
 # See docs/security/UNSAFE_POLICY.md.
 
 on:
-  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Weekly, Sunday: an interpreter run allowed up to 5 hours per leg.
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: both legs together measured 12 min, no build cache (run 41976301084).
   schedule:
-    - cron: '17 8 * * 0'
+    - cron: '17 8 * * *'
   workflow_dispatch: {}
 
 permissions:

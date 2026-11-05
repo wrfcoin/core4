@@ -13,7 +13,7 @@ the older trigger descriptions below for them. PR triggers are unchanged.
 | `loom.yml` | daily 05:41 | under 30 min; only CI home for the loom models |
 | `kani.yml` | daily 06:13 | proofs take about a minute; setup is most of the job |
 | `fuzz-nightly.yml` | daily 07:07 | 15 min per target; largest matrix, so last |
-| `miri.yml` | weekly, Sunday 08:17 | interpreter run, up to 5 hours per leg |
+| `miri.yml` | daily 08:17 | both legs together measured 12 min; after fuzz |
 
 They start after the 02:00-04:45 block of existing nightlies and off the hour, when GitHub delays
 scheduled runs least. Each cargo-heavy job frees unused preinstalled toolchains first.

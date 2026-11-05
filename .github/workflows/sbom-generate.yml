@@ -168,20 +168,6 @@ jobs:
           echo "Combined SBOM metadata:"
           cat sbom/combined-sbom-metadata.json
 
-  terminal-skip-guard:
-    name: Terminal skip guard
-    needs: [generate-sbom, verify-sbom]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Reject skipped required gates
-        env:
-          GATE_NEEDS: ${{ toJSON(needs) }}
-          GATE_REQUIRED: generate-sbom verify-sbom
-          GATE_CONDITIONAL: ''
-        run: python3 scripts/assert_gate_results.py
-
       # Fail-closed inventory validation (#2317). The pinned `cyclonedx validate`
       # CLI returns 0 on a malformed document unless `--fail-on-errors` is passed,
       # and the old verify job also swallowed its exit with `|| echo`. This
@@ -355,3 +341,17 @@ jobs:
           echo "Rust Components: $(jq '.components | length' sbom/rust-sbom.cdx.json)"
           echo ""
           cat sbom/combined-sbom-metadata.json
+
+  terminal-skip-guard:
+    name: Terminal skip guard
+    needs: [generate-sbom, verify-sbom]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: generate-sbom verify-sbom
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py
