@@ -914,6 +914,13 @@ impl Mempool {
         self.transactions.get(tx_id).cloned()
     }
 
+    /// Whether a pending transaction already holds this protocol replay key
+    /// (for example `commit:<id>` or `reveal:<id>`). Read-only; lets an HTTP
+    /// route refuse a duplicate before spending a request budget on it.
+    pub fn has_protocol_replay_key(&self, key: &str) -> bool {
+        self.protocol_replay_keys.contains(key)
+    }
+
     /// Gets all transactions in the mempool
     pub fn get_all_transactions(&self) -> Vec<Arc<Transaction>> {
         self.transactions.values().cloned().collect()
