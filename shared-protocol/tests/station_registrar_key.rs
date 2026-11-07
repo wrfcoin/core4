@@ -17,16 +17,17 @@ use rand::rngs::StdRng;
 use tokio::sync::RwLock;
 use wrfcoin_shared_protocol::blockchain::chain::Blockchain;
 use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
+use wrfcoin_shared_protocol::blockchain::station_owner::StationOwnerActionPayload;
 use wrfcoin_shared_protocol::blockchain::transaction::{
-    StationRegistrationAuthority, StationRegistrationPayload, Transaction, TransactionInput,
-    TransactionOutput, TransactionType,
+    StationOwnerActionKind, StationRegistrationAuthority, StationRegistrationPayload, Transaction,
+    TransactionInput, TransactionOutput, TransactionType,
 };
 use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
 use wrfcoin_shared_protocol::consensus::station_registrar::{
     MOBILE_STATION_SLOT, PHONE_HARDWARE_MODEL, PHONE_STATION_CEILING, RegistrarBlockSlot,
-    RegistrarSelection, select_registrar_registrations,
-    mobile_station_id, phone_station_count, registrar_keys_at, station_registrar_key_active,
+    RegistrarSelection, mobile_station_id, phone_station_count, registrar_keys_at,
+    select_registrar_registrations, station_registrar_key_active,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
     ConsensusFeature, FeatureSchedule, install_feature_schedule,
@@ -71,6 +72,7 @@ fn install() {
     install_feature_schedule(
         FeatureSchedule::from_entries(vec![
             ("station_registration_nonce".into(), NONCE_AT),
+            ("station_owner_actions".into(), NONCE_AT),
             ("station_registrar_key".into(), K),
         ])
         .unwrap(),
@@ -216,7 +218,7 @@ fn registrar_can_activate_a_phone_within_limits() {
         1,
         "nonce advanced"
     );
-    assert_eq!(phone_station_count(&state.station_registry), 1);
+    assert_eq!(phone_station_count(&state), 1);
 
     // The spare key works the same way.
     let other = key(0xA3);
@@ -394,10 +396,7 @@ fn registrar_refuses_over_the_ceiling() {
     for n in 0..(PHONE_STATION_CEILING as u32 - 1) {
         state.apply_station_registration(phone_station(n)).unwrap();
     }
-    assert_eq!(
-        phone_station_count(&state.station_registry),
-        PHONE_STATION_CEILING - 1
-    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING - 1);
     // The 128th phone station fits.
     let last = key(0xB0);
     assert!(apply(
@@ -405,10 +404,7 @@ fn registrar_refuses_over_the_ceiling() {
         &signed(phone(&last), &last, REGISTRAR),
         K
     ));
-    assert_eq!(
-        phone_station_count(&state.station_registry),
-        PHONE_STATION_CEILING
-    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING);
     // The 129th is an inert no-op: extracted, but nothing moves.
     let over = key(0xB1);
     state.recalculate_state_root();
@@ -420,10 +416,7 @@ fn registrar_refuses_over_the_ceiling() {
     ));
     state.recalculate_state_root();
     assert_eq!(state.state_root, root, "over the ceiling changes nothing");
-    assert_eq!(
-        phone_station_count(&state.station_registry),
-        PHONE_STATION_CEILING
-    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING);
     let over_id = mobile_station_id(&addr(&over), 0).unwrap();
     assert!(state.station_registry.get(&over_id).is_none());
     assert_eq!(state.station_owner_ledger_view(&over_id).owner_nonce, 0);
@@ -434,55 +427,168 @@ fn registrar_refuses_over_the_ceiling() {
         &signed(phone(&gov_owner), &gov_owner, GOVERNANCE),
         K + 1
     ));
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING + 1);
+}
+
+/// Apply an owner-signed station action (the real deactivation path) for
+/// `owner`'s phone station at `height`.
+fn owner_action(state: &mut State, owner: &PrivateKey, kind: StationOwnerActionKind, height: u64) {
+    let id = mobile_station_id(&addr(owner), 0).unwrap();
+    let nonce = state.station_owner_ledger_view(&id).owner_nonce;
+    let identity = wrfcoin_shared_protocol::crypto::chain_binding::ChainIdentity::active();
+    let mut action = StationOwnerActionPayload::new(
+        id.clone(),
+        addr(owner),
+        PublicKey::from_private_key(owner).to_hex(),
+        kind,
+        nonce,
+        height + 100,
+    );
+    action.sign_with_domain(&identity.chain_id, &identity.network_id, owner);
+    let mut tx = tx_of(&format!("action-{id}-{nonce}"), &phone(owner));
+    tx.data = Some(serde_json::to_string(&action).unwrap());
+    tx.set_id();
+    let transition = tx
+        .station_owner_ledger_transition(height)
+        .expect("an owner action extracts");
+    state.apply_transition(transition).unwrap();
     assert_eq!(
-        phone_station_count(&state.station_registry),
-        PHONE_STATION_CEILING + 1
+        state.station_owner_ledger_view(&id).owner_nonce,
+        nonce + 1,
+        "the action applied"
     );
 }
 
-/// The ceiling counts ACTIVE phone stations only (owner decision, 11-07):
-/// deactivating one frees a slot, but a deactivated `mob-` id is never
-/// re-registered through the registrar.
+/// The ceiling counts phone stations that hold a slot: registry-active and
+/// not suspended by the owner ledger (owner decision, 11-07). A real
+/// owner-ledger Deactivate frees a slot, and so does a report-stolen freeze.
+/// A deactivated or frozen `mob-` id is never re-registered through the
+/// registrar.
 #[test]
-fn a_deactivated_station_frees_a_ceiling_slot_but_cannot_be_re_registered() {
+fn owner_deactivation_and_freeze_free_ceiling_slots_but_ids_cannot_be_re_registered() {
     install();
     let mut state = State::new();
-    for n in 0..(PHONE_STATION_CEILING as u32 - 1) {
+    for n in 0..(PHONE_STATION_CEILING as u32 - 2) {
         state.apply_station_registration(phone_station(n)).unwrap();
     }
-    let last = key(0xB3);
-    let last_tx = signed(phone(&last), &last, REGISTRAR);
-    assert!(apply(&mut state, &last_tx, K));
-    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING);
-    let waiting = key(0xB4);
-    let waiting_tx = signed(phone(&waiting), &waiting, REGISTRAR);
-    let waiting_id = mobile_station_id(&addr(&waiting), 0).unwrap();
-    assert!(apply(&mut state, &waiting_tx, K + 1));
-    assert!(state.station_registry.get(&waiting_id).is_none(), "full: refused");
+    let (deactivating, freezing) = (key(0xB3), key(0xB4));
+    for owner in [&deactivating, &freezing] {
+        assert!(apply(
+            &mut state,
+            &signed(phone(owner), owner, REGISTRAR),
+            K
+        ));
+    }
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING);
+    let (w1, w2) = (key(0xB5), key(0xB6));
+    let w1_id = mobile_station_id(&addr(&w1), 0).unwrap();
+    let w2_id = mobile_station_id(&addr(&w2), 0).unwrap();
+    assert!(apply(
+        &mut state,
+        &signed(phone(&w1), &w1, REGISTRAR),
+        K + 1
+    ));
+    assert!(
+        state.station_registry.get(&w1_id).is_none(),
+        "full: refused"
+    );
 
-    // An inactive phone station holds no slot.
-    let last_id = mobile_station_id(&addr(&last), 0).unwrap();
-    assert!(state.deactivate_weather_station(&last_id));
-    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING - 1);
-    assert!(apply(&mut state, &waiting_tx, K + 2));
-    assert!(state.station_registry.get(&waiting_id).is_some(), "the freed slot is taken");
-    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING);
+    // Owner self-deactivation frees one slot; the registry record stays.
+    owner_action(
+        &mut state,
+        &deactivating,
+        StationOwnerActionKind::Deactivate,
+        K + 2,
+    );
+    let deactivated_id = mobile_station_id(&addr(&deactivating), 0).unwrap();
+    assert!(
+        state
+            .station_registry
+            .get(&deactivated_id)
+            .unwrap()
+            .is_active
+    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING - 1);
+    assert!(apply(
+        &mut state,
+        &signed(phone(&w1), &w1, REGISTRAR),
+        K + 2
+    ));
+    assert!(
+        state.station_registry.get(&w1_id).is_some(),
+        "the freed slot is taken"
+    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING);
 
-    // The deactivated id stays deactivated: the registrar cannot bring it back,
-    // even with a slot free.
-    assert!(state.deactivate_weather_station(&waiting_id));
-    state.recalculate_state_root();
-    let root = state.state_root;
-    assert!(apply(&mut state, &last_tx, K + 3));
-    state.recalculate_state_root();
-    assert_eq!(state.state_root, root, "re-registering a deactivated id changes nothing");
-    assert!(!state.station_registry.get(&last_id).unwrap().is_active);
-    // Even after a fresh signature over a new envelope.
-    let mut fresh = phone(&last);
-    fresh.sign_ownership(&last);
-    fresh.sign(&key(SPARE));
-    assert!(apply(&mut state, &tx_of("fresh-last", &fresh), K + 3));
-    assert!(!state.station_registry.get(&last_id).unwrap().is_active);
+    // A report-stolen freeze frees another.
+    owner_action(
+        &mut state,
+        &freezing,
+        StationOwnerActionKind::ReportStolen,
+        K + 3,
+    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING - 1);
+    assert!(apply(
+        &mut state,
+        &signed(phone(&w2), &w2, REGISTRAR),
+        K + 3
+    ));
+    assert!(state.station_registry.get(&w2_id).is_some());
+
+    // Neither id comes back through the registrar, even with a slot free and
+    // a fresh spare-key signature.
+    owner_action(&mut state, &w2, StationOwnerActionKind::Deactivate, K + 4);
+    let frozen_id = mobile_station_id(&addr(&freezing), 0).unwrap();
+    for (owner, id) in [(&deactivating, &deactivated_id), (&freezing, &frozen_id)] {
+        let mut fresh = phone(owner);
+        fresh.sign_ownership(owner);
+        fresh.sign(&key(SPARE));
+        state.recalculate_state_root();
+        let root = state.state_root;
+        assert!(apply(
+            &mut state,
+            &tx_of(&format!("again-{id}"), &fresh),
+            K + 5
+        ));
+        state.recalculate_state_root();
+        assert_eq!(
+            state.state_root, root,
+            "re-registering {id} changes nothing"
+        );
+    }
+
+    // A Reactivate can take the count above the ceiling: harmless, the
+    // ceiling only gates new registrar registrations.
+    // Before: 127 hold a slot (128 minus w2, deactivated just above).
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING - 1);
+    owner_action(
+        &mut state,
+        &deactivating,
+        StationOwnerActionKind::Reactivate,
+        K + 6,
+    );
+    owner_action(&mut state, &w2, StationOwnerActionKind::Reactivate, K + 6);
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING + 1);
+    owner_action(
+        &mut state,
+        &freezing,
+        StationOwnerActionKind::Unfreeze,
+        K + 6,
+    );
+    assert_eq!(phone_station_count(&state), PHONE_STATION_CEILING + 2);
+    // Over the ceiling, a new registrar registration is refused.
+    let late = key(0xB7);
+    assert!(apply(
+        &mut state,
+        &signed(phone(&late), &late, REGISTRAR),
+        K + 7
+    ));
+    assert!(
+        state
+            .station_registry
+            .get(&mobile_station_id(&addr(&late), 0).unwrap())
+            .is_none()
+    );
 }
 
 #[test]
@@ -570,7 +676,10 @@ async fn production_path_mines_one_registrar_registration_per_block_and_holds_th
     } else {
         second.id.unwrap()
     };
-    assert!(mempool.read().await.contains(&held), "the other stays in the mempool");
+    assert!(
+        mempool.read().await.contains(&held),
+        "the other stays in the mempool"
+    );
     pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
         .await
         .unwrap();
@@ -600,12 +709,21 @@ async fn production_path_mines_one_registrar_registration_per_block_and_holds_th
         let c = chain.read().await;
         assert_eq!(c.height, K + 2);
         assert_eq!(in_tip(&c), 1);
-        assert!(c.state.station_registry.get(&live_id).is_some(), "the live one applied");
+        assert!(
+            c.state.station_registry.get(&live_id).is_some(),
+            "the live one applied"
+        );
         let tip = c.blocks().values().last().unwrap();
-        assert!(!tip.transactions.iter().any(|tx| tx.id == duplicate.id), "duplicate not mined");
+        assert!(
+            !tip.transactions.iter().any(|tx| tx.id == duplicate.id),
+            "duplicate not mined"
+        );
     }
     assert!(
-        !mempool.read().await.contains(duplicate.id.as_ref().unwrap()),
+        !mempool
+            .read()
+            .await
+            .contains(duplicate.id.as_ref().unwrap()),
         "a registration that can never apply is evicted"
     );
 }
@@ -634,7 +752,11 @@ fn only_the_registration_path_and_the_scheduling_guards_read_the_pins() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.parent().unwrap();
     let mut hits = Vec::new();
-    for crate_src in ["shared-protocol/src", "native-chain/src", "tools/cli/WrfcoinCLI/src"] {
+    for crate_src in [
+        "shared-protocol/src",
+        "native-chain/src",
+        "tools/cli/WrfcoinCLI/src",
+    ] {
         scan(&root.join(crate_src), &mut hits, root);
     }
     hits.sort();
@@ -669,12 +791,54 @@ fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
     // A governance phone ahead of it fills the ceiling: held, not evicted.
     assert_eq!(
         select_registrar_registrations(&state, K, &[governance_tx.clone(), registrar_tx.clone()]),
-        RegistrarSelection { defer: vec![1], evict: vec![] }
+        RegistrarSelection {
+            defer: vec![1],
+            evict: vec![],
+            defer_commits: vec![]
+        }
     );
     // Behind it, the registrar registration takes the last slot.
     assert_eq!(
         select_registrar_registrations(&state, K, &[registrar_tx.clone(), governance_tx]),
         RegistrarSelection::default()
+    );
+    // A commit for a deferred station is held with its registration; one for
+    // the selected station is not.
+    let commit = |tag: &str, station_id: &str| {
+        let mut tx = tx_of(tag, &phone(&r));
+        tx.tx_type = TransactionType::ForecastCommit;
+        tx.data = Some(
+            serde_json::json!({
+                "commit_id": hash_string(tag).to_hex(),
+                "station_id": station_id,
+                "timestamp": 1,
+                "contribution_type": "forecast",
+            })
+            .to_string(),
+        );
+        tx.set_id();
+        tx
+    };
+    let (s1, s2) = (key(0xE7), key(0xE8));
+    let s2_id = mobile_station_id(&addr(&s2), 0).unwrap();
+    let s1_id = mobile_station_id(&addr(&s1), 0).unwrap();
+    let roomy = State::new();
+    assert_eq!(
+        select_registrar_registrations(
+            &roomy,
+            K,
+            &[
+                signed(phone(&s1), &s1, REGISTRAR),
+                signed(phone(&s2), &s2, REGISTRAR),
+                commit("c-s2", &s2_id),
+                commit("c-s1", &s1_id),
+            ],
+        ),
+        RegistrarSelection {
+            defer: vec![1],
+            evict: vec![],
+            defer_commits: vec![2]
+        }
     );
     // Below activation selection never touches anything.
     assert_eq!(

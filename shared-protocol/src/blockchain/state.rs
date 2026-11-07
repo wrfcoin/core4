@@ -5940,12 +5940,8 @@ impl State {
                     return Err(StateError::InvalidTransition);
                 }
                 let station_id = station.station_id.clone();
-                let ledger_nonce = self.station_owner_ledger_view(&station_id).owner_nonce;
-                let refusal = crate::consensus::station_registrar::registrar_state_refusal(
-                    &self.station_registry,
-                    ledger_nonce,
-                    &station,
-                );
+                let refusal =
+                    crate::consensus::station_registrar::registrar_state_refusal(self, &station);
                 match (refusal, self.precheck_station_registration_v2(&station, 0, block_height)) {
                     (None, Ok(mut entry)) => {
                         self.apply_station_registration(station)?;

@@ -7504,15 +7504,18 @@ impl ProofOfPublishing {
             return Vec::new();
         }
         info!(
-            "station_registrar_key: deferred {} and evicted {} registrar registration(s) at height {next_height}",
+            "station_registrar_key: deferred {} and evicted {} registrar registration(s), and deferred {} commit(s) for deferred stations, at height {next_height}",
             selection.defer.len(),
-            selection.evict.len()
+            selection.evict.len(),
+            selection.defer_commits.len()
         );
         let evicted: Vec<Hash> =
             selection.evict.iter().filter_map(|&i| transactions[i].id).collect();
         let mut index = 0;
         transactions.retain(|_| {
-            let keep = !selection.defer.contains(&index) && !selection.evict.contains(&index);
+            let keep = !selection.defer.contains(&index)
+                && !selection.evict.contains(&index)
+                && !selection.defer_commits.contains(&index);
             index += 1;
             keep
         });

@@ -16,7 +16,7 @@
 //! | v2 with `expected_nonce` 0 | [`registrar_shape_refusal`] |
 //! | Coordinates exactly on the 0.1 degree grid, no elevation | [`registrar_shape_refusal`] |
 //! | Station not already registered, owner-ledger nonce 0 | the apply arm (`State`) |
-//! | Fewer than [`PHONE_STATION_CEILING`] ACTIVE phone stations | the apply arm (`State`) |
+//! | Fewer than [`PHONE_STATION_CEILING`] phone stations holding a slot ([`holds_ceiling_slot`]: registry-active, not owner-deactivated, not frozen) | the apply arm (`State`) |
 //! | At most one registrar registration per block | [`RegistrarBlockSlot`] in both extractors |
 //!
 //! These add no state: the ceiling is counted from the station registry, the
@@ -29,12 +29,10 @@
 //! key signs at all, and can change without a release. [`policy`] is the
 //! reference implementation the service uses; no node reads it.
 
-use crate::blockchain::state::StateTransition;
+use crate::blockchain::state::{State, StateTransition};
 use crate::blockchain::transaction::StationRegistrationPayload;
 use crate::crypto::chain_binding::{ConsensusFeature, feature_active};
-use crate::station_registry::{
-    ContributionProvenanceClass, DataQualityTier, StationRegistry, WeatherStation,
-};
+use crate::station_registry::{ContributionProvenanceClass, DataQualityTier, WeatherStation};
 
 /// The only hardware model a registrar key may register.
 pub const PHONE_HARDWARE_MODEL: &str = "phone-barometer";
@@ -156,13 +154,31 @@ pub fn registrar_shape_refusal(
     None
 }
 
-/// Number of ACTIVE `phone-barometer` stations in `registry`: what the
-/// ceiling counts. An inactive station holds no slot.
-pub fn phone_station_count(registry: &StationRegistry) -> usize {
+/// Does `station` hold a ceiling slot in `state`? A `phone-barometer` station
+/// that is registry-active AND not suspended by its owner ledger (owner
+/// self-deactivation or a report-stolen freeze, the same test
+/// `StationOwnerLedgerEntry::suspends_rewards` applies to rewards). The ONE
+/// definition: apply ([`registrar_state_refusal`]) and producer selection
+/// ([`select_registrar_registrations`]) both count through it.
+pub fn holds_ceiling_slot(state: &State, station: &WeatherStation) -> bool {
+    station.is_active
+        && station.hardware_model == PHONE_HARDWARE_MODEL
+        && !state
+            .station_owner_ledger
+            .get(&station.station_id)
+            .is_some_and(|entry| entry.suspends_rewards())
+}
+
+/// Number of phone stations holding a ceiling slot ([`holds_ceiling_slot`]).
+/// A Reactivate or Unfreeze can take this above [`PHONE_STATION_CEILING`];
+/// that is harmless, because the ceiling only gates NEW registrar
+/// registrations.
+pub fn phone_station_count(state: &State) -> usize {
     // determinism-ok: a count of matching entries does not depend on iteration order.
-    registry
+    state
+        .station_registry
         .entries()
-        .filter(|(_, s)| s.is_active && s.hardware_model == PHONE_HARDWARE_MODEL)
+        .filter(|(_, s)| holds_ceiling_slot(state, s))
         .count()
 }
 
@@ -174,8 +190,8 @@ pub enum RegistrarStateRefusal {
     AlreadyRegistered,
     /// The station's owner-ledger nonce is not 0. Never applies later.
     NonceNotZero,
-    /// [`PHONE_STATION_CEILING`] active phone stations. May apply once a slot
-    /// is freed.
+    /// [`PHONE_STATION_CEILING`] phone stations hold a slot. May apply once
+    /// one is deactivated or frozen.
     CeilingReached,
 }
 
@@ -188,21 +204,25 @@ impl RegistrarStateRefusal {
 }
 
 /// Why a registrar registration that passed the stateless checks does not
-/// apply to the current state, or `None` when it does.
+/// apply to `state`, or `None` when it does.
 pub fn registrar_state_refusal(
-    registry: &StationRegistry,
-    owner_nonce: u64,
+    state: &State,
     station: &WeatherStation,
 ) -> Option<RegistrarStateRefusal> {
-    // Any record, active or not: a deactivated `mob-` id is never
-    // re-registered through the registrar (only governance can touch it).
-    if registry.get(&station.station_id).is_some() {
+    // Any record, active, deactivated or frozen: a registered `mob-` id is
+    // never registered again through the registrar (only governance or the
+    // owner's own actions can touch it).
+    if state.station_registry.get(&station.station_id).is_some() {
         return Some(RegistrarStateRefusal::AlreadyRegistered);
     }
-    if owner_nonce != 0 {
+    if state
+        .station_owner_ledger_view(&station.station_id)
+        .owner_nonce
+        != 0
+    {
         return Some(RegistrarStateRefusal::NonceNotZero);
     }
-    if phone_station_count(registry) >= PHONE_STATION_CEILING {
+    if phone_station_count(state) >= PHONE_STATION_CEILING {
         return Some(RegistrarStateRefusal::CeilingReached);
     }
     None
@@ -246,6 +266,11 @@ pub struct RegistrarSelection {
     /// Indices to take out of the block AND evict: they can never apply
     /// (station already registered, nonce not 0).
     pub evict: Vec<usize>,
+    /// Commit indices (contribution or forecast) whose `station_id` belongs
+    /// to a DEFERRED registrar registration: held with it, so the commit is
+    /// not mined against a station that is not registered yet (and recorded
+    /// as unclassified). Kept in the mempool.
+    pub defer_commits: Vec<usize>,
 }
 
 /// PRODUCER SELECTION ONLY, never validity: pick at most one registrar
@@ -255,6 +280,14 @@ pub struct RegistrarSelection {
 /// transaction that fills the ceiling or registers the same id is seen.
 /// Block validity, the classifier and the apply arm are unchanged: a block
 /// carrying two still verifies, the second is just inert.
+///
+/// **Replay assumption.** The replay applies the candidate's transitions one
+/// at a time on the PARENT state. Real apply runs them inside the block batch,
+/// after `begin_node_service_block` and the coinbase / genesis-emission
+/// transitions. The two agree today only because none of those touch the
+/// station registry or the owner ledger. Anyone adding a block-level or
+/// per-tx transition that does must replay it here too, or selection will
+/// hold back or mine the wrong registration.
 pub fn select_registrar_registrations(
     state: &crate::blockchain::state::State,
     height: u64,
@@ -278,31 +311,35 @@ pub fn select_registrar_registrations(
             }
         })
         .collect();
-    if !steps
-        .iter()
-        .any(|t| matches!(t, Some(StateTransition::ApplyStationRegistrarRegistration { .. })))
-    {
+    if !steps.iter().any(|t| {
+        matches!(
+            t,
+            Some(StateTransition::ApplyStationRegistrarRegistration { .. })
+        )
+    }) {
         return selection;
     }
     let mut replay = state.clone();
     let mut slot_used = false;
+    let mut deferred_stations: Vec<String> = Vec::new();
     for (index, step) in steps.into_iter().enumerate() {
         let Some(transition) = step else { continue };
         if let StateTransition::ApplyStationRegistrarRegistration { station, .. } = &transition {
             // A registration that can never apply is evicted whatever the
             // slot says; one that may apply later waits.
-            let nonce = replay.station_owner_ledger_view(&station.station_id).owner_nonce;
-            match registrar_state_refusal(&replay.station_registry, nonce, station) {
+            match registrar_state_refusal(&replay, station) {
                 Some(refusal) if !refusal.may_clear() => {
                     selection.evict.push(index);
                     continue;
                 },
                 Some(_) => {
                     selection.defer.push(index);
+                    deferred_stations.push(station.station_id.clone());
                     continue;
                 },
                 None if slot_used => {
                     selection.defer.push(index);
+                    deferred_stations.push(station.station_id.clone());
                     continue;
                 },
                 None => slot_used = true,
@@ -310,6 +347,21 @@ pub fn select_registrar_registrations(
         }
         // A refused step is an inert no-op on chain too; ignore it here.
         let _ = replay.apply_transition(transition);
+    }
+    if !deferred_stations.is_empty() {
+        selection.defer_commits = transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, tx)| {
+                matches!(
+                    tx.tx_type,
+                    TransactionType::ContributionCommit | TransactionType::ForecastCommit
+                ) && tx
+                    .parse_commit_payload()
+                    .is_some_and(|commit| deferred_stations.contains(&commit.station_id))
+            })
+            .map(|(index, _)| index)
+            .collect();
     }
     selection
 }
