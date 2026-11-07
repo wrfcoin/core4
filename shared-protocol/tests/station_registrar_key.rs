@@ -25,6 +25,7 @@ use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
 use wrfcoin_shared_protocol::consensus::station_registrar::{
     MOBILE_STATION_SLOT, PHONE_HARDWARE_MODEL, PHONE_STATION_CEILING, RegistrarBlockSlot,
+    RegistrarSelection, select_registrar_registrations,
     mobile_station_id, phone_station_count, registrar_keys_at, station_registrar_key_active,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
@@ -439,6 +440,51 @@ fn registrar_refuses_over_the_ceiling() {
     );
 }
 
+/// The ceiling counts ACTIVE phone stations only (owner decision, 11-07):
+/// deactivating one frees a slot, but a deactivated `mob-` id is never
+/// re-registered through the registrar.
+#[test]
+fn a_deactivated_station_frees_a_ceiling_slot_but_cannot_be_re_registered() {
+    install();
+    let mut state = State::new();
+    for n in 0..(PHONE_STATION_CEILING as u32 - 1) {
+        state.apply_station_registration(phone_station(n)).unwrap();
+    }
+    let last = key(0xB3);
+    let last_tx = signed(phone(&last), &last, REGISTRAR);
+    assert!(apply(&mut state, &last_tx, K));
+    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING);
+    let waiting = key(0xB4);
+    let waiting_tx = signed(phone(&waiting), &waiting, REGISTRAR);
+    let waiting_id = mobile_station_id(&addr(&waiting), 0).unwrap();
+    assert!(apply(&mut state, &waiting_tx, K + 1));
+    assert!(state.station_registry.get(&waiting_id).is_none(), "full: refused");
+
+    // An inactive phone station holds no slot.
+    let last_id = mobile_station_id(&addr(&last), 0).unwrap();
+    assert!(state.deactivate_weather_station(&last_id));
+    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING - 1);
+    assert!(apply(&mut state, &waiting_tx, K + 2));
+    assert!(state.station_registry.get(&waiting_id).is_some(), "the freed slot is taken");
+    assert_eq!(phone_station_count(&state.station_registry), PHONE_STATION_CEILING);
+
+    // The deactivated id stays deactivated: the registrar cannot bring it back,
+    // even with a slot free.
+    assert!(state.deactivate_weather_station(&waiting_id));
+    state.recalculate_state_root();
+    let root = state.state_root;
+    assert!(apply(&mut state, &last_tx, K + 3));
+    state.recalculate_state_root();
+    assert_eq!(state.state_root, root, "re-registering a deactivated id changes nothing");
+    assert!(!state.station_registry.get(&last_id).unwrap().is_active);
+    // Even after a fresh signature over a new envelope.
+    let mut fresh = phone(&last);
+    fresh.sign_ownership(&last);
+    fresh.sign(&key(SPARE));
+    assert!(apply(&mut state, &tx_of("fresh-last", &fresh), K + 3));
+    assert!(!state.station_registry.get(&last_id).unwrap().is_active);
+}
+
 #[test]
 fn registrar_registers_at_most_one_station_per_block() {
     install();
@@ -453,11 +499,11 @@ fn registrar_registers_at_most_one_station_per_block() {
     );
 }
 
-/// The production path (`create_next_block`, which applies through the same
-/// block extractor the verifier uses) agrees: two registrar registrations
-/// offered for one block, one applies; the other applies in a later block.
+/// Producer selection (`create_next_block`): with two registrar registrations
+/// in the pool, block 1 carries one and block 2 the other, and both apply. A
+/// registration that can never apply is evicted and does not take the slot.
 #[tokio::test]
-async fn production_path_applies_one_registrar_registration_per_block() {
+async fn production_path_mines_one_registrar_registration_per_block_and_holds_the_rest() {
     install();
     let mut rng = StdRng::seed_from_u64(11);
     let miner = PrivateKey::generate(&mut rng);
@@ -498,16 +544,70 @@ async fn production_path_applies_one_registrar_registration_per_block() {
             .filter(|id| c.state.station_registry.get(id).is_some())
             .count()
     };
-    offer(signed(phone(&a), &a, REGISTRAR)).await;
-    offer(signed(phone(&b), &b, REGISTRAR)).await;
+    // Registrar registrations carried by the tip block.
+    let in_tip = |c: &Blockchain| {
+        let tip = c.blocks().values().last().unwrap();
+        tip.transactions
+            .iter()
+            .filter(|tx| is_registrar(&tx.station_registration_step(tip.height)))
+            .count()
+    };
+    let first = signed(phone(&a), &a, REGISTRAR);
+    let second = signed(phone(&b), &b, REGISTRAR);
+    offer(first.clone()).await;
+    offer(second.clone()).await;
     pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
         .await
         .unwrap();
     {
         let c = chain.read().await;
         assert_eq!(c.height, K);
-        assert_eq!(registered(&c), 1, "one registrar registration per block");
+        assert_eq!(in_tip(&c), 1, "block 1 carries one registrar registration");
+        assert_eq!(registered(&c), 1, "and it applied");
     }
+    let held = if mempool.read().await.contains(first.id.as_ref().unwrap()) {
+        first.id.unwrap()
+    } else {
+        second.id.unwrap()
+    };
+    assert!(mempool.read().await.contains(&held), "the other stays in the mempool");
+    pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
+        .await
+        .unwrap();
+    {
+        let c = chain.read().await;
+        assert_eq!(c.height, K + 1);
+        assert_eq!(in_tip(&c), 1, "block 2 carries the other");
+        assert_eq!(registered(&c), 2, "both applied");
+    }
+    assert!(!mempool.read().await.contains(&held));
+
+    // A registration that can never apply (its station is registered) does
+    // not take the slot: it is evicted, and a live one mines in its block.
+    let mut duplicate = phone(&a);
+    duplicate.sign_ownership(&a);
+    duplicate.sign(&key(SPARE));
+    let duplicate = tx_of("duplicate-a", &duplicate);
+    let c_key = key(0xD3);
+    let live = signed(phone(&c_key), &c_key, REGISTRAR);
+    let live_id = mobile_station_id(&addr(&c_key), 0).unwrap();
+    offer(duplicate.clone()).await;
+    offer(live).await;
+    pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
+        .await
+        .unwrap();
+    {
+        let c = chain.read().await;
+        assert_eq!(c.height, K + 2);
+        assert_eq!(in_tip(&c), 1);
+        assert!(c.state.station_registry.get(&live_id).is_some(), "the live one applied");
+        let tip = c.blocks().values().last().unwrap();
+        assert!(!tip.transactions.iter().any(|tx| tx.id == duplicate.id), "duplicate not mined");
+    }
+    assert!(
+        !mempool.read().await.contains(duplicate.id.as_ref().unwrap()),
+        "a registration that can never apply is evicted"
+    );
 }
 
 /// Nothing but the registration step, its scheduling guards and the
@@ -546,5 +646,39 @@ fn only_the_registration_path_and_the_scheduling_guards_read_the_pins() {
             "shared-protocol/src/crypto/chain_binding.rs",
             "shared-protocol/src/governance/schedule_extension.rs",
         ]
+    );
+}
+
+/// Selection: a ceiling refusal is held (it may clear), and a governance
+/// registration earlier in the same candidate that fills the ceiling is seen.
+#[test]
+fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
+    install();
+    let mut state = State::new();
+    for n in 0..(PHONE_STATION_CEILING as u32 - 1) {
+        state.apply_station_registration(phone_station(n)).unwrap();
+    }
+    let (r, g) = (key(0xE5), key(0xE6));
+    let registrar_tx = signed(phone(&r), &r, REGISTRAR);
+    let governance_tx = signed(phone(&g), &g, GOVERNANCE);
+    // One slot left: the registrar registration alone is selected.
+    assert_eq!(
+        select_registrar_registrations(&state, K, std::slice::from_ref(&registrar_tx)),
+        RegistrarSelection::default()
+    );
+    // A governance phone ahead of it fills the ceiling: held, not evicted.
+    assert_eq!(
+        select_registrar_registrations(&state, K, &[governance_tx.clone(), registrar_tx.clone()]),
+        RegistrarSelection { defer: vec![1], evict: vec![] }
+    );
+    // Behind it, the registrar registration takes the last slot.
+    assert_eq!(
+        select_registrar_registrations(&state, K, &[registrar_tx.clone(), governance_tx]),
+        RegistrarSelection::default()
+    );
+    // Below activation selection never touches anything.
+    assert_eq!(
+        select_registrar_registrations(&state, K - 1, &[registrar_tx]),
+        RegistrarSelection::default()
     );
 }

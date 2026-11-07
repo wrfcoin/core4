@@ -9,6 +9,10 @@ edition = "2021"
 integration-guard = ["wrf-primitives/integration-guard"]
 default = []
 test-support = []
+# Consensus test hooks (e.g. pinning a station registrar key in-process).
+# Enabled ONLY from this crate's own [dev-dependencies]: no shipped crate may
+# enable it, so a node binary can never install a test pin.
+consensus-test-hooks = []
 # HSM (PKCS#11) block-signer impl. Required for release builds; excluded
 # from default to keep the minimal build surface small and to allow tests
 # to run without a PKCS#11 module installed. See core4#1394 and
@@ -102,7 +106,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 # Integration tests link the library without cfg(test). Enable its test-only
 # helpers for test targets, without exposing them to normal library consumers.
-wrfcoin-shared-protocol = { path = ".", features = ["test-support"] }
+wrfcoin-shared-protocol = { path = ".", features = ["test-support", "consensus-test-hooks"] }
 wrf-primitives = { workspace = true, features = ["integration-guard"] }
 proptest = "1.0"
 criterion = { workspace = true }

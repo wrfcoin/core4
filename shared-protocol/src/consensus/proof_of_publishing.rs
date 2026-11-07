@@ -3720,6 +3720,16 @@ impl ProofOfPublishing {
             );
         }
 
+        // `station_registrar_key` (selection only): at most one registrar
+        // registration per block, and only one that would apply. Extras and
+        // ceiling-refused ones stay in the mempool for a later block; ones
+        // that can never apply are evicted. Inactive this is a no-op.
+        skipped_mempool_tx_ids.extend(Self::hold_back_registrar_registrations(
+            &chain.state,
+            next_height,
+            &mut transactions,
+        ));
+
         // Calculate the publishing score for this block after stale/invalid entries have been
         // removed so the metadata matches the final candidate block.
         let publishing_score = self.calculate_block_publishing_score(&transactions, next_height);
@@ -7473,6 +7483,40 @@ impl ProofOfPublishing {
             }
         });
         before - transactions.len()
+    }
+
+    /// `station_registrar_key`: apply [`select_registrar_registrations`] to the
+    /// candidate. Returns the ids to evict; deferred ones are removed from the
+    /// candidate only.
+    ///
+    /// [`select_registrar_registrations`]: crate::consensus::station_registrar::select_registrar_registrations
+    fn hold_back_registrar_registrations(
+        state: &State,
+        next_height: u64,
+        transactions: &mut Vec<Transaction>,
+    ) -> Vec<Hash> {
+        let selection = crate::consensus::station_registrar::select_registrar_registrations(
+            state,
+            next_height,
+            transactions,
+        );
+        if selection.defer.is_empty() && selection.evict.is_empty() {
+            return Vec::new();
+        }
+        info!(
+            "station_registrar_key: deferred {} and evicted {} registrar registration(s) at height {next_height}",
+            selection.defer.len(),
+            selection.evict.len()
+        );
+        let evicted: Vec<Hash> =
+            selection.evict.iter().filter_map(|&i| transactions[i].id).collect();
+        let mut index = 0;
+        transactions.retain(|_| {
+            let keep = !selection.defer.contains(&index) && !selection.evict.contains(&index);
+            index += 1;
+            keep
+        });
+        evicted
     }
 
     fn defer_real_contribution_groups_without_quorum(

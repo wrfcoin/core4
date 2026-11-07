@@ -1247,14 +1247,15 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// release; adding one means every producer upgrades together.
 pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[];
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_STATION_REGISTRAR_PIN: std::sync::OnceLock<(String, Vec<String>)> =
     std::sync::OnceLock::new();
 
 /// Tests only: pin `keys` as station registrar keys for `genesis_hash` in this
-/// process. Compiled only into test builds, so a shipped binary reads
+/// process. Compiled only into test builds (`consensus-test-hooks` is enabled
+/// only from this crate's dev-dependencies), so a shipped binary reads
 /// [`STATION_REGISTRAR_KEY_PINS`] and nothing else. First install wins.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "consensus-test-hooks"))]
 pub fn install_station_registrar_pin_for_tests(genesis_hash: &str, keys: Vec<String>) {
     let _ = TEST_STATION_REGISTRAR_PIN.get_or_init(|| (genesis_hash.to_string(), keys));
 }
@@ -1263,7 +1264,7 @@ pub fn install_station_registrar_pin_for_tests(genesis_hash: &str, keys: Vec<Str
 /// hash is `genesis_hash`; empty when none is. Answers whether or not the
 /// feature is active: consensus callers gate it on the carrying height.
 pub fn station_registrar_keys(genesis_hash: &str) -> Vec<String> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "consensus-test-hooks"))]
     if let Some((genesis, keys)) = TEST_STATION_REGISTRAR_PIN.get() {
         if genesis == genesis_hash {
             return keys.clone();
