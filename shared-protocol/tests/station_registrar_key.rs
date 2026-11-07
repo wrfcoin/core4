@@ -19,8 +19,8 @@ use wrfcoin_shared_protocol::blockchain::chain::Blockchain;
 use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
 use wrfcoin_shared_protocol::blockchain::station_owner::StationOwnerActionPayload;
 use wrfcoin_shared_protocol::blockchain::transaction::{
-    StationOwnerActionKind, StationRegistrationAuthority, StationRegistrationPayload, Transaction,
-    TransactionInput, TransactionOutput, TransactionType,
+    CommitPayload, RevealPayload, StationOwnerActionKind, StationRegistrationAuthority,
+    StationRegistrationPayload, Transaction, TransactionInput, TransactionOutput, TransactionType,
 };
 use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
@@ -793,8 +793,7 @@ fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
         select_registrar_registrations(&state, K, &[governance_tx.clone(), registrar_tx.clone()]),
         RegistrarSelection {
             defer: vec![1],
-            evict: vec![],
-            defer_commits: vec![]
+            evict: vec![]
         }
     );
     // Behind it, the registrar registration takes the last slot.
@@ -802,26 +801,9 @@ fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
         select_registrar_registrations(&state, K, &[registrar_tx.clone(), governance_tx]),
         RegistrarSelection::default()
     );
-    // A commit for a deferred station is held with its registration; one for
-    // the selected station is not.
-    let commit = |tag: &str, station_id: &str| {
-        let mut tx = tx_of(tag, &phone(&r));
-        tx.tx_type = TransactionType::ForecastCommit;
-        tx.data = Some(
-            serde_json::json!({
-                "commit_id": hash_string(tag).to_hex(),
-                "station_id": station_id,
-                "timestamp": 1,
-                "contribution_type": "forecast",
-            })
-            .to_string(),
-        );
-        tx.set_id();
-        tx
-    };
+    // Two with room: the first is selected, the second waits; other
+    // transactions are never touched.
     let (s1, s2) = (key(0xE7), key(0xE8));
-    let s2_id = mobile_station_id(&addr(&s2), 0).unwrap();
-    let s1_id = mobile_station_id(&addr(&s1), 0).unwrap();
     let roomy = State::new();
     assert_eq!(
         select_registrar_registrations(
@@ -830,14 +812,11 @@ fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
             &[
                 signed(phone(&s1), &s1, REGISTRAR),
                 signed(phone(&s2), &s2, REGISTRAR),
-                commit("c-s2", &s2_id),
-                commit("c-s1", &s1_id),
             ],
         ),
         RegistrarSelection {
             defer: vec![1],
-            evict: vec![],
-            defer_commits: vec![2]
+            evict: vec![]
         }
     );
     // Below activation selection never touches anything.
@@ -845,4 +824,169 @@ fn selection_holds_ceiling_refusals_and_replays_the_candidate_in_order() {
         select_registrar_registrations(&state, K - 1, &[registrar_tx]),
         RegistrarSelection::default()
     );
+}
+
+/// A commit + reveal pair for `station_id` (`kind` is "forecast" or
+/// "contribution"), signed by a throwaway key, as the earn-loop tests build
+/// them.
+fn commit_and_reveal(station_id: &str, kind: &str, tag: &str) -> (Transaction, Transaction) {
+    let data = serde_json::json!({
+        "quality": 1.0, "volume": 1.0, "uniqueness": 1.0,
+        "temperature_c": 21.5, "humidity_percent": 60.0, "pressure_hpa": 1014.0,
+    });
+    let timestamp = chrono::Utc::now().timestamp();
+    let nonce = format!("nonce-{tag}");
+    let commit_id = Transaction::compute_commit_id(&data, &nonce, station_id, timestamp, kind);
+    let mut commit = CommitPayload {
+        commit_id: commit_id.clone(),
+        station_id: station_id.to_string(),
+        timestamp,
+        contribution_type: kind.to_string(),
+        auth_pubkey: None,
+        auth_signature: None,
+    };
+    commit.sign_authorization(&key(0x77));
+    let reveal = RevealPayload {
+        commit_id,
+        station_id: station_id.to_string(),
+        timestamp,
+        contribution_type: kind.to_string(),
+        data,
+        nonce,
+        data_cid: None,
+        data_hash: None,
+        storage_provider: None,
+        provenance: None,
+        manifest: None,
+        verification_receipt: None,
+        compute_receipt: None,
+        quality_tier: None,
+    };
+    let (commit_type, reveal_type) = if kind == "forecast" {
+        (
+            TransactionType::ForecastCommit,
+            TransactionType::ForecastReveal,
+        )
+    } else {
+        (
+            TransactionType::ContributionCommit,
+            TransactionType::ContributionReveal,
+        )
+    };
+    let envelope = |tx_type: TransactionType, data: String, tag: String| {
+        let mut tx = Transaction::new(
+            vec![TransactionInput {
+                txid: hash_string(&tag),
+                vout: 0,
+                signature: None,
+                public_key: None,
+                coinbase_data: None,
+            }],
+            vec![TransactionOutput {
+                amount: 1,
+                address: format!("wrf-{tag}"),
+                script: "OP_TRUE".to_string(),
+                nft_data: None,
+            }],
+        );
+        tx.tx_type = tx_type;
+        tx.data = Some(data);
+        tx.fee = 1;
+        tx.set_id();
+        tx
+    };
+    (
+        envelope(
+            commit_type,
+            serde_json::to_string(&commit).unwrap(),
+            format!("commit-{tag}"),
+        ),
+        envelope(
+            reveal_type,
+            serde_json::to_string(&reveal).unwrap(),
+            format!("reveal-{tag}"),
+        ),
+    )
+}
+
+/// Liveness: a deferred registrar registration plus same-block forecast and
+/// contribution commit + reveal pairs naming the deferred station never make
+/// the producer refuse its own block, and the next round makes progress.
+#[tokio::test]
+async fn deferred_registration_with_same_block_commits_and_reveals_never_stalls_production() {
+    install();
+    let mut rng = StdRng::seed_from_u64(13);
+    let miner = PrivateKey::generate(&mut rng);
+    let miner_hex = format!(
+        "0x{}",
+        hex::encode(
+            wrfcoin_shared_protocol::common::types::Address::from_public_key(
+                &PublicKey::from_private_key(&miner)
+            )
+            .0
+        )
+    );
+    let chain = Arc::new(RwLock::new(Blockchain::default()));
+    let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+    let mut pop = ProofOfPublishing::new(1, 60, 0, 16);
+    pop.declare_no_genesis_oracles();
+    while chain.read().await.height < K - 1 {
+        pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
+            .await
+            .unwrap();
+    }
+    let offer = |tx: Transaction| {
+        let chain = chain.clone();
+        let mempool = mempool.clone();
+        async move {
+            let keys = chain.read().await.state.signing_keys.clone();
+            mempool
+                .write()
+                .await
+                .add_transaction_with_signing_keys(tx, Some(&keys))
+                .is_ok()
+        }
+    };
+    let (a, b) = (key(0xF4), key(0xF5));
+    let a_id = mobile_station_id(&addr(&a), 0).unwrap();
+    let b_id = mobile_station_id(&addr(&b), 0).unwrap();
+    assert!(offer(signed(phone(&a), &a, REGISTRAR)).await);
+    assert!(offer(signed(phone(&b), &b, REGISTRAR)).await);
+    // Commit + reveal pairs for BOTH stations, so whichever registration the
+    // producer defers, the pairs naming it are in the same candidate.
+    let mut admitted = 0;
+    for (station, tag) in [(&a_id, "a"), (&b_id, "b")] {
+        for kind in ["forecast", "contribution"] {
+            let (commit, reveal) = commit_and_reveal(station, kind, &format!("{kind}-{tag}"));
+            admitted += usize::from(offer(commit).await);
+            admitted += usize::from(offer(reveal).await);
+        }
+    }
+    assert!(
+        admitted >= 4,
+        "the commits and reveals reach the mempool ({admitted} admitted)"
+    );
+
+    pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
+        .await
+        .expect("a deferred registration never makes the producer refuse its block");
+    let registered = |c: &Blockchain| {
+        [&a_id, &b_id]
+            .iter()
+            .filter(|id| c.state.station_registry.get(id.as_str()).is_some())
+            .count()
+    };
+    {
+        let c = chain.read().await;
+        assert_eq!(c.height, K);
+        assert_eq!(registered(&c), 1, "one registrar registration in block 1");
+    }
+    pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
+        .await
+        .expect("the next round makes progress");
+    {
+        let c = chain.read().await;
+        assert_eq!(c.height, K + 1);
+        assert_eq!(registered(&c), 2, "the deferred registration applies next");
+    }
 }

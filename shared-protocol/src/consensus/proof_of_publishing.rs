@@ -3608,6 +3608,7 @@ impl ProofOfPublishing {
             *chain.tip.as_bytes(),
             &mut transactions,
         ));
+        let after_first_prune = transactions.len();
 
         // ── Producer self-screen (#1730) ─────────────────────────────────────
         // Drop any assembled transaction a syncing peer would reject, using the
@@ -3729,6 +3730,23 @@ impl ProofOfPublishing {
             next_height,
             &mut transactions,
         ));
+        // General guard: anything a selection removal since the first prune
+        // stranded (self-screen, the #2777 fence, #3565 deferral, registrar
+        // selection: a reveal whose commit was held back, a transaction that
+        // leaned on a removed one) is dropped and evicted by the same trial
+        // apply, rather than making this producer refuse its own block. It
+        // re-runs only when something was removed, so an ordinary block costs
+        // nothing extra, and it only ever removes transactions the block's own
+        // apply would have failed on.
+        if transactions.len() != after_first_prune {
+            skipped_mempool_tx_ids.extend(self.prune_invalid_launch_transactions(
+                &chain.state,
+                next_height,
+                block_creation_time.timestamp(),
+                *chain.tip.as_bytes(),
+                &mut transactions,
+            ));
+        }
 
         // Calculate the publishing score for this block after stale/invalid entries have been
         // removed so the metadata matches the final candidate block.
@@ -7504,18 +7522,15 @@ impl ProofOfPublishing {
             return Vec::new();
         }
         info!(
-            "station_registrar_key: deferred {} and evicted {} registrar registration(s), and deferred {} commit(s) for deferred stations, at height {next_height}",
+            "station_registrar_key: deferred {} and evicted {} registrar registration(s) at height {next_height}",
             selection.defer.len(),
-            selection.evict.len(),
-            selection.defer_commits.len()
+            selection.evict.len()
         );
         let evicted: Vec<Hash> =
             selection.evict.iter().filter_map(|&i| transactions[i].id).collect();
         let mut index = 0;
         transactions.retain(|_| {
-            let keep = !selection.defer.contains(&index)
-                && !selection.evict.contains(&index)
-                && !selection.defer_commits.contains(&index);
+            let keep = !selection.defer.contains(&index) && !selection.evict.contains(&index);
             index += 1;
             keep
         });

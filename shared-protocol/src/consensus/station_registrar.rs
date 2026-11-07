@@ -266,11 +266,6 @@ pub struct RegistrarSelection {
     /// Indices to take out of the block AND evict: they can never apply
     /// (station already registered, nonce not 0).
     pub evict: Vec<usize>,
-    /// Commit indices (contribution or forecast) whose `station_id` belongs
-    /// to a DEFERRED registrar registration: held with it, so the commit is
-    /// not mined against a station that is not registered yet (and recorded
-    /// as unclassified). Kept in the mempool.
-    pub defer_commits: Vec<usize>,
 }
 
 /// PRODUCER SELECTION ONLY, never validity: pick at most one registrar
@@ -285,9 +280,13 @@ pub struct RegistrarSelection {
 /// at a time on the PARENT state. Real apply runs them inside the block batch,
 /// after `begin_node_service_block` and the coinbase / genesis-emission
 /// transitions. The two agree today only because none of those touch the
-/// station registry or the owner ledger. Anyone adding a block-level or
-/// per-tx transition that does must replay it here too, or selection will
-/// hold back or mine the wrong registration.
+/// station registry or the owner ledger. The producer also applies governance
+/// transitions (finalized proposals) to the state BEFORE the launch batch
+/// (`create_next_block`); those don't touch them either. Anyone adding a
+/// block-level, governance or per-tx transition that does must replay it here
+/// too, or selection will hold back or mine the wrong registration. A wrong
+/// guess cannot stall production: `create_next_block` re-runs the trial prune
+/// on the final candidate.
 pub fn select_registrar_registrations(
     state: &crate::blockchain::state::State,
     height: u64,
@@ -321,7 +320,6 @@ pub fn select_registrar_registrations(
     }
     let mut replay = state.clone();
     let mut slot_used = false;
-    let mut deferred_stations: Vec<String> = Vec::new();
     for (index, step) in steps.into_iter().enumerate() {
         let Some(transition) = step else { continue };
         if let StateTransition::ApplyStationRegistrarRegistration { station, .. } = &transition {
@@ -334,12 +332,10 @@ pub fn select_registrar_registrations(
                 },
                 Some(_) => {
                     selection.defer.push(index);
-                    deferred_stations.push(station.station_id.clone());
                     continue;
                 },
                 None if slot_used => {
                     selection.defer.push(index);
-                    deferred_stations.push(station.station_id.clone());
                     continue;
                 },
                 None => slot_used = true,
@@ -347,21 +343,6 @@ pub fn select_registrar_registrations(
         }
         // A refused step is an inert no-op on chain too; ignore it here.
         let _ = replay.apply_transition(transition);
-    }
-    if !deferred_stations.is_empty() {
-        selection.defer_commits = transactions
-            .iter()
-            .enumerate()
-            .filter(|(_, tx)| {
-                matches!(
-                    tx.tx_type,
-                    TransactionType::ContributionCommit | TransactionType::ForecastCommit
-                ) && tx
-                    .parse_commit_payload()
-                    .is_some_and(|commit| deferred_stations.contains(&commit.station_id))
-            })
-            .map(|(index, _)| index)
-            .collect();
     }
     selection
 }
