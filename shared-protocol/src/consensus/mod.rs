@@ -22,3 +22,4 @@ pub mod node_settlement;
 pub mod node_fraud;
 /// Burned transfer fee (`transfer_fee_burn`, owner GO 2026-11-01).
 pub mod transfer_fee;
+pub mod station_registrar;

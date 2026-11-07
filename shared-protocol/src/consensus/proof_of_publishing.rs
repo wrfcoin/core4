@@ -6454,15 +6454,19 @@ impl ProofOfPublishing {
                 StateTransition::RecordGenesisEmissionConfig { config }));
         }
 
+        // `station_registrar_key`: at most one registrar registration per
+        // block, by transaction order; the applier's extractor uses the same
+        // slot, so producer == applier == WAL replay. Inert while inactive.
+        let mut registrar_slot = crate::consensus::station_registrar::RegistrarBlockSlot::new();
         for (tx_index, tx) in block.transactions.iter().enumerate() {
-            if let Some(transition) =
+            if let Some(transition) = registrar_slot.admit(
                 Self::launch_transition_for_transaction(
                     tx,
                     block.height,
                     block.timestamp.timestamp(),
                     tx_index,
-                )?
-            {
+                )?,
+            ) {
                 if let StateTransition::ApplyReveal { payload, .. } = &transition {
                     revealed_commit_ids.insert(payload.commit_id.clone());
                 }

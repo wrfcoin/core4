@@ -176,6 +176,10 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
         && !ConsensusFeature::BondAdmissionKey.schedulable(Some(&block.calculate_hash().to_hex())) {
         return Err("bond_admission_key needs a pinned key for this genesis".into());
     }
+    if parsed.features.iter().any(|(name, _)| name == ConsensusFeature::StationRegistrarKey.name())
+        && !ConsensusFeature::StationRegistrarKey.schedulable(Some(&block.calculate_hash().to_hex())) {
+        return Err("station_registrar_key needs a pinned key for this genesis".into());
+    }
     for key in [GENESIS_NODE_EPOCH_KEY, GENESIS_NODE_CHALLENGE_KEY] {
         if block.metadata.get(key).is_some_and(|value| value != "512") {
             return Err("new testnet node timing must be 512 blocks when recorded".into());
@@ -1202,6 +1206,30 @@ pub enum ConsensusFeature {
     /// the binary refuses to schedule it on a chain with no pinned key.
     /// Scheduling is the owner's signature only.
     BondAdmissionKey,
+    /// Wire ordinal 31 is RESERVED and not free: do not reuse it. It is no
+    /// feature: it is in no [`Self::ALL`], no `KNOWN_FEATURES`, never parsed
+    /// from a schedule, never schedulable and has no behaviour. It exists only
+    /// so the next feature takes ordinal 32.
+    #[doc(hidden)]
+    ReservedOrdinal31,
+    /// Limited station registrar key (`consensus::station_registrar`). From
+    /// its activation a station registration may be authorized by a key
+    /// compiled into `schedule_extension::STATION_REGISTRAR_KEY_PINS` for this
+    /// chain instance, as well as by the oracle-governance keys, but ONLY for
+    /// a new phone-class station inside the compiled limits (phone-barometer,
+    /// unverified, `real`; the owner-derived `mob-` id; v2 with nonce 0; a
+    /// station not already registered; coordinates on the 0.1 degree grid
+    /// with no elevation; at most one per block; under the phone-station
+    /// ceiling). The key is not a governance key and authorizes nothing else.
+    /// Below activation, and on a chain with no pinned key, validation is
+    /// exactly what it was without this feature; it adds no state, so blocks
+    /// and `state_root` are byte-identical.
+    ///
+    /// Wire ordinal 32 (31 is reserved). Ships UNSCHEDULED: it appears in no
+    /// genesis, default schedule or cut pin, and the binary refuses to
+    /// schedule it on a chain with no pinned key. Scheduling is the owner's
+    /// signature only.
+    StationRegistrarKey,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1249,6 +1277,8 @@ impl ConsensusFeature {
         Self::SendAllowlist,
         Self::PasskeyBondPayout,
         Self::BondAdmissionKey,
+        // Ordinal 31 (`ReservedOrdinal31`) is reserved and deliberately absent.
+        Self::StationRegistrarKey,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1285,6 +1315,8 @@ impl ConsensusFeature {
             Self::SendAllowlist => "send_allowlist",
             Self::PasskeyBondPayout => "passkey_bond_payout",
             Self::BondAdmissionKey => "bond_admission_key",
+            Self::ReservedOrdinal31 => "reserved_ordinal_31",
+            Self::StationRegistrarKey => "station_registrar_key",
         }
     }
 
@@ -1324,8 +1356,15 @@ impl ConsensusFeature {
     /// - `bond_admission_key`: schedulable ONLY on a chain instance with a
     ///   key in `schedule_extension::BOND_ADMISSION_KEY_PINS`; refused on
     ///   every other chain and on a node with no block-1 hash.
+    /// - `station_registrar_key`: the same rule over
+    ///   `schedule_extension::STATION_REGISTRAR_KEY_PINS`.
     pub fn schedulable(self, node_genesis_hash: Option<&str>) -> bool {
         match self {
+            Self::StationRegistrarKey => node_genesis_hash.is_some_and(|genesis| {
+                !crate::governance::schedule_extension::station_registrar_keys(genesis).is_empty()
+            }),
+            // Reserved ordinal: no feature, never schedulable.
+            Self::ReservedOrdinal31 => false,
             Self::BondAdmissionKey => node_genesis_hash.is_some_and(|genesis| {
                 !crate::governance::schedule_extension::bond_admission_keys(genesis).is_empty()
             }),
@@ -1414,6 +1453,10 @@ impl ConsensusFeature {
             Self::PasskeyBondPayout => true,
             // Bond admission key: lifecycle verify and the role-key check read it.
             Self::BondAdmissionKey => true,
+            // Station registrar key: the registration step, its apply arm and
+            // the per-block slot read it.
+            Self::StationRegistrarKey => true,
+            Self::ReservedOrdinal31 => false,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1476,12 +1519,33 @@ mod forecast_skill_baseline_tests {
 
     #[test]
     fn appended_feature_preserves_every_legacy_enum_wire_ordinal() {
-        for (index, feature) in ConsensusFeature::ALL.iter().enumerate() {
+        // Ordinals 0..=30 are the first 31 entries of `ALL`; 31 is reserved
+        // (no feature); `station_registrar_key` is 32.
+        for (index, feature) in ConsensusFeature::ALL[..31].iter().enumerate() {
             assert_eq!(
                 bincode::serialize(feature).unwrap(),
                 (index as u32).to_le_bytes()
             );
         }
+        assert_eq!(ConsensusFeature::ALL[30], ConsensusFeature::BondAdmissionKey);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::ReservedOrdinal31).unwrap(),
+            31u32.to_le_bytes()
+        );
+        assert_eq!(ConsensusFeature::ALL[31], ConsensusFeature::StationRegistrarKey);
+        assert_eq!(ConsensusFeature::ALL.len(), 32);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::StationRegistrarKey).unwrap(),
+            32u32.to_le_bytes()
+        );
+        // The reserved slot is no feature: not listed, not parsed, not
+        // schedulable, no behaviour.
+        let reserved = ConsensusFeature::ReservedOrdinal31;
+        assert!(!ConsensusFeature::ALL.contains(&reserved));
+        assert_eq!(ConsensusFeature::parse(reserved.name()), None);
+        assert!(!reserved.schedulable(None));
+        assert!(!reserved.has_behaviour());
+        assert!(!crate::crypto::protocol_support::KNOWN_FEATURES.contains(&reserved.name()));
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
