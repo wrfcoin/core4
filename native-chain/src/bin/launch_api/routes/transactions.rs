@@ -1139,6 +1139,28 @@ async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &st
     Err(response)
 }
 
+/// A commit id this node already holds: pending in the mempool, or recorded
+/// on chain as committed, revealed or rewarded.
+async fn forecast_commit_already_known(state: &AppState, commit_id: &str) -> bool {
+    if state.mempool.read().await.has_protocol_replay_key(&format!("commit:{commit_id}")) {
+        return true;
+    }
+    let chain = state.blockchain.read().await;
+    chain.state.pending_commits.contains_key(commit_id)
+        || chain.state.pending_reveals.contains_key(commit_id)
+        || chain.state.contribution_reward_records.contains_key(commit_id)
+}
+
+/// A commit id already revealed: pending in the mempool, or on chain.
+async fn forecast_reveal_already_known(state: &AppState, commit_id: &str) -> bool {
+    if state.mempool.read().await.has_protocol_replay_key(&format!("reveal:{commit_id}")) {
+        return true;
+    }
+    let chain = state.blockchain.read().await;
+    chain.state.pending_reveals.contains_key(commit_id)
+        || chain.state.contribution_reward_records.contains_key(commit_id)
+}
+
 pub async fn submit_forecast_commit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -1157,14 +1179,21 @@ pub async fn submit_forecast_commit(
     // bucket and one sender (review of core4#3114).
     // A relay whose bearer is not bound to this forecaster may still submit
     // when the forecaster's own key signed the commit (key-bound relay).
-    let forecaster = match resolve_forecast_submitter(
+    let submitter = match resolve_forecast_submitter(
         &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
         request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
     ) {
-        Ok(canonical) => canonical,
+        Ok(submitter) => submitter,
         Err(resp) => return resp,
     };
-    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, false).await {
+    let forecaster = submitter.forecaster.clone();
+    // A relayed authorization may be resent by anyone who has seen it; refuse
+    // a commit id this node already holds before spending any budget on it.
+    if submitter.relayed && forecast_commit_already_known(&state, &request.commit_hash).await {
+        return envelope_error(&req, StatusCode::CONFLICT, "FORECAST_COMMIT_DUPLICATE",
+            "this commit_hash is already pending or on chain");
+    }
+    if let Err(response) = enforce_forecast_quota(&req, &state, &submitter.quota_key, false).await {
         return response;
     }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {
@@ -1174,7 +1203,7 @@ pub async fn submit_forecast_commit(
         return resp;
     }
     if let Err(resp) =
-        enforce_contribution_commit_rate_limit(&req, &state, &forecaster).await
+        enforce_contribution_commit_rate_limit(&req, &state, &submitter.quota_key).await
     {
         return resp;
     }
@@ -1233,14 +1262,33 @@ pub async fn submit_forecast_reveal(
     // Key-bound relay: the reveal carries the forecaster's commit
     // authorization, and `commit_hash` must re-derive from the revealed data
     // below, so it can only reveal a commit that forecaster's key signed.
-    let forecaster = match resolve_forecast_submitter(
+    let submitter = match resolve_forecast_submitter(
         &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
         request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
     ) {
-        Ok(canonical) => canonical,
+        Ok(submitter) => submitter,
         Err(resp) => return resp,
     };
-    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, true).await {
+    let forecaster = submitter.forecaster.clone();
+    if submitter.relayed {
+        // Before any budget is spent: the revealed data must re-derive the
+        // signed commit_hash (a relayed reveal must state its timestamp), and
+        // the commit must not already be revealed.
+        let rederives = request.timestamp.is_some_and(|timestamp| {
+            Transaction::compute_commit_id(
+                &request.payload, &request.nonce, &request.station_id, timestamp, "forecast",
+            ) == request.commit_hash
+        });
+        if !rederives {
+            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE_ENTITY",
+                "Reveal payload does not match commit_hash");
+        }
+        if forecast_reveal_already_known(&state, &request.commit_hash).await {
+            return envelope_error(&req, StatusCode::CONFLICT, "FORECAST_REVEAL_DUPLICATE",
+                "this commit_hash is already revealed");
+        }
+    }
+    if let Err(response) = enforce_forecast_quota(&req, &state, &submitter.quota_key, true).await {
         return response;
     }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {

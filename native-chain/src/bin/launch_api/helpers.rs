@@ -471,6 +471,11 @@ pub fn require_forecaster_bound_to_bearer(
 /// (`Address::to_hex`), so the transaction sender is the address of its
 /// `auth_pubkey`, which is what the forecaster key binding rule asks.
 ///
+/// Request budgets: a direct submission is charged to the forecaster, as
+/// before. A relayed one is charged to the submitting bearer together with the
+/// forecaster ([`ForecastSubmitter::quota_key`]), never to the forecaster
+/// alone, so one relay's traffic cannot spend another submitter's budget.
+///
 /// Node-local admission only: mempool and block validation of the resulting
 /// transaction are unchanged.
 pub fn resolve_forecast_submitter(
@@ -481,13 +486,15 @@ pub fn resolve_forecast_submitter(
     commit_id: &str,
     auth_pubkey: Option<&str>,
     auth_signature: Option<&str>,
-) -> Result<String, HttpResponse> {
+) -> Result<ForecastSubmitter, HttpResponse> {
     use wrfcoin_native_chain::blockchain::transaction::commit_authorization_message;
     use wrfcoin_native_chain::common::types::Address;
     use wrfcoin_native_chain::crypto::signature::Signature;
 
     let bearer_refusal = match require_forecaster_bound_to_bearer(req, state, forecaster) {
-        Ok(canonical) => return Ok(canonical),
+        Ok(canonical) => {
+            return Ok(ForecastSubmitter { quota_key: canonical.clone(), forecaster: canonical, relayed: false });
+        },
         Err(refusal) => refusal,
     };
     let Some(public_key) = auth_pubkey.and_then(|hex| PublicKey::from_hex(hex.trim()).ok()) else {
@@ -509,7 +516,28 @@ pub fn resolve_forecast_submitter(
             "a relayed forecast needs auth_signature by the forecaster's key over this station_id and commit_hash",
         ));
     }
-    Ok(key_address.to_hex())
+    let forecaster = key_address.to_hex();
+    // The bearer is identified by a digest of its token, so the limiter key
+    // never holds the secret itself.
+    let bearer = bearer_token_from_request(req).unwrap_or_default();
+    let bearer_digest = wrfcoin_native_chain::crypto::hash::hash_bytes(bearer.as_bytes()).to_hex();
+    Ok(ForecastSubmitter {
+        quota_key: format!("relay:{}:{forecaster}", &bearer_digest[..32.min(bearer_digest.len())]),
+        forecaster,
+        relayed: true,
+    })
+}
+
+/// Who a forecast submission is for, and whose request budget it spends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForecastSubmitter {
+    /// Canonical forecaster: the transaction sender.
+    pub forecaster: String,
+    /// Key for the forecast quota and the commit rate limit: the forecaster on
+    /// the direct path; the submitting bearer plus the forecaster on a relay.
+    pub quota_key: String,
+    /// True when accepted through the key-bound relay path.
+    pub relayed: bool,
 }
 
 /// Returns `true` if the request comes from localhost OR carries a valid Operator bearer token.
