@@ -222,7 +222,7 @@ pub mod policy {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct RegistrarPolicyLimits {
         /// One setting turns signing off. Existing stations stay.
-        pub signing_enabled: bool,
+        pub enabled: bool,
         /// Registrations accepted in any trailing 24 h, in total.
         pub daily_total: usize,
         /// Per public IP (salted hash), in any trailing 24 h.
@@ -236,7 +236,7 @@ pub mod policy {
     impl Default for RegistrarPolicyLimits {
         fn default() -> Self {
             Self {
-                signing_enabled: true,
+                enabled: true,
                 daily_total: 20,
                 daily_per_ip: 3,
                 daily_per_cell: 3,
@@ -260,7 +260,7 @@ pub mod policy {
     /// Why the service refuses or delays a request.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum RegistrarPolicyRefusal {
-        SigningStopped,
+        Stopped,
         AlreadyRequested,
         DailyTotal,
         DailyPerIp,
@@ -302,8 +302,8 @@ pub mod policy {
             now: u64,
         ) -> Result<(), RegistrarPolicyRefusal> {
             use RegistrarPolicyRefusal as R;
-            if !limits.signing_enabled {
-                return Err(R::SigningStopped);
+            if !limits.enabled {
+                return Err(R::Stopped);
             }
             if self
                 .accepted
@@ -337,14 +337,14 @@ pub mod policy {
 
         /// May the online key sign `station_id` at `now`? Only an accepted
         /// request whose hold has passed, and only while signing is on.
-        pub fn ready_to_sign(
+        pub fn ready_to_release(
             &self,
             limits: &RegistrarPolicyLimits,
             station_id: &str,
             now: u64,
         ) -> Result<(), RegistrarPolicyRefusal> {
-            if !limits.signing_enabled {
-                return Err(RegistrarPolicyRefusal::SigningStopped);
+            if !limits.enabled {
+                return Err(RegistrarPolicyRefusal::Stopped);
             }
             let accepted = self
                 .accepted
@@ -517,27 +517,27 @@ mod tests {
             .accept(&limits, request(1, "ip", (0, 0)), t0)
             .unwrap();
         assert_eq!(
-            ledger.ready_to_sign(&limits, "mob-1", t0 + DAY_SECS - 1),
+            ledger.ready_to_release(&limits, "mob-1", t0 + DAY_SECS - 1),
             Err(RegistrarPolicyRefusal::Held {
                 until: t0 + DAY_SECS
             })
         );
         assert_eq!(
-            ledger.ready_to_sign(&limits, "mob-1", t0 + DAY_SECS),
+            ledger.ready_to_release(&limits, "mob-1", t0 + DAY_SECS),
             Ok(())
         );
         assert_eq!(
-            ledger.ready_to_sign(&limits, "mob-2", t0 + DAY_SECS),
+            ledger.ready_to_release(&limits, "mob-2", t0 + DAY_SECS),
             Err(RegistrarPolicyRefusal::Unknown)
         );
-        limits.signing_enabled = false;
+        limits.enabled = false;
         assert_eq!(
-            ledger.ready_to_sign(&limits, "mob-1", t0 + DAY_SECS),
-            Err(RegistrarPolicyRefusal::SigningStopped)
+            ledger.ready_to_release(&limits, "mob-1", t0 + DAY_SECS),
+            Err(RegistrarPolicyRefusal::Stopped)
         );
         assert_eq!(
             ledger.accept(&limits, request(2, "ip2", (1, 1)), t0),
-            Err(RegistrarPolicyRefusal::SigningStopped)
+            Err(RegistrarPolicyRefusal::Stopped)
         );
     }
 }
