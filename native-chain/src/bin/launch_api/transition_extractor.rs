@@ -45,6 +45,10 @@ pub fn extract_transitions(
         transitions.push(transition);
     }
 
+    // `station_registrar_key`: the same per-block slot as the PoP producer
+    // path, so producer == applier == WAL replay. Inert while inactive.
+    let mut registrar_slot =
+        wrfcoin_shared_protocol::consensus::station_registrar::RegistrarBlockSlot::new();
     for tx in &block.transactions {
         match tx.tx_type {
             TransactionType::NodeFraudReport => {
@@ -260,7 +264,9 @@ pub fn extract_transitions(
                     // The SAME shared step as the PoP producer arm: the
                     // format-vs-activation rule, authorization and the variant
                     // by height, so producer == applier == WAL replay.
-                    if let Some(transition) = tx.station_registration_step(block_height) {
+                    if let Some(transition) =
+                        registrar_slot.admit(tx.station_registration_step(block_height))
+                    {
                         transitions.push(transition);
                     }
                 } else if tx.parse_station_registration().is_none() {

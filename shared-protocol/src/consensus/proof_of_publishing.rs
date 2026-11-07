@@ -2714,6 +2714,23 @@ pub struct ProofOfPublishing {
     mlsag_verify_budget_ms: u64,
 }
 
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+static HELD_AFTER_FIRST_PRUNE: std::sync::Mutex<Vec<Hash>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests only: make `create_next_block` remove these transactions from its
+/// candidate right after the first trial prune, as a selection step would
+/// (they stay in the mempool). Exercises the re-prune liveness guard.
+/// Compiled only with `consensus-test-hooks`, which no shipped crate enables.
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+pub fn hold_after_first_prune_for_tests(ids: Vec<Hash>) {
+    *HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+}
+
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+fn held_after_first_prune_for_tests() -> Vec<Hash> {
+    HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 impl ProofOfPublishing {
     fn verify_attestation_signature(
         &self,
@@ -3608,6 +3625,17 @@ impl ProofOfPublishing {
             *chain.tip.as_bytes(),
             &mut transactions,
         ));
+        let after_first_prune = transactions.len();
+        // Tests only (`consensus-test-hooks` is enabled only from this crate's
+        // dev-dependencies): stand in for a selection step that removes a
+        // transaction after the first prune, kept in the mempool.
+        #[cfg(any(test, feature = "consensus-test-hooks"))]
+        {
+            let held = held_after_first_prune_for_tests();
+            if !held.is_empty() {
+                transactions.retain(|tx| tx.id.is_none_or(|id| !held.contains(&id)));
+            }
+        }
 
         // ── Producer self-screen (#1730) ─────────────────────────────────────
         // Drop any assembled transaction a syncing peer would reject, using the
@@ -3718,6 +3746,33 @@ impl ProofOfPublishing {
             info!(
                 "#3565: deferred {deferred_device_reveal_count} extra same-station reveal(s) to a later block at height {next_height}"
             );
+        }
+
+        // `station_registrar_key` (selection only): at most one registrar
+        // registration per block, and only one that would apply. Extras and
+        // ceiling-refused ones stay in the mempool for a later block; ones
+        // that can never apply are evicted. Inactive this is a no-op.
+        skipped_mempool_tx_ids.extend(Self::hold_back_registrar_registrations(
+            &chain.state,
+            next_height,
+            &mut transactions,
+        ));
+        // General guard: anything a selection removal since the first prune
+        // stranded (self-screen, the #2777 fence, #3565 deferral, registrar
+        // selection: a reveal whose commit was held back, a transaction that
+        // leaned on a removed one) is dropped and evicted by the same trial
+        // apply, rather than making this producer refuse its own block. It
+        // re-runs only when something was removed, so an ordinary block costs
+        // nothing extra, and it only ever removes transactions the block's own
+        // apply would have failed on.
+        if transactions.len() != after_first_prune {
+            skipped_mempool_tx_ids.extend(self.prune_invalid_launch_transactions(
+                &chain.state,
+                next_height,
+                block_creation_time.timestamp(),
+                *chain.tip.as_bytes(),
+                &mut transactions,
+            ));
         }
 
         // Calculate the publishing score for this block after stale/invalid entries have been
@@ -6454,15 +6509,19 @@ impl ProofOfPublishing {
                 StateTransition::RecordGenesisEmissionConfig { config }));
         }
 
+        // `station_registrar_key`: at most one registrar registration per
+        // block, by transaction order; the applier's extractor uses the same
+        // slot, so producer == applier == WAL replay. Inert while inactive.
+        let mut registrar_slot = crate::consensus::station_registrar::RegistrarBlockSlot::new();
         for (tx_index, tx) in block.transactions.iter().enumerate() {
-            if let Some(transition) =
+            if let Some(transition) = registrar_slot.admit(
                 Self::launch_transition_for_transaction(
                     tx,
                     block.height,
                     block.timestamp.timestamp(),
                     tx_index,
-                )?
-            {
+                )?,
+            ) {
                 if let StateTransition::ApplyReveal { payload, .. } = &transition {
                     revealed_commit_ids.insert(payload.commit_id.clone());
                 }
@@ -7469,6 +7528,40 @@ impl ProofOfPublishing {
             }
         });
         before - transactions.len()
+    }
+
+    /// `station_registrar_key`: apply [`select_registrar_registrations`] to the
+    /// candidate. Returns the ids to evict; deferred ones are removed from the
+    /// candidate only.
+    ///
+    /// [`select_registrar_registrations`]: crate::consensus::station_registrar::select_registrar_registrations
+    fn hold_back_registrar_registrations(
+        state: &State,
+        next_height: u64,
+        transactions: &mut Vec<Transaction>,
+    ) -> Vec<Hash> {
+        let selection = crate::consensus::station_registrar::select_registrar_registrations(
+            state,
+            next_height,
+            transactions,
+        );
+        if selection.defer.is_empty() && selection.evict.is_empty() {
+            return Vec::new();
+        }
+        info!(
+            "station_registrar_key: deferred {} and evicted {} registrar registration(s) at height {next_height}",
+            selection.defer.len(),
+            selection.evict.len()
+        );
+        let evicted: Vec<Hash> =
+            selection.evict.iter().filter_map(|&i| transactions[i].id).collect();
+        let mut index = 0;
+        transactions.retain(|_| {
+            let keep = !selection.defer.contains(&index) && !selection.evict.contains(&index);
+            index += 1;
+            keep
+        });
+        evicted
     }
 
     fn defer_real_contribution_groups_without_quorum(

@@ -281,8 +281,11 @@ fn feature_is_registered_but_unscheduled_and_not_live_schedulable() {
     assert!(!feature.schedulable(None));
     assert!(!feature.schedulable(Some("synthetic-genesis")));
     assert!(feature.has_behaviour());
+    // Wire ordinal 31 is reserved (no feature), so entries after it sit one
+    // ordinal past their index.
     for (index, f) in ConsensusFeature::ALL.iter().enumerate() {
-        assert_eq!(bincode::serialize(f).unwrap(), (index as u32).to_le_bytes());
+        let ordinal = if index < 31 { index } else { index + 1 } as u32;
+        assert_eq!(bincode::serialize(f).unwrap(), ordinal.to_le_bytes());
     }
 }
 

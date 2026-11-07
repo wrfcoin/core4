@@ -552,6 +552,9 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
+        StateTransition::ApplyStationRegistrarRegistration { .. } => {
+            "ApplyStationRegistrarRegistration"
+        },
     }
 }
 
@@ -761,6 +764,14 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
             payload: fixture::auth(20, 2, 0, NodeBondAction::Deposit, 1),
             block_height: fixture::A,
         },
+        // `station_registrar_key` (unscheduled here, so refused): the station
+        // record of the v2 registration fixture.
+        58 => match sweep_transition(53) {
+            StateTransition::ApplyStationRegistrationV2 { station, block_height, .. } => {
+                StateTransition::ApplyStationRegistrarRegistration { station, block_height }
+            },
+            other => panic!("fixture 53 drifted: {other:?}"),
+        },
         _ => {
             // Synthetic zero-value fixtures, preserving the original sweep inputs.
             // StateTransition is not a protocol bincode boundary; keep fixtures JSON.
@@ -835,6 +846,7 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "ApplyNodeBondLifecycle",
         "ApplyNodeServiceBatch",
         "ApplyNodeFraudReport",
+        "ApplyStationRegistrarRegistration",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {
