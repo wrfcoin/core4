@@ -935,6 +935,178 @@ async fn forecast_reveal_without_receipt_retains_baseline_submission() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
+/// Key-bound relay fixture: a forecaster whose address is derived from its
+/// own key, a commit signed by that key, and the matching reveal. The reveal
+/// carries the commit's `auth_pubkey`/`auth_signature`, which is how a relay
+/// (one shared, unbound Contributor bearer) shows the forecaster's consent.
+/// Returns (commit body, reveal body, canonical forecaster address).
+fn relayed_forecast_fixture(seed: u64) -> (serde_json::Value, serde_json::Value, String) {
+    use wrfcoin_native_chain::blockchain::transaction::{CommitPayload, Transaction};
+    use wrfcoin_native_chain::common::types::Address;
+    let (_, base_reveal, _) = forecast_route_fixture();
+    let sk = PrivateKey::generate(&mut StdRng::seed_from_u64(seed));
+    let forecaster = Address::from_public_key(&PublicKey::from_private_key(&sk)).to_hex();
+    let timestamp = chrono::Utc::now().timestamp();
+    let data = serde_json::json!({"temperature": 21.5, "seed": seed});
+    let nonce = format!("relay-nonce-{seed}");
+    let commit_id = Transaction::compute_commit_id(&data, &nonce, "station-forecast", timestamp, "forecast");
+    let mut commit = CommitPayload {
+        commit_id: commit_id.clone(), station_id: "station-forecast".into(), timestamp,
+        contribution_type: "forecast".into(), auth_pubkey: None, auth_signature: None,
+    };
+    commit.sign_authorization(&sk);
+    let commit_json = serde_json::json!({
+        "forecaster": forecaster, "station_id": "station-forecast", "commit_hash": commit_id,
+        "auth_pubkey": commit.auth_pubkey, "auth_signature": commit.auth_signature,
+    });
+    let reveal_json = serde_json::json!({
+        "forecaster": forecaster, "station_id": "station-forecast", "commit_hash": commit_id,
+        "payload": data, "nonce": nonce, "timestamp": timestamp,
+        "manifest": base_reveal["manifest"],
+        "auth_pubkey": commit.auth_pubkey, "auth_signature": commit.auth_signature,
+    });
+    (commit_json, reveal_json, forecaster)
+}
+
+async fn post_forecast(
+    state: &web::Data<state::AppState>,
+    route: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().app_data(state.clone())
+        .configure(routes::configure_launch_routes)).await;
+    let resp = test::call_service(&app, test::TestRequest::post()
+        .uri(&format!("/transactions/forecast/{route}")).insert_header(bearer(token))
+        .set_json(body).to_request()).await;
+    let status = resp.status();
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    (status, body)
+}
+
+/// A relay with an unbound Contributor bearer (and a bearer bound to some
+/// other wallet) can submit a commit and reveal that the forecaster's own key
+/// signed. Both transactions are sent as the key's address, and the commit
+/// satisfies the forecaster key binding rule used at block validation.
+#[actix_web::test]
+async fn relayed_forecast_signed_by_forecaster_key_is_accepted() {
+    use wrfcoin_native_chain::blockchain::transaction::TransactionType;
+    for (seed, token) in [(81_001, TEST_CONTRIBUTOR_TOKEN), (81_002, TEST_FORECASTER_TOKEN)] {
+        let (mut commit, mut reveal, forecaster) = relayed_forecast_fixture(seed);
+        // Any hex spelling of the address resolves to one canonical sender.
+        let upper = format!("0x{}", forecaster.trim_start_matches("0x").to_ascii_uppercase());
+        commit["forecaster"] = serde_json::json!(upper);
+        reveal["forecaster"] = serde_json::json!(forecaster.trim_start_matches("0x"));
+        let state = forecast_state();
+        let (status, body) = post_forecast(&state, "commit", token, &commit).await;
+        assert_eq!(status, StatusCode::CREATED, "commit via {token}: {body}");
+        let (status, body) = post_forecast(&state, "reveal", token, &reveal).await;
+        assert_eq!(status, StatusCode::CREATED, "reveal via {token}: {body}");
+        let txs = state.mempool.read().await.get_all_transactions();
+        assert_eq!(txs.len(), 2);
+        for tx in &txs {
+            assert_eq!(tx.sender_address.to_hex(), forecaster);
+            assert!(tx.outputs.iter().all(|o| o.address == forecaster), "{:?}", tx.outputs);
+        }
+        let commit_tx = txs.iter().find(|tx| tx.tx_type == TransactionType::ForecastCommit).unwrap();
+        assert!(commit_tx.forecast_commit_key_bound(), "relayed commit must be key-bound");
+        assert!(txs.iter().any(|tx| tx.tx_type == TransactionType::ForecastReveal));
+    }
+}
+
+/// A relayed submission is refused when the key does not belong to the
+/// forecaster it names, or when the signature is not the forecaster's.
+#[actix_web::test]
+async fn relayed_forecast_refused_when_key_does_not_match_forecaster() {
+    let (commit, reveal, _) = relayed_forecast_fixture(82_001);
+    let (_, _, other_forecaster) = relayed_forecast_fixture(82_002);
+    let (other_commit, _, _) = relayed_forecast_fixture(82_003);
+    for (route, base) in [("commit", &commit), ("reveal", &reveal)] {
+        // Valid signature, but by a key whose address is not the forecaster.
+        let mut wrong_forecaster = base.clone();
+        wrong_forecaster["forecaster"] = serde_json::json!(other_forecaster);
+        // The forecaster's own pubkey with a signature made by another key.
+        let mut foreign_signature = base.clone();
+        foreign_signature["auth_signature"] = other_commit["auth_signature"].clone();
+        // No key at all: nothing binds the forecaster to an unbound bearer.
+        let mut no_key = base.clone();
+        no_key.as_object_mut().unwrap().remove("auth_pubkey");
+        let mut no_signature = base.clone();
+        no_signature.as_object_mut().unwrap().remove("auth_signature");
+        let cases = [
+            ("wrong_forecaster", wrong_forecaster, StatusCode::FORBIDDEN, "FORECASTER_BEARER_UNBOUND"),
+            ("foreign_signature", foreign_signature, StatusCode::UNPROCESSABLE_ENTITY, "INVALID_FORECAST_AUTHORIZATION"),
+            ("no_key", no_key, StatusCode::FORBIDDEN, "FORECASTER_BEARER_UNBOUND"),
+            ("no_signature", no_signature, StatusCode::UNPROCESSABLE_ENTITY, "INVALID_FORECAST_AUTHORIZATION"),
+        ];
+        for (label, body, expected, code) in cases {
+            let state = forecast_state();
+            let (status, error) = post_forecast(&state, route, TEST_CONTRIBUTOR_TOKEN, &body).await;
+            assert_eq!(status, expected, "{route}/{label}: {error}");
+            assert!(error.to_string().contains(code), "{route}/{label}: {error}");
+            assert!(state.mempool.read().await.get_all_transactions().is_empty(), "{route}/{label} must not enqueue");
+        }
+    }
+    // A bearer bound to another wallet keeps its own refusal code.
+    let mut wrong = commit.clone();
+    wrong["forecaster"] = serde_json::json!(other_forecaster);
+    let state = forecast_state();
+    let (status, error) = post_forecast(&state, "commit", TEST_FORECASTER_TOKEN, &wrong).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(error.to_string().contains("FORECASTER_NOT_BOUND_TO_BEARER"), "{error}");
+}
+
+/// The relayed submission is bound to one commit id: a signature over a
+/// different commit id is refused on commit, and a reveal whose data does
+/// not re-derive the signed commit id is refused on reveal.
+#[actix_web::test]
+async fn relayed_forecast_refused_when_commit_id_does_not_rederive() {
+    let (commit, reveal, _) = relayed_forecast_fixture(83_001);
+    let (other_commit, _, _) = relayed_forecast_fixture(83_002);
+
+    // Commit: the signature covers this commit_hash, so swapping it fails.
+    let mut swapped = commit.clone();
+    swapped["commit_hash"] = other_commit["commit_hash"].clone();
+    let state = forecast_state();
+    let (status, error) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &swapped).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+    assert!(error.to_string().contains("INVALID_FORECAST_AUTHORIZATION"), "{error}");
+    assert!(state.mempool.read().await.get_all_transactions().is_empty());
+
+    // Reveal: signed commit id, but the revealed data or nonce changed.
+    for (label, field, value) in [
+        ("payload", "payload", serde_json::json!({"temperature": 99.0})),
+        ("nonce", "nonce", serde_json::json!("tampered-nonce")),
+    ] {
+        let mut tampered = reveal.clone();
+        tampered[field] = value;
+        let state = forecast_state();
+        let (status, error) = post_forecast(&state, "reveal", TEST_CONTRIBUTOR_TOKEN, &tampered).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{label}: {error}");
+        assert!(error.to_string().contains("does not match commit_hash"), "{label}: {error}");
+        assert!(state.mempool.read().await.get_all_transactions().is_empty(), "{label} must not enqueue");
+    }
+}
+
+/// The direct path is unchanged: a wallet-bound bearer still submits for its
+/// own wallet under the bearer's claim, whatever key signed, and the reveal
+/// needs no auth fields.
+#[actix_web::test]
+async fn direct_forecast_path_is_unchanged_by_key_bound_relay() {
+    let (commit, reveal, _) = forecast_route_fixture();
+    let mut reveal = reveal;
+    reveal.as_object_mut().unwrap().remove("verification_receipt");
+    assert!(reveal.get("auth_pubkey").is_none());
+    let state = forecast_state();
+    let (status, body) = post_forecast(&state, "commit", TEST_FORECASTER_TOKEN, &commit).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = post_forecast(&state, "reveal", TEST_FORECASTER_TOKEN, &reveal).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for tx in state.mempool.read().await.get_all_transactions() {
+        assert_eq!(tx.outputs[0].address, TEST_FORECASTER_WALLET);
+    }
+}
+
 /// #2456 — the per-commit reward-evidence read model is fail-closed: every
 /// leg of `record -> quorum/credit -> block -> finality -> account` must be
 /// proven before `rewarded` flips, and each missing leg is named.

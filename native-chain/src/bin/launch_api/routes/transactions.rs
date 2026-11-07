@@ -7,7 +7,7 @@ use crate::helpers::{
     enforce_permissionless_replay_protection, enforce_permissionless_submit_rate_limit,
     enqueue_protocol_transaction, enqueue_protocol_transaction_with_nonce_and_fee, envelope_error,
     envelope_success, feature_disabled_envelope_with_hint, refuse_seen_permissionless_replay_key,
-    release_permissionless_replay_key, require_forecaster_bound_to_bearer, require_role,
+    release_permissionless_replay_key, require_role, resolve_forecast_submitter,
     submit_protocol_transaction, validate_commit_hash, validate_nonce, validate_participant_id,
     validate_station_id, validate_timestamp,
 };
@@ -1111,6 +1111,14 @@ pub struct ForecastRevealRequest {
     pub compute_receipt: Option<ComputeReceipt>,
     #[serde(default)]
     pub provenance: Option<SensorProvenance>,
+    /// Key-bound relay only: the forecaster's hex ed25519 public key, the same
+    /// `auth_pubkey` its commit carried. Not part of the reveal transaction.
+    #[serde(default)]
+    pub auth_pubkey: Option<String>,
+    /// Key-bound relay only: the commit's `auth_signature` (over this
+    /// `station_id` and `commit_hash`). Not part of the reveal transaction.
+    #[serde(default)]
+    pub auth_signature: Option<String>,
 }
 
 async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &str, reveal: bool) -> Result<(), HttpResponse> {
@@ -1147,7 +1155,12 @@ pub async fn submit_forecast_commit(
     // Everything below uses `forecaster`, the canonical identity, never the
     // raw request string: case/whitespace variants must share one rate-limit
     // bucket and one sender (review of core4#3114).
-    let forecaster = match require_forecaster_bound_to_bearer(&req, &state, &request.forecaster) {
+    // A relay whose bearer is not bound to this forecaster may still submit
+    // when the forecaster's own key signed the commit (key-bound relay).
+    let forecaster = match resolve_forecast_submitter(
+        &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
+        request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
+    ) {
         Ok(canonical) => canonical,
         Err(resp) => return resp,
     };
@@ -1217,7 +1230,13 @@ pub async fn submit_forecast_reveal(
     // Everything below uses `forecaster`, the canonical identity, never the
     // raw request string: case/whitespace variants must share one rate-limit
     // bucket and one sender (review of core4#3114).
-    let forecaster = match require_forecaster_bound_to_bearer(&req, &state, &request.forecaster) {
+    // Key-bound relay: the reveal carries the forecaster's commit
+    // authorization, and `commit_hash` must re-derive from the revealed data
+    // below, so it can only reveal a commit that forecaster's key signed.
+    let forecaster = match resolve_forecast_submitter(
+        &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
+        request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
+    ) {
         Ok(canonical) => canonical,
         Err(resp) => return resp,
     };
