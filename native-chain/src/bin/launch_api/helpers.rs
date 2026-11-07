@@ -447,6 +447,71 @@ pub fn require_forecaster_bound_to_bearer(
     }
 }
 
+/// Forecast submitter resolution: the bearer binding above, or a key-bound relay.
+///
+/// A relay (for example the web backend, holding one shared Contributor
+/// bearer) may submit a forecast commit or reveal for a forecaster its bearer
+/// is not bound to when the forecaster's **own key** authorized it:
+///
+/// - `auth_pubkey` is present and `forecaster` is exactly
+///   `Address::from_public_key(auth_pubkey)`, and
+/// - `auth_signature` verifies, under that key, over the canonical forecast
+///   commit-authorization message for this `station_id` and `commit_id`.
+///
+/// On the reveal route the route then re-derives `commit_id` from the revealed
+/// data, so a relayed reveal is bound to a commit the forecaster signed.
+///
+/// The bearer binding is tried first and is unchanged: a wallet-bound bearer
+/// for this forecaster, or an operator bearer, resolves exactly as before. If
+/// neither the bearer nor the key binds the forecaster, the bearer's refusal is
+/// returned unchanged. A key that matches the forecaster but whose signature
+/// does not verify is refused with `INVALID_FORECAST_AUTHORIZATION`.
+///
+/// A key-bound submission resolves to the canonical address string
+/// (`Address::to_hex`), so the transaction sender is the address of its
+/// `auth_pubkey`, which is what the forecaster key binding rule asks.
+///
+/// Node-local admission only: mempool and block validation of the resulting
+/// transaction are unchanged.
+pub fn resolve_forecast_submitter(
+    req: &HttpRequest,
+    state: &AppState,
+    forecaster: &str,
+    station_id: &str,
+    commit_id: &str,
+    auth_pubkey: Option<&str>,
+    auth_signature: Option<&str>,
+) -> Result<String, HttpResponse> {
+    use wrfcoin_native_chain::blockchain::transaction::commit_authorization_message;
+    use wrfcoin_native_chain::common::types::Address;
+    use wrfcoin_native_chain::crypto::signature::Signature;
+
+    let bearer_refusal = match require_forecaster_bound_to_bearer(req, state, forecaster) {
+        Ok(canonical) => return Ok(canonical),
+        Err(refusal) => refusal,
+    };
+    let Some(public_key) = auth_pubkey.and_then(|hex| PublicKey::from_hex(hex.trim()).ok()) else {
+        return Err(bearer_refusal);
+    };
+    let key_address = Address::from_public_key(&public_key);
+    if forecaster.trim().parse::<Address>().ok() != Some(key_address) {
+        return Err(bearer_refusal);
+    }
+    let message = commit_authorization_message(station_id, commit_id, "forecast");
+    let signed = auth_signature
+        .and_then(|hex| Signature::from_hex(hex.trim()).ok())
+        .is_some_and(|signature| public_key.verify(&message, &signature));
+    if !signed {
+        return Err(envelope_error(
+            req,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_FORECAST_AUTHORIZATION",
+            "a relayed forecast needs auth_signature by the forecaster's key over this station_id and commit_hash",
+        ));
+    }
+    Ok(key_address.to_hex())
+}
+
 /// Returns `true` if the request comes from localhost OR carries a valid Operator bearer token.
 /// Used by health/readyz endpoints to decide between minimal and full responses.
 pub fn is_operator_or_localhost(req: &HttpRequest, state: &AppState) -> bool {
