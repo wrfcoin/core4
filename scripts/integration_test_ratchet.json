@@ -1067,6 +1067,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "station_registrar_key_unscheduled"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "producer_reprune_guard"
     }
   ],
   "external_coverage": [

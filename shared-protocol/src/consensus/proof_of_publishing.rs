@@ -2714,6 +2714,23 @@ pub struct ProofOfPublishing {
     mlsag_verify_budget_ms: u64,
 }
 
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+static HELD_AFTER_FIRST_PRUNE: std::sync::Mutex<Vec<Hash>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests only: make `create_next_block` remove these transactions from its
+/// candidate right after the first trial prune, as a selection step would
+/// (they stay in the mempool). Exercises the re-prune liveness guard.
+/// Compiled only with `consensus-test-hooks`, which no shipped crate enables.
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+pub fn hold_after_first_prune_for_tests(ids: Vec<Hash>) {
+    *HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+}
+
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+fn held_after_first_prune_for_tests() -> Vec<Hash> {
+    HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 impl ProofOfPublishing {
     fn verify_attestation_signature(
         &self,
@@ -3609,6 +3626,16 @@ impl ProofOfPublishing {
             &mut transactions,
         ));
         let after_first_prune = transactions.len();
+        // Tests only (`consensus-test-hooks` is enabled only from this crate's
+        // dev-dependencies): stand in for a selection step that removes a
+        // transaction after the first prune, kept in the mempool.
+        #[cfg(any(test, feature = "consensus-test-hooks"))]
+        {
+            let held = held_after_first_prune_for_tests();
+            if !held.is_empty() {
+                transactions.retain(|tx| tx.id.is_none_or(|id| !held.contains(&id)));
+            }
+        }
 
         // ── Producer self-screen (#1730) ─────────────────────────────────────
         // Drop any assembled transaction a syncing peer would reject, using the

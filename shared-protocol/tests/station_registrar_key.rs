@@ -19,8 +19,9 @@ use wrfcoin_shared_protocol::blockchain::chain::Blockchain;
 use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
 use wrfcoin_shared_protocol::blockchain::station_owner::StationOwnerActionPayload;
 use wrfcoin_shared_protocol::blockchain::transaction::{
-    CommitPayload, RevealPayload, StationOwnerActionKind, StationRegistrationAuthority,
-    StationRegistrationPayload, Transaction, TransactionInput, TransactionOutput, TransactionType,
+    CommitPayload, ForecastArtifactManifest, RevealPayload, StationOwnerActionKind,
+    StationRegistrationAuthority, StationRegistrationPayload, Transaction, TransactionInput,
+    TransactionOutput, TransactionType,
 };
 use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
@@ -857,7 +858,18 @@ fn commit_and_reveal(station_id: &str, kind: &str, tag: &str) -> (Transaction, T
         data_hash: None,
         storage_provider: None,
         provenance: None,
-        manifest: None,
+        // A forecast reveal must carry an artifact manifest.
+        manifest: (kind == "forecast").then(|| ForecastArtifactManifest {
+            schema_version: 1,
+            model_id: "wrf-gfs-v3".to_string(),
+            input_hash: "a".repeat(64),
+            output_hash: "b".repeat(64),
+            produced_at: timestamp,
+            region: "us-east".to_string(),
+            horizon_hours: 48,
+            input_variables: vec!["pressure".to_string(), "temperature".to_string()],
+            output_variables: vec!["temperature".to_string()],
+        }),
         verification_receipt: None,
         compute_receipt: None,
         quality_tier: None,
@@ -948,38 +960,80 @@ async fn deferred_registration_with_same_block_commits_and_reveals_never_stalls_
         }
     };
     let (a, b) = (key(0xF4), key(0xF5));
-    let a_id = mobile_station_id(&addr(&a), 0).unwrap();
-    let b_id = mobile_station_id(&addr(&b), 0).unwrap();
-    assert!(offer(signed(phone(&a), &a, REGISTRAR)).await);
-    assert!(offer(signed(phone(&b), &b, REGISTRAR)).await);
-    // Commit + reveal pairs for BOTH stations, so whichever registration the
-    // producer defers, the pairs naming it are in the same candidate.
+    let (reg_a, reg_b) = (
+        signed(phone(&a), &a, REGISTRAR),
+        signed(phone(&b), &b, REGISTRAR),
+    );
+    // Fixed outcome: both carry fee 0, and the mempool breaks fee ties by
+    // ascending txid, so the registration with the smaller txid is selected
+    // and the other one is deferred.
+    let ((selected_key, selected_reg), (deferred_key, deferred_reg)) = if reg_a.id < reg_b.id {
+        ((&a, reg_a), (&b, reg_b))
+    } else {
+        ((&b, reg_b), (&a, reg_a))
+    };
+    let selected_id = mobile_station_id(&addr(selected_key), 0).unwrap();
+    let deferred_id = mobile_station_id(&addr(deferred_key), 0).unwrap();
+    assert!(offer(selected_reg).await);
+    assert!(offer(deferred_reg.clone()).await);
+    // Forecast and contribution commit + reveal pairs for BOTH stations.
+    let mut deferred_station_txs = Vec::new();
     let mut admitted = 0;
-    for (station, tag) in [(&a_id, "a"), (&b_id, "b")] {
+    for (station, tag) in [(&selected_id, "selected"), (&deferred_id, "deferred")] {
         for kind in ["forecast", "contribution"] {
             let (commit, reveal) = commit_and_reveal(station, kind, &format!("{kind}-{tag}"));
+            if station == &deferred_id {
+                deferred_station_txs.push(commit.clone());
+                deferred_station_txs.push(reveal.clone());
+            }
             admitted += usize::from(offer(commit).await);
             admitted += usize::from(offer(reveal).await);
         }
     }
-    assert!(
-        admitted >= 4,
-        "the commits and reveals reach the mempool ({admitted} admitted)"
+    assert_eq!(
+        admitted, 8,
+        "all eight commits and reveals reach the mempool"
     );
 
     pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
         .await
         .expect("a deferred registration never makes the producer refuse its block");
-    let registered = |c: &Blockchain| {
-        [&a_id, &b_id]
-            .iter()
-            .filter(|id| c.state.station_registry.get(id.as_str()).is_some())
-            .count()
-    };
     {
         let c = chain.read().await;
         assert_eq!(c.height, K);
-        assert_eq!(registered(&c), 1, "one registrar registration in block 1");
+        assert!(
+            c.state.station_registry.get(&selected_id).is_some(),
+            "the selected one applied"
+        );
+        assert!(
+            c.state.station_registry.get(&deferred_id).is_none(),
+            "the other was deferred"
+        );
+        let mined: Vec<_> = c
+            .blocks()
+            .values()
+            .last()
+            .unwrap()
+            .transactions
+            .iter()
+            .filter_map(|t| t.id)
+            .collect();
+        assert!(!mined.contains(deferred_reg.id.as_ref().unwrap()));
+        let pool = mempool.read().await;
+        assert!(
+            pool.contains(deferred_reg.id.as_ref().unwrap()),
+            "the deferred registration waits"
+        );
+        // The deferred station's commits and reveals: each mined in block K
+        // or still pending, never lost.
+        for tx in &deferred_station_txs {
+            let id = tx.id.unwrap();
+            assert!(
+                mined.contains(&id) || pool.contains(&id),
+                "{:?} for the deferred station was lost (neither mined nor pending)",
+                tx.tx_type
+            );
+        }
     }
     pop.create_next_block(chain.clone(), mempool.clone(), &miner_hex)
         .await
@@ -987,6 +1041,9 @@ async fn deferred_registration_with_same_block_commits_and_reveals_never_stalls_
     {
         let c = chain.read().await;
         assert_eq!(c.height, K + 1);
-        assert_eq!(registered(&c), 2, "the deferred registration applies next");
+        assert!(
+            c.state.station_registry.get(&deferred_id).is_some(),
+            "the deferred registration applies next"
+        );
     }
 }
