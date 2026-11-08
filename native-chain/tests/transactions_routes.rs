@@ -633,12 +633,25 @@ async fn forecast_cli_payloads_are_accepted_by_routes() {
         (&receipt, &fixture["verification_receipt"])] {
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     }
-    let input = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
+    // The CLI signs only for the forecaster its key controls (#3290), so this
+    // test's forecaster is the signer's address, and a Contributor bearer is
+    // bound to that wallet.
+    let forecaster = wrfcoin_native_chain::common::types::Address::from_public_key(
+        &PublicKey::from_private_key(&signer)).to_hex();
+    let input = ForecastInput { forecaster: forecaster.clone(), station_id: "station-forecast".into(),
         data_file: data, nonce: "reveal-nonce".into(), timestamp: fixture["timestamp"].as_i64().unwrap() };
     let commit = commit_body(&input, &signer, &signing_chain_id(), &signing_network_id()).unwrap();
     let reveal = reveal_body(&input, &manifest, Some(&receipt)).unwrap();
     assert_eq!(commit["commit_hash"], reveal["commit_hash"]);
-    let state = forecast_state();
+    const CLI_FORECASTER_TOKEN: &str = "test-cli-forecaster-token";
+    let tokens = {
+        use wrfcoin_native_chain::security::api_auth::Identity;
+        let mut store = (*forecast_token_store()).clone();
+        store.insert(CLI_FORECASTER_TOKEN.to_string(),
+            AuthPrincipal::with_identity(ApiRole::Contributor, Identity::wallet(&forecaster)));
+        Arc::new(store)
+    };
+    let state = test_state_with_tokens(None, tokens);
     state.blockchain.write().await.apply_state_transition(StateTransition::SetOracleConfig {
         oracle_set: vec![fixture["verification_receipt"]["oracle_id"].as_str().unwrap().into()],
         oracle_quorum: 1,
@@ -646,7 +659,7 @@ async fn forecast_cli_payloads_are_accepted_by_routes() {
     let app = test::init_service(test_app(state.clone())).await;
     for (route, body) in [("commit", commit), ("reveal", reveal)] {
         let request = test::TestRequest::post().uri(&format!("/transactions/forecast/{route}"))
-            .insert_header(bearer(TEST_FORECASTER_TOKEN)).set_json(body).to_request();
+            .insert_header(bearer(CLI_FORECASTER_TOKEN)).set_json(body).to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status(), StatusCode::CREATED, "{route}");
         let body: serde_json::Value = test::read_body_json(response).await;
