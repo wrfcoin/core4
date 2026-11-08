@@ -243,9 +243,10 @@ pub async fn handle_admit(args: &AdmitArgs) -> Result<Value> {
     let signed = NodeBondLifecycle::parse(&tx)
         .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
     let sig = Signature::from_bytes(&signed.governance_signature)?;
-    ensure!(
+    let admission_public = signer.public_key();
+    ensure!( // secret-leak-ok: verifies a public signature with a public key; the message is a fixed string
         verify_domain_for(
-            &signer.public_key(),
+            &admission_public,
             &signed.signed.authorization,
             &sig,
             &identity,
