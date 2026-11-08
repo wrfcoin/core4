@@ -10,10 +10,11 @@ and an internet connection. No administrator rights are needed.
 
 ## Install
 
-1. Download `wrfcoin-node-<version>-windows-x86_64-setup.exe` and its `SHA256SUMS`.
-   Check the file before you run it, in PowerShell from the download folder:
-   `Get-FileHash .\wrfcoin-node-*-setup.exe -Algorithm SHA256` must print the hash
-   in `SHA256SUMS`. If it does not match, delete the file and do not run it.
+1. Download `wrfcoin-node-<version>-windows-x86_64-setup.exe` and its `SHA256SUMS`
+   into the same folder, from [wrfcoin.com/downloads](https://wrfcoin.com/downloads)
+   or the [releases page](https://github.com/wrfcoin/core4/releases). Check the file
+   before you run it: open PowerShell in that folder and paste
+   [the download check](#check-the-download).
 2. Run the installer. **It is not code-signed yet**, so Windows SmartScreen may show
    "Windows protected your PC". If the hash matched, click **More info**, then
    **Run anyway**. See [If Windows warns you](#if-windows-warns-you).
@@ -23,6 +24,26 @@ and an internet connection. No administrator rights are needed.
 
 The installer puts the program in `%LOCALAPPDATA%\Programs\WRFCoin Node` and adds
 a **WRFCoin Node** folder to the Start menu.
+
+### Check the download
+
+Paste this into PowerShell in the folder that holds the installer and
+`SHA256SUMS`. It finds the installer, computes its SHA-256 and compares it with
+the line for that file in `SHA256SUMS`:
+
+```powershell
+$f = Get-ChildItem .\wrfcoin-node-*-windows-x86_64-setup.exe | Sort-Object LastWriteTime | Select-Object -Last 1
+$want = ((Get-Content .\SHA256SUMS | Where-Object { $_ -match [regex]::Escape($f.Name) + '$' }) -split '\s+')[0]
+$got = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+if ($want -and $got -eq $want) { "OK: $($f.Name) matches SHA256SUMS" } else { "STOP: $($f.Name) does not match SHA256SUMS. Delete it and do not run it." }
+```
+
+It must print `OK`. Anything else (`STOP`, or an error because a file is
+missing) means: do not run the installer. Delete it and download both files
+again. If more than one installer is in the folder, it checks the newest one.
+
+`certutil -hashfile <file> SHA256` works too (in Command Prompt as well); compare
+its output with `SHA256SUMS` by eye.
 
 ### If Windows warns you
 
@@ -315,18 +336,30 @@ network `testnet`.
 ## Which version am I running? Updating
 
 The status page shows the version under **Node version**, for example
-`v0.5.0 (68f6d291)`: the version number, then the commit the installer was built
+`v0.5.0 (63504a2a)`: the version number, then the commit the installer was built
 from. The same pair is in the installer's file name
-(`wrfcoin-node-0.5.0-g68f6d291-windows-x86_64-setup.exe`) and in Settings → Apps →
-**WRFCoin Node**. Each Windows preview raises the version: preview 5 is 0.5.0.
-New since preview 4: preview 5 knows the next network features to be scheduled, so update your node
-before they activate.
+(`wrfcoin-node-0.5.0-g63504a2a-windows-x86_64-setup.exe`) and in Settings → Apps →
+**WRFCoin Node**. Each Windows preview raises the version: preview N is 0.N.0. What
+is new in each one is in its notes on the
+[releases page](https://github.com/wrfcoin/core4/releases).
 
 **Check for updates** under the version opens wrfcoin.com/downloads, which lists the
 newest installer with its version and SHA-256. The status page itself never
-contacts anything but this node, so it cannot tell you about an update on its own.
+contacts anything but this node, so it does not know about every new release. It
+does know what the chain itself has scheduled, and says so in a box at the top:
 
-To update: download the new installer, check its hash as in Install, and run it.
+- **Update needed before block N** (amber): the network turns on new rules at
+  block N that this version does not have. The node stops syncing at that block,
+  so update before then. The box says roughly how long is left.
+- **Update needed: this node can no longer follow the chain** (red): that block
+  has passed and the node has stopped following the chain. Update to carry on.
+- **A node release is announced** (blue): a signed upgrade notice names a
+  different release. This version can still follow the chain; updating is optional.
+- **Network change scheduled at block N** (blue): a scheduled change this version
+  already has. Nothing to do.
+
+To update: download the new installer, [check the download](#check-the-download),
+and run it.
 It stops a running node cleanly first, replaces only the program files, and keeps
 your chain data, keys and settings in `%LOCALAPPDATA%\WRFCoin`. Then start the node
 from the Start menu; it continues from where it stopped.
