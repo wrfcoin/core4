@@ -288,7 +288,7 @@ mod tests {
         path
     }
     fn write_key(dir: &Dir, seed: u8) -> PathBuf {
-        let path = dir.0.join(format!("k{seed}.key"));
+        let path = dir.0.join(format!("k{seed}.key")); // secret-leak-ok: test; a file name from a fixed throwaway seed number, no key bytes
         fs::write(&path, key(seed).to_hex()).unwrap();
         path
     }
@@ -343,7 +343,7 @@ mod tests {
             let out = d.0.join(format!("{name}.json"));
             let summary = sign(&row_file, &genesis(), &write_key(&d, seed), &out).unwrap();
             assert_eq!(summary["signed"], true);
-            assert_eq!(summary["registrar_pubkey"], pk_hex(seed));
+            assert_eq!(summary["registrar_pubkey"], pk_hex(seed)); // secret-leak-ok: test; compares public keys of throwaway test seeds
             let tx = tx_of(&out);
             assert!(tx.verify_station_registrar_authorization_with_domain(
                 CHAIN,
@@ -359,7 +359,7 @@ mod tests {
             let p: StationRegistrationPayload = tx.parse_station_registration().unwrap();
             assert!(p.is_v2());
             assert_eq!(p.expected_nonce, Some(0));
-            assert_eq!(p.auth_pubkey.as_deref(), Some(pk_hex(seed).as_str()));
+            assert_eq!(p.auth_pubkey.as_deref(), Some(pk_hex(seed).as_str())); // secret-leak-ok: test; compares public keys of throwaway test seeds
             assert_eq!(p.station_id, value["station_id"].as_str().unwrap());
             assert_eq!(p.latitude.to_bits(), 46.8_f64.to_bits());
             assert!(p.elevation_meters.is_none());
