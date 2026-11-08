@@ -77,6 +77,56 @@ not hold. A new credit can be missing until the next rebuild. A credit paid duri
 a walk with a commit ID behind the cursor appears on the next walk from the start,
 as with the transactions route.
 
+### Newest first (`order=newest`)
+
+`GET /addresses/{address}/credits?order=newest` returns the same rows, plus
+`payout_height`, newest first: `credit_order` is `payout_height_descending`
+(ties by commit ID descending). `credit_limit` is as above. `credit_after` takes
+only a `credit_next_cursor` from an `order=newest` response; it is opaque, and
+anything else (including a commit-ID cursor from the default order) is a `400
+VALIDATION_ERROR`. Any other `order` value is a 400 too. Without `order` the
+route is exactly as described above.
+
+Example:
+
+```json
+{
+  "address": "0x…",
+  "credit_events": [
+    { "event_id": "contribution:<commit_id>", "to": "0x…",
+      "direction": "received", "amount_base_units": "5000000",
+      "kind": "weather_reward", "settlement": "paid", "payout_height": 31207,
+      "tx_id": null, "sender": null, "from": null, "counterparty": null,
+      "tx_type": null, "block_height": null, "timestamp": null }
+  ],
+  "credit_limit": 50,
+  "credit_next_cursor": "n1.30940.<commit_id>",
+  "credit_order": "payout_height_descending",
+  "credit_keys_examined": 51,
+  "credit_keys_examined_limit": 1000,
+  "index_height": 31210
+}
+```
+
+`payout_height` is the latest block whose `reward_entries` metadata names the
+commit, which is the block that paid it. The index learns it by reading each
+block once (from disk at startup, then each new block), not from state. It is
+null when this node does not hold that block (a node started from a snapshot);
+those credits come after every dated credit, by commit ID descending.
+`block_height` stays null as above, so a client that only reads the old fields
+sees no change.
+
+The cursor is a position `(payout_height, commit_id)`. A credit paid after it
+was handed out has a higher payout height, so it appears at the top of a fresh
+walk and never in, or ahead of, the rest of a walk already under way. A reorg
+of recent blocks re-dates the credits in the replaced blocks. A credit paid in a
+block the index has not scanned yet waits for the next rebuild (about 10
+seconds) rather than being shown undated. On startup the first build also reads
+the stored blocks, so `503 REWARD_INDEX_WARMING` can last longer than before.
+
+Memory is about 270 bytes per indexed credit plus about 150 bytes per address
+(each commit ID is stored once and shared), so 100,000 credits use about 27 MB.
+
 The response is still incomplete as general wallet history. Achievement,
 coinbase and implicit settlement attribution are excluded until a confirmed-paid
 event source exists. Consumers must retain an incomplete-history notice and

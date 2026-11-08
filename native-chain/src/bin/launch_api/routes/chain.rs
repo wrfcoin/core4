@@ -664,6 +664,8 @@ pub struct AddressTransactionsQuery {
 pub struct AddressCreditsQuery {
     pub credit_limit: Option<usize>,
     pub credit_after: Option<String>,
+    /// `newest` for payout height descending; absent for commit id order.
+    pub order: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1001,6 +1003,20 @@ pub async fn get_address_credits(
             "The reward index is still being built; retry shortly",
         );
     };
+    match query.order.as_deref() {
+        None => {},
+        Some("newest") => {
+            return address_credits_newest(&req, &state, &index, address, credit_limit, after).await;
+        },
+        Some(_) => {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "order must be newest or absent",
+            );
+        },
+    }
     let page = {
         let blockchain = state.blockchain.read().await;
         index.page(&blockchain.state, address, credit_limit, after)
@@ -1016,6 +1032,58 @@ pub async fn get_address_credits(
             "credit_limit": credit_limit,
             "credit_next_cursor": page.next_cursor,
             "credit_order": "commit_id_ascending",
+            "credit_keys_examined": page.keys_examined,
+            "credit_keys_examined_limit": crate::state::reward_index::MAX_KEYS_EXAMINED_PER_READ,
+            "index_height": index.height(),
+        }),
+    )
+}
+
+/// `order=newest` on the credits route: payout height descending, with an
+/// opaque cursor that later blocks cannot move.
+async fn address_credits_newest(
+    req: &HttpRequest,
+    state: &web::Data<AppState>,
+    index: &crate::state::reward_index::PublishedIndex,
+    address: Address,
+    credit_limit: usize,
+    after: Option<&str>,
+) -> HttpResponse {
+    use crate::state::reward_index::decode_newest_cursor;
+    let after = match after.map(decode_newest_cursor).transpose() {
+        Ok(after) => after,
+        Err(_) => {
+            return envelope_error(
+                req,
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "credit_after is not a cursor from order=newest",
+            );
+        },
+    };
+    let page = {
+        let blockchain = state.blockchain.read().await;
+        index.newest_page(&blockchain.state, address, credit_limit, after)
+    };
+    // Allocate credit JSON after dropping the chain read guard.
+    let credit_events: Vec<_> = page
+        .records
+        .into_iter()
+        .map(|(record, payout_height)| {
+            let mut event = paid_credit_summary(record);
+            event["payout_height"] = json!(payout_height);
+            event
+        })
+        .collect();
+    envelope_success(
+        req,
+        StatusCode::OK,
+        json!({
+            "address": address.to_string(),
+            "credit_events": credit_events,
+            "credit_limit": credit_limit,
+            "credit_next_cursor": page.next_cursor,
+            "credit_order": "payout_height_descending",
             "credit_keys_examined": page.keys_examined,
             "credit_keys_examined_limit": crate::state::reward_index::MAX_KEYS_EXAMINED_PER_READ,
             "index_height": index.height(),
