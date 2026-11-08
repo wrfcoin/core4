@@ -18,6 +18,7 @@ pub mod monitor;
 pub mod nft;
 pub mod node;
 pub mod node_bond;
+pub mod node_bond_admit;
 pub mod node_bond_update;
 pub mod node_deposit;
 pub mod node_fraud;
