@@ -621,6 +621,11 @@ pub enum P2pCommand {
         peer_id: PeerId,
         reason: String,
     },
+    /// Test-only: drop this node's own blocks-topic subscription while every
+    /// connection stays up, so `ChainStatus` and `NewBlock` gossip silently
+    /// stop arriving. Models the 2026-11-08 ws stall.
+    #[cfg(test)]
+    TestDropChainGossipSubscription,
     Shutdown,
 }
 
@@ -2333,6 +2338,10 @@ async fn event_loop(
                         info!("P2P evicting graylisted peer {peer_id}: reason={reason}");
                         swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
                         let _ = swarm.disconnect_peer_id(peer_id);
+                    }
+                    #[cfg(test)]
+                    Some(P2pCommand::TestDropChainGossipSubscription) => {
+                        let _ = swarm.behaviour_mut().gossipsub.unsubscribe(tm.blocks());
                     }
                     Some(P2pCommand::Shutdown) => {
                         info!("Shutdown command received, exiting event loop");
