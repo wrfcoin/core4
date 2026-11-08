@@ -472,6 +472,10 @@
     },
     {
       "package": "wrfcoin-p2p",
+      "target": "fork_backtrack_reconverge"
+    },
+    {
+      "package": "wrfcoin-p2p",
       "target": "missing_genesis_parent_regression"
     },
     {
@@ -884,6 +888,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "node_rejection_atomicity_3535"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_tx_mempool"
     },
     {
       "package": "wrfcoin-shared-protocol",

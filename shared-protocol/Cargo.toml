@@ -9,9 +9,17 @@ edition = "2021"
 integration-guard = ["wrf-primitives/integration-guard"]
 default = []
 test-support = []
-# Consensus test hooks (e.g. pinning a station registrar key in-process).
-# Enabled ONLY from this crate's own [dev-dependencies]: no shipped crate may
-# enable it, so a node binary can never install a test pin.
+# Test-only switch that turns the producer's node-service / reveal separation
+# guard off for a process (`disable_node_service_guard_for_tests`). Enabled
+# ONLY from native-chain's [dev-dependencies]; never from a normal dependency,
+# so no shipped binary carries it.
+node-service-guard-test-switch = []
+# Test-only process-wide consensus hooks: `install_schedule_extension_authority_for_tests`,
+# `install_bond_admission_pin_for_tests`, `install_station_registrar_pin_for_tests` and the
+# other in-process test pins. Enabled ONLY from [dev-dependencies]
+# (this crate's own, native-chain's and the CLI's); never from a normal dependency, so
+# no shipped binary carries them. `test-support` does not imply it: p2p enables
+# `test-support` as a normal dependency, so that feature reaches the node binary.
 consensus-test-hooks = []
 # HSM (PKCS#11) block-signer impl. Required for release builds; excluded
 # from default to keep the minimal build surface small and to allow tests

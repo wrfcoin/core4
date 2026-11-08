@@ -84,6 +84,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "send_allowlist",
     "passkey_bond_payout",
     "bond_admission_key",
+    "streak_replay_recipient_parity",
     "station_registrar_key",
 ];
 
@@ -337,6 +338,7 @@ mod tests {
                 "send_allowlist",
                 "passkey_bond_payout",
                 "bond_admission_key",
+                "streak_replay_recipient_parity",
                 "station_registrar_key"
             ]
         );
