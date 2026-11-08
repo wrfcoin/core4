@@ -648,13 +648,13 @@ mod tests {
         let peer_id = peer.public().to_peer_id().to_string();
         assert_eq!(
             peer_id,
-            "12D3KooWJWoaqZhDaoEFshF7Rh1bpY9ohihFhzcW6d69Lr2NASuq"
+            "12D3KooWJWoaqZhDaoEFshF7Rh1bpY9ohihFhzcW6d69Lr2NASuq" // pragma: allowlist secret -- public peer id of a synthetic test seed
         );
         let addr = format!("/ip4/203.0.113.7/tcp/9000/p2p/{peer_id}");
         let message = admission_peer_message("888", "testnet", &"ab".repeat(32), &addr).unwrap();
         assert_eq!(
             hex::encode(peer.sign(&message).unwrap()),
-            "07fb6838d507d91edb0a9ab6f4b5df81b9be5f26d67d32bbda883cb1ac4f49ebbc1290f4ef89e34017ae85d6cdc26a566ccb406a6461af8684d560bab994f308"
+            "07fb6838d507d91edb0a9ab6f4b5df81b9be5f26d67d32bbda883cb1ac4f49ebbc1290f4ef89e34017ae85d6cdc26a566ccb406a6461af8684d560bab994f308" // pragma: allowlist secret -- public signature, synthetic test vector
         );
     }
 
