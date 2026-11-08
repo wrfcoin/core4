@@ -3911,6 +3911,42 @@ impl Transaction {
         )
     }
 
+    /// Offline (CLI) form of the `station_registrar_key` path in
+    /// [`Self::station_registration_authority_at_height`]: is this tx signed
+    /// by a key pinned for `genesis_hash` (the f64 preimage, as before
+    /// `station_coordinates_fixed_point`), with a valid owner proof, and
+    /// inside the registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`])?
+    /// The same predicate and the same rule function consensus runs, minus the
+    /// height gate and the node's installed chain authority. No node calls it.
+    pub fn verify_station_registrar_authorization_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        genesis_hash: &str,
+    ) -> bool {
+        let registrar_keys =
+            crate::governance::schedule_extension::station_registrar_keys(genesis_hash);
+        if registrar_keys.is_empty() {
+            return false;
+        }
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.contains(&key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_registrar,
+        ) {
+            return false;
+        }
+        self.parse_station_registration().is_some_and(|payload| {
+            crate::consensus::station_registrar::registrar_shape_refusal(&payload, false).is_none()
+        })
+    }
+
     /// `authorized` decides which `auth_pubkey`s may sign: the oracle-governance
     /// allowlist, or (`station_registrar_key`) the registrar keys in force.
     fn verify_station_registration_authorization_for(
