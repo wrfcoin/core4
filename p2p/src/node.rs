@@ -1594,30 +1594,31 @@ async fn event_loop(
                             ..
                         },
                     )) if watchdog_probes.contains_key(&request_id) => {
-                        let peer = watchdog_probes.remove(&request_id).expect("checked above");
-                        let answer = probe_answer(&response);
-                        on_watchdog_probe_answer(
-                            &mut gossip_watchdog,
-                            &mut swarm,
-                            &tm,
-                            &metrics,
-                            peer,
-                            answer,
-                        );
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                probe_answer(&response),
+                            );
+                        }
                     }
                     SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BlockSync(
                         request_response::Event::OutboundFailure { request_id, error, .. },
                     )) if watchdog_probes.contains_key(&request_id) => {
-                        let peer = watchdog_probes.remove(&request_id).expect("checked above");
-                        debug!("Gossip-silence probe to {peer} failed: {error}");
-                        on_watchdog_probe_answer(
-                            &mut gossip_watchdog,
-                            &mut swarm,
-                            &tm,
-                            &metrics,
-                            peer,
-                            crate::gossip_watchdog::ProbeAnswer::Failed,
-                        );
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            debug!("Gossip-silence probe to {peer} failed: {error}");
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                crate::gossip_watchdog::ProbeAnswer::Failed,
+                            );
+                        }
                     }
                     SwarmEvent::Behaviour(behaviour_event) => {
                         handle_behaviour_event(
