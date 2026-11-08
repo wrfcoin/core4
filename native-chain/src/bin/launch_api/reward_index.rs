@@ -323,16 +323,16 @@ impl PayoutHeights {
     fn rewind(&mut self, chain: &Blockchain) {
         let window_full = self.recent.len() >= RECENT_SCAN_WINDOW;
         let mut rewound_below: Option<u64> = None;
-        while let Some((&height, (hash, _))) = self.recent.last_key_value() {
+        while let Some((height, (hash, commits))) = self.recent.pop_last() {
             // An evicted block is older than any reorg the chain accepts.
             let kept = height <= chain.height
                 && chain
                     .block_at_height(height)
-                    .is_none_or(|block| block.hash == *hash);
+                    .is_none_or(|block| block.hash == hash);
             if kept {
+                self.recent.insert(height, (hash, commits));
                 break;
             }
-            let (_, (_, commits)) = self.recent.pop_last().expect("checked above");
             for commit in commits {
                 if self.by_commit.get(&commit) == Some(&height) {
                     self.by_commit.remove(&commit);
