@@ -441,8 +441,12 @@ pub fn require_forecaster_bound_to_bearer(
             req,
             StatusCode::FORBIDDEN,
             "FORECASTER_BEARER_UNBOUND",
-            "forecast submissions are wallet-scoped: this bearer carries no wallet claim \
-             (bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS to the token, or use an operator bearer)",
+            "forecast submissions are wallet-scoped: this bearer carries no wallet claim. \
+             Sign the forecast with the forecaster's own key (auth_pubkey and auth_signature), \
+             or use an operator bearer. Bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS only on a \
+             Contributor token that serves that one wallet: on a token shared by many \
+             contributors (a backend relaying phones) it makes them all one identity, \
+             capped at 8 stations by default",
         )),
     }
 }
