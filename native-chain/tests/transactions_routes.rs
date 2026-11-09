@@ -633,12 +633,25 @@ async fn forecast_cli_payloads_are_accepted_by_routes() {
         (&receipt, &fixture["verification_receipt"])] {
         std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     }
-    let input = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
+    // The CLI signs only for the forecaster its key controls (#3290), so this
+    // test's forecaster is the signer's address, and a Contributor bearer is
+    // bound to that wallet.
+    let forecaster = wrfcoin_native_chain::common::types::Address::from_public_key(
+        &PublicKey::from_private_key(&signer)).to_hex();
+    let input = ForecastInput { forecaster: forecaster.clone(), station_id: "station-forecast".into(),
         data_file: data, nonce: "reveal-nonce".into(), timestamp: fixture["timestamp"].as_i64().unwrap() };
     let commit = commit_body(&input, &signer, &signing_chain_id(), &signing_network_id()).unwrap();
     let reveal = reveal_body(&input, &manifest, Some(&receipt)).unwrap();
     assert_eq!(commit["commit_hash"], reveal["commit_hash"]);
-    let state = forecast_state();
+    const CLI_FORECASTER_TOKEN: &str = "test-cli-forecaster-token";
+    let tokens = {
+        use wrfcoin_native_chain::security::api_auth::Identity;
+        let mut store = (*forecast_token_store()).clone();
+        store.insert(CLI_FORECASTER_TOKEN.to_string(),
+            AuthPrincipal::with_identity(ApiRole::Contributor, Identity::wallet(&forecaster)));
+        Arc::new(store)
+    };
+    let state = test_state_with_tokens(None, tokens);
     state.blockchain.write().await.apply_state_transition(StateTransition::SetOracleConfig {
         oracle_set: vec![fixture["verification_receipt"]["oracle_id"].as_str().unwrap().into()],
         oracle_quorum: 1,
@@ -646,7 +659,7 @@ async fn forecast_cli_payloads_are_accepted_by_routes() {
     let app = test::init_service(test_app(state.clone())).await;
     for (route, body) in [("commit", commit), ("reveal", reveal)] {
         let request = test::TestRequest::post().uri(&format!("/transactions/forecast/{route}"))
-            .insert_header(bearer(TEST_FORECASTER_TOKEN)).set_json(body).to_request();
+            .insert_header(bearer(CLI_FORECASTER_TOKEN)).set_json(body).to_request();
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status(), StatusCode::CREATED, "{route}");
         let body: serde_json::Value = test::read_body_json(response).await;
@@ -712,6 +725,14 @@ async fn forecast_routes_bind_the_forecaster_to_the_bearer_wallet() {
             Some(code) => {
                 let error: serde_json::Value = test::read_body_json(resp).await;
                 assert!(error.to_string().contains(code), "{label}: {error}");
+                if code == "FORECASTER_BEARER_UNBOUND" {
+                    // The hint must point at the key-signed relay and warn that a wallet
+                    // claim on a shared Contributor token merges every contributor into
+                    // one Sybil identity (8-station cap), never just say "bind it".
+                    let text = error.to_string();
+                    assert!(text.contains("auth_signature"), "{label}: {error}");
+                    assert!(text.contains("one identity") && text.contains("8 stations"), "{label}: {error}");
+                }
                 assert_eq!(enqueued, 0, "{label} must not enqueue");
             },
         }
@@ -933,6 +954,307 @@ async fn forecast_reveal_without_receipt_retains_baseline_submission() {
         .uri("/transactions/forecast/reveal").insert_header(bearer(TEST_FORECASTER_TOKEN))
         .set_json(body).to_request()).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+/// Key-bound relay fixture: a forecaster whose address is derived from its
+/// own key, a commit signed by that key, and the matching reveal. The reveal
+/// carries the commit's `auth_pubkey`/`auth_signature`, which is how a relay
+/// (one shared, unbound Contributor bearer) shows the forecaster's consent.
+/// Returns (commit body, reveal body, canonical forecaster address).
+fn relayed_forecast_fixture(seed: u64) -> (serde_json::Value, serde_json::Value, String) {
+    relayed_forecast_fixture_n(seed, 0)
+}
+
+/// [`relayed_forecast_fixture`] for the `n`th distinct forecast by the same key.
+fn relayed_forecast_fixture_n(seed: u64, n: u64) -> (serde_json::Value, serde_json::Value, String) {
+    use wrfcoin_native_chain::blockchain::transaction::{CommitPayload, Transaction};
+    use wrfcoin_native_chain::common::types::Address;
+    let (_, base_reveal, _) = forecast_route_fixture();
+    let sk = PrivateKey::generate(&mut StdRng::seed_from_u64(seed));
+    let forecaster = Address::from_public_key(&PublicKey::from_private_key(&sk)).to_hex();
+    let timestamp = chrono::Utc::now().timestamp();
+    let data = serde_json::json!({"temperature": 21.5, "seed": seed, "n": n});
+    let nonce = format!("relay-nonce-{seed}-{n}");
+    let commit_id = Transaction::compute_commit_id(&data, &nonce, "station-forecast", timestamp, "forecast");
+    let mut commit = CommitPayload {
+        commit_id: commit_id.clone(), station_id: "station-forecast".into(), timestamp,
+        contribution_type: "forecast".into(), auth_pubkey: None, auth_signature: None,
+    };
+    commit.sign_authorization(&sk);
+    let commit_json = serde_json::json!({
+        "forecaster": forecaster, "station_id": "station-forecast", "commit_hash": commit_id,
+        "auth_pubkey": commit.auth_pubkey, "auth_signature": commit.auth_signature,
+    });
+    let reveal_json = serde_json::json!({
+        "forecaster": forecaster, "station_id": "station-forecast", "commit_hash": commit_id,
+        "payload": data, "nonce": nonce, "timestamp": timestamp,
+        "manifest": base_reveal["manifest"],
+        "auth_pubkey": commit.auth_pubkey, "auth_signature": commit.auth_signature,
+    });
+    (commit_json, reveal_json, forecaster)
+}
+
+async fn post_forecast(
+    state: &web::Data<state::AppState>,
+    route: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().app_data(state.clone())
+        .configure(routes::configure_launch_routes)).await;
+    let resp = test::call_service(&app, test::TestRequest::post()
+        .uri(&format!("/transactions/forecast/{route}")).insert_header(bearer(token))
+        .set_json(body).to_request()).await;
+    let status = resp.status();
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    (status, body)
+}
+
+/// A relay with an unbound Contributor bearer (and a bearer bound to some
+/// other wallet) can submit a commit and reveal that the forecaster's own key
+/// signed. Both transactions are sent as the key's address, and the commit
+/// satisfies the forecaster key binding rule used at block validation.
+#[actix_web::test]
+async fn relayed_forecast_signed_by_forecaster_key_is_accepted() {
+    use wrfcoin_native_chain::blockchain::transaction::TransactionType;
+    for (seed, token) in [(81_001, TEST_CONTRIBUTOR_TOKEN), (81_002, TEST_FORECASTER_TOKEN)] {
+        let (mut commit, mut reveal, forecaster) = relayed_forecast_fixture(seed);
+        // Any hex spelling of the address resolves to one canonical sender.
+        let upper = format!("0x{}", forecaster.trim_start_matches("0x").to_ascii_uppercase());
+        commit["forecaster"] = serde_json::json!(upper);
+        reveal["forecaster"] = serde_json::json!(forecaster.trim_start_matches("0x"));
+        let state = forecast_state();
+        let (status, body) = post_forecast(&state, "commit", token, &commit).await;
+        assert_eq!(status, StatusCode::CREATED, "commit via {token}: {body}");
+        let (status, body) = post_forecast(&state, "reveal", token, &reveal).await;
+        assert_eq!(status, StatusCode::CREATED, "reveal via {token}: {body}");
+        let txs = state.mempool.read().await.get_all_transactions();
+        assert_eq!(txs.len(), 2);
+        for tx in &txs {
+            assert_eq!(tx.sender_address.to_hex(), forecaster);
+            assert!(tx.outputs.iter().all(|o| o.address == forecaster), "{:?}", tx.outputs);
+        }
+        let commit_tx = txs.iter().find(|tx| tx.tx_type == TransactionType::ForecastCommit).unwrap();
+        assert!(commit_tx.forecast_commit_key_bound(), "relayed commit must be key-bound");
+        assert!(txs.iter().any(|tx| tx.tx_type == TransactionType::ForecastReveal));
+    }
+}
+
+/// A relayed submission is refused when the key does not belong to the
+/// forecaster it names, or when the signature is not the forecaster's.
+#[actix_web::test]
+async fn relayed_forecast_refused_when_key_does_not_match_forecaster() {
+    let (commit, reveal, _) = relayed_forecast_fixture(82_001);
+    let (_, _, other_forecaster) = relayed_forecast_fixture(82_002);
+    let (other_commit, _, _) = relayed_forecast_fixture(82_003);
+    for (route, base) in [("commit", &commit), ("reveal", &reveal)] {
+        // Valid signature, but by a key whose address is not the forecaster.
+        let mut wrong_forecaster = base.clone();
+        wrong_forecaster["forecaster"] = serde_json::json!(other_forecaster);
+        // The forecaster's own pubkey with a signature made by another key.
+        let mut foreign_signature = base.clone();
+        foreign_signature["auth_signature"] = other_commit["auth_signature"].clone();
+        // No key at all: nothing binds the forecaster to an unbound bearer.
+        let mut no_key = base.clone();
+        no_key.as_object_mut().unwrap().remove("auth_pubkey");
+        let mut no_signature = base.clone();
+        no_signature.as_object_mut().unwrap().remove("auth_signature");
+        let cases = [
+            ("wrong_forecaster", wrong_forecaster, StatusCode::FORBIDDEN, "FORECASTER_BEARER_UNBOUND"),
+            ("foreign_signature", foreign_signature, StatusCode::UNPROCESSABLE_ENTITY, "INVALID_FORECAST_AUTHORIZATION"),
+            ("no_key", no_key, StatusCode::FORBIDDEN, "FORECASTER_BEARER_UNBOUND"),
+            ("no_signature", no_signature, StatusCode::UNPROCESSABLE_ENTITY, "INVALID_FORECAST_AUTHORIZATION"),
+        ];
+        for (label, body, expected, code) in cases {
+            let state = forecast_state();
+            let (status, error) = post_forecast(&state, route, TEST_CONTRIBUTOR_TOKEN, &body).await;
+            assert_eq!(status, expected, "{route}/{label}: {error}");
+            assert!(error.to_string().contains(code), "{route}/{label}: {error}");
+            assert!(state.mempool.read().await.get_all_transactions().is_empty(), "{route}/{label} must not enqueue");
+        }
+    }
+    // A bearer bound to another wallet keeps its own refusal code.
+    let mut wrong = commit.clone();
+    wrong["forecaster"] = serde_json::json!(other_forecaster);
+    let state = forecast_state();
+    let (status, error) = post_forecast(&state, "commit", TEST_FORECASTER_TOKEN, &wrong).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(error.to_string().contains("FORECASTER_NOT_BOUND_TO_BEARER"), "{error}");
+}
+
+/// The relayed submission is bound to one commit id: a signature over a
+/// different commit id is refused on commit, and a reveal whose data does
+/// not re-derive the signed commit id is refused on reveal.
+#[actix_web::test]
+async fn relayed_forecast_refused_when_commit_id_does_not_rederive() {
+    let (commit, reveal, _) = relayed_forecast_fixture(83_001);
+    let (other_commit, _, _) = relayed_forecast_fixture(83_002);
+
+    // Commit: the signature covers this commit_hash, so swapping it fails.
+    let mut swapped = commit.clone();
+    swapped["commit_hash"] = other_commit["commit_hash"].clone();
+    let state = forecast_state();
+    let (status, error) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &swapped).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+    assert!(error.to_string().contains("INVALID_FORECAST_AUTHORIZATION"), "{error}");
+    assert!(state.mempool.read().await.get_all_transactions().is_empty());
+
+    // Reveal: signed commit id, but the revealed data or nonce changed.
+    for (label, field, value) in [
+        ("payload", "payload", serde_json::json!({"temperature": 99.0})),
+        ("nonce", "nonce", serde_json::json!("tampered-nonce")),
+    ] {
+        let mut tampered = reveal.clone();
+        tampered[field] = value;
+        let state = forecast_state();
+        let (status, error) = post_forecast(&state, "reveal", TEST_CONTRIBUTOR_TOKEN, &tampered).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{label}: {error}");
+        assert!(error.to_string().contains("does not match commit_hash"), "{label}: {error}");
+        assert!(state.mempool.read().await.get_all_transactions().is_empty(), "{label} must not enqueue");
+    }
+}
+
+/// The direct path is unchanged: a wallet-bound bearer still submits for its
+/// own wallet under the bearer's claim, whatever key signed, and the reveal
+/// needs no auth fields.
+#[actix_web::test]
+async fn direct_forecast_path_is_unchanged_by_key_bound_relay() {
+    let (commit, reveal, _) = forecast_route_fixture();
+    let mut reveal = reveal;
+    reveal.as_object_mut().unwrap().remove("verification_receipt");
+    assert!(reveal.get("auth_pubkey").is_none());
+    let state = forecast_state();
+    let (status, body) = post_forecast(&state, "commit", TEST_FORECASTER_TOKEN, &commit).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = post_forecast(&state, "reveal", TEST_FORECASTER_TOKEN, &reveal).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for tx in state.mempool.read().await.get_all_transactions() {
+        assert_eq!(tx.outputs[0].address, TEST_FORECASTER_WALLET);
+    }
+}
+
+/// A second Contributor bearer with no wallet claim: another relay.
+const TEST_RELAY_B_TOKEN: &str = "test-relay-b-token";
+/// A Contributor bearer bound to the relayed fixture's forecaster (seed 84_000).
+const TEST_RELAYED_OWNER_TOKEN: &str = "test-relayed-owner-token";
+
+/// Forecast state with two relay bearers, a bearer bound to the forecaster of
+/// `relayed_forecast_fixture_n(84_000, _)`, and a forecast quota of `limit`.
+async fn relay_quota_state(limit: usize) -> (web::Data<state::AppState>, String) {
+    use wrfcoin_native_chain::security::api_auth::Identity;
+    let (_, _, forecaster) = relayed_forecast_fixture_n(84_000, 0);
+    let mut store = (*forecast_token_store()).clone();
+    store.insert(TEST_RELAY_B_TOKEN.to_string(), AuthPrincipal::with_role(ApiRole::Contributor));
+    store.insert(TEST_RELAYED_OWNER_TOKEN.to_string(),
+        AuthPrincipal::with_identity(ApiRole::Contributor, Identity::wallet(&forecaster)));
+    let state = test_state_with_tokens(None, Arc::new(store));
+    state.forecast_quotas.write().await.config.limit = limit;
+    (state, forecaster)
+}
+
+/// Relayed submissions spend the submitting bearer's budget, never the
+/// forecaster's: resending an accepted authorization from another bearer is
+/// refused as a duplicate without charging anyone, the forecaster's own
+/// (direct) budget stays whole, and each relay bearer has its own budget.
+#[actix_web::test]
+async fn relayed_replay_from_another_bearer_does_not_spend_forecaster_quota() {
+    let (state, _) = relay_quota_state(2).await;
+    let commit = |n| relayed_forecast_fixture_n(84_000, n).0;
+    let (status, body) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &commit(0)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for token in [TEST_RELAY_B_TOKEN, TEST_CONTRIBUTOR_TOKEN] {
+        for _ in 0..5 {
+            let (status, body) = post_forecast(&state, "commit", token, &commit(0)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{token}: {body}");
+            assert!(body.to_string().contains("FORECAST_COMMIT_DUPLICATE"), "{body}");
+        }
+    }
+    // The forecaster's own bearer (direct path) still has its whole budget,
+    // and is still charged to the forecaster as before.
+    for n in 1..=2 {
+        let (status, body) = post_forecast(&state, "commit", TEST_RELAYED_OWNER_TOKEN, &commit(n)).await;
+        assert_eq!(status, StatusCode::CREATED, "direct {n}: {body}");
+    }
+    let (status, _) = post_forecast(&state, "commit", TEST_RELAYED_OWNER_TOKEN, &commit(3)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "direct budget is the forecaster's");
+    // Relay B spent nothing on its replays: its full budget is still there.
+    for n in 10..=11 {
+        let (status, body) = post_forecast(&state, "commit", TEST_RELAY_B_TOKEN, &commit(n)).await;
+        assert_eq!(status, StatusCode::CREATED, "relay B {n}: {body}");
+    }
+    let (status, _) = post_forecast(&state, "commit", TEST_RELAY_B_TOKEN, &commit(12)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "relay B's own budget");
+    // Relay A spent one (its accepted commit) and has one left.
+    let (status, body) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &commit(20)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &commit(21)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A relayed commit whose id is already on chain (committed or revealed) is
+/// refused before anything is charged.
+#[actix_web::test]
+async fn relayed_duplicate_commit_id_is_refused_without_charging() {
+    let (state, _) = relay_quota_state(1).await;
+    let (pending, _, _) = relayed_forecast_fixture_n(84_000, 0);
+    let (revealed, _, _) = relayed_forecast_fixture_n(84_000, 1);
+    {
+        let mut chain = state.blockchain.write().await;
+        let record = |id: &str| CommitRecord {
+            commit_id: id.to_string(), station_id: "station-forecast".into(),
+            contribution_type: "forecast".into(), provenance_class: Default::default(),
+            committed_at: 1, commit_expires_at: 1_000, reveal_expires_at: 2_000,
+        };
+        let id = pending["commit_hash"].as_str().unwrap();
+        chain.state.pending_commits.insert(id.to_string(), record(id));
+        let id = revealed["commit_hash"].as_str().unwrap().to_string();
+        let reveal_record: wrfcoin_shared_protocol::contributions::commit_reveal::RevealRecord =
+            serde_json::from_value(serde_json::json!({
+                "commit_id": id, "station_id": "station-forecast", "revealed_at": 2, "reveal_id": "r",
+            })).unwrap_or_else(|e| panic!("RevealRecord fixture: {e}"));
+        chain.state.pending_reveals.insert(id, reveal_record);
+    }
+    for body in [&pending, &revealed] {
+        for _ in 0..3 {
+            let (status, error) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{error}");
+            assert!(error.to_string().contains("FORECAST_COMMIT_DUPLICATE"), "{error}");
+        }
+    }
+    assert!(state.mempool.read().await.get_all_transactions().is_empty());
+    // Nothing was charged: the bearer's single-request budget is intact.
+    let (fresh, _, _) = relayed_forecast_fixture_n(84_000, 2);
+    let (status, body) = post_forecast(&state, "commit", TEST_CONTRIBUTOR_TOKEN, &fresh).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A relayed reveal whose data does not re-derive its commit_hash (or that
+/// omits the timestamp) is refused before anything is charged; a relayed
+/// reveal already pending is refused as a duplicate, also uncharged.
+#[actix_web::test]
+async fn relayed_reveal_that_does_not_rederive_charges_nothing() {
+    let (state, _) = relay_quota_state(1).await;
+    let (_, reveal, _) = relayed_forecast_fixture_n(84_000, 0);
+    let mut tampered = reveal.clone();
+    tampered["payload"] = serde_json::json!({"temperature": -40.0});
+    let mut untimed = reveal.clone();
+    untimed.as_object_mut().unwrap().remove("timestamp");
+    for body in [&tampered, &tampered, &tampered, &untimed, &untimed] {
+        let (status, error) = post_forecast(&state, "reveal", TEST_CONTRIBUTOR_TOKEN, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        assert!(error.to_string().contains("does not match commit_hash"), "{error}");
+    }
+    let (status, body) = post_forecast(&state, "reveal", TEST_CONTRIBUTOR_TOKEN, &reveal).await;
+    assert_eq!(status, StatusCode::CREATED, "budget intact: {body}");
+    // Resending the accepted reveal from another relay: duplicate, uncharged.
+    for _ in 0..3 {
+        let (status, error) = post_forecast(&state, "reveal", TEST_RELAY_B_TOKEN, &reveal).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{error}");
+        assert!(error.to_string().contains("FORECAST_REVEAL_DUPLICATE"), "{error}");
+    }
+    let (_, other, _) = relayed_forecast_fixture_n(84_000, 1);
+    let (status, body) = post_forecast(&state, "reveal", TEST_RELAY_B_TOKEN, &other).await;
+    assert_eq!(status, StatusCode::CREATED, "relay B budget intact: {body}");
 }
 
 /// #2456 — the per-commit reward-evidence read model is fail-closed: every

@@ -485,6 +485,20 @@ pub struct P2pConfig {
     /// Parsed from `WRFCOIN_P2P_BOOTSTRAP_REDIAL_MAX_BACKOFF_SECS` (default: 300).
     pub bootstrap_redial_max_backoff: Duration,
 
+    // -- Silent-gossip watchdog ------------------------------------------------
+    /// How long the node may go without any `ChainStatus` or `NewBlock` gossip
+    /// from its connected peers before it probes them directly over block sync.
+    /// Peers advertise `ChainStatus` every ~block_time/6 (about 13 s on chain
+    /// 888), so five minutes of nothing means gossip has stopped, not that the
+    /// chain is slow. `0` disables the watchdog.
+    /// Parsed from `WRFCOIN_P2P_GOSSIP_SILENCE_SECS` (default: 300).
+    pub gossip_silence_timeout: Duration,
+
+    /// How long a silence probe waits for an answer before the node gives up
+    /// on that connection, disconnects it and lets bootstrap redial rebuild it.
+    /// Parsed from `WRFCOIN_P2P_GOSSIP_PROBE_TIMEOUT_SECS` (default: 60).
+    pub gossip_probe_timeout: Duration,
+
     /// What this node is for (#2120). Defaults to [`NodeRole::Public`].
     pub role: NodeRole,
 
@@ -616,6 +630,14 @@ impl Default for P2pConfig {
             bootstrap_redial_max_backoff: Duration::from_secs(env_u64(
                 "WRFCOIN_P2P_BOOTSTRAP_REDIAL_MAX_BACKOFF_SECS",
                 300,
+            )),
+            gossip_silence_timeout: Duration::from_secs(env_u64(
+                "WRFCOIN_P2P_GOSSIP_SILENCE_SECS",
+                300,
+            )),
+            gossip_probe_timeout: Duration::from_secs(env_u64(
+                "WRFCOIN_P2P_GOSSIP_PROBE_TIMEOUT_SECS",
+                60,
             )),
             // #2120: Public + no interfaces + no allowlist == today's behaviour
             // exactly. Roles are opt-in; see NodeRole's docs for why the default

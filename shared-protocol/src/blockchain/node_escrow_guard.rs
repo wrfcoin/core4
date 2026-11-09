@@ -127,7 +127,8 @@ impl State {
             },
             ApplyStationRegistration { station }
             | ApplyStationRegistrationWithOwnerConsent { station, .. }
-            | ApplyStationRegistrationV2 { station, .. } => identity(&station.owner_address),
+            | ApplyStationRegistrationV2 { station, .. }
+            | ApplyStationRegistrarRegistration { station, .. } => identity(&station.owner_address),
             ApplyStationOwnerTransfer {
                 to_owner_address, ..
             }

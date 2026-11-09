@@ -45,6 +45,10 @@ pub fn extract_transitions(
         transitions.push(transition);
     }
 
+    // `station_registrar_key`: the same per-block slot as the PoP producer
+    // path, so producer == applier == WAL replay. Inert while inactive.
+    let mut registrar_slot =
+        wrfcoin_shared_protocol::consensus::station_registrar::RegistrarBlockSlot::new();
     for tx in &block.transactions {
         match tx.tx_type {
             TransactionType::NodeFraudReport => {
@@ -260,7 +264,9 @@ pub fn extract_transitions(
                     // The SAME shared step as the PoP producer arm: the
                     // format-vs-activation rule, authorization and the variant
                     // by height, so producer == applier == WAL replay.
-                    if let Some(transition) = tx.station_registration_step(block_height) {
+                    if let Some(transition) =
+                        registrar_slot.admit(tx.station_registration_step(block_height))
+                    {
                         transitions.push(transition);
                     }
                 } else if tx.parse_station_registration().is_none() {
@@ -414,13 +420,23 @@ pub fn extract_transitions(
             .cloned()
     })
     .flatten();
-    let low_quality_streak_transitions = derive_low_quality_streak_transitions(
-        state,
-        block,
-        &governance_transitions,
-        replay_node_service_begin.as_ref(),
-        &launch_transitions,
-    );
+    // From `streak_replay_recipient_parity` the replay is the producer's own
+    // pre-reward state and recipient rule; it implies the node-service begin
+    // above, so `streak_replay_node_service` is not consulted then.
+    let low_quality_streak_transitions = if wrfcoin_shared_protocol::crypto::chain_binding::feature_active(
+        wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::StreakReplayRecipientParity,
+        block_height,
+    ) {
+        derive_low_quality_streak_transitions_from_producer_state(state, block, &governance_transitions)
+    } else {
+        derive_low_quality_streak_transitions(
+            state,
+            block,
+            &governance_transitions,
+            replay_node_service_begin.as_ref(),
+            &launch_transitions,
+        )
+    };
     transitions.extend(governance_transitions);
     transitions.extend(low_quality_streak_transitions);
 
@@ -634,6 +650,104 @@ fn derive_low_quality_streak_transitions(
                 };
                 if replay_state
                     .apply_transition_without_root_recompute(slash.clone())
+                    .is_ok()
+                {
+                    transitions.push(slash);
+                    replay_state.reset_low_quality_streak(&recipient_address);
+                    transitions.push(StateTransition::SetLowQualityStreak {
+                        address: recipient_address,
+                        streak: None,
+                    });
+                }
+            }
+        } else {
+            replay_state.reset_low_quality_streak(&recipient_address);
+            transitions.push(StateTransition::SetLowQualityStreak {
+                address: recipient_address,
+                streak: None,
+            });
+        }
+    }
+
+    transitions
+}
+
+/// `streak_replay_recipient_parity`: the streak transitions the producer's
+/// `process_contribution_rewards` emits, derived from the producer's pre-reward
+/// state (`ProofOfPublishing::pre_reward_state_for_replay`) with the producer's
+/// recipient rule (`ProofOfPublishing::streak_recipient_for_reveal`).
+fn derive_low_quality_streak_transitions_from_producer_state(
+    state: &State,
+    block: &Block,
+    governance_transitions: &[StateTransition],
+) -> Vec<StateTransition> {
+    use wrfcoin_native_chain::consensus::proof_of_publishing::ProofOfPublishing;
+    let (mut replay_state, revealed_commit_ids) =
+        match ProofOfPublishing::pre_reward_state_for_replay(state, block, governance_transitions) {
+            Ok(replayed) => replayed,
+            Err(err) => {
+                log::warn!(
+                    "low-quality-streak replay aborted at block {}: the pre-reward state \
+                     did not replay (error={err:?}); deriving no streak transitions",
+                    block.height
+                );
+                return Vec::new();
+            },
+        };
+    let quorum = replay_state.oracle_quorum.max(1);
+    let quality_policy = replay_state.governance.params.data_quality_policy.clone();
+    let mut transitions = Vec::new();
+    for tx in &block.transactions {
+        if tx.tx_type != TransactionType::ContributionReveal {
+            continue;
+        }
+        let Some(reveal_payload) = tx.parse_reveal_payload() else {
+            continue;
+        };
+        let commit_id = reveal_payload.commit_id.clone();
+        if commit_id.is_empty()
+            || !revealed_commit_ids.contains(&commit_id)
+            || !replay_state
+                .attestations
+                .get(&commit_id)
+                .is_some_and(|set| set.has_quorum(quorum))
+        {
+            continue;
+        }
+        let Some(recipient_address) = ProofOfPublishing::streak_recipient_for_reveal(
+            &replay_state,
+            block.height,
+            tx,
+            &reveal_payload,
+        ) else {
+            continue;
+        };
+        let quality_score = derive_quality_score(
+            tx,
+            replay_state
+                .pending_reveals
+                .get(&commit_id)
+                .and_then(|record| record.quality_score.as_ref()),
+        );
+        let quality_eval = quality_policy.evaluate(quality_score.as_ref());
+
+        if quality_eval.counts_toward_low_quality_streak {
+            let streak = replay_state.increment_low_quality_streak(recipient_address);
+            transitions.push(StateTransition::SetLowQualityStreak {
+                address: recipient_address,
+                streak: Some(streak),
+            });
+            if streak >= quality_policy.low_quality_slash_streak {
+                let slash = StateTransition::Slash {
+                    address: recipient_address,
+                    amount: Balance::new(quality_policy.low_quality_slash_amount),
+                    reason: format!(
+                        "repeated_low_quality:commit={commit_id}:streak={streak}:threshold={}",
+                        quality_policy.low_quality_slash_streak
+                    ),
+                };
+                if replay_state
+                    .apply_transitions_batch(std::iter::once(slash.clone()))
                     .is_ok()
                 {
                     transitions.push(slash);

@@ -485,6 +485,53 @@ pub fn honest_gap_reason(body: &str) -> Option<String> {
     })
 }
 
+/// The refusal's error code and message, if the body has the node's error shape. Only a plain
+/// code and a short line of printable ASCII pass, so a body can't reach the terminal unfiltered.
+fn receipt_refusal_detail(body: &[u8]) -> String {
+    const MAX_MESSAGE_CHARS: usize = 200;
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return String::new();
+    };
+    let code = value["error"]["code"].as_str().unwrap_or_default();
+    let plain_code = !code.is_empty()
+        && code.len() <= 64
+        && code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    if !plain_code {
+        return String::new();
+    }
+    let message = value["error"]["message"].as_str().unwrap_or_default();
+    if message.is_empty()
+        || message.len() > MAX_MESSAGE_CHARS
+        || !message.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+    {
+        return format!(" {code}");
+    }
+    format!(" {code}: {message}")
+}
+
+#[cfg(test)]
+mod receipt_refusal_tests {
+    use super::receipt_refusal_detail;
+
+    #[test]
+    fn the_refusal_reason_survives_and_nothing_else_does() {
+        let refusal = br#"{"ok":false,"error":{"code":"NODE_TX_NONCE_USED","message":"this nonce is already used on chain"}}"#;
+        assert_eq!(receipt_refusal_detail(refusal), " NODE_TX_NONCE_USED: this nonce is already used on chain");
+        for hostile in [
+            &br#"not json"#[..],
+            br#"{"token":"abc"}"#,
+            br#"{"error":{"code":"lower case"}}"#,
+            br#"{"error":{"code":"\u001b[31mRED","message":"x"}}"#,
+        ] {
+            assert_eq!(receipt_refusal_detail(hostile), "", "{}", String::from_utf8_lossy(hostile));
+        }
+        let long = format!(r#"{{"error":{{"code":"A","message":"{}"}}}}"#, "x".repeat(500));
+        assert_eq!(receipt_refusal_detail(long.as_bytes()), " A");
+        let escape = br#"{"error":{"code":"A","message":"\u001b[2Jwiped"}}"#;
+        assert_eq!(receipt_refusal_detail(escape), " A");
+    }
+}
+
 impl ApiClient {
     /// Authenticated receipt submission must never forward credentials through redirects.
     pub fn new_without_redirects(config: ApiConfig) -> Result<Self> {
@@ -539,7 +586,8 @@ impl ApiClient {
     }
 
     /// Credential-bearing receipt requests never retry or expose untrusted bodies,
-    /// URLs, transport details, or deserialization diagnostics.
+    /// URLs, transport details, or deserialization diagnostics. A refusal's code and
+    /// message are the one exception, filtered by [`receipt_refusal_detail`].
     pub async fn receipt_request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
         let url = format!("{}{}", self.config.base_url, path);
         let mut request = match method {
@@ -550,10 +598,18 @@ impl ApiClient {
         if let Some(body) = body { request = request.json(&body); }
         if let Some(token) = &self.config.bearer_token { request = request.bearer_auth(token); }
         let mut response = request.send().await.map_err(|_| anyhow!("RECEIPT_TRANSPORT"))?;
-        if !response.status().is_success() {
-            return Err(anyhow!("RECEIPT_HTTP_{}", response.status().as_u16()));
-        }
         const CAP: usize = 40 * 1024;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let mut body = Vec::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if chunk.len() > CAP.saturating_sub(body.len()) {
+                    break;
+                }
+                body.extend_from_slice(&chunk);
+            }
+            return Err(anyhow!("RECEIPT_HTTP_{status}{}", receipt_refusal_detail(&body)));
+        }
         if response.content_length().is_some_and(|size| size > CAP as u64) {
             return Err(anyhow!("RECEIPT_RESPONSE_BOUND"));
         }

@@ -12,6 +12,7 @@ use wrfcoin_native_chain::{
 use wrfcoin_shared_protocol::{
     consensus::{node_receipt_registry::claim_hash, node_share_contracts::BondedServiceClaim},
     crypto::chain_binding::ChainIdentity,
+    mempool::node_admission,
 };
 
 pub(crate) fn identity() -> Option<ChainIdentity> {
@@ -284,6 +285,16 @@ pub async fn submit(
     let Some(carrying_height) = chain.height.checked_add(1) else {
         return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "NODE_SUBMISSION_REFUSED", "no valid carrying height");
     };
+    // Sending the same thing again is success, not a fault: already on chain, or already pending.
+    if node_admission::batch_included(&chain.state, &tx) {
+        return HttpResponse::Ok().json(serde_json::json!({"tx_id":tx.id.map(|hash| hash.to_hex()),"admitted":true,"included":true,"duplicate":true}));
+    }
+    if let Some(pending) = crate::helpers::exact_pending_node_tx(&state, &tx).await {
+        return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+    }
+    if let Err(refusal) = node_admission::check(&chain.state, &tx, chain.height) {
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, refusal.code(), refusal.message());
+    }
     // A licensed owner must submit authentic claims before consuming durable
     // journal capacity. Inclusion and nonce execution remain the applier's job.
     for claim in &payload.batch.claims {
@@ -328,19 +339,19 @@ pub async fn submit(
     // Serialize before admission; gossip only after the pool accepts it.
     #[cfg(feature = "p2p")]
     let serialized = bincode::serialize(&tx).map_err(|error| error.to_string());
-    if state
+    let admitted = state
         .mempool
         .write()
         .await
-        .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(height))
-        .is_err()
-    {
-        return envelope_error(
-            &req,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "NODE_SUBMISSION_REFUSED",
-            "Node submission refused by common admission policy",
-        );
+        .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(height));
+    if let Err(reason) = admitted {
+        // A rewrapped copy of this same signed batch is pending, which is just as good.
+        if let Some(pending) = state.mempool.read().await.pending_node_copy(&tx) {
+            return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+        }
+        log::info!("Node receipt submission {} refused: {reason}", id.as_deref().unwrap_or("?"));
+        // The pool's reasons are fixed text and limits. This route is operator-only.
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "NODE_SUBMISSION_REFUSED", reason.to_string());
     }
     // Without this the tx is mined only if this node produces the next block (#3588).
     #[cfg(feature = "p2p")]

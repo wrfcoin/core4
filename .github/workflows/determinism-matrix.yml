@@ -95,8 +95,12 @@ jobs:
           # aarch64 release via QEMU cross-run (the point of this workflow).
           # cross runs the built binary under emulation so the roots reflect a
           # genuinely different architecture, not just a different target triple.
+          # os is pinned to ubuntu-24.04 (temporary): the current ubuntu-latest
+          # image has no qemu-user-static package. The leg name stays unchanged
+          # because the gate and result readers key on it. Follow-up: switch to
+          # docker/setup-qemu-action, then unpin.
           - leg: ubuntu-latest-aarch64-release-1.98.0
-            os: ubuntu-latest
+            os: ubuntu-24.04
             profile: release
             toolchain: '1.98.0'
             arch: aarch64

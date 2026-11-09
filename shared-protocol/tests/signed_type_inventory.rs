@@ -299,6 +299,14 @@ const UNREGISTERED: &[(&str, &str)] = &[
          which the route re-checks via verify_authorization() before submission",
     ),
     (
+        "ForecastRevealRequest",
+        "API DTO for the forecast reveal route; its optional auth_pubkey/auth_signature \
+         are the forecaster's commit authorization, relayed only so a key-bound relay can \
+         prove the forecaster signed this commit. The route verifies them against the \
+         canonical commit-authorization message (CommitPayload's domain tag) and never \
+         copies them into the RevealPayload it submits; it signs nothing itself",
+    ),
+    (
         "WrfcoinMessage",
         "p2p transport envelope; the inner payload is the signed object",
     ),

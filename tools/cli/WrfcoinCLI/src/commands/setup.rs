@@ -696,7 +696,10 @@ fn build_activation_schedule(activate: &[String]) -> Result<Option<String>> {
     // Its key is pinned by this block 1's own hash, which does not exist yet.
     crate::commands::governance::check_held_feature_names(
         entries.iter().map(|(_, feature)| feature.as_str()),
-        &[("bond_admission_key", "its key is pinned by genesis hash, so a schedule extension activates it")],
+        &[
+            ("bond_admission_key", "its key is pinned by genesis hash, so a schedule extension activates it"),
+            ("station_registrar_key", "its key is pinned by genesis hash, so a schedule extension activates it"),
+        ],
         "write the genesis schedule",
     )?;
     // core4#3299: the same hold as the signed extension. Refused here, before
@@ -1351,6 +1354,14 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("scheduling of `bond_admission_key` is held"), "{err}");
+    }
+
+    #[test]
+    fn genesis_activate_refuses_station_registrar_key() {
+        let err = build_activation_schedule(&["station_registrar_key@25000".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("scheduling of `station_registrar_key` is held"), "{err}");
     }
 
     #[test]

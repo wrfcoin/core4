@@ -5925,6 +5925,40 @@ impl State {
                     },
                 }
             }
+            StateTransition::ApplyStationRegistrarRegistration {
+                station,
+                block_height,
+            } => {
+                // Never emitted below activation; refusing it there keeps a
+                // forged or mis-built transition from changing state.
+                if !crate::consensus::station_registrar::station_registrar_key_active(block_height)
+                    || !crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationRegistrationNonce,
+                        block_height,
+                    )
+                {
+                    return Err(StateError::InvalidTransition);
+                }
+                let station_id = station.station_id.clone();
+                let refusal =
+                    crate::consensus::station_registrar::registrar_state_refusal(self, &station);
+                match (refusal, self.precheck_station_registration_v2(&station, 0, block_height)) {
+                    (None, Ok(mut entry)) => {
+                        self.apply_station_registration(station)?;
+                        let _ = entry.advance_nonce_for_registration();
+                        self.station_owner_ledger.insert(station_id, entry);
+                    },
+                    (refusal, precheck) => {
+                        tracing::warn!(
+                            station_id = %station_id,
+                            block_height,
+                            ?refusal,
+                            precheck = ?precheck.err(),
+                            "station registrar registration refused (inert no-op)"
+                        );
+                    },
+                }
+            }
             StateTransition::ApplyStationOwnerTransfer {
                 station_id,
                 from_owner_address,
@@ -10954,6 +10988,17 @@ pub enum StateTransition {
     ApplyNodeBondLifecycle { payload: crate::consensus::node_bond_registry::NodeBondLifecycle, block_height: u64 },
     ApplyNodeServiceBatch { payload: crate::consensus::node_receipt_registry::NodeReceiptSubmission, block_height: u64 },
     ApplyNodeFraudReport { payload: crate::consensus::node_fraud::NodeFraudReport, block_height: u64 },
+    /// `station_registrar_key`: a NEW phone-class station registered by a
+    /// pinned registrar key (`consensus::station_registrar`). Applies like a
+    /// v2 registration with nonce 0 only when the station is not registered
+    /// and the phone-station ceiling has room; otherwise an inert no-op.
+    /// Refused below `station_registrar_key` or `station_registration_nonce`.
+    /// APPENDED LAST (bincode is positional) and never emitted while the
+    /// feature is inactive.
+    ApplyStationRegistrarRegistration {
+        station: WeatherStation,
+        block_height: u64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
