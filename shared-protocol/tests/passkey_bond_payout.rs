@@ -139,10 +139,11 @@ fn feature_is_registered_appended_unscheduled_by_default_and_schedulable() {
     let f = ConsensusFeature::PasskeyBondPayout;
     assert_eq!(f.name(), "passkey_bond_payout");
     assert_eq!(ConsensusFeature::parse("passkey_bond_payout"), Some(f));
-    // `bond_admission_key` (30), `streak_replay_recipient_parity` (31) and
-    // `station_registrar_key` (32) are appended after this feature.
+    // `bond_admission_key` (30), `streak_replay_recipient_parity` (31),
+    // `station_registrar_key` (32) and `advisory_governance` (33) are appended
+    // after this feature.
     assert_eq!(ConsensusFeature::ALL.get(29), Some(&f));
-    assert_eq!(ConsensusFeature::ALL.len(), 33);
+    assert_eq!(ConsensusFeature::ALL.len(), 34);
     assert_eq!(bincode::serialize(&f).unwrap(), 29u32.to_le_bytes());
     assert!(f.schedulable(None));
     assert!(f.has_behaviour());
