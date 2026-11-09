@@ -22,6 +22,7 @@ class Store:
         self.sent = []       # {"station", "lead", "day", "variable", "commit_id", "value", "issued_at"}
         self.cycle_started = None    # unix seconds: when the long-running loop last began a cycle
         self.learn_turn = 0          # counts cycles, so learning starts at a different station each time
+        self.not_before = None       # unix seconds: the site asked the worker to stay away until then
         self.recovered_from = None   # set when a damaged state file was moved aside
         if self.path.exists():
             try:
@@ -55,11 +56,19 @@ class Store:
                 or not isinstance(turn, int) or isinstance(turn, bool) or turn < 0:
             raise ValueError("wrong shape")
         self.obs, self.samples, self.sent = obs, samples, sent
-        self.cycle_started, self.learn_turn = started, turn
+        not_before = meta.get("not_before")
+        if not_before is not None and (not isinstance(not_before, int) or isinstance(not_before, bool)):
+            raise ValueError("wrong shape")
+        self.cycle_started, self.learn_turn, self.not_before = started, turn, not_before
 
     def mark_cycle_start(self, now: int) -> None:
         """Written before a cycle does anything, so a restart for any reason can see how long to wait."""
         self.cycle_started = now
+        self.not_before = None
+        self.save(now)
+
+    def mark_not_before(self, until: int, now: int) -> None:
+        self.not_before = until
         self.save(now)
 
     def save(self, now: int) -> None:
@@ -69,7 +78,7 @@ class Store:
         self.sent = [s for s in self.sent if s["issued_at"] >= now - KEEP_SENT_SECONDS]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        meta = {"cycle_started": self.cycle_started, "learn_turn": self.learn_turn}
+        meta = {"cycle_started": self.cycle_started, "learn_turn": self.learn_turn, "not_before": self.not_before}
         tmp.write_text(json.dumps({"obs": self.obs, "samples": self.samples, "sent": self.sent, "meta": meta}, separators=(",", ":")),
                        encoding="utf-8")
         os.replace(tmp, self.path)

@@ -80,7 +80,7 @@ Change them in `compose.yml` under `environment:`. The defaults are fine to star
 | `WORKER_LEADS` | `1,6,12,24` | Hours ahead to forecast. |
 | `WORKER_CYCLE_SECONDS` | `3600` | How often the worker wakes up. Not less than 900. |
 | `WRFCOIN_API` | `https://wrfcoin.com/api` | The site to talk to. |
-| `WORKER_DRY_RUN` | `false` | `true` = keep running but never log in, sign or send. |
+| `WORKER_DRY_RUN` | `false` | `true` = keep running but never log in, sign or send (`status` is refused too). Only `true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0` are accepted. |
 
 ## What works today
 

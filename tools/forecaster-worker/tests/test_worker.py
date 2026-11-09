@@ -897,13 +897,52 @@ class RunLoopTest(unittest.TestCase):
             real = cli.run_cycle
             cli.run_cycle = cycle
             try:
-                for value, want in (("true", True), ("false", False), ("", False)):
+                cases = [(v, True) for v in ("1", "true", "TRUE", " yes ", "on")] + \
+                        [(v, False) for v in ("", "0", "false", "No", "off")]
+                for value, want in cases:
                     os.environ.update({"WORKER_DATA_DIR": folder, "WORKER_DRY_RUN": value})
-                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out), self.assertRaises(KeyboardInterrupt):
                         cli.main(["once"])
                     self.assertEqual(seen[-1], want)
+                    self.assertIn("Dry run: nothing is signed or sent." if want else "Live: forecasts will be signed and sent.",
+                                  out.getvalue())
+                for typo in ("ture", "y", "enabled", "2", "tru e", "dry"):
+                    os.environ["WORKER_DRY_RUN"] = typo
+                    before, err = len(seen), io.StringIO()
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                        self.assertEqual(cli.main(["once"]), 2)
+                        self.assertEqual(cli.main(["run"]), 2)
+                    self.assertEqual(len(seen), before)                 # no cycle ran, live or dry
+                    self.assertIn("Cannot start: WORKER_DRY_RUN must be one of", err.getvalue())
             finally:
                 cli.run_cycle = real
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_status_is_refused_in_a_dry_run_and_never_logs_in(self):
+        import os
+        calls = []
+        real = cli.Site
+        class Watched(real):
+            def login(self, *args, **kwargs):
+                calls.append("login")
+                raise AssertionError("a dry run must not log in")
+        with tempfile.TemporaryDirectory() as folder:
+            old = dict(os.environ)
+            cli.Site = Watched
+            try:
+                for env, argv in (({"WORKER_DRY_RUN": "true"}, ["status"]), ({}, ["status", "--dry-run"])):
+                    os.environ.clear()
+                    os.environ.update(old)
+                    os.environ.update({"WORKER_DATA_DIR": folder, **env})
+                    err = io.StringIO()
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                        self.assertEqual(cli.main(argv), 1)
+                    self.assertIn("A dry run never logs in", err.getvalue())
+                self.assertEqual(calls, [])
+            finally:
+                cli.Site = real
                 os.environ.clear()
                 os.environ.update(old)
 
@@ -914,6 +953,46 @@ class RunLoopTest(unittest.TestCase):
         self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 99999), 0)
         self.assertEqual(cli.seconds_until_next_cycle(5000, 3600, 1000.0), 3600)      # clock went back
         self.assertEqual(cli.seconds_until_next_cycle("soon", 3600, 1000.0), 0)
+        # A longer wait the site asked for wins, is capped at six hours, and ends when its time has passed.
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 600, not_before=1000 + 7200), 6600)
+        self.assertEqual(cli.seconds_until_next_cycle(None, 3600, 1000.0, not_before=1000 + 99 * 3600), 6 * 3600)
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 9000, not_before=1000 + 7200), 0)
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 600, not_before="later"), 3000)
+
+    def test_a_long_retry_after_survives_a_restart(self):
+        import os
+        events = []
+        with tempfile.TemporaryDirectory() as folder:
+            old = dict(os.environ)
+            os.environ.update({"WORKER_DATA_DIR": folder, "WORKER_CYCLE_SECONDS": "3600", "WORKER_DRY_RUN": "true"})
+            real = (cli.run_cycle, cli.time.sleep)
+
+            def busy_cycle(*args, **kwargs):
+                events.append("cycle")
+                raise SiteError(429, None, None, retry_after=3 * 3600)
+
+            def sleep(seconds):
+                events.append(seconds)
+                raise KeyboardInterrupt                         # the process is restarted during the back-off
+
+            cli.run_cycle, cli.time.sleep = busy_cycle, sleep
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    for _ in range(2):
+                        with self.assertRaises(KeyboardInterrupt):
+                            cli.main(["run"])
+                self.assertEqual(events[0], "cycle")
+                self.assertEqual(events[1], 3 * 3600.0)
+                self.assertEqual(len(events), 3)                # the restart ran no second cycle
+                self.assertGreater(events[2], 3 * 3600 - 10)    # and waits the three hours, not one
+                store = Store(folder)
+                self.assertIsInstance(store.not_before, int)
+                store.mark_cycle_start(T)                       # the next real cycle clears it
+                self.assertIsNone(Store(folder).not_before)
+            finally:
+                cli.run_cycle, cli.time.sleep = real
+                os.environ.clear()
+                os.environ.update(old)
 
     def test_cycle_errors_show_their_message(self):
         def cycle(*args, **kwargs):
