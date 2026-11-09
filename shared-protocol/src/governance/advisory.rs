@@ -1,0 +1,821 @@
+//! Advisory governance: signed, text-only proposals with no execution path
+//! (unscheduled `advisory_governance`).
+//!
+//! A wallet puts a short public text on chain (a title and a summary), wallets
+//! that held at least 1 WRF when it was proposed vote on it, and after the
+//! voting period the chain records the outcome. That is all. Nothing in this
+//! module, and nothing it calls, can change a protocol parameter, a law, a
+//! reward rule or any account other than the proposer's own deposit.
+//!
+//! ## Why a new transaction type
+//!
+//! The legacy `TransactionType::GovernanceProposal` carries no signature, takes
+//! any `parameter`/`value`, lets the payload choose its deadline and deposit,
+//! and debits whatever `sender_address` names. It is refused by mempool
+//! admission and by the block classifier (#2024) and stays refused at every
+//! height, whatever this feature's state. This type shares nothing with it:
+//! - its payload has no parameter, value, law id, category, deadline or
+//!   deposit member, and unknown members are refused (`deny_unknown_fields`);
+//! - it is applied by [`State`](crate::blockchain::state::State) arms that
+//!   never call `parse_governance_update`, `apply_governance_update` or the
+//!   law book;
+//! - its records live in their own map, so `GovernanceVote` and
+//!   `FinalizeGovernanceProposal` (which read `governance.proposals`) cannot
+//!   reach them, and their finalize ([`finalize`]) only sets a status and
+//!   returns the deposit.
+//!
+//! ## Signing
+//!
+//! Each action is signed by the ed25519 key of the account that sends it, over
+//! [`advisory_action_message`]: every field length-prefixed (u64 LE), under
+//! [`ADVISORY_ACTION_DOMAIN_TAG`], binding the chain id, the network id, the
+//! account, the action and the transaction nonce. The nonce binding stops a
+//! relay from moving a signed action to another nonce, and the account's
+//! nonce advances when the action applies, so neither action replays. The
+//! signature covers bytes, not JSON.
+//!
+//! ## Activation
+//!
+//! Below the activation height of `ConsensusFeature::AdvisoryGovernance`
+//! mempool admission refuses the type, a block carrying one is invalid, and
+//! the apply arm refuses it, so `State::advisory_proposals` is provably empty.
+//! While empty the map is absent from `state_root_material`, checkpoints and
+//! snapshots, so every root is byte-identical to a binary without this module.
+//!
+//! Design: `docs/architecture/advisory-governance.md`.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::blockchain::transaction::{Transaction, TransactionType};
+use crate::common::constants::WRF_UNITS_PER_COIN;
+use crate::common::types::{Address, Balance};
+use crate::crypto::signature::{PrivateKey, PublicKey, Signature};
+
+/// Domain tag of every advisory-governance signature.
+pub const ADVISORY_ACTION_DOMAIN_TAG: &[u8] = b"wrfcoin.advisory_governance_action.v1";
+
+/// Title length, in UTF-8 bytes (1..=this).
+pub const MAX_TITLE_BYTES: usize = 160;
+/// Summary length, in UTF-8 bytes (1..=this).
+pub const MAX_SUMMARY_BYTES: usize = 1_024;
+/// Largest `Transaction::data` this module parses (after JSON escaping).
+pub const MAX_ADVISORY_PAYLOAD_BYTES: usize = 8 * 1024;
+/// Deposit debited from the proposer: 1 WRF. Fixed; the payload has no
+/// deposit member.
+pub const ADVISORY_DEPOSIT: u64 = WRF_UNITS_PER_COIN;
+/// A wallet may vote if its spendable balance was at least this (1 WRF)
+/// immediately before the proposal applied.
+pub const MIN_VOTER_SPENDABLE: u64 = WRF_UNITS_PER_COIN;
+/// Voting period: 1,120 blocks, about 24 h at 77 s per block.
+pub const ADVISORY_VOTING_PERIOD_BLOCKS: u64 = 1_120;
+/// A proposal needs at least this many votes (for + against) to be decided
+/// (owner decision 2026-11-02). Otherwise it fails quorum.
+pub const ADVISORY_QUORUM_MIN_VOTES: u64 = 3;
+/// With quorum, a proposal passes when `for * 100 >= this * (for + against)`.
+pub const ADVISORY_APPROVAL_PERCENT: u64 = 51;
+/// Active proposals one wallet may have at once.
+pub const MAX_ACTIVE_PER_PROPOSER: usize = 1;
+/// Active proposals on chain at once.
+pub const MAX_ACTIVE_PROPOSALS: usize = 20;
+/// Proposals one block may carry (each one walks every account for its
+/// electorate snapshot). Enforced by the block classifier.
+pub const MAX_PROPOSALS_PER_BLOCK: usize = 2;
+/// Proposal ids are `adv-` followed by 16 lowercase hex characters.
+pub const PROPOSAL_ID_PREFIX: &str = "adv-";
+
+/// One signed action.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AdvisoryAction {
+    /// Put a text on chain. The chain chooses the id, the deadline and the
+    /// deposit.
+    Propose { title: String, summary: String },
+    /// For (`approve: true`) or against an active proposal.
+    Vote { proposal_id: String, approve: bool },
+}
+
+/// `Transaction::data` of a `TransactionType::AdvisoryGovernance` transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedAdvisoryAction {
+    /// Must equal the transaction's `sender_address`.
+    pub account: Address,
+    pub action: AdvisoryAction,
+    /// Must equal the transaction's `nonce`, which must equal the account's
+    /// nonce when the action applies.
+    pub nonce: u64,
+    /// Lowercase hex ed25519 public key; must hash to `account`.
+    pub public_key: String,
+    /// Hex ed25519 signature over [`advisory_action_message`].
+    pub signature: String,
+}
+
+/// How a proposal ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisoryStatus {
+    Active,
+    /// Quorum met and approved. Advisory: nothing is executed.
+    Passed,
+    /// Quorum met and not approved.
+    Rejected,
+    /// Fewer than [`ADVISORY_QUORUM_MIN_VOTES`] votes. The deposit stays held.
+    FailedQuorum,
+}
+
+/// One proposal as stored in `State::advisory_proposals`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryProposal {
+    pub id: String,
+    pub proposer: Address,
+    pub title: String,
+    pub summary: String,
+    pub created_at_block: u64,
+    /// Votes count while `height < voting_deadline`; finalized at the first
+    /// block with `height >= voting_deadline`.
+    pub voting_deadline: u64,
+    /// Held deposit. Zero once returned.
+    pub deposit: Balance,
+    /// Wallets that may vote (snapshot). Cleared at finalize.
+    pub eligible_voters: BTreeSet<Address>,
+    /// Size of the snapshot; kept after finalize.
+    pub eligible_count: u64,
+    /// Votes cast, `true` = for. Cleared at finalize (the votes stay in the
+    /// blocks' transactions).
+    pub votes: BTreeMap<Address, bool>,
+    pub yes_votes: u64,
+    pub no_votes: u64,
+    pub status: AdvisoryStatus,
+    pub finalized_at_block: Option<u64>,
+}
+
+/// What applying one checked action writes: the signer's nonce advances,
+/// the deposit (proposals only) is debited from the signer, and `proposal` is
+/// stored under its id (a new record, or the voted-on record).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdvisoryEffect {
+    pub signer: Address,
+    pub next_nonce: u64,
+    pub deposit: Option<Balance>,
+    pub proposal: AdvisoryProposal,
+}
+
+/// Every way an action is refused. No panic anywhere in this module.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum AdvisoryError {
+    #[error("malformed key or signature: {0}")]
+    Malformed(&'static str),
+    #[error("public key does not hash to the account")]
+    KeyAddressMismatch,
+    #[error("signature does not verify")]
+    BadSignature,
+    #[error("title: {0}")]
+    Title(TextError),
+    #[error("summary: {0}")]
+    Summary(TextError),
+    #[error("proposal id is not a chain-derived advisory id")]
+    BadProposalId,
+}
+
+/// Why a title or summary is refused.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum TextError {
+    #[error("empty")]
+    Empty,
+    #[error("{got} bytes is over the {max}-byte limit")]
+    TooLong { got: usize, max: usize },
+    #[error("character U+{0:04X} is not allowed")]
+    ForbiddenChar(u32),
+}
+
+/// Whether `c` is refused in proposal text. A byte rule only, with no Unicode
+/// normalization (which could vary between library versions):
+/// C0 controls (U+0000..=U+001F; `\n` is allowed in a summary), DEL and the
+/// C1 controls (U+007F..=U+009F), and the bidirectional embedding, override
+/// and isolate characters (U+202A..=U+202E, U+2066..=U+2069).
+pub fn forbidden_char(c: char, allow_newline: bool) -> bool {
+    let cp = c as u32;
+    if c == '\n' {
+        return !allow_newline;
+    }
+    cp <= 0x1F
+        || (0x7F..=0x9F).contains(&cp)
+        || (0x202A..=0x202E).contains(&cp)
+        || (0x2066..=0x2069).contains(&cp)
+}
+
+fn validate_text(text: &str, max: usize, allow_newline: bool) -> Result<(), TextError> {
+    if text.trim().is_empty() {
+        return Err(TextError::Empty);
+    }
+    if text.len() > max {
+        return Err(TextError::TooLong {
+            got: text.len(),
+            max,
+        });
+    }
+    if let Some(c) = text.chars().find(|c| forbidden_char(*c, allow_newline)) {
+        return Err(TextError::ForbiddenChar(c as u32));
+    }
+    Ok(())
+}
+
+/// Title rules: 1..=[`MAX_TITLE_BYTES`] bytes, not blank, one line.
+pub fn validate_title(title: &str) -> Result<(), TextError> {
+    validate_text(title, MAX_TITLE_BYTES, false)
+}
+
+/// Summary rules: 1..=[`MAX_SUMMARY_BYTES`] bytes, not blank, `\n` allowed.
+pub fn validate_summary(summary: &str) -> Result<(), TextError> {
+    validate_text(summary, MAX_SUMMARY_BYTES, true)
+}
+
+/// Whether `id` has the shape of a chain-derived advisory id.
+pub fn is_advisory_proposal_id(id: &str) -> bool {
+    id.strip_prefix(PROPOSAL_ID_PREFIX).is_some_and(|hex| {
+        hex.len() == 16
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// The id the chain gives a proposal: `adv-` + the first 8 bytes (16 hex) of
+/// SHA-256(tag, proposer bytes, nonce LE). The proposer does not choose it,
+/// and the account nonce makes it unique per proposer.
+pub fn proposal_id(proposer: &Address, nonce: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(ADVISORY_ACTION_DOMAIN_TAG);
+    hasher.update(proposer.0);
+    hasher.update(nonce.to_le_bytes());
+    let digest = hasher.finalize();
+    format!("{PROPOSAL_ID_PREFIX}{}", hex::encode(&digest[..8]))
+}
+
+fn push(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Stable, non-serde encoding of an action for the preimage.
+///
+/// ```text
+/// propose: 0x01 || len title || title || len summary || summary
+/// vote:    0x02 || len proposal_id || proposal_id || 0x01 (for) | 0x00 (against)
+/// ```
+pub fn encode_action_for_preimage(action: &AdvisoryAction) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    match action {
+        AdvisoryAction::Propose { title, summary } => {
+            encoded.push(0x01);
+            push(&mut encoded, title.as_bytes());
+            push(&mut encoded, summary.as_bytes());
+        },
+        AdvisoryAction::Vote {
+            proposal_id,
+            approve,
+        } => {
+            encoded.push(0x02);
+            push(&mut encoded, proposal_id.as_bytes());
+            encoded.push(u8::from(*approve));
+        },
+    }
+    encoded
+}
+
+/// The exact bytes the account key signs. Every component is length-prefixed
+/// (u64 LE): tag, chain id, network id, 20 account bytes, encoded action,
+/// 8 nonce bytes LE.
+///
+/// Built explicitly rather than with `DomainSeparated::signing_preimage()`:
+/// at signing V1 that construction drops the chain and network binding.
+pub fn advisory_action_message(
+    chain_id: &str,
+    network_id: &str,
+    account: &Address,
+    action: &AdvisoryAction,
+    nonce: u64,
+) -> Vec<u8> {
+    let mut message = Vec::new();
+    push(&mut message, ADVISORY_ACTION_DOMAIN_TAG);
+    push(&mut message, chain_id.as_bytes());
+    push(&mut message, network_id.as_bytes());
+    push(&mut message, &account.0);
+    push(&mut message, &encode_action_for_preimage(action));
+    push(&mut message, &nonce.to_le_bytes());
+    message
+}
+
+impl SignedAdvisoryAction {
+    /// Sign `action` with `key` (CLI and tests).
+    pub fn sign(
+        chain_id: &str,
+        network_id: &str,
+        key: &PrivateKey,
+        action: AdvisoryAction,
+        nonce: u64,
+    ) -> Self {
+        let public_key = PublicKey::from_private_key(key);
+        let account = Address::from_public_key(&public_key);
+        let message = advisory_action_message(chain_id, network_id, &account, &action, nonce);
+        Self {
+            account,
+            action,
+            nonce,
+            public_key: public_key.to_hex(),
+            signature: key.sign(&message).to_hex(),
+        }
+    }
+
+    /// Stateless check, run by mempool admission, the block classifier and
+    /// apply: text rules, id shape, the key hashes to the account, and the
+    /// signature verifies over the preimage for this chain and network.
+    pub fn verify(&self, chain_id: &str, network_id: &str) -> Result<(), AdvisoryError> {
+        match &self.action {
+            AdvisoryAction::Propose { title, summary } => {
+                validate_title(title).map_err(AdvisoryError::Title)?;
+                validate_summary(summary).map_err(AdvisoryError::Summary)?;
+            },
+            AdvisoryAction::Vote { proposal_id, .. } => {
+                if !is_advisory_proposal_id(proposal_id) {
+                    return Err(AdvisoryError::BadProposalId);
+                }
+            },
+        }
+        let public_key = PublicKey::from_hex(self.public_key.trim())
+            .map_err(|_| AdvisoryError::Malformed("public key is not hex ed25519"))?;
+        if Address::from_public_key(&public_key) != self.account {
+            return Err(AdvisoryError::KeyAddressMismatch);
+        }
+        let signature = Signature::from_hex(self.signature.trim())
+            .map_err(|_| AdvisoryError::Malformed("signature is not hex ed25519"))?;
+        let message = advisory_action_message(
+            chain_id,
+            network_id,
+            &self.account,
+            &self.action,
+            self.nonce,
+        );
+        if !public_key.verify(&message, &signature) {
+            return Err(AdvisoryError::BadSignature);
+        }
+        Ok(())
+    }
+
+    /// Parse a `TransactionType::AdvisoryGovernance` transaction. `None` for
+    /// any other type, an oversized or unparsable payload, an unknown member,
+    /// a payload whose account is not the transaction's `sender_address`, or
+    /// whose nonce is not the transaction's `nonce`.
+    pub fn parse(tx: &Transaction) -> Option<Self> {
+        if tx.tx_type != TransactionType::AdvisoryGovernance {
+            return None;
+        }
+        let data = tx.data.as_ref()?;
+        if data.len() > MAX_ADVISORY_PAYLOAD_BYTES {
+            return None;
+        }
+        let parsed: Self = serde_json::from_str(data).ok()?;
+        (parsed.account == tx.sender_address && parsed.nonce == tx.nonce).then_some(parsed)
+    }
+
+    /// Whether this is a proposal (for the per-block cap).
+    pub fn is_propose(&self) -> bool {
+        matches!(self.action, AdvisoryAction::Propose { .. })
+    }
+}
+
+/// The outcome rule, a pure function of the tallies.
+pub fn outcome(yes_votes: u64, no_votes: u64) -> AdvisoryStatus {
+    let total = u128::from(yes_votes) + u128::from(no_votes);
+    if total < u128::from(ADVISORY_QUORUM_MIN_VOTES) {
+        return AdvisoryStatus::FailedQuorum;
+    }
+    if u128::from(yes_votes) * 100 >= u128::from(ADVISORY_APPROVAL_PERCENT) * total {
+        AdvisoryStatus::Passed
+    } else {
+        AdvisoryStatus::Rejected
+    }
+}
+
+/// Active proposals, and active proposals of `proposer`.
+pub fn active_counts(
+    proposals: &BTreeMap<String, AdvisoryProposal>,
+    proposer: &Address,
+) -> (usize, usize) {
+    let mut all = 0;
+    let mut mine = 0;
+    for proposal in proposals.values() {
+        if proposal.status == AdvisoryStatus::Active {
+            all += 1;
+            if proposal.proposer == *proposer {
+                mine += 1;
+            }
+        }
+    }
+    (all, mine)
+}
+
+/// Ids of active proposals due for finalize at `height`, in id order.
+pub fn due_proposal_ids(
+    proposals: &BTreeMap<String, AdvisoryProposal>,
+    height: u64,
+) -> Vec<String> {
+    proposals
+        .values()
+        .filter(|p| p.status == AdvisoryStatus::Active && p.voting_deadline <= height)
+        .map(|p| p.id.clone())
+        .collect()
+}
+
+/// Record a vote on an active proposal. All checks precede the write.
+pub fn record_vote(
+    proposal: &mut AdvisoryProposal,
+    voter: &Address,
+    approve: bool,
+    height: u64,
+) -> Result<(), String> {
+    if proposal.status != AdvisoryStatus::Active {
+        return Err("proposal is not active".into());
+    }
+    if height >= proposal.voting_deadline {
+        return Err("voting period has ended".into());
+    }
+    if !proposal.eligible_voters.contains(voter) {
+        return Err("wallet held under 1 WRF spendable when the proposal was created".into());
+    }
+    if proposal.votes.contains_key(voter) {
+        return Err("wallet already voted".into());
+    }
+    if approve {
+        proposal.yes_votes = proposal.yes_votes.checked_add(1).ok_or("tally overflow")?;
+    } else {
+        proposal.no_votes = proposal.no_votes.checked_add(1).ok_or("tally overflow")?;
+    }
+    proposal.votes.insert(*voter, approve);
+    Ok(())
+}
+
+/// Finalize: set the outcome and drop the per-voter maps. Returns the deposit
+/// to give back to the proposer (zero for a failed quorum, whose deposit stays
+/// held). The caller credits it. Sets no parameter, touches no law: the only
+/// effects of an advisory proposal are this record and that deposit.
+pub fn finalize(proposal: &mut AdvisoryProposal, height: u64) -> Result<Balance, String> {
+    if proposal.status != AdvisoryStatus::Active {
+        return Err("proposal is not active".into());
+    }
+    if height < proposal.voting_deadline {
+        return Err("voting period not finished".into());
+    }
+    let status = outcome(proposal.yes_votes, proposal.no_votes);
+    proposal.status = status;
+    proposal.finalized_at_block = Some(height);
+    proposal.eligible_voters.clear();
+    proposal.votes.clear();
+    Ok(match status {
+        AdvisoryStatus::Passed | AdvisoryStatus::Rejected => proposal.deposit,
+        AdvisoryStatus::FailedQuorum | AdvisoryStatus::Active => Balance::new(0),
+    })
+}
+
+/// Canonical state-root encoding of the map. Explicit, length-prefixed, in
+/// BTreeMap/BTreeSet order. Only called while the map is non-empty.
+pub fn root_material(proposals: &BTreeMap<String, AdvisoryProposal>, out: &mut Vec<u8>) {
+    fn u64_(out: &mut Vec<u8>, v: u64) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(b"wrfcoin_advisory_proposals_v1");
+    u64_(out, proposals.len() as u64);
+    for (id, p) in proposals {
+        push(out, id.as_bytes());
+        push(out, &p.proposer.0);
+        push(out, p.title.as_bytes());
+        push(out, p.summary.as_bytes());
+        u64_(out, p.created_at_block);
+        u64_(out, p.voting_deadline);
+        out.extend_from_slice(&p.deposit.into_inner().to_le_bytes());
+        u64_(out, p.eligible_count);
+        u64_(out, p.eligible_voters.len() as u64);
+        for voter in &p.eligible_voters {
+            out.extend_from_slice(&voter.0);
+        }
+        u64_(out, p.votes.len() as u64);
+        for (voter, approve) in &p.votes {
+            out.extend_from_slice(&voter.0);
+            out.push(u8::from(*approve));
+        }
+        u64_(out, p.yes_votes);
+        u64_(out, p.no_votes);
+        out.push(match p.status {
+            AdvisoryStatus::Active => 0,
+            AdvisoryStatus::Passed => 1,
+            AdvisoryStatus::Rejected => 2,
+            AdvisoryStatus::FailedQuorum => 3,
+        });
+        match p.finalized_at_block {
+            None => out.push(0),
+            Some(h) => {
+                out.push(1);
+                u64_(out, h);
+            },
+        }
+    }
+}
+
+/// Read model for the node API (no per-voter list for a finalized proposal:
+/// it was cleared).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryProposalView {
+    pub id: String,
+    pub kind: &'static str,
+    pub proposer: String,
+    pub title: String,
+    pub summary: String,
+    pub created_at_block: u64,
+    pub voting_deadline: u64,
+    pub status: AdvisoryStatus,
+    pub yes_votes: u64,
+    pub no_votes: u64,
+    pub eligible_count: u64,
+    pub quorum_min_votes: u64,
+    pub approval_percent: u64,
+    pub deposit_held: String,
+    pub finalized_at_block: Option<u64>,
+}
+
+impl AdvisoryProposalView {
+    pub fn from_record(p: &AdvisoryProposal) -> Self {
+        Self {
+            id: p.id.clone(),
+            kind: "advisory",
+            proposer: p.proposer.to_string(),
+            title: p.title.clone(),
+            summary: p.summary.clone(),
+            created_at_block: p.created_at_block,
+            voting_deadline: p.voting_deadline,
+            status: p.status,
+            yes_votes: p.yes_votes,
+            no_votes: p.no_votes,
+            eligible_count: p.eligible_count,
+            quorum_min_votes: ADVISORY_QUORUM_MIN_VOTES,
+            approval_percent: ADVISORY_APPROVAL_PERCENT,
+            deposit_held: p.deposit.into_inner().to_string(),
+            finalized_at_block: p.finalized_at_block,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHAIN: &str = "888";
+    const NET: &str = "testnet";
+
+    fn key(seed: u8) -> PrivateKey {
+        PrivateKey::from_bytes(&[seed; 32]).expect("key")
+    }
+
+    fn propose(title: &str, summary: &str) -> AdvisoryAction {
+        AdvisoryAction::Propose {
+            title: title.into(),
+            summary: summary.into(),
+        }
+    }
+
+    #[test]
+    fn a_signed_action_verifies_and_every_bound_field_breaks_it() {
+        let k = key(7);
+        let signed = SignedAdvisoryAction::sign(CHAIN, NET, &k, propose("Welcome", "Hello."), 4);
+        signed.verify(CHAIN, NET).expect("verifies");
+        assert_eq!(signed.verify("777", NET), Err(AdvisoryError::BadSignature));
+        assert_eq!(
+            signed.verify(CHAIN, "devnet"),
+            Err(AdvisoryError::BadSignature)
+        );
+        let mut other_nonce = signed.clone();
+        other_nonce.nonce = 5;
+        assert_eq!(
+            other_nonce.verify(CHAIN, NET),
+            Err(AdvisoryError::BadSignature)
+        );
+        let mut other_action = signed.clone();
+        other_action.action = propose("Welcome!", "Hello.");
+        assert_eq!(
+            other_action.verify(CHAIN, NET),
+            Err(AdvisoryError::BadSignature)
+        );
+        let mut other_account = signed.clone();
+        other_account.account = Address([9; 20]);
+        assert_eq!(
+            other_account.verify(CHAIN, NET),
+            Err(AdvisoryError::KeyAddressMismatch)
+        );
+        let mut other_key = signed;
+        other_key.public_key = PublicKey::from_private_key(&key(8)).to_hex();
+        assert_eq!(
+            other_key.verify(CHAIN, NET),
+            Err(AdvisoryError::KeyAddressMismatch)
+        );
+    }
+
+    #[test]
+    fn a_vote_signature_cannot_be_reused_for_the_other_side() {
+        let k = key(3);
+        let id = proposal_id(&Address([1; 20]), 0);
+        let mut signed = SignedAdvisoryAction::sign(
+            CHAIN,
+            NET,
+            &k,
+            AdvisoryAction::Vote {
+                proposal_id: id,
+                approve: true,
+            },
+            0,
+        );
+        signed.verify(CHAIN, NET).expect("verifies");
+        if let AdvisoryAction::Vote { approve, .. } = &mut signed.action {
+            *approve = false;
+        }
+        assert_eq!(signed.verify(CHAIN, NET), Err(AdvisoryError::BadSignature));
+    }
+
+    #[test]
+    fn length_caps_are_byte_caps_at_exactly_the_limit() {
+        assert!(validate_title(&"a".repeat(MAX_TITLE_BYTES)).is_ok());
+        assert_eq!(
+            validate_title(&"a".repeat(MAX_TITLE_BYTES + 1)),
+            Err(TextError::TooLong {
+                got: MAX_TITLE_BYTES + 1,
+                max: MAX_TITLE_BYTES
+            })
+        );
+        assert!(validate_summary(&"a".repeat(MAX_SUMMARY_BYTES)).is_ok());
+        assert!(validate_summary(&"a".repeat(MAX_SUMMARY_BYTES + 1)).is_err());
+        // Bytes, not characters: 54 three-byte characters = 162 bytes.
+        assert!(validate_title(&"€".repeat(54)).is_err());
+        assert!(validate_title(&"€".repeat(53)).is_ok());
+        assert_eq!(validate_title(""), Err(TextError::Empty));
+        assert_eq!(validate_title("   "), Err(TextError::Empty));
+        assert_eq!(validate_summary(" \n "), Err(TextError::Empty));
+    }
+
+    #[test]
+    fn control_and_bidi_characters_are_refused() {
+        for cp in [
+            0x00u32, 0x07, 0x09, 0x0D, 0x1B, 0x1F, 0x7F, 0x85, 0x9F, 0x202A, 0x202E, 0x2066, 0x2069,
+        ] {
+            let c = char::from_u32(cp).unwrap();
+            let text = format!("a{c}b");
+            assert_eq!(
+                validate_title(&text),
+                Err(TextError::ForbiddenChar(cp)),
+                "title U+{cp:04X}"
+            );
+            assert_eq!(
+                validate_summary(&text),
+                Err(TextError::ForbiddenChar(cp)),
+                "summary U+{cp:04X}"
+            );
+        }
+        assert!(validate_summary("line one\nline two").is_ok());
+        assert_eq!(
+            validate_title("line one\nline two"),
+            Err(TextError::ForbiddenChar(0x0A))
+        );
+        assert!(validate_title("Café, 東京, emoji 🌧").is_ok());
+    }
+
+    #[test]
+    fn signed_actions_with_bad_text_do_not_verify() {
+        let k = key(2);
+        let signed = SignedAdvisoryAction::sign(CHAIN, NET, &k, propose(&"x".repeat(161), "ok"), 0);
+        assert!(matches!(
+            signed.verify(CHAIN, NET),
+            Err(AdvisoryError::Title(TextError::TooLong { .. }))
+        ));
+        let vote = SignedAdvisoryAction::sign(
+            CHAIN,
+            NET,
+            &k,
+            AdvisoryAction::Vote {
+                proposal_id: "LAW-001".into(),
+                approve: true,
+            },
+            0,
+        );
+        assert_eq!(vote.verify(CHAIN, NET), Err(AdvisoryError::BadProposalId));
+    }
+
+    fn tx_with(data: String, sender: Address, nonce: u64) -> Transaction {
+        let mut tx = Transaction::new(Vec::new(), Vec::new());
+        tx.tx_type = TransactionType::AdvisoryGovernance;
+        tx.sender_address = sender;
+        tx.nonce = nonce;
+        tx.data = Some(data);
+        tx
+    }
+
+    #[test]
+    fn parse_refuses_unknown_members_wrong_sender_wrong_nonce_and_size() {
+        let k = key(5);
+        let signed = SignedAdvisoryAction::sign(CHAIN, NET, &k, propose("T", "S"), 3);
+        let json = serde_json::to_string(&signed).unwrap();
+        let account = signed.account;
+        assert!(SignedAdvisoryAction::parse(&tx_with(json.clone(), account, 3)).is_some());
+        assert!(SignedAdvisoryAction::parse(&tx_with(json.clone(), Address([4; 20]), 3)).is_none());
+        assert!(SignedAdvisoryAction::parse(&tx_with(json.clone(), account, 4)).is_none());
+        // A parameter-shaped member is refused at the top level and inside the action.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["parameter"] = serde_json::json!("emission_rate");
+        assert!(SignedAdvisoryAction::parse(&tx_with(v.to_string(), account, 3)).is_none());
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["action"]["propose"]["value"] = serde_json::json!("0");
+        assert!(SignedAdvisoryAction::parse(&tx_with(v.to_string(), account, 3)).is_none());
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["action"]["propose"]["deposit"] = serde_json::json!(1);
+        assert!(SignedAdvisoryAction::parse(&tx_with(v.to_string(), account, 3)).is_none());
+        let big = format!("{json}{}", " ".repeat(MAX_ADVISORY_PAYLOAD_BYTES));
+        assert!(SignedAdvisoryAction::parse(&tx_with(big, account, 3)).is_none());
+        let mut wrong_type = tx_with(json, account, 3);
+        wrong_type.tx_type = TransactionType::GovernanceProposal;
+        assert!(SignedAdvisoryAction::parse(&wrong_type).is_none());
+    }
+
+    #[test]
+    fn proposal_ids_are_chain_derived_and_well_formed() {
+        let a = proposal_id(&Address([1; 20]), 0);
+        assert!(is_advisory_proposal_id(&a));
+        assert_ne!(a, proposal_id(&Address([1; 20]), 1));
+        assert_ne!(a, proposal_id(&Address([2; 20]), 0));
+        assert!(!is_advisory_proposal_id("adv-0123"));
+        assert!(!is_advisory_proposal_id("adv-0123456789ABCDEF"));
+        assert!(!is_advisory_proposal_id("LAW-ADV-0123456789abcdef"));
+    }
+
+    #[test]
+    fn outcome_rule() {
+        assert_eq!(outcome(0, 0), AdvisoryStatus::FailedQuorum);
+        assert_eq!(outcome(2, 0), AdvisoryStatus::FailedQuorum);
+        assert_eq!(outcome(3, 0), AdvisoryStatus::Passed);
+        assert_eq!(outcome(2, 1), AdvisoryStatus::Passed); // 66%
+        assert_eq!(outcome(1, 2), AdvisoryStatus::Rejected);
+        assert_eq!(outcome(51, 49), AdvisoryStatus::Passed);
+        assert_eq!(outcome(50, 50), AdvisoryStatus::Rejected);
+        assert_eq!(outcome(u64::MAX, u64::MAX), AdvisoryStatus::Rejected);
+    }
+
+    fn record(deadline: u64) -> AdvisoryProposal {
+        AdvisoryProposal {
+            id: proposal_id(&Address([1; 20]), 0),
+            proposer: Address([1; 20]),
+            title: "T".into(),
+            summary: "S".into(),
+            created_at_block: 10,
+            voting_deadline: deadline,
+            deposit: Balance::new(u128::from(ADVISORY_DEPOSIT)),
+            eligible_voters: [Address([1; 20]), Address([2; 20]), Address([3; 20])]
+                .into_iter()
+                .collect(),
+            eligible_count: 3,
+            votes: BTreeMap::new(),
+            yes_votes: 0,
+            no_votes: 0,
+            status: AdvisoryStatus::Active,
+            finalized_at_block: None,
+        }
+    }
+
+    #[test]
+    fn votes_need_snapshot_membership_once_before_the_deadline() {
+        let mut p = record(100);
+        assert!(record_vote(&mut p, &Address([9; 20]), true, 50).is_err());
+        record_vote(&mut p, &Address([2; 20]), true, 50).unwrap();
+        assert!(record_vote(&mut p, &Address([2; 20]), false, 51).is_err());
+        record_vote(&mut p, &Address([3; 20]), false, 99).unwrap();
+        assert!(record_vote(&mut p, &Address([1; 20]), true, 100).is_err());
+        assert_eq!((p.yes_votes, p.no_votes), (1, 1));
+    }
+
+    #[test]
+    fn finalize_records_only_status_and_returns_only_the_deposit() {
+        let mut p = record(100);
+        assert!(finalize(&mut p, 99).is_err());
+        for v in 1..=3u8 {
+            record_vote(&mut p, &Address([v; 20]), true, 20).unwrap();
+        }
+        let refund = finalize(&mut p, 100).unwrap();
+        assert_eq!(refund, Balance::new(u128::from(ADVISORY_DEPOSIT)));
+        assert_eq!(p.status, AdvisoryStatus::Passed);
+        assert!(p.eligible_voters.is_empty() && p.votes.is_empty());
+        assert_eq!((p.yes_votes, p.eligible_count), (3, 3));
+        assert!(finalize(&mut p, 101).is_err());
+
+        let mut q = record(100);
+        assert_eq!(finalize(&mut q, 150).unwrap(), Balance::new(0));
+        assert_eq!(q.status, AdvisoryStatus::FailedQuorum);
+    }
+}

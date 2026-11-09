@@ -353,6 +353,9 @@ pub fn extract_transitions(
             | TransactionType::SecurityKeyAction
             // Send-allowlist actions use the same governance-routed sink.
             | TransactionType::SendAllowlist
+            // Advisory governance actions use the same governance-routed sink;
+            // their finalize comes from `governance_transitions_for_block`.
+            | TransactionType::AdvisoryGovernance
             // Governance proposal/vote/etc. were already governance-routed.
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote

@@ -337,6 +337,9 @@ impl VerifyCost for Transaction {
                 .unwrap_or(5),
             // Security-key action: the phrase key's ed25519 signature.
             TransactionType::SecurityKeyAction => 1,
+            // Advisory governance: the signer's ed25519 signature over the
+            // action. A new type, so no pre-activation price moves.
+            TransactionType::AdvisoryGovernance => 1,
             _ => 0,
         });
 

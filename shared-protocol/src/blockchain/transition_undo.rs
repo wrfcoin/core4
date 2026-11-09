@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 78],
+    records: [Option<Undo>; 79],
 }
 
 impl TransitionUndo {
@@ -95,6 +95,7 @@ impl TransitionUndo {
             node_settlement: _,
             node_fraud: _,
             send_allowlists: _,
+            advisory_proposals: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -186,6 +187,7 @@ impl TransitionUndo {
             capture!(node_settlement),
             capture!(node_fraud),
             capture!(send_allowlists),
+            capture!(advisory_proposals),
         ];
         Self { records }
     }
@@ -276,6 +278,9 @@ const PROTOCOL: &[&str] = &[
     "archived_quality_policy_event_count",
     "archived_quality_policy_event_through_event_id",
     "send_allowlists",
+    // `AdvisoryGovernance` (advisory_governance) writes the proposal map
+    // through the governance sink; balances and nonces are in COMMON.
+    "advisory_proposals",
 ];
 const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger"];
 const NODE: &[&str] = &[
@@ -377,6 +382,8 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         | ApplyNodeBondLifecycle { .. }
         | ApplyNodeServiceBatch { .. }
         | ApplyNodeFraudReport { .. } => NODE,
+        // Writes the record; the deposit refund is a balance (COMMON).
+        FinalizeAdvisoryProposal { .. } => &["advisory_proposals"],
     }
 }
 
@@ -483,6 +490,7 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyStationRegistrationV2 { .. } => "ApplyStationRegistrationV2",
         StateTransition::BeginNodeServiceBlock { .. } => "BeginNodeServiceBlock",
         StateTransition::ApplyStationRegistrarRegistration { .. } => "ApplyStationRegistrarRegistration",
+        StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",

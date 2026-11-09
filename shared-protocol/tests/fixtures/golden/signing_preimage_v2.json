@@ -1930,6 +1930,76 @@
         "chain_id": "wrfcoin-testnet",
         "nonce": 8
       }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "account": "0x99ad2299c36c67bace1e8ab4d6f387f892697c3d",
+        "action": {
+          "propose": {
+            "summary": "The first advisory proposal on chain 888.\nIt changes nothing — a passed proposal is only recorded.",
+            "title": "Welcome to governance"
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 3
+      },
+      "kind": "advisory_governance_action_v2",
+      "preimage_hex": "2500000000000000777266636f696e2e61647669736f72795f676f7665726e616e63655f616374696f6e2e76310f00000000000000777266636f696e2d746573746e65740700000000000000746573746e6574140000000000000099ad2299c36c67bace1e8ab4d6f387f892697c3d8a0000000000000001150000000000000057656c636f6d6520746f20676f7665726e616e636564000000000000005468652066697273742061647669736f72792070726f706f73616c206f6e20636861696e203838382e0a4974206368616e676573206e6f7468696e6720e280942061207061737365642070726f706f73616c206973206f6e6c79207265636f726465642e08000000000000000300000000000000",
+      "signature_hex": "93664abdc362cc86e27c027909568c0eb3fa11b757856698ed3f6590aa7795cb9458129a9a33dbab21498616c60a446c52552ecc9310dbba52d1a187dd372a02",
+      "signer_public_key_hex": "094f2af81ea7e0a39f03d30b81c8fb178707d640ad36763cecae1378e31ce15d",
+      "signer_secret_hex": "22dc700eedc45aff2bca437029ab6b4df1187f64248ebace9ab5447d3a96d46f",
+      "signer_seed": 900150,
+      "tag": "wrfcoin.advisory_governance_action.v1",
+      "tamper_note": "summary text changed",
+      "tampered_input": {
+        "account": "0x99ad2299c36c67bace1e8ab4d6f387f892697c3d",
+        "action": {
+          "propose": {
+            "summary": "The first advisory proposal on chain 888.\nIt changes everything.",
+            "title": "Welcome to governance"
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 3
+      }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "account": "0xc3631f8a9677caa884dce150089830c9c47e47f9",
+        "action": {
+          "vote": {
+            "approve": true,
+            "proposal_id": "adv-94c0b5ba24e7fe5c"
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 9
+      },
+      "kind": "advisory_governance_action_v2",
+      "preimage_hex": "2500000000000000777266636f696e2e61647669736f72795f676f7665726e616e63655f616374696f6e2e76310f00000000000000777266636f696e2d746573746e65740700000000000000746573746e65741400000000000000c3631f8a9677caa884dce150089830c9c47e47f91e000000000000000214000000000000006164762d393463306235626132346537666535630108000000000000000900000000000000",
+      "signature_hex": "3eb472a4533cb260696fd1e4a0b24540d84e2cc85b3a3016c5283825dc8b432f60b2df57285021cb0ef4d51fdf0bd35162c09f537bfd95e7cd44538795dc650b",
+      "signer_public_key_hex": "12ed2e7235ddd6cfb41b79a79854e6c079b7bd701059fa8fc369554cd908523c",
+      "signer_secret_hex": "c1d2cabf215d03c447627b7df8e98b2973b4ceae4dbbd0ba826cee1943cda57c",
+      "signer_seed": 900151,
+      "tag": "wrfcoin.advisory_governance_action.v1",
+      "tamper_note": "vote for -> against",
+      "tampered_input": {
+        "account": "0xc3631f8a9677caa884dce150089830c9c47e47f9",
+        "action": {
+          "vote": {
+            "approve": false,
+            "proposal_id": "adv-94c0b5ba24e7fe5c"
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 9
+      }
     }
   ],
   "chain_id": "wrfcoin-testnet",
