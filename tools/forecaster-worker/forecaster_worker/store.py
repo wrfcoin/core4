@@ -5,6 +5,7 @@ forecasts already sent. Stations are named by their public alias only. No coordi
 """
 import json
 import os
+import time
 from pathlib import Path
 
 STATE_FILE = "state.json"
@@ -19,11 +20,34 @@ class Store:
         self.obs = {}        # alias -> {str(observed_at): {"temperature_c": centi-degC, "pressure_hpa": Pa}}
         self.samples = []    # {"station", "variable", "lead", "valid", "model", "obs"}
         self.sent = []       # {"station", "lead", "day", "variable", "commit_id", "value", "issued_at"}
+        self.recovered_from = None   # set when a damaged state file was moved aside
         if self.path.exists():
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.obs = data.get("obs", {})
-            self.samples = data.get("samples", [])
-            self.sent = data.get("sent", [])
+            try:
+                self._load(json.loads(self.path.read_text(encoding="utf-8")))
+            except (ValueError, TypeError, KeyError, AttributeError, OSError):
+                aside = self.path.with_name(f"{STATE_FILE}.damaged-{int(time.time())}")
+                os.replace(self.path, aside)
+                self.obs, self.samples, self.sent = {}, [], []
+                self.recovered_from = aside.name
+
+    def _load(self, data) -> None:
+        obs, samples, sent = data.get("obs", {}), data.get("samples", []), data.get("sent", [])
+        if not isinstance(obs, dict) or not isinstance(samples, list) or not isinstance(sent, list):
+            raise ValueError("wrong shape")
+        for readings in obs.values():
+            for at, values in readings.items():
+                int(at)
+                if not all(isinstance(v, int) for v in values.values()):
+                    raise ValueError("wrong shape")
+        for s in samples:
+            if not (isinstance(s["station"], str) and isinstance(s["variable"], str)
+                    and all(isinstance(s[k], int) for k in ("lead", "valid", "model", "obs"))):
+                raise ValueError("wrong shape")
+        for s in sent:
+            if not (isinstance(s["station"], str) and isinstance(s["day"], str)
+                    and isinstance(s["lead"], int) and isinstance(s["issued_at"], int)):
+                raise ValueError("wrong shape")
+        self.obs, self.samples, self.sent = obs, samples, sent
 
     def save(self, now: int) -> None:
         for alias in list(self.obs):

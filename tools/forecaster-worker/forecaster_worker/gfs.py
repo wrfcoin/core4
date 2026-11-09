@@ -27,6 +27,19 @@ class GfsUnavailable(Exception):
     pass
 
 
+class GfsBudgetSpent(GfsUnavailable):
+    """This cycle's request allowance is used up."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: the worker talks to the host it was told to and no other."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def pick_cycle(issue_time: int, lag_hours: int = AVAILABILITY_LAG_HOURS) -> datetime:
     """The newest 6-hourly run that is at least `lag_hours` old at `issue_time` (unix seconds)."""
     t = datetime.fromtimestamp(issue_time, timezone.utc) - timedelta(hours=lag_hours)
@@ -72,7 +85,7 @@ def point_from_grib(blob: bytes, lat: float, lon: float, cycle: datetime | None 
 class GfsClient:
     """Fetches point boxes politely: one at a time, spaced out, cached for the life of a cycle."""
 
-    def __init__(self, opener=None, sleep=time.sleep, clock=time.monotonic, max_requests: int = 40):
+    def __init__(self, opener=None, sleep=time.sleep, clock=time.monotonic, max_requests: int = 60):
         self._open = opener or self._default_open
         self._sleep, self._clock = sleep, clock
         self._last = None
@@ -83,15 +96,15 @@ class GfsClient:
     @staticmethod
     def _default_open(url: str) -> bytes:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=40) as response:
-            return response.read(200_000)
+        with NO_REDIRECT_OPENER.open(request, timeout=40) as response:
+            return response.read(grib2.MAX_FILE_BYTES + 1)
 
     def point(self, cycle: datetime, step: int, lat: float, lon: float) -> dict:
         key = (cycle, step, round(lat, 1), round(lon, 1))
         if key in self._cache:
             return self._cache[key]
         if self.requests >= self.max_requests:
-            raise GfsUnavailable("request budget for this cycle is used up")
+            raise GfsBudgetSpent("request budget for this cycle is used up")
         if self._last is not None:
             wait = MIN_SECONDS_BETWEEN_REQUESTS - (self._clock() - self._last)
             if wait > 0:
@@ -99,8 +112,9 @@ class GfsClient:
         self.requests += 1
         try:
             blob = self._open(box_url(cycle, step, lat, lon))
-        except (urllib.error.URLError, OSError, TimeoutError) as error:
+        except Exception as error:  # noqa: BLE001 - any transport failure means "no file this cycle"
             code = getattr(error, "code", None)
+            getattr(error, "close", lambda: None)()
             raise GfsUnavailable(f"NOMADS did not return the file (HTTP {code})" if code else "NOMADS could not be reached") from None
         finally:
             self._last = self._clock()
@@ -108,6 +122,8 @@ class GfsClient:
             value = point_from_grib(blob, lat, lon, cycle, step)
         except grib2.GribError as error:
             raise GfsUnavailable(f"could not read the model file: {error}") from None
+        except Exception as error:  # noqa: BLE001 - belt and braces: a bad file must never stop the worker
+            raise GfsUnavailable(f"could not read the model file ({type(error).__name__})") from None
         self._cache[key] = value
         return value
 

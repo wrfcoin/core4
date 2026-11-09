@@ -24,7 +24,7 @@ def _show(report, variable: str) -> None:
               f"(model {f['model_raw'] / scale:.2f}, correction {f['correction'] / scale:+.2f} from {f['samples']} samples, "
               f"GFS run {f['model_run']})")
         if f["dry_run"]:
-            print("  submit body: " + json.dumps(f["submit_body"], sort_keys=True))
+            print("  unsigned submit body (a dry run signs nothing): " + json.dumps(f["submit_body"], sort_keys=True))
         else:
             print(f"  commit id: {f['commit_id']}")
     if not report.forecasts:
@@ -70,18 +70,23 @@ def main(argv=None) -> int:
     loop = args.command == "run"
     while True:
         started = time.time()
-        store = Store(cfg.data_dir)
+        wait = cfg.cycle_seconds
+        failed = False
         try:
-            report = run_cycle(cfg, site, gfs.GfsClient(), store, wallet, dry_run=args.dry_run)
+            report = run_cycle(cfg, site, gfs.GfsClient(), Store(cfg.data_dir), wallet, dry_run=args.dry_run)
             _show(report, cfg.variable)
         except SiteError as error:
-            print(f"Cycle stopped: {error}. Will try again next cycle.", file=sys.stderr)
-            if not loop:
-                return 1
+            failed = True
+            wait = max(wait, error.retry_after or 0)
+            print(f"Cycle stopped: {error}. Next try in {wait // 60} minutes.", file=sys.stderr)
+        except Exception as error:  # noqa: BLE001 - one bad cycle must never end the worker or start a restart loop
+            failed = True
+            print(f"Cycle failed ({type(error).__name__}). Next try in {wait // 60} minutes.", file=sys.stderr)
         if not loop:
-            return 0
+            return 1 if failed else 0
         sys.stdout.flush()
-        time.sleep(max(60.0, cfg.cycle_seconds - (time.time() - started)))
+        # Always a full interval between cycles, also after an error: never a fast retry.
+        time.sleep(max(60.0, wait - (time.time() - started)) if not failed else float(wait))
 
 
 if __name__ == "__main__":

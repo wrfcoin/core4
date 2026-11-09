@@ -11,6 +11,7 @@ import hmac
 import os
 import secrets
 import stat
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -70,16 +71,40 @@ class Wallet:
         return f"Wallet({self.address})"
 
 
+def folder_keeps_modes(folder: Path) -> bool:
+    """True when a file made private in this folder really is private (false on Windows-backed mounts)."""
+    probe = folder / f".mode-probe-{secrets.token_hex(4)}"
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        return stat.S_IMODE(probe.stat().st_mode) & 0o077 == 0
+    except OSError:
+        return True     # cannot tell: stay strict
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+
+
 def load_or_create(data_dir: Path) -> tuple[Wallet, bool]:
     """Return (wallet, created). The phrase file is created with mode 600 and never rewritten."""
     path = Path(data_dir) / PHRASE_FILE
     if path.exists():
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & 0o077:
-            raise PermissionError(f"{path} is readable by other users (mode {mode:o}); run: chmod 600 {path}")
-        phrase = path.read_text(encoding="ascii").strip()
+            if folder_keeps_modes(Path(data_dir)):
+                raise PermissionError(f"{path} is readable by other users (mode {mode:o}); run: chmod 600 {path}")
+            # Windows and some network folders ignore Unix file modes. Refusing would lock the owner out.
+            print(f"Note: this folder does not keep Unix file permissions, so {PHRASE_FILE} is protected only by "
+                  "the folder's own access rules. Keep the folder private.", file=sys.stderr)
+        try:
+            phrase = path.read_text(encoding="ascii").strip()
+        except ValueError:
+            phrase = ""
         if not phrase_is_valid(phrase):
-            raise ValueError(f"{path} does not hold a valid 12-word phrase")
+            raise ValueError(f"{path} does not hold a valid 12-word phrase. The worker will not replace it. "
+                             "Restore your copy of the file, or move it away to start a new wallet.")
         return Wallet(phrase), False
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     phrase = new_phrase()

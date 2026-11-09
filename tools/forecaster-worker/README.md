@@ -26,8 +26,12 @@ days of running, because the worker needs past readings to learn from.
    git clone https://github.com/wrfcoin/core4.git
    cd core4/tools/forecaster-worker
    mkdir -p worker-data
+   printf 'WORKER_UID=%s\nWORKER_GID=%s\n' "$(id -u)" "$(id -g)" > .env
    docker compose build
    ```
+
+   The `printf` line is for Linux and macOS: it makes the worker run as you, so the wallet file
+   belongs to you. On Windows (PowerShell) skip that line and use `mkdir worker-data`.
 
 3. Try it first without sending anything:
 
@@ -35,7 +39,8 @@ days of running, because the worker needs past readings to learn from.
    docker compose run --rm worker once --dry-run
    ```
 
-   It prints your wallet address and the forecasts it **would** send.
+   It prints your wallet address and the forecasts it **would** send. A dry run does not log in
+   and signs nothing.
 
 4. Start it for real. It keeps running and restarts with your computer:
 
@@ -50,9 +55,10 @@ To stop it: `docker compose down`. Your wallet and history stay in the `worker-d
 
 - The first run makes a new wallet. The worker prints its **address** (it starts with `0x`).
   Print it again any time: `docker compose run --rm worker address`
-- The 12 secret words of the wallet are in the file `worker-data/wallet-phrase.txt`. Only you can
-  read it. The worker never shows them. **Keep that file private and keep a copy.** Whoever has
-  the words has the wallet.
+- The 12 secret words of the wallet are in the file `worker-data/wallet-phrase.txt`. The worker
+  never shows them. On Linux and macOS the file is readable only by your user. On Windows the
+  file has the same access as the folder it is in, so keep the folder inside your own user
+  folder. **Keep that file private and keep a copy.** Whoever has the words has the wallet.
 - See your forecasts and scores in the terminal: `docker compose run --rm worker status`
 - See them on the site: <https://wrfcoin.com/forecast/new> lists the forecasts of the signed-in
   wallet. Sign in there with a 12-word wallet, using the words from your file.

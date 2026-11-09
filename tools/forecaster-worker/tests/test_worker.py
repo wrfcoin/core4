@@ -1,7 +1,13 @@
 """Offline tests: no network, no real wallet. Run: python3 -m unittest discover -s tools/forecaster-worker/tests -v"""
 import hashlib
+import http.server
+import io
 import json
+import random
 import stat
+import struct
+import threading
+import contextlib
 import sys
 import tempfile
 import unittest
@@ -14,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from forecaster_worker import bias, chain, ed25519, gfs, grib2, wallet  # noqa: E402
 from forecaster_worker.site import Site, SiteError  # noqa: E402
 from forecaster_worker.store import Store  # noqa: E402
+from forecaster_worker import __main__ as cli  # noqa: E402
 from forecaster_worker.worker import Config, run_cycle  # noqa: E402
 
 # The shared cross-wallet vector (frontend contract-fixtures/wallet-key-scheme-vector.json).
@@ -107,7 +114,8 @@ class ChainRulesTest(unittest.TestCase):
         self.assertEqual(chain.site_value("pressure_hpa", 98364), 983.6)
 
     def test_draft_is_checked_before_signing(self):
-        want = dict(wallet=ADDRESS, alias=chain.station_alias(STATION), variable="temperature_c", lead_hours=6, value=12.3)
+        want = dict(wallet=ADDRESS, alias=chain.station_alias(STATION), variable="temperature_c", lead_hours=6, value=12.3,
+                    now=T + 30, model_id="website-manual/v1")
         self.assertEqual(chain.verify_draft(site_draft(), **want), STATION)
         for bad in (site_draft(value=15), site_draft(lead=12), site_draft(station="PWS-OTHER"),
                     site_draft(variable="pressure_hpa"), site_draft(forecaster="0x" + "11" * 20)):
@@ -119,6 +127,30 @@ class ChainRulesTest(unittest.TestCase):
             chain.verify_draft(tampered, **want)
         with self.assertRaises(chain.DraftMismatch):
             chain.verify_draft(dict(site_draft(), commitId="cd" * 32), **want)
+
+    def test_draft_must_be_dated_now_and_be_exactly_the_workers_own_text(self):
+        want = dict(wallet=ADDRESS, alias=chain.station_alias(STATION), variable="temperature_c", lead_hours=6, value=12.3,
+                    model_id="website-manual/v1")
+        self.assertEqual(chain.verify_draft(site_draft(), now=T + 120, **want), STATION)
+        for late in (T + 121, T - 121, T + 86400):
+            with self.assertRaisesRegex(chain.DraftMismatch, "not dated now"):
+                chain.verify_draft(site_draft(), now=late, **want)
+
+        def rehashed(data):
+            d = site_draft()
+            return dict(d, data=data, commitId=chain.commit_id(data, d["nonce"], STATION, T))
+
+        good = site_draft()["data"]
+        variants = [
+            good[:-1] + ',"zz_extra":1}',                                              # an extra field
+            good.replace('"horizon_hours":6,', '"horizon_hours":99,"horizon_hours":6,'),  # a repeated key
+            good.replace('"values":{"temperature_c":12.3}', '"values":{"temperature_c":12.30}'),
+            good.replace(",", ", ", 1),                                                # not compact
+            good.replace("website-manual/v1", "something-else/v9"),
+        ]
+        for data in variants:
+            with self.assertRaises(chain.DraftMismatch):
+                chain.verify_draft(rehashed(data), now=T, **want)
 
     def test_signed_body_verifies_and_is_key_bound(self):
         w = wallet.Wallet(PHRASE)
@@ -338,8 +370,18 @@ class CycleTest(unittest.TestCase):
         self.assertEqual((first["model_raw"], first["correction"], first["samples"], first["forecast"]), (1000, 56, 3, 1056))
         self.assertEqual(first["value"], 10.6)
         body = first["submit_body"]
-        message = chain.commit_auth_message("888", "testnet", self.alias_a, body["commitId"])
-        self.assertTrue(ed25519.verify(self.wallet.public_key, message, bytes.fromhex(body["authSignature"])))
+        self.assertIsNone(body["authSignature"])              # a dry run signs nothing
+        self.assertEqual(body["authPubkey"], PUBKEY)
+        self.assertEqual(chain.commit_id(body["data"], body["nonce"], self.alias_a, body["timestamp"]), body["commitId"])
+
+    def test_dry_run_never_calls_the_signer(self):
+        class NoSign:
+            address, public_key = self.wallet.address, self.wallet.public_key
+            def sign(self, message):
+                raise AssertionError("a dry run must not sign")
+        site = FakeSite(self.NOW, [self.alias_a], self.ids)
+        report = run_cycle(self.cfg, site, FakeModel(), Store(self.folder.name), NoSign(), dry_run=True, now=self.NOW)
+        self.assertEqual(len(report.forecasts), 4)
 
     def test_live_cycle_submits_once_per_station_lead_and_day(self):
         site = FakeSite(self.NOW, [self.alias_a], self.ids)
@@ -407,9 +449,14 @@ class ConfigTest(unittest.TestCase):
         cfg = Config.from_env({})
         self.assertEqual((cfg.api_base, cfg.chain_id, cfg.stations, cfg.leads), ("https://wrfcoin.com/api", "888", "auto", (1, 6, 12, 24)))
         for bad in ({"WORKER_VARIABLE": "humidity_pct"}, {"WORKER_LEADS": "3"}, {"WORKER_CYCLE_SECONDS": "60"},
-                    {"WORKER_STATIONS": "PWS-RAW-ID"}, {"WRFCOIN_API": "http://wrfcoin.com/api"}):
+                    {"WORKER_STATIONS": "PWS-RAW-ID"}, {"WRFCOIN_API": "http://wrfcoin.com/api"},
+                    {"WRFCOIN_API": "http://evil.example/localhost"}, {"WRFCOIN_API": "http://localhost.evil.example/api"},
+                    {"WRFCOIN_API": "http://127.0.0.1.evil.example/api"}, {"WRFCOIN_API": "https://user@wrfcoin.com/api"},
+                    {"WRFCOIN_API": "ftp://wrfcoin.com/api"}):
             with self.assertRaises(ValueError):
                 Config.from_env(bad)
+        self.assertEqual(Config.from_env({"WRFCOIN_API": "http://localhost:4001/api"}).api_base, "http://localhost:4001/api")
+        self.assertEqual(Config.from_env({"WRFCOIN_API": "http://127.0.0.1:4001/api"}).api_base, "http://127.0.0.1:4001/api")
 
 
 class SiteClientTest(unittest.TestCase):
@@ -452,6 +499,327 @@ class SiteClientTest(unittest.TestCase):
         with self.assertRaises(SiteError) as caught:
             busy.draft("st_aaaaaaaaaaaa", "temperature_c", 6, 1.0)
         self.assertEqual(caught.exception.code, "ALREADY_FORECAST")
+
+
+class GribHardeningTest(unittest.TestCase):
+    """Bad model files may only ever produce GribError (or, by luck, plausible integers)."""
+
+    def outcome(self, blob):
+        try:
+            got = gfs.point_from_grib(blob, 40.0, -100.0)
+        except grib2.GribError:
+            return
+        self.assertEqual(sorted(got), ["pressure_hpa", "temperature_c"])
+        self.assertTrue(all(isinstance(v, int) for v in got.values()))
+
+    def test_every_truncation(self):
+        blob = FIXTURE.read_bytes()
+        for cut in range(len(blob)):
+            self.outcome(blob[:cut])
+
+    def test_seeded_mutations(self):
+        blob = FIXTURE.read_bytes()
+        rng = random.Random(888)
+        for _ in range(4000):
+            data = bytearray(blob)
+            for _ in range(rng.choice((1, 1, 2, 4))):
+                data[rng.randrange(len(data))] = rng.randrange(256)
+            self.outcome(bytes(data))
+        for _ in range(300):
+            self.outcome(bytes(rng.randrange(256) for _ in range(rng.randrange(0, 700))))
+            self.outcome(b"GRIB" + bytes(rng.randrange(256) for _ in range(rng.randrange(0, 300))))
+
+    def test_huge_declared_grid_is_refused_before_any_allocation(self):
+        blob = bytearray(FIXTURE.read_bytes()[:214])            # the first message
+        s3 = bytes(blob).index(b"\x00\x00\x00\x48\x03")          # section 3 (72 bytes)
+        s5 = bytes(blob).index(b"\x00\x00\x00\x15\x05")          # section 5 (21 bytes)
+        blob[s3 + 6:s3 + 10] = struct.pack(">I", 3000 * 3000)   # points in section 3
+        blob[s3 + 30:s3 + 38] = struct.pack(">II", 3000, 3000)  # Ni, Nj
+        blob[s5 + 5:s5 + 9] = struct.pack(">I", 3000 * 3000)    # points in section 5
+        blob[s5 + 19] = 0                                       # bit width 0: no data needed
+        import tracemalloc
+        tracemalloc.start()
+        with self.assertRaisesRegex(grib2.GribError, "small point box"):
+            grib2.read_fields(bytes(blob))
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        self.assertLess(peak, 5_000_000)
+
+    def test_client_turns_any_bad_file_into_unavailable(self):
+        cycle = datetime(2026, 11, 9, 6, tzinfo=timezone.utc)
+        for blob in (b"", b"GRIB", FIXTURE.read_bytes()[:100], b"<html>busy</html>"):
+            client = gfs.GfsClient(opener=lambda url, b=blob: b, sleep=lambda s: None)
+            with self.assertRaises(gfs.GfsUnavailable):
+                client.point(cycle, 6, 40.0, -100.0)
+
+        def boom(url):
+            raise RuntimeError("odd transport failure")
+        with self.assertRaises(gfs.GfsUnavailable):
+            gfs.GfsClient(opener=boom, sleep=lambda s: None).point(cycle, 6, 40.0, -100.0)
+
+
+class _Redirector(http.server.BaseHTTPRequestHandler):
+    seen = []
+
+    def do_GET(self):
+        type(self).seen.append((self.path, self.headers.get("Authorization")))
+        if self.path.startswith("/landed"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"forecasts":[]}')
+            return
+        self.send_response(302)
+        self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/landed")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+class RedirectTest(unittest.TestCase):
+    def setUp(self):
+        _Redirector.seen = []
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), _Redirector)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+
+    def test_site_client_does_not_follow_a_redirect_with_the_token(self):
+        site = Site(self.base + "/api", sleep=lambda s: None)
+        site._token = "token-value"
+        with self.assertRaises(SiteError) as caught:
+            site.mine()
+        self.assertEqual((caught.exception.status, caught.exception.code), (302, "REDIRECT"))
+        self.assertEqual([path for path, _ in _Redirector.seen], ["/api/forecasts/mine"])     # /landed was never asked
+
+    def test_model_client_does_not_follow_a_redirect(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            gfs.GfsClient._default_open(self.base + "/file")
+        caught.exception.close()
+        self.assertEqual([path for path, _ in _Redirector.seen], ["/file"])
+
+
+class SiteShapeTest(unittest.TestCase):
+    ODD = [b"", b"null", b"[]", b"[1,2]", b'"text"', b"7", b"{", b'{"stations":7}', b'{"stations":{"a":1}}',
+           b'{"stations":[1,null,"x",{"alias":5},{"alias":null}]}', b'{"observations":"x"}', b'{"observations":[1,[2]]}',
+           b'{"forecasts":{"a":1}}', b'{"success":true,"data":[1]}', b'{"success":true,"data":null}', b"\xff\xfe"]
+
+    def test_odd_answers_never_raise_anything_but_site_errors(self):
+        w = wallet.Wallet(PHRASE)
+        for payload in self.ODD:
+            site = Site("https://wrfcoin.com/api", transport=lambda m, u, h, b, p=payload: (200, p, None), sleep=lambda s: None)
+            site._token = "t"
+            self.assertIsInstance(site.forecast_status(), (dict, type(None)))
+            self.assertEqual(site.stations(), [])
+            self.assertEqual(site.observations("st_aaaaaaaaaaaa"), [])
+            self.assertEqual(site.mine(), [])
+            self.assertIsInstance(site.draft("st_aaaaaaaaaaaa", "temperature_c", 6, 1.0), dict)
+            self.assertIsInstance(site.submit({}), dict)
+            with self.assertRaises((chain.LoginChallengeRefused, SiteError)):
+                site.login(w, "888", "testnet")
+        for status in (400, 404, 500):
+            for payload in self.ODD:
+                site = Site("https://wrfcoin.com/api", transport=lambda m, u, h, b, p=payload, s=status: (s, p, None),
+                            sleep=lambda s: None)
+                with self.assertRaises(SiteError):
+                    site.stations()
+
+    def test_retry_after_and_paging_flag(self):
+        busy = Site("https://wrfcoin.com/api", transport=lambda m, u, h, b: (429, b"{}", "900"), sleep=lambda s: None)
+        with self.assertRaises(SiteError) as caught:
+            busy.stations()
+        self.assertEqual((caught.exception.retry_after, caught.exception.back_off), (900, True))
+        self.assertFalse(SiteError(403, "STATION_NOT_OPEN").back_off)
+        self.assertTrue(SiteError(503).back_off)
+        paged = Site("https://wrfcoin.com/api", sleep=lambda s: None, transport=lambda m, u, h, b: (
+            200, b'{"stations":[{"alias":"st_aaaaaaaaaaaa","latitude":1.0,"longitude":2.0}],"hasMore":true}', None))
+        self.assertEqual(len(paged.stations()), 1)
+        self.assertTrue(paged.more_stations)
+
+
+class WalletFileTest(unittest.TestCase):
+    def test_empty_or_damaged_phrase_file_is_refused_and_left_alone(self):
+        for content in (b"", b"\n", b"abandon abandon", b"\xff\xfe\x00binary", (PHRASE.replace("about", "zoo")).encode()):
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / wallet.PHRASE_FILE
+                path.write_bytes(content)
+                path.chmod(0o600)
+                with self.assertRaises(ValueError):
+                    wallet.load_or_create(Path(folder))
+                self.assertEqual(path.read_bytes(), content)
+
+    def test_folder_without_unix_modes_warns_instead_of_locking_the_owner_out(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first, _ = wallet.load_or_create(Path(folder))
+            path = Path(folder) / wallet.PHRASE_FILE
+            path.chmod(0o666)
+            real = wallet.folder_keeps_modes
+            self.addCleanup(setattr, wallet, "folder_keeps_modes", real)
+            self.assertTrue(real(Path(folder)))
+            self.assertEqual(list(Path(folder).iterdir()), [path])            # the probe file is gone
+            with self.assertRaises(PermissionError):                             # modes are real here: refuse
+                wallet.load_or_create(Path(folder))
+            wallet.folder_keeps_modes = lambda folder: False                     # a Windows-backed mount
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                again, created = wallet.load_or_create(Path(folder))
+            self.assertEqual((again.address, created), (first.address, False))
+            self.assertIn("does not keep Unix file permissions", err.getvalue())
+            self.assertNotIn(path.read_text().split()[0] + " " + path.read_text().split()[1], err.getvalue())
+
+
+class StoreTest(unittest.TestCase):
+    def test_damaged_state_is_moved_aside_and_the_worker_starts_empty(self):
+        for content in ("", "{", "[]", "null", '{"obs":[]}', '{"samples":[{"station":1}]}', '{"sent":[{}]}',
+                        '{"obs":{"st_aaaaaaaaaaaa":{"abc":{}}}}'):
+            with tempfile.TemporaryDirectory() as folder:
+                (Path(folder) / "state.json").write_text(content)
+                store = Store(folder)
+                self.assertEqual((store.obs, store.samples, store.sent), ({}, [], []))
+                self.assertTrue(store.recovered_from.startswith("state.json.damaged-"))
+                self.assertEqual((Path(folder) / store.recovered_from).read_text(), content)
+                store.save(T)
+                self.assertIsNone(Store(folder).recovered_from)
+
+
+class ManyStationsModel(FakeModel):
+    """Counts distinct model files like the real client and stops at a budget."""
+    def __init__(self, budget):
+        super().__init__()
+        self.max_requests, self.files = budget, set()
+
+    def at_time(self, issue_time, valid_time, lat, lon):
+        lower = valid_time - valid_time % 3600
+        for hour in ({lower} if lower == valid_time else {lower, lower + 3600}):
+            key = (gfs.pick_cycle(issue_time), hour, lat, lon)
+            if key not in self.files:
+                if len(self.files) >= self.max_requests:
+                    raise gfs.GfsBudgetSpent("request budget for this cycle is used up")
+                self.files.add(key)
+        return super().at_time(issue_time, valid_time, lat, lon)
+
+
+class ResilienceTest(unittest.TestCase):
+    NOW = CycleTest.NOW
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.wallet = wallet.Wallet(PHRASE)
+        self.cfg = Config(data_dir=self.folder.name)
+
+    def test_forecasts_are_made_before_learning_spends_the_model_budget(self):
+        ids = {chain.station_alias(f"PWS-{n}"): f"PWS-{n}" for n in range(12)}
+        site = FakeSite(self.NOW, sorted(ids), ids)
+        site.stations = lambda: [{"alias": a, "latitude": 40.0 + n, "longitude": -100.0} for n, a in enumerate(sorted(ids))]
+        report = run_cycle(self.cfg, site, ManyStationsModel(budget=60), Store(self.folder.name), self.wallet,
+                           dry_run=False, now=self.NOW)
+        self.assertEqual(len(site.submitted), 4)
+        self.assertTrue(any("budget for learning is used up" in line and "learn next cycle" in line for line in report.lines))
+        self.assertEqual(len(report.forecasts), 4)
+
+    def test_a_crash_after_a_submit_does_not_forget_the_submit(self):
+        ids = {chain.station_alias("PWS-A"): "PWS-A"}
+        site = FakeSite(self.NOW, sorted(ids), ids)
+        honest = site.submit
+        def submit_then_die(body):
+            if len(site.submitted) == 2:
+                raise RuntimeError("power cut")
+            return honest(body)
+        site.submit = submit_then_die
+        with self.assertRaises(RuntimeError):
+            run_cycle(self.cfg, site, FakeModel(), Store(self.folder.name), self.wallet, dry_run=False, now=self.NOW)
+        self.assertEqual(len(Store(self.folder.name).sent), 2)
+        site.submit = honest
+        run_cycle(self.cfg, site, FakeModel(), Store(self.folder.name), self.wallet, dry_run=False, now=self.NOW)
+        self.assertEqual(len(site.submitted), 4)
+        self.assertEqual(sorted(json.loads(b["data"])["horizon_hours"] for b in site.submitted), [1, 6, 12, 24])
+
+    def test_busy_site_stops_the_cycle_at_once(self):
+        ids = {chain.station_alias(f"PWS-{n}"): f"PWS-{n}" for n in range(3)}
+        for failing in ("observations", "draft"):
+            site = FakeSite(self.NOW, sorted(ids), ids)
+            calls = []
+            def busy(*args, _calls=calls):
+                _calls.append(args)
+                raise SiteError(429, None, None, retry_after=1200)
+            setattr(site, failing, busy)
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(SiteError) as caught:
+                    run_cycle(Config(data_dir=folder), site, FakeModel(), Store(folder), self.wallet, dry_run=False, now=self.NOW)
+            self.assertEqual(caught.exception.retry_after, 1200)
+            self.assertEqual(len(calls), 1)                 # not tried again for the next station or lead
+            self.assertEqual(site.submitted, [])
+
+    def test_an_old_draft_is_not_signed(self):
+        ids = {chain.station_alias("PWS-A"): "PWS-A"}
+        site = FakeSite(self.NOW - 3600, sorted(ids), ids)   # the site's clock is an hour behind
+        site.observations = lambda alias: FakeSite(self.NOW, [], ids).observations(alias)
+        report = run_cycle(self.cfg, site, FakeModel(), Store(self.folder.name), self.wallet, dry_run=False, now=self.NOW)
+        self.assertEqual(site.submitted, [])
+        self.assertTrue(any("not dated now" in line for line in report.lines))
+
+
+class RunLoopTest(unittest.TestCase):
+    """The long-running loop: an error in a cycle never ends the process and never causes a fast retry."""
+
+    def run_loop(self, cycle, cycles=3):
+        sleeps = []
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) >= cycles:
+                raise KeyboardInterrupt
+        with tempfile.TemporaryDirectory() as folder:
+            real = (cli.run_cycle, cli.time.sleep)
+            cli.run_cycle, cli.time.sleep = cycle, fake_sleep
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(KeyboardInterrupt):
+                    import os
+                    old = dict(os.environ)
+                    os.environ.update({"WORKER_DATA_DIR": folder, "WORKER_CYCLE_SECONDS": "3600"})
+                    try:
+                        cli.main(["run", "--dry-run"])
+                    finally:
+                        os.environ.clear()
+                        os.environ.update(old)
+            finally:
+                cli.run_cycle, cli.time.sleep = real
+        return sleeps, err.getvalue()
+
+    def test_unexpected_errors_wait_a_full_interval(self):
+        for error in (IndexError("x"), struct.error("x"), ZeroDivisionError(), AttributeError("x"), TypeError("x"), MemoryError()):
+            def cycle(*args, _error=error, **kwargs):
+                raise _error
+            sleeps, err = self.run_loop(cycle)
+            self.assertEqual(sleeps, [3600.0, 3600.0, 3600.0])
+            self.assertIn("Cycle failed", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_retry_after_longer_than_the_interval_is_honoured(self):
+        def cycle(*args, **kwargs):
+            raise SiteError(429, None, None, retry_after=7200)
+        sleeps, _ = self.run_loop(cycle, cycles=2)
+        self.assertEqual(sleeps, [7200.0, 7200.0])
+
+    def test_once_reports_failure_with_an_exit_code_not_a_traceback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            real = cli.run_cycle
+            def cycle(*args, **kwargs):
+                raise IndexError("x")
+            cli.run_cycle = cycle
+            import os
+            old = dict(os.environ)
+            os.environ["WORKER_DATA_DIR"] = folder
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cli.main(["once", "--dry-run"]), 1)
+            finally:
+                cli.run_cycle = real
+                os.environ.clear()
+                os.environ.update(old)
 
 
 if __name__ == "__main__":

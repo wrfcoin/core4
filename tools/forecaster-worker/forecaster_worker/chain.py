@@ -79,8 +79,16 @@ class DraftMismatch(Exception):
     """The site's draft is not the forecast this worker asked for. Nothing is signed."""
 
 
-def verify_draft(draft: dict, *, wallet: str, alias: str, variable: str, lead_hours: int, value: float) -> str:
-    """Check a draft before signing it. Returns the station id to sign over."""
+DRAFT_MAX_CLOCK_GAP_SECONDS = 120
+
+
+def verify_draft(draft: dict, *, wallet: str, alias: str, variable: str, lead_hours: int, value: float,
+                 now: int, model_id: str) -> str:
+    """Check a draft before signing it. Returns the station id to sign over.
+
+    The draft's time must be the present, and its data text must be byte for byte the text this worker
+    would write itself for the same forecast, so it can hold no extra, repeated or reordered field.
+    """
     def fail(why):
         raise DraftMismatch(why)
 
@@ -118,6 +126,12 @@ def verify_draft(draft: dict, *, wallet: str, alias: str, variable: str, lead_ho
         fail("the target time does not match the lead")
     if str(draft.get("forecaster", "")).lower() != wallet.lower() or not ADDRESS_RE.match(wallet.lower()):
         fail("the draft names a different wallet")
+    if abs(timestamp - now) > DRAFT_MAX_CLOCK_GAP_SECONDS:
+        fail("the draft is not dated now (check this computer's clock)")
+    if not re.match(r"^[\x21-\x7e]{1,128}$", nonce):
+        fail("the draft nonce is malformed")
+    if data != build_data(station_id, variable, round_tenth(value), lead_hours, timestamp, model_id):
+        fail("the draft text is not exactly the forecast this worker asked for")
     if commit_id(data, nonce, station_id, timestamp) != commit:
         fail("the commit id does not match the forecast")
     return station_id

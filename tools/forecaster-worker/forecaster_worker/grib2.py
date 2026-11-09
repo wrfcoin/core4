@@ -31,6 +31,12 @@ class Field:
 
     def at(self, lat: float, lon: float) -> float:
         """Bilinear value at a point inside the grid."""
+        try:
+            return self._at(lat, lon)
+        except (IndexError, ZeroDivisionError, OverflowError, ValueError) as error:
+            raise GribError(f"damaged GRIB grid ({type(error).__name__})") from None
+
+    def _at(self, lat: float, lon: float) -> float:
         y = (lat - self.lat0) / self.dlat
         x = ((lon - self.lon0) % 360.0) / self.dlon
         if not (-1e-6 <= y <= self.nj - 1 + 1e-6 and -1e-6 <= x <= self.ni - 1 + 1e-6):
@@ -64,7 +70,23 @@ def _unpack_bits(data: bytes, nbits: int, count: int) -> list:
     return [(big >> (total - nbits * (k + 1))) & mask for k in range(count)]
 
 
+MAX_GRID_POINTS = 10_000     # a point box is 25 points; anything huge is not what the worker asked for
+MAX_FILE_BYTES = 200_000
+
+
 def read_fields(blob: bytes) -> list:
+    """Decode every message, or raise GribError. No other exception leaves this function."""
+    try:
+        return _read_fields(blob)
+    except GribError:
+        raise
+    except (IndexError, ValueError, OverflowError, ZeroDivisionError, ArithmeticError, MemoryError, struct.error) as error:
+        raise GribError(f"damaged GRIB file ({type(error).__name__})") from None
+
+
+def _read_fields(blob: bytes) -> list:
+    if len(blob) > MAX_FILE_BYTES:
+        raise GribError("the file is far larger than a point box")
     fields = []
     pos = 0
     while pos < len(blob):
@@ -112,14 +134,20 @@ def _decode(discipline: int, sections: dict) -> Field:
     scan = s3[71]
     if scan & 0x30:
         raise GribError("unsupported scanning mode")
-    if ni * nj != struct.unpack(">I", s3[6:10])[0] or ni < 1 or nj < 1:
+    if ni < 1 or nj < 1 or ni * nj > MAX_GRID_POINTS:
+        raise GribError("the grid is not a small point box")
+    if ni * nj != struct.unpack(">I", s3[6:10])[0]:
         raise GribError("grid size does not match the point count")
     dlon = di * unit * (-1 if scan & 0x80 else 1)
     dlat = dj * unit * (1 if scan & 0x40 else -1)
     if nj > 1 and abs((la1 + dlat * (nj - 1)) - la2) > 1e-3:
         raise GribError("grid latitudes are inconsistent")
-    if dlon <= 0:
+    if dlon <= 0 or (ni > 1 and di == 0) or (nj > 1 and dj == 0):
         raise GribError("unsupported scanning mode")
+    if nj == 1:
+        dlat = dlat or 1.0     # a single row: any non-zero step keeps the row index at 0
+    if dlat == 0:
+        raise GribError("grid latitudes are inconsistent")
 
     if struct.unpack(">H", s4[7:9])[0] != 0:
         raise GribError("only product template 4.0 is supported")

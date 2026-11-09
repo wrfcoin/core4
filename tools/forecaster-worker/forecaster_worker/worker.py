@@ -4,6 +4,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from . import bias, chain, gfs
 from .site import SiteError
@@ -13,6 +14,7 @@ RELAY_MODEL_ID = "website-manual/v1"
 MAX_FORECASTS_PER_CYCLE = 4          # the site allows 10 draft/submit calls per wallet per 10 minutes
 FRESH_READING_SECONDS = 3 * 3600     # a station silent for longer cannot score a forecast
 BACKFILL_HOURS = 3
+FORECAST_REQUEST_RESERVE = 2 * MAX_FORECASTS_PER_CYCLE   # model files kept back for the forecasts
 
 
 @dataclass
@@ -49,8 +51,10 @@ class Config:
             raise ValueError("WORKER_CYCLE_SECONDS must be at least 900 (15 minutes), to stay polite to the data sources")
         if self.stations != "auto" and any(not chain.ALIAS_RE.match(a.strip()) for a in self.stations.split(",")):
             raise ValueError("WORKER_STATIONS must be 'auto' or a comma list of station aliases like st_0123456789ab")
-        if not self.api_base.startswith("https://") and "localhost" not in self.api_base and "127.0.0.1" not in self.api_base:
-            raise ValueError("WRFCOIN_API must be an https URL")
+        parts = urlsplit(self.api_base)
+        local = parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1")
+        if not ((parts.scheme == "https" or local) and parts.hostname and not parts.username and not parts.query):
+            raise ValueError("WRFCOIN_API must be an https URL (plain http is allowed only for localhost)")
 
 
 @dataclass
@@ -102,8 +106,8 @@ def choose_stations(cfg: Config, status, listed: list, report: CycleReport, dry_
     return chosen
 
 
-def learn(store, model, alias: str, position, cfg: Config, now: int, report: CycleReport) -> None:
-    """Add bias samples for recent whole hours that have a station reading."""
+def learn(store, model, alias: str, position, cfg: Config, now: int, report: CycleReport) -> bool:
+    """Add bias samples for recent whole hours that have a station reading. False = model budget used up."""
     last_hour = now - now % 3600
     for hour in range(last_hour - (BACKFILL_HOURS - 1) * 3600, last_hour + 1, 3600):
         for variable in chain.VARIABLES:
@@ -115,12 +119,15 @@ def learn(store, model, alias: str, position, cfg: Config, now: int, report: Cyc
                     continue
                 try:
                     value = model.at_time(hour - lead * 3600, hour, *position)[variable]
+                except gfs.GfsBudgetSpent:
+                    return False
                 except gfs.GfsUnavailable as error:
                     report.say(f"{alias}: no model value for a past hour ({error}).")
-                    return
+                    return True
                 store.samples.append({"station": alias, "variable": variable, "lead": lead, "valid": hour,
                                       "model": value, "obs": reading})
                 report.new_samples += 1
+    return True
 
 
 def make_forecast(store, model, alias: str, position, cfg: Config, lead: int, now: int) -> dict:
@@ -146,32 +153,71 @@ def local_draft(forecast: dict, wallet, now: int) -> dict:
             "data": data, "nonce": nonce, "timestamp": now, "commitId": chain.commit_id(data, nonce, station_id, now)}
 
 
-def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: int | None = None) -> CycleReport:
+def unsigned_body(draft: dict, wallet) -> dict:
+    """What a dry run prints: the submit body without a signature. A dry run signs nothing."""
+    return {"data": draft["data"], "nonce": draft["nonce"], "timestamp": draft["timestamp"], "commitId": draft["commitId"],
+            "authPubkey": wallet.public_key.hex(), "authSignature": None}
+
+
+def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: int | None = None,
+              clock=None) -> CycleReport:
+    """One cycle. State is saved after every accepted forecast and again at the end, whatever happens.
+    A busy, broken or unreachable site (429, 5xx, no answer) raises SiteError: the caller waits a full interval."""
+    clock = clock or ((lambda: now) if now is not None else time.time)   # tests pin the time; real runs use the clock
     now = int(time.time()) if now is None else now
     report = CycleReport()
+    try:
+        _cycle(cfg, site, model, store, wallet, dry_run, now, report, clock)
+    finally:
+        store.save(now)
+    return report
+
+
+def _cycle(cfg, site, model, store, wallet, dry_run, now, report, clock) -> None:
     site.logout()   # a token from an earlier cycle has expired by now
+    if getattr(store, "recovered_from", None):
+        report.say(f"The history file was damaged. It was kept as {store.recovered_from} and a new one was started.")
     status = site.forecast_status()
     if status is None:
         report.say("Website forecasts are switched off on the site right now.")
     stations = choose_stations(cfg, status, site.stations(), report, dry_run)
+    if getattr(site, "more_stations", False):
+        report.say("The site has more stations than its first page lists; only the first page is used.")
     report.stations = sorted(stations)
     if not stations:
         report.say("No station to forecast this cycle.")
 
-    for alias, position in stations.items():
+    for alias in stations:
         try:
             report.new_readings += store.add_observations(alias, site.observations(alias))
         except SiteError as error:
+            if error.back_off:
+                raise
             report.say(f"{alias}: could not read the station's readings ({error}).")
-            continue
-        learn(store, model, alias, position, cfg, now, report)
 
+    # Learn first, so today's forecasts use today's samples, but keep enough model requests back for
+    # the forecasts: they are the point of the cycle. The start station rotates so none is always last.
+    limit = getattr(model, "max_requests", None)
+    if limit is not None:
+        model.max_requests = max(0, limit - FORECAST_REQUEST_RESERVE)
+    try:
+        order = sorted(stations)
+        start = (now // 3600) % len(order) if order else 0
+        for index, alias in enumerate(order[start:] + order[:start]):
+            if not learn(store, model, alias, stations[alias], cfg, now, report):
+                waiting = len(order) - index
+                report.say(f"Model request budget for learning is used up this cycle; {waiting} station(s) learn next cycle.")
+                break
+    finally:
+        if limit is not None:
+            model.max_requests = limit
+    _send_forecasts(cfg, site, model, store, wallet, dry_run, now, report, stations, clock)
+
+
+def _send_forecasts(cfg, site, model, store, wallet, dry_run, now, report, stations, clock) -> None:
     day = utc_day(now)
     sent_this_cycle = 0
-    stop = False
     for alias, position in stations.items():
-        if stop:
-            break
         newest = store.newest_reading(alias)
         if newest is None or now - newest > FRESH_READING_SECONDS:
             report.say(f"{alias}: no reading in the last {FRESH_READING_SECONDS // 3600} hours. "
@@ -182,8 +228,7 @@ def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: in
                 continue
             if sent_this_cycle >= MAX_FORECASTS_PER_CYCLE:
                 report.say("Sent the most forecasts allowed in one cycle; the rest go next cycle.")
-                stop = True
-                break
+                return
             try:
                 forecast = make_forecast(store, model, alias, position, cfg, lead, now)
             except gfs.GfsUnavailable as error:
@@ -191,10 +236,10 @@ def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: in
                 continue
             if dry_run:
                 draft = local_draft(forecast, wallet, now)
-                station_id = chain.verify_draft(draft, wallet=wallet.address, alias=chain.station_alias(draft["stationId"]),
-                                                variable=cfg.variable, lead_hours=lead, value=forecast["value"])
-                body = chain.sign_commit(draft, station_id, cfg.chain_id, cfg.network_id, wallet)
-                report.forecasts.append(dict(forecast, dry_run=True, submit_body=body))
+                chain.verify_draft(draft, wallet=wallet.address, alias=chain.station_alias(draft["stationId"]),
+                                   variable=cfg.variable, lead_hours=lead, value=forecast["value"], now=now,
+                                   model_id=RELAY_MODEL_ID)
+                report.forecasts.append(dict(forecast, dry_run=True, submit_body=unsigned_body(draft, wallet)))
                 sent_this_cycle += 1
                 continue
             try:
@@ -202,28 +247,29 @@ def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: in
                     site.login(wallet, cfg.chain_id, cfg.network_id)
                 draft = site.draft(alias, cfg.variable, lead, forecast["value"])
                 station_id = chain.verify_draft(draft, wallet=wallet.address, alias=alias, variable=cfg.variable,
-                                                lead_hours=lead, value=forecast["value"])
+                                                lead_hours=lead, value=forecast["value"], now=int(clock()),
+                                                model_id=RELAY_MODEL_ID)
                 answer = site.submit(chain.sign_commit(draft, station_id, cfg.chain_id, cfg.network_id, wallet))
             except SiteError as error:
                 if error.code == "ALREADY_FORECAST":
                     store.sent.append({"station": alias, "lead": lead, "day": day, "variable": cfg.variable,
                                        "commit_id": None, "value": None, "issued_at": now})
+                    store.save(now)
                     report.say(f"{alias} +{lead}h: this wallet already forecast it today.")
                     continue
                 if error.code == "STATION_NOT_OPEN":
                     report.say(f"{alias}: the site does not take forecasts for this station yet.")
                     break
-                report.say(f"{alias} +{lead}h: the site refused or failed ({error}). Stopping until the next cycle.")
-                stop = True
-                break
+                if error.back_off:
+                    raise
+                report.say(f"{alias} +{lead}h: the site refused ({error}). No more forecasts this cycle.")
+                return
             except (chain.DraftMismatch, chain.LoginChallengeRefused) as error:
-                report.say(f"Nothing was signed: {error}. Stopping until the next cycle.")
-                stop = True
-                break
+                report.say(f"Nothing was signed: {error}. No more forecasts this cycle.")
+                return
             sent_this_cycle += 1
-            commit = answer.get("commitId") if isinstance(answer, dict) else None
+            commit = answer.get("commitId") if isinstance(answer.get("commitId"), str) else draft["commitId"]
             store.sent.append({"station": alias, "lead": lead, "day": day, "variable": cfg.variable,
-                               "commit_id": commit or draft["commitId"], "value": forecast["value"], "issued_at": now})
-            report.forecasts.append(dict(forecast, dry_run=False, commit_id=commit or draft["commitId"]))
-    store.save(now)
-    return report
+                               "commit_id": commit, "value": forecast["value"], "issued_at": now})
+            store.save(now)     # at once: a crash later in the cycle must not forget a sent forecast
+            report.forecasts.append(dict(forecast, dry_run=False, commit_id=commit))

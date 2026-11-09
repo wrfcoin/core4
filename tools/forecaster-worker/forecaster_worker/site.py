@@ -2,7 +2,8 @@
 
 Reads (no login): station list, a station's recent readings, forecast status.
 Writes (wallet login): forecast draft and signed submit; the site relays the commit and reveals it.
-The login token lives in memory only and is never printed.
+The login token lives in memory only and is never printed. Redirects are never followed, so the
+token cannot be carried to another host. Every answer is shape-checked before use.
 """
 import json
 import time
@@ -13,23 +14,55 @@ from urllib.parse import urlsplit
 from . import chain
 
 USER_AGENT = "wrfcoin-forecaster-worker/0"
+MAX_RETRY_AFTER_SECONDS = 6 * 3600
 
 
 class SiteError(Exception):
-    def __init__(self, status, code=None, message=None):
+    def __init__(self, status, code=None, message=None, retry_after=None):
         super().__init__(f"HTTP {status}" + (f" {code}" if code else "") + (f": {message}" if message else ""))
-        self.status, self.code, self.message = status, code, message
+        self.status, self.code, self.message, self.retry_after = status, code, message, retry_after
+
+    @property
+    def back_off(self) -> bool:
+        """The site is busy, broken or unreachable: stop the cycle instead of trying the next thing."""
+        return self.status is None or self.status == 429 or self.status >= 500
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def default_transport(method: str, url: str, headers: dict, body: bytes | None):
+    """Returns (status, body, retry_after_text). A redirect comes back as its 3xx status, unfollowed."""
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.status, response.read(2_000_000)
+        with _OPENER.open(request, timeout=30) as response:
+            return response.status, response.read(2_000_000), response.headers.get("Retry-After")
     except urllib.error.HTTPError as error:
-        return error.code, error.read(200_000)
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return None, b""
+        with error:
+            return error.code, error.read(200_000), error.headers.get("Retry-After") if error.headers else None
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        return None, b"", None
+
+
+def _retry_seconds(text) -> int | None:
+    try:
+        seconds = int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS) if seconds > 0 else None
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value) -> list:
+    return value if isinstance(value, list) else []
 
 
 class Site:
@@ -43,6 +76,7 @@ class Site:
         self._last = None
         self._token = None
         self.requests = 0
+        self.more_stations = False
 
     def _call(self, method: str, path: str, body=None, auth: bool = False):
         if self._last is not None:
@@ -59,56 +93,65 @@ class Site:
                 raise SiteError(401, "SIGNED_OUT", "not logged in")
             headers["Authorization"] = f"Bearer {self._token}"
         self.requests += 1
-        status, payload = self._transport(method, self.api_base + path, headers, raw)
+        answer = self._transport(method, self.api_base + path, headers, raw)
         self._last = self._clock()
+        status, payload = answer[0], answer[1]
+        retry_after = _retry_seconds(answer[2]) if len(answer) > 2 else None
         if status is None:
             raise SiteError(None, "UNREACHABLE", "the site could not be reached")
         try:
             parsed = json.loads(payload.decode("utf-8")) if payload else None
-        except ValueError:
+        except (ValueError, AttributeError):
             parsed = None
         if 200 <= status < 300:
             if isinstance(parsed, dict) and "success" in parsed and "data" in parsed:
                 return parsed["data"]
             return parsed
-        error = parsed.get("error") if isinstance(parsed, dict) else None
-        code = error.get("code") if isinstance(error, dict) else None
-        message = error.get("message") if isinstance(error, dict) else None
-        raise SiteError(status, code if isinstance(code, str) else None, message if isinstance(message, str) else None)
+        if 300 <= status < 400:
+            raise SiteError(status, "REDIRECT", "the site answered with a redirect, which the worker does not follow")
+        error = _dict(_dict(parsed).get("error"))
+        code, message = error.get("code"), error.get("message")
+        raise SiteError(status, code if isinstance(code, str) else None, message if isinstance(message, str) else None,
+                        retry_after)
 
     # Public reads
     def forecast_status(self) -> dict | None:
         """None when website forecasts are switched off (the site answers 404)."""
         try:
-            return self._call("GET", "/forecasts/status")
+            data = self._call("GET", "/forecasts/status")
         except SiteError as error:
             if error.status == 404:
                 return None
             raise
+        return data if isinstance(data, dict) else None
 
     def stations(self) -> list:
-        data = self._call("GET", "/weather/stations") or {}
-        return [s for s in data.get("stations", []) if isinstance(s, dict) and chain.ALIAS_RE.match(str(s.get("alias", "")))]
+        """The first page of the public station list. The public edge takes no paging query, so when the
+        site says there are more, `more_stations` is set and the caller says so."""
+        data = _dict(self._call("GET", "/weather/stations"))
+        self.more_stations = data.get("hasMore") is True
+        return [s for s in _list(data.get("stations"))
+                if isinstance(s, dict) and isinstance(s.get("alias"), str) and chain.ALIAS_RE.match(s["alias"])]
 
     def observations(self, alias: str) -> list:
-        data = self._call("GET", f"/stations/{alias}/observations") or {}
-        return [o for o in data.get("observations", []) if isinstance(o, dict)]
+        data = _dict(self._call("GET", f"/stations/{alias}/observations"))
+        return [o for o in _list(data.get("observations")) if isinstance(o, dict)]
 
     # Wallet calls
     def login(self, wallet, chain_id: str, network_id: str) -> None:
-        challenge = self._call("GET", f"/auth/nonce/{wallet.address}?scheme=ed25519") or {}
+        challenge = _dict(self._call("GET", f"/auth/nonce/{wallet.address}?scheme=ed25519"))
         if challenge.get("scheme") != "ed25519":
             raise chain.LoginChallengeRefused("the site did not send an ed25519 challenge")
         nonce = challenge.get("nonce")
         message = chain.check_login_challenge(
             challenge.get("message"), address=wallet.address, origin=self.origin, chain_id=chain_id,
             network_id=network_id, nonce=nonce if isinstance(nonce, str) else "", now=self._clock())
-        result = self._call("POST", "/auth/wallet-login", {
+        result = _dict(self._call("POST", "/auth/wallet-login", {
             "scheme": "ed25519", "address": wallet.address, "pubkey": wallet.public_key.hex(),
             "signature": wallet.sign(message).hex(), "nonce": nonce,
-        }) or {}
+        }))
         token = result.get("jwt")
-        if not isinstance(token, str) or not token:
+        if not isinstance(token, str) or not token or any(c in token for c in "\r\n "):
             raise SiteError(502, "NO_TOKEN", "the login answer held no token")
         self._token = token
 
@@ -121,12 +164,13 @@ class Site:
         self._token = None
 
     def draft(self, alias: str, variable: str, lead_hours: int, value: float) -> dict:
-        return self._call("POST", "/forecasts/draft",
-                          {"stationAlias": alias, "variable": variable, "leadHours": lead_hours, "value": value}, auth=True)
+        return _dict(self._call("POST", "/forecasts/draft",
+                                {"stationAlias": alias, "variable": variable, "leadHours": lead_hours, "value": value},
+                                auth=True))
 
     def submit(self, body: dict) -> dict:
-        return self._call("POST", "/forecasts/submit", body, auth=True)
+        return _dict(self._call("POST", "/forecasts/submit", body, auth=True))
 
     def mine(self) -> list:
-        data = self._call("GET", "/forecasts/mine", auth=True) or {}
-        return data.get("forecasts", [])
+        data = _dict(self._call("GET", "/forecasts/mine", auth=True))
+        return [row for row in _list(data.get("forecasts")) if isinstance(row, dict)]

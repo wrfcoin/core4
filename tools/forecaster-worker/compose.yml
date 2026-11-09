@@ -1,5 +1,6 @@
 # WRFCoin forecaster worker v0.
 #   mkdir -p worker-data
+#   printf 'WORKER_UID=%s\nWORKER_GID=%s\n' "$(id -u)" "$(id -g)" > .env     # Linux and macOS
 #   docker compose build
 #   docker compose run --rm worker once --dry-run     # try it, sends nothing
 #   docker compose up -d                              # run it
@@ -8,7 +9,7 @@ services:
     build: .
     image: wrfcoin-forecaster-worker:local
     restart: unless-stopped
-    # Your user id, so the wallet file in ./worker-data belongs to you (Linux: `id -u`).
+    # Your user id, so the wallet file in ./worker-data belongs to you. The .env file above sets it.
     user: "${WORKER_UID:-1000}:${WORKER_GID:-1000}"
     environment:
       WORKER_STATIONS: "auto"
@@ -19,5 +20,7 @@ services:
     volumes:
       - ./worker-data:/data
     read_only: true
+    mem_limit: 256m
+    pids_limit: 64
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
