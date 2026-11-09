@@ -237,6 +237,13 @@ impl Default for VerifyPricing {
 /// What a thing makes a verifier do.
 pub trait VerifyCost {
     fn verify_work(&self) -> VerifyWork;
+
+    /// The work at a consensus height. Defaults to [`Self::verify_work`];
+    /// transactions add `security_key_spend` pricing from its activation.
+    fn verify_work_at_height(&self, height: u64) -> VerifyWork {
+        let _ = height;
+        self.verify_work()
+    }
 }
 
 /// Minimal view of a serialized MLSAG used only to learn the ring size.
@@ -321,10 +328,15 @@ impl VerifyCost for Transaction {
             TransactionType::NodeFraudReport => crate::consensus::node_fraud::parse(self).map(|p| 1 + 4 * p.batch.claims.len() as u32).unwrap_or(9),
             TransactionType::NodeServiceBatch => crate::consensus::node_receipt_registry::NodeReceiptSubmission::parse(self)
                 .map(|p| 1 + 4 * p.batch.claims.len() as u32).unwrap_or(1 + 4 * crate::consensus::node_share_contracts::MAX_NODE_CLAIMS as u32),
+            // Register: owner signature + session-key possession proof
+            // (charged for the larger case; revoke verifies one).
+            TransactionType::SessionKeyAction => 2,
             TransactionType::NodeBondLifecycle => crate::consensus::node_bond_registry::NodeBondLifecycle::parse(self)
                 .map(|p| if matches!(p.signed.authorization.action,
                     crate::consensus::node_share_contracts::NodeBondAction::Deposit | crate::consensus::node_share_contracts::NodeBondAction::Update) { 5 } else { 1 })
                 .unwrap_or(5),
+            // Security-key action: the phrase key's ed25519 signature.
+            TransactionType::SecurityKeyAction => 1,
             _ => 0,
         });
 
@@ -398,9 +410,49 @@ impl VerifyCost for Transaction {
             {
                 work.ecdsa = work.ecdsa.saturating_add(1);
             },
+            // Security-key action (`security_key_spend`): fail-expensive, always
+            // the most P-256 verifications any action can carry. A new type, so
+            // no pre-activation block can carry one and no price moves.
+            TransactionType::SecurityKeyAction => {
+                work.ecdsa = work.ecdsa.saturating_add(
+                    crate::accounts::security_key::ACTION_PRICED_P256_VERIFICATIONS,
+                );
+            },
             _ => {},
         }
 
+        work
+    }
+
+    /// [`Self::verify_work`] at a consensus height. From `security_key_spend`
+    /// activation a Transfer / Stake / Unstake carrying a well-formed
+    /// `security_key_auth` member is charged one P-256 verification (the State
+    /// check verifies it against one named key). Below activation this is
+    /// exactly `verify_work`, so pre-activation budgets are byte-identical.
+    /// The same holds for `passkey_bond_payout` (below).
+    fn verify_work_at_height(&self, height: u64) -> VerifyWork {
+        let mut work = self.verify_work();
+        if matches!(
+            self.tx_type,
+            TransactionType::Transfer | TransactionType::Stake | TransactionType::Unstake
+        ) && crate::accounts::security_key::security_key_active(height)
+            && self.security_key_spend_proof().is_some()
+        {
+            work.ecdsa = work.ecdsa.saturating_add(1);
+        }
+        // `passkey_bond_payout`: from activation a node-bond lifecycle carrying
+        // a well-formed `payout_passkey` member is charged one P-256
+        // verification (the payout approval). Detected with the same lenient
+        // parse consensus uses. Fail-expensive: charged whenever the member is
+        // present, even where verification refuses it. Below activation the
+        // member is ignored and the price is exactly `verify_work`.
+        if self.tx_type == TransactionType::NodeBondLifecycle
+            && crate::consensus::node_bond_registry::passkey_bond_payout_active(height)
+            && crate::consensus::node_bond_registry::NodeBondLifecycle::parse(self)
+                .is_some_and(|p| p.payout_passkey.is_some())
+        {
+            work.ecdsa = work.ecdsa.saturating_add(1);
+        }
         work
     }
 }
@@ -456,6 +508,40 @@ where
         .fold(VerifyWork::NONE, |total, tx| {
             total.saturating_add(tx.verify_work())
         })
+}
+
+/// [`block_verify_work`] at a consensus height (see
+/// [`Transaction::verify_work_at_height`]).
+pub fn block_verify_work_at_height<'a, I>(transactions: I, height: u64) -> VerifyWork
+where
+    I: IntoIterator<Item = &'a Transaction>,
+{
+    transactions
+        .into_iter()
+        .fold(VerifyWork::NONE, |total, tx| {
+            total.saturating_add(tx.verify_work_at_height(height))
+        })
+}
+
+/// [`check_block_verify_budget`] for a block at `height`: the form the
+/// producer and every applier use, so `security_key_spend` pricing applies
+/// from exactly its activation height.
+pub fn check_block_verify_budget_at_height<'a, I>(
+    transactions: I,
+    pricing: &VerifyPricing,
+    height: u64,
+) -> Result<VerifyUnits, BlockVerifyBudgetExceeded>
+where
+    I: IntoIterator<Item = &'a Transaction>,
+{
+    let units = pricing.units(&block_verify_work_at_height(transactions, height));
+    if units.0 > pricing.block_verify_budget {
+        return Err(BlockVerifyBudgetExceeded {
+            units,
+            budget: pricing.block_verify_budget,
+        });
+    }
+    Ok(units)
 }
 
 /// Why a block was refused on verification cost.
@@ -643,6 +729,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: auth,
+                sponsorship: None,
+                session_key_auth: None,
             };
             tx(
                 TransactionType::Transfer,

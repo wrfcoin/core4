@@ -17,6 +17,9 @@
 //!   outside production, nothing when it is unset in production. A disallowed
 //!   `Origin` is refused here rather than by withholding a CORS header, since the
 //!   latter only stops the browser reading the response, not the request running.
+//!   Exception: a request the browser marks `Sec-Fetch-Site: same-origin` whose
+//!   `Origin` is exactly `http(s)://<the Host header>` is the node's own page (the
+//!   `/dashboard` Stop button's POST) and is judged as if it carried no `Origin`.
 //! * **No Origin** — a browser-originated request (any `Sec-Fetch-*` header, which
 //!   a page can neither forge nor remove) to an `admin` method must carry an
 //!   allowlisted `Origin` — unless the browser asserts `Sec-Fetch-Site:
@@ -223,6 +226,25 @@ pub struct OriginMiddleware<S> {
     inner: Arc<Inner>,
 }
 
+/// True when `origin` (`scheme://authority`, as a browser sends it) names exactly
+/// the authority in the raw `Host` header, ignoring ASCII case. No `Host` header,
+/// a path, or any other scheme is never a match.
+pub fn origin_names_host(origin: &str, host_header: Option<&str>) -> bool {
+    let Some(host) = host_header.map(str::trim).filter(|h| !h.is_empty()) else {
+        return false;
+    };
+    let origin = origin.trim();
+    let authority = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    match authority {
+        Some(authority) if !authority.is_empty() && !authority.contains('/') => {
+            authority.eq_ignore_ascii_case(host)
+        }
+        _ => false,
+    }
+}
+
 fn refusal(request: &HttpRequest, error: &OriginError) -> HttpResponse {
     let message = match error {
         OriginError::MissingHost => "Request carries no Host header".to_string(),
@@ -280,6 +302,19 @@ where
                     .get("sec-fetch-site")
                     .and_then(|v| v.to_str().ok())
                     .is_some_and(|v| v.trim().eq_ignore_ascii_case("same-origin"));
+                // A same-origin POST (the page's Stop button, `POST /node/shutdown`)
+                // does carry `Origin`, naming this very node. When the browser
+                // asserts same-origin AND that `Origin` names the `Host` the
+                // browser sent, the request is the node's own page and is judged
+                // like the same-origin GET above. Any other `Origin` is still
+                // checked against the allowlist.
+                let origin = if same_origin_page
+                    && origin.is_some_and(|o| origin_names_host(o, host_header))
+                {
+                    None
+                } else {
+                    origin
+                };
                 let browser_originated = !same_origin_page
                     && (origin.is_some()
                         || headers.iter().any(|(name, _)| name.as_str().starts_with("sec-fetch-")));

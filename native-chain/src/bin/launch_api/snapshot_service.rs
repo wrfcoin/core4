@@ -30,6 +30,12 @@ const RECEIPTS_PER_KEY_PER_MINUTE_MAX: usize = 8;
 /// Retained share per authenticated bearer, shared by every client using it.
 const RECEIPTS_PER_CALLER_MAX: usize = 64;
 const RECENT_EXPORT_CUTS_MAX: usize = 32;
+/// Cuts held for P2P bonded fetches after the chain moved on (one consumer at
+/// a time is the expected load; a second pin evicts the least recently used).
+/// A cut is the whole exported state, so this bounds memory, not just count.
+pub(crate) const PINNED_CUTS_MAX: usize = 1;
+/// A pinned cut nobody asked for in this long is released.
+pub(crate) const PINNED_CUT_IDLE: Duration = Duration::from_secs(10 * 60);
 /// Accepted receipts expire 15 minutes after admission, measured monotonically.
 /// Admission and Operator reads remove expired evidence and bookkeeping.
 /// Operators must collect receipts via GET /network/snapshot-sync/receipts
@@ -44,6 +50,10 @@ pub struct SnapshotServiceState {
     pub(crate) export: tokio::sync::Mutex<Option<Arc<SnapshotExportCut>>>,
     pub(crate) ledger: Mutex<ReceiptLedger>,
     recent_exports: Mutex<VecDeque<ServedCut>>,
+    /// Cuts a P2P bonded consumer started fetching (#bonded P2P fetch). Pages
+    /// of one fetch come from one cut even when a block lands mid-fetch, which
+    /// a home uplink makes likely for a few hundred MiB at ~77 s per block.
+    pinned_cuts: Mutex<VecDeque<(Arc<SnapshotExportCut>, Instant)>>,
     #[cfg(test)]
     pub(crate) export_builds: std::sync::atomic::AtomicUsize,
 }
@@ -74,6 +84,36 @@ impl SnapshotServiceState {
         while recent.len() > RECENT_EXPORT_CUTS_MAX {
             recent.pop_front();
         }
+    }
+
+    /// Keep `cut` for the export pages of a P2P fetch that just read its payload.
+    pub(crate) fn pin_cut(&self, cut: &Arc<SnapshotExportCut>, now: Instant) {
+        let mut pinned = self.pinned_cuts.lock().unwrap_or_else(|e| e.into_inner());
+        pinned.retain(|(c, at)| {
+            now.saturating_duration_since(*at) < PINNED_CUT_IDLE
+                && !(c.height == cut.height && c.snapshot_root_hex == cut.snapshot_root_hex)
+        });
+        pinned.push_back((Arc::clone(cut), now));
+        while pinned.len() > PINNED_CUTS_MAX {
+            pinned.pop_front();
+        }
+    }
+
+    /// The pinned cut for (height, root), refreshed as used; `None` once it
+    /// was evicted or idled out.
+    pub(crate) fn pinned_cut(
+        &self,
+        height: u64,
+        snapshot_root_hex: &str,
+        now: Instant,
+    ) -> Option<Arc<SnapshotExportCut>> {
+        let mut pinned = self.pinned_cuts.lock().unwrap_or_else(|e| e.into_inner());
+        pinned.retain(|(_, at)| now.saturating_duration_since(*at) < PINNED_CUT_IDLE);
+        let entry = pinned
+            .iter_mut()
+            .find(|(c, _)| c.height == height && c.snapshot_root_hex == snapshot_root_hex)?;
+        entry.1 = now;
+        Some(Arc::clone(&entry.0))
     }
 
     pub(crate) fn matches_recent_receipt(
@@ -352,6 +392,39 @@ mod receipt_admission_tests {
             ledger.record(claim(66, 1), [1; 32], now + RECEIPT_RETENTION),
             Ok(34)
         );
+    }
+
+    #[test]
+    fn pinned_cuts_are_bounded_found_by_height_and_root_and_idle_out() {
+        let service = SnapshotServiceState::default();
+        let now = Instant::now();
+        let cut = |height: u64, root: &str| {
+            Arc::new(SnapshotExportCut {
+                height,
+                tip_hash_hex: "00".into(),
+                finalized_height: 0,
+                stored_state_root: "00".into(),
+                state_root_hex: "00".into(),
+                snapshot_root_hex: root.into(),
+                entries: vec![(vec![1], vec![2])],
+            })
+        };
+        let a = cut(5, "aa");
+        service.pin_cut(&a, now);
+        assert!(Arc::ptr_eq(&service.pinned_cut(5, "aa", now).unwrap(), &a));
+        assert!(service.pinned_cut(5, "bb", now).is_none(), "root must match");
+        assert!(service.pinned_cut(6, "aa", now).is_none(), "height must match");
+        // Use refreshes the idle clock.
+        let later = now + PINNED_CUT_IDLE - Duration::from_secs(1);
+        assert!(service.pinned_cut(5, "aa", later).is_some());
+        assert!(service.pinned_cut(5, "aa", later + PINNED_CUT_IDLE - Duration::from_secs(1)).is_some());
+        // A newer pin evicts the older one at the bound.
+        service.pin_cut(&cut(6, "bb"), later);
+        assert!(service.pinned_cut(5, "aa", later).is_none());
+        assert!(service.pinned_cut(6, "bb", later).is_some());
+        // Idle out.
+        assert!(service.pinned_cut(6, "bb", later + PINNED_CUT_IDLE).is_none());
+        assert!(service.pinned_cuts.lock().unwrap().is_empty());
     }
 
     #[test]

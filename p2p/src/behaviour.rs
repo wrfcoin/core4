@@ -47,6 +47,9 @@ pub struct WrfcoinBehaviour {
     pub identify: identify::Behaviour,
     /// Block-range request / response protocol used during initial sync.
     pub block_sync: libp2p::request_response::Behaviour<BlockSyncCodec>,
+    /// Bonded snapshot fetch ([`crate::bonded_fetch`]). Inbound support is
+    /// listed only when `P2pConfig::serve_bonded_snapshots` is on.
+    pub bonded_fetch: libp2p::request_response::Behaviour<crate::bonded_fetch::BondedFetchCodec>,
     /// Relay client for NAT'd nodes to reach the network via relay nodes.
     pub relay_client: relay::client::Behaviour,
     /// Direct Connection Upgrade through Relay — upgrades relayed
@@ -76,6 +79,13 @@ pub enum WrfcoinBehaviourEvent {
     Identify(identify::Event),
     /// A block-sync request / response event.
     BlockSync(libp2p::request_response::Event<BlockRequest, BlockResponse>),
+    /// A bonded snapshot fetch request / response event.
+    BondedFetch(
+        libp2p::request_response::Event<
+            crate::bonded_fetch::BondedFetchRequest,
+            crate::bonded_fetch::BondedFetchResponse,
+        >,
+    ),
     /// A relay client event (reservation accepted/rejected, etc.).
     RelayClient(relay::client::Event),
     /// A DCUtR event (direct connection upgrade result).
@@ -119,6 +129,24 @@ impl From<libp2p::request_response::Event<BlockRequest, BlockResponse>>
 {
     fn from(event: libp2p::request_response::Event<BlockRequest, BlockResponse>) -> Self {
         WrfcoinBehaviourEvent::BlockSync(event)
+    }
+}
+
+impl
+    From<
+        libp2p::request_response::Event<
+            crate::bonded_fetch::BondedFetchRequest,
+            crate::bonded_fetch::BondedFetchResponse,
+        >,
+    > for WrfcoinBehaviourEvent
+{
+    fn from(
+        event: libp2p::request_response::Event<
+            crate::bonded_fetch::BondedFetchRequest,
+            crate::bonded_fetch::BondedFetchResponse,
+        >,
+    ) -> Self {
+        WrfcoinBehaviourEvent::BondedFetch(event)
     }
 }
 
@@ -233,8 +261,15 @@ pub fn build_behaviour(
     // libp2p-identify's internal NewExternalAddrOfPeer injection at the sender,
     // which no receive-side filter can intercept. Nodes WITHOUT an external
     // address keep the default so LAN-only development discovery still works.
-    let hide_listen_addrs =
-        config.external_address.is_some() || config.quic_external_address.is_some();
+    //
+    // Unless WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS opts in, raw listen addresses
+    // are always hidden: a 0.0.0.0 listener expands to every interface, and
+    // identify cannot filter them per address. The event loop instead promotes
+    // each globally routable listen address to an external address, which is
+    // what identify then announces (see `crate::announce`).
+    let hide_listen_addrs = config.external_address.is_some()
+        || config.quic_external_address.is_some()
+        || !config.announce_non_global_addrs;
     let identify = identify::Behaviour::new(
         identify::Config::new("/wrfcoin/id/1.0.0".to_string(), keypair.public())
             .with_hide_listen_addrs(hide_listen_addrs),
@@ -250,6 +285,8 @@ pub fn build_behaviour(
         protocols,
         block_sync_config,
     );
+
+    let bonded_fetch = crate::bonded_fetch::behaviour(config.serve_bonded_snapshots);
 
     // -- NAT traversal -------------------------------------------------------
     let dcutr = dcutr::Behaviour::new(local_peer_id);
@@ -269,6 +306,7 @@ pub fn build_behaviour(
         kademlia,
         identify,
         block_sync,
+        bonded_fetch,
         relay_client: relay_behaviour,
         dcutr,
         autonat,
@@ -361,7 +399,7 @@ pub fn test_swarm() -> P2pResult<libp2p::Swarm<WrfcoinBehaviour>> {
     test_swarm_with_config(&P2pConfig::default())
 }
 
-fn loopback_listeners_only(config: &P2pConfig) -> bool {
+pub(crate) fn loopback_listeners_only(config: &P2pConfig) -> bool {
     let addresses: Vec<_> = config.listen_addresses.iter()
         .chain(config.quic_listen_addresses.iter()).collect();
     !addresses.is_empty() && addresses.iter().all(|address| {

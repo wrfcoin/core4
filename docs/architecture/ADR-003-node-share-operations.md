@@ -131,7 +131,9 @@ and dedicated role keys. A dry-run takes only public keys plus the explicit
 protected Operator token file for canonical reads; it never loads a signing key.
 It prints the unsigned public Transaction and its hash, and optionally fsyncs a
 new unsigned packet. Refuse observed tip before H; no pre-H registration is faked.
-The effective epoch is epoch(next carrying height)+1. Deposit amount is fixed at
+The effective epoch is the node-reported epoch+1; the assembly refuses a reported
+epoch that fits no known epoch length, or a tip within 3 blocks of the epoch's end.
+Deposit amount is fixed at
 25000000000 base units and escrow uses the consensus V2 derivation.
 
 ```sh

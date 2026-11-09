@@ -23,6 +23,18 @@ name = "passkey_feature_parity_2169"
 path = "passkey_feature_parity_2169.rs"
 
 [[test]]
+name = "passkey_bond_payout_parity"
+path = "passkey_bond_payout_parity.rs"
+
+[[test]]
+name = "bond_admission_key_parity"
+path = "bond_admission_key_parity.rs"
+
+[[test]]
+name = "security_key_feature_parity"
+path = "security_key_feature_parity.rs"
+
+[[test]]
 name = "schedule_extension_bootstrap_parity_3277"
 path = "schedule_extension_bootstrap_parity_3277.rs"
 

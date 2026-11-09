@@ -116,30 +116,166 @@ impl OrphanBlockBuffer {
 /// In-memory buffer of blocks received from peers that are at-or-below our
 /// current height — potential fork candidates. Keyed by block height so we
 /// can reconstruct candidate chains when a longer fork is detected.
+/// Candidates kept per height (a fork has at most a few honest variants).
+const MAX_FORK_CANDIDATES_PER_HEIGHT: usize = 4;
+
 struct ForkCandidateBuffer {
     /// Blocks keyed by height. Multiple blocks at the same height are
     /// possible (from different forks).
     blocks: BTreeMap<u64, Vec<Block>>,
+    /// Hashes of buffered blocks whose parent is our own block at height-1.
+    anchored: std::collections::HashSet<CryptoHash>,
     /// Maximum number of entries before we start evicting the oldest.
     max_entries: usize,
+    /// Tips of candidate chains `try_reorg_inner` rejected (bounded, oldest
+    /// forgotten first). A rejected tip is never offered again.
+    failed_tips: std::collections::VecDeque<(CryptoHash, std::time::Instant)>,
 }
+
+/// Rejected tips remembered per buffer.
+const MAX_FAILED_FORK_TIPS: usize = 64;
+/// A rejection is forgotten after this long: a verdict that depended on the
+/// wall clock (future-drift on a skewed node) must not be permanent.
+const FAILED_FORK_TIP_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Candidate chains tried per inserted block. Every candidate must end at
+/// local height + 1 (nothing higher is ever buffered), where a height holds at
+/// most `MAX_FORK_CANDIDATES_PER_HEIGHT` entries, so this covers all of them.
+const MAX_REORG_ATTEMPTS_PER_INSERT: usize = MAX_FORK_CANDIDATES_PER_HEIGHT;
 
 impl ForkCandidateBuffer {
     fn new() -> Self {
         Self {
             blocks: BTreeMap::new(),
+            anchored: Default::default(),
             max_entries: MAX_REORG_DEPTH as usize * 2,
+            failed_tips: Default::default(),
+        }
+    }
+
+    fn block_hash(block: &Block) -> CryptoHash {
+        block.hash.unwrap_or_else(|| block.calculate_hash())
+    }
+
+    /// An entry is linked when it chains to, or is chained from, another
+    /// buffered block.
+    fn is_linked(&self, block: &Block) -> bool {
+        let hash = Self::block_hash(block);
+        let parent_buffered = block.height.checked_sub(1).is_some_and(|h| {
+            self.blocks
+                .get(&h)
+                .is_some_and(|v| v.iter().any(|b| Self::block_hash(b) == block.prev_block_hash))
+        });
+        parent_buffered
+            || self
+                .blocks
+                .get(&(block.height + 1))
+                .is_some_and(|v| v.iter().any(|b| b.prev_block_hash == hash))
+    }
+
+    /// Protected entries are what a real competing branch consists of:
+    /// anchored (parent is OUR block at height-1) or linked to another
+    /// buffered block. Everything else is the cheapest thing for junk to be.
+    fn is_protected(&self, block: &Block) -> bool {
+        self.anchored.contains(&Self::block_hash(block)) || self.is_linked(block)
+    }
+
+    /// True when some buffered block at height+1 names `block` as its parent.
+    fn has_child(&self, block: &Block) -> bool {
+        let hash = Self::block_hash(block);
+        self.blocks
+            .get(&(block.height + 1))
+            .is_some_and(|v| v.iter().any(|b| b.prev_block_hash == hash))
+    }
+
+    /// Eviction rank, lowest goes first: 0 unprotected; 1 protected leaf (no
+    /// buffered child, so not yet part of any chain longer than its own);
+    /// 2 protected with a buffered child (part of a multi-block branch).
+    fn evict_rank(&self, block: &Block) -> u8 {
+        if !self.is_protected(block) {
+            0
+        } else if self.has_child(block) {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// Remove the lowest-ranked (oldest on ties) entry at `height` whose rank
+    /// is at most `max_rank`; false if none qualifies.
+    fn evict_lowest_at(&mut self, height: u64, max_rank: u8) -> bool {
+        let Some(victim) = self.blocks.get(&height).and_then(|v| {
+            v.iter()
+                .enumerate()
+                .map(|(i, b)| (self.evict_rank(b), i))
+                .filter(|(r, _)| *r <= max_rank)
+                .min()
+                .map(|(_, i)| i)
+        }) else {
+            return false;
+        };
+        self.remove_at(height, victim);
+        true
+    }
+
+    fn remove_at(&mut self, height: u64, index: usize) {
+        if let Some(v) = self.blocks.get_mut(&height) {
+            let removed = v.remove(index);
+            self.anchored.remove(&Self::block_hash(&removed));
+            if v.is_empty() {
+                self.blocks.remove(&height);
+            }
         }
     }
 
     fn insert(&mut self, block: Block) {
-        self.blocks.entry(block.height).or_default().push(block);
+        self.insert_with_anchor(block, false);
+    }
 
-        // Evict oldest entries if we exceed capacity.
+    /// Buffering policy only: nothing here validates a block or decides a
+    /// reorg. Duplicates are ignored and each height holds a bounded number of
+    /// candidates. When a height is full the oldest *unprotected* entry makes
+    /// room (so a real block that arrives after junk still gets in); if every
+    /// entry there is protected, an unprotected newcomer is dropped. Overflow
+    /// of the whole buffer evicts unprotected entries from the most populated
+    /// height rather than the lowest heights (the real ancestors).
+    /// `anchored` is true when the block's parent is our own block at height-1.
+    fn insert_with_anchor(&mut self, block: Block, anchored: bool) {
+        let hash = Self::block_hash(&block);
+        let height = block.height;
+        if self
+            .blocks
+            .get(&height)
+            .is_some_and(|v| v.iter().any(|b| Self::block_hash(b) == hash))
+        {
+            return;
+        }
+        if anchored {
+            self.anchored.insert(hash);
+        }
+
+        if self.blocks.get(&height).map_or(0, Vec::len) >= MAX_FORK_CANDIDATES_PER_HEIGHT {
+            // The newcomer may only displace an entry ranked no higher than itself.
+            let newcomer_rank = {
+                self.blocks.entry(height).or_default().push(block.clone());
+                let rank = self.evict_rank(&block);
+                self.blocks.get_mut(&height).map(Vec::pop);
+                rank
+            };
+            if !self.evict_lowest_at(height, newcomer_rank) {
+                self.anchored.remove(&hash);
+                return;
+            }
+        }
+        self.blocks.entry(height).or_default().push(block);
+
         while self.total_count() > self.max_entries {
-            if let Some(&oldest) = self.blocks.keys().next() {
-                self.blocks.remove(&oldest);
-            } else {
+            let busiest = self
+                .blocks
+                .iter()
+                .max_by_key(|(h, v)| (v.len(), **h))
+                .map(|(h, _)| *h);
+            let Some(busiest) = busiest else { break };
+            if !self.evict_lowest_at(busiest, u8::MAX) {
                 break;
             }
         }
@@ -149,34 +285,90 @@ impl ForkCandidateBuffer {
         self.blocks.values().map(|v| v.len()).sum()
     }
 
-    /// Try to build a contiguous chain of candidate blocks starting from
-    /// `start_height` up to the highest available height. The chain must
-    /// be internally consistent (each block's `prev_block_hash` matches
-    /// the previous block's hash).
-    ///
-    /// Returns `None` if no contiguous chain can be formed.
-    fn build_chain_from(&self, start_height: u64, anchor_hash: CryptoHash) -> Option<Vec<Block>> {
-        let mut chain = Vec::new();
-        let mut expected_prev = anchor_hash;
-
-        let mut h = start_height;
-        loop {
-            let candidates = self.blocks.get(&h)?;
-            // Find a block at this height whose prev_block_hash matches.
-            let matching = candidates
-                .iter()
-                .find(|b| b.prev_block_hash == expected_prev)?;
-            let blk_hash = matching.hash.unwrap_or_else(|| matching.calculate_hash());
-            chain.push(matching.clone());
-            expected_prev = blk_hash;
-            h += 1;
-            // Stop if no blocks at next height.
-            if !self.blocks.contains_key(&h) {
-                break;
+    /// Every maximal contiguous chain of buffered blocks starting at
+    /// `start_height` whose first block's parent is `anchor_hash` (one entry
+    /// per leaf, in buffering order). Every matching block at each height is
+    /// considered, so a forged or stale sibling cannot hide the real branch.
+    /// Each block has one parent hash and hashes are deduplicated, so the
+    /// search visits each buffered block at most once; depth is additionally
+    /// capped at `max_entries`.
+    fn build_chains_from(&self, start_height: u64, anchor_hash: CryptoHash) -> Vec<Vec<Block>> {
+        let mut out: Vec<Vec<Block>> = Vec::new();
+        let mut path: Vec<&Block> = Vec::new();
+        // Frame: (height, parent hash, next candidate index to try).
+        let mut stack: Vec<(u64, CryptoHash, usize)> = vec![(start_height, anchor_hash, 0)];
+        while let Some(frame) = stack.last_mut() {
+            let (h, prev, idx) = *frame;
+            let next = self.blocks.get(&h).and_then(|v| {
+                v.iter()
+                    .enumerate()
+                    .skip(idx)
+                    .find(|(_, b)| b.prev_block_hash == prev)
+            });
+            match next {
+                Some((i, blk)) if path.len() < self.max_entries => {
+                    frame.2 = i + 1;
+                    path.push(blk);
+                    stack.push((h + 1, Self::block_hash(blk), 0));
+                }
+                _ => {
+                    // Never found a child (or hit the depth cap): a leaf.
+                    if idx == 0 && !path.is_empty() {
+                        out.push(path.iter().map(|b| (*b).clone()).collect());
+                    }
+                    stack.pop();
+                    path.pop();
+                }
             }
         }
+        out
+    }
 
-        if chain.is_empty() { None } else { Some(chain) }
+    /// The longest chain from `build_chains_from` (earliest-buffered on ties).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn build_chain_from(&self, start_height: u64, anchor_hash: CryptoHash) -> Option<Vec<Block>> {
+        let mut best: Option<Vec<Block>> = None;
+        for c in self.build_chains_from(start_height, anchor_hash) {
+            if best.as_ref().is_none_or(|b| c.len() > b.len()) {
+                best = Some(c);
+            }
+        }
+        best
+    }
+
+    fn is_failed_tip(&self, tip: &CryptoHash) -> bool {
+        self.failed_tips
+            .iter()
+            .any(|(h, at)| h == tip && at.elapsed() < FAILED_FORK_TIP_TTL)
+    }
+
+    /// Record a chain `try_reorg_inner` rejected: remember its tip, and drop
+    /// the blocks only it used, walking down from the tip. The walk stops at a
+    /// block some other buffered block still builds on (shared with another
+    /// branch) and never removes the chain's first block (the anchored fork-point
+    /// child, which an honest branch may share), so an honest ancestor shared
+    /// with a failed junk extension survives.
+    fn note_failed_chain(&mut self, chain: &[Block]) {
+        let Some(tip) = chain.last() else { return };
+        if self.failed_tips.len() >= MAX_FAILED_FORK_TIPS {
+            self.failed_tips.pop_front();
+        }
+        self.failed_tips
+            // determinism-ok: node-local TTL for forgetting a rejected fork tip; never enters state, blocks or the root
+            .push_back((Self::block_hash(tip), std::time::Instant::now()));
+        for blk in chain.iter().skip(1).rev() {
+            if self.has_child(blk) {
+                break;
+            }
+            let hash = Self::block_hash(blk);
+            let pos = self
+                .blocks
+                .get(&blk.height)
+                .and_then(|v| v.iter().position(|b| Self::block_hash(b) == hash));
+            if let Some(i) = pos {
+                self.remove_at(blk.height, i);
+            }
+        }
     }
 }
 
@@ -1020,6 +1212,19 @@ where
     let is_next_height_competitor =
         block.height == chain.height.saturating_add(1) && block.prev_block_hash != chain.tip;
     if block.height <= chain.height || is_next_height_competitor {
+        // A block identical to the one we already hold at that height (for
+        // example a common ancestor returned by a sync backtrack) is our own
+        // chain, not a competing branch; buffering it would only give
+        // `detect_fork_from_buffer` an earlier, pointless fork start.
+        if block.height <= chain.height {
+            let incoming = block.hash.unwrap_or_else(|| block.calculate_hash());
+            if chain
+                .block_at_height(block.height)
+                .is_some_and(|local| local.hash.unwrap_or_else(|| local.calculate_hash()) == incoming)
+            {
+                return P2pBlockApplyOutcome::Deferred;
+            }
+        }
         let min_fork_height = chain.height.saturating_sub(MAX_REORG_DEPTH);
         if block.height > min_fork_height {
             log::debug!(
@@ -1027,43 +1232,67 @@ where
                 block.height,
                 chain.height
             );
-            fork_buffer.insert(block);
+            let anchored = if block.height == 1 {
+                block.prev_block_hash == CryptoHash::default()
+            } else {
+                chain.block_at_height(block.height - 1).is_some_and(|local| {
+                    local.hash.unwrap_or_else(|| local.calculate_hash()) == block.prev_block_hash
+                })
+            };
+            fork_buffer.insert_with_anchor(block, anchored);
 
             // Check if the buffer now contains a fork longer than ours.
             // We need to find the fork point — look for a block in the
             // buffer whose prev_block_hash matches one of our blocks.
-            if let Some(reorg_chain) = detect_fork_from_buffer(fork_buffer, &chain) {
-                let candidate_tip = reorg_chain.last().map(|b| b.height).unwrap_or(0);
-                if candidate_tip > chain.height {
-                    log::info!(
-                        "Detected longer fork: candidate tip={} vs local={}",
-                        candidate_tip,
-                        chain.height
-                    );
-                    drop(chain);
-                    try_reorg_inner(
+            let candidates = detect_fork_candidates(fork_buffer, &chain);
+            if !candidates.is_empty() {
+                log::info!(
+                    "Detected {} longer fork candidate(s): best tip={} vs local={}",
+                    candidates.len(),
+                    candidates[0].last().map(|b| b.height).unwrap_or(0),
+                    chain.height
+                );
+                drop(chain);
+                // `try_reorg_inner` takes its persistence hook by value; only
+                // an attempt that gets as far as persisting consumes it.
+                let mut prepare = Some(prepare_persist_state);
+                for reorg_chain in candidates.into_iter().take(MAX_REORG_ATTEMPTS_PER_INSERT) {
+                    let outcome = try_reorg_inner(
                         version,
-                        reorg_chain,
+                        reorg_chain.clone(),
                         blockchain,
                         storage,
                         consensus,
                         p2p,
-                        prepare_persist_state,
+                        |state| match prepare.take() {
+                            Some(f) => f(state),
+                            None => state,
+                        },
                     )
                     .await;
-                    // #3277 S3: whether the reorg completed or restored the
-                    // pre-reorg snapshot, re-derive the effective schedule
-                    // from the canonical state it left behind (a branch-only
-                    // extension must not outlive its branch).
-                    {
-                        let chain = blockchain.read().await;
-                        wrfcoin_native_chain::upgrade::refresh_schedule_from_canonical_state(
-                            &chain.state,
-                            "chain reorganization",
-                        );
+                    match outcome {
+                        ReorgOutcome::Reorged => break,
+                        // Deterministically invalid: never offer it again.
+                        ReorgOutcome::InvalidChain => fork_buffer.note_failed_chain(&reorg_chain),
+                        // May succeed later: leave the buffer intact, try the next candidate.
+                        ReorgOutcome::Transient => {},
+                        // The in-memory chain may have changed: stop, as the
+                        // pre-classification code did after any attempt.
+                        ReorgOutcome::Aborted => break,
                     }
-                    return P2pBlockApplyOutcome::Deferred;
                 }
+                // #3277 S3: whether the reorg completed or restored the
+                // pre-reorg snapshot, re-derive the effective schedule
+                // from the canonical state it left behind (a branch-only
+                // extension must not outlive its branch).
+                {
+                    let chain = blockchain.read().await;
+                    wrfcoin_native_chain::upgrade::refresh_schedule_from_canonical_state(
+                        &chain.state,
+                        "chain reorganization",
+                    );
+                }
+                return P2pBlockApplyOutcome::Deferred;
             }
         } else {
             log::debug!(
@@ -1426,7 +1655,29 @@ async fn try_clear_latch_on_local_root(
 /// Walk the fork candidate buffer to find a contiguous chain that forks
 /// from our local chain and is longer.
 fn detect_fork_from_buffer(buffer: &ForkCandidateBuffer, chain: &Blockchain) -> Option<Vec<Block>> {
-    // Try each height in the buffer as a potential fork start.
+    detect_fork_candidates(buffer, chain).into_iter().next()
+}
+
+/// Every candidate chain that connects to our chain, is longer than our tip
+/// and whose tip has not already been rejected, longest first (earliest
+/// buffered first on ties). The caller tries them in order, so a junk chain
+/// cannot shadow the real branch.
+fn detect_fork_candidates(buffer: &ForkCandidateBuffer, chain: &Blockchain) -> Vec<Vec<Block>> {
+    let mut found: Vec<Vec<Block>> = Vec::new();
+    let mut consider = |chains: Vec<Vec<Block>>| {
+        for fc in chains {
+            let Some(tip) = fc.last() else { continue };
+            let tip_hash = ForkCandidateBuffer::block_hash(tip);
+            if tip.height > chain.height
+                && !buffer.is_failed_tip(&tip_hash)
+                && !found
+                    .iter()
+                    .any(|f| f.last().map(ForkCandidateBuffer::block_hash) == Some(tip_hash))
+            {
+                found.push(fc);
+            }
+        }
+    };
     for (&height, candidates) in &buffer.blocks {
         for candidate in candidates {
             // Check if this block's parent is in our chain.
@@ -1435,27 +1686,39 @@ fn detect_fork_from_buffer(buffer: &ForkCandidateBuffer, chain: &Blockchain) -> 
                     .hash
                     .unwrap_or_else(|| local_block.calculate_hash());
                 if candidate.prev_block_hash == local_hash {
-                    // Found a fork point. Build the longest chain from here.
-                    if let Some(fork_chain) = buffer.build_chain_from(height, local_hash) {
-                        let fork_tip = fork_chain.last().map(|b| b.height).unwrap_or(0);
-                        if fork_tip > chain.height {
-                            return Some(fork_chain);
-                        }
-                    }
+                    consider(buffer.build_chains_from(height, local_hash));
                 }
             }
             // Also check fork from genesis.
             if height == 1 && candidate.prev_block_hash == CryptoHash::default() {
-                if let Some(fork_chain) = buffer.build_chain_from(1, CryptoHash::default()) {
-                    let fork_tip = fork_chain.last().map(|b| b.height).unwrap_or(0);
-                    if fork_tip > chain.height {
-                        return Some(fork_chain);
-                    }
-                }
+                consider(buffer.build_chains_from(1, CryptoHash::default()));
             }
         }
     }
-    None
+    // Stable: ties keep buffering order.
+    found.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    found
+}
+
+/// How one `try_reorg_inner` attempt ended. Only `InvalidChain` is a verdict
+/// about the candidate itself; everything that can depend on local I/O, local
+/// state, a lock race or the clock is `Transient` and must stay retryable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReorgOutcome {
+    /// The candidate was installed.
+    Reorged,
+    /// Deterministically invalid (structure, consensus verdict, transition or
+    /// state-root failure): safe to remember and never retry.
+    InvalidChain,
+    /// Aborted for a reason that may not recur (checkpoint/WAL/storage I/O,
+    /// serialization, persistence hook, consensus error, a concurrent local
+    /// extension). The in-memory chain is as it was before the attempt.
+    Transient,
+    /// Aborted after the in-memory chain may already have been changed (an
+    /// `execute_reorg` error, or a durable rollback/persist failure after the
+    /// in-memory reorg). Nothing is learned about the candidate and no further
+    /// candidate is attempted against a chain in an uncertain state.
+    Aborted,
 }
 
 /// Shared implementation for production and exact-version rejection tests.
@@ -1472,7 +1735,8 @@ async fn try_reorg_inner<F>(
     consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
     p2p: Option<&P2pClient>,
     prepare_persist_state: F,
-) where
+) -> ReorgOutcome
+where
     F: FnOnce(
         wrfcoin_native_chain::blockchain::state::State,
     ) -> wrfcoin_native_chain::blockchain::state::State,
@@ -1485,6 +1749,7 @@ async fn try_reorg_inner<F>(
     // than acquiring/releasing inside the closure — the closure itself is
     // sync and non-async, and `plan_reorg_with_loader` walks at most
     // MAX_REORG_DEPTH blocks backwards.
+    let mut disk_preload_failed = false;
     let disk_blocks: std::collections::HashMap<u64, Block> = {
         let st = storage.read().await;
         let search_floor = chain.height.saturating_sub(MAX_REORG_DEPTH);
@@ -1495,6 +1760,7 @@ async fn try_reorg_inner<F>(
                 log::warn!(
                     "Reorg: failed to preload disk blocks for fork-point fallback: {e}"
                 );
+                disk_preload_failed = true;
                 std::collections::HashMap::new()
             },
         }
@@ -1505,12 +1771,30 @@ async fn try_reorg_inner<F>(
     {
         Ok(Some(plan)) => plan,
         Ok(None) => {
-            log::debug!("Reorg plan rejected: local chain is already best");
-            return;
+            log::debug!("Reorg plan rejected: no actionable plan for this candidate");
+            // `plan_reorg_with_loader` returns `Ok(None)` both for a candidate
+            // that is no longer better than our chain (a concurrent local
+            // extension: not the candidate's fault) and for deterministic
+            // rejections (no common ancestor, fork below the finalized height,
+            // deeper than MAX_REORG_DEPTH, non-contiguous). Mirror only its
+            // first two checks to tell the race apart; everything else is a
+            // property of the candidate. A failed disk preload may hide the
+            // fork point, so that stays retryable.
+            let cand_tip = candidate_blocks.last();
+            let no_longer_better = cand_tip.is_none_or(|t| {
+                t.height < chain.height
+                    || (t.height == chain.height
+                        && t.hash.unwrap_or_else(|| t.calculate_hash()) >= chain.tip)
+            });
+            return if no_longer_better || disk_preload_failed {
+                ReorgOutcome::Transient
+            } else {
+                ReorgOutcome::InvalidChain
+            };
         },
         Err(e) => {
             log::error!("Failed to plan reorg: {e}");
-            return;
+            return if disk_preload_failed { ReorgOutcome::Transient } else { ReorgOutcome::InvalidChain };
         },
     };
 
@@ -1556,7 +1840,7 @@ async fn try_reorg_inner<F>(
             plan.blocks_to_apply.last().map_or(0, |b| b.height),
             chain.height,
         );
-        return;
+        return ReorgOutcome::InvalidChain;
     }
 
     // Load the nearest checkpoint at or before the fork height and replay
@@ -1573,11 +1857,11 @@ async fn try_reorg_inner<F>(
                     "Reorg aborted: no checkpoint at or before fork height {}",
                     plan.fork_height
                 );
-                return;
+                return ReorgOutcome::Transient;
             },
             Err(e) => {
                 log::error!("Reorg aborted: failed to load checkpoint: {e}");
-                return;
+                return ReorgOutcome::Transient;
             },
         };
 
@@ -1597,7 +1881,7 @@ async fn try_reorg_inner<F>(
                 Ok(transitions) => transitions,
                 Err(e) => {
                     log::error!("Reorg aborted: failed to load WAL transitions: {e}");
-                    return;
+                    return ReorgOutcome::Transient;
                 },
             };
             // WAL entries are appended in block order; consecutive entries
@@ -1613,14 +1897,14 @@ async fn try_reorg_inner<F>(
                         std::mem::take(&mut block_transitions),
                     ) {
                         log::error!("Reorg aborted: WAL replay batch failed at height {ph}: {e}");
-                        return;
+                        return ReorgOutcome::Transient;
                     }
                     // Unchecked by design: this reconstructs persisted fork-point
                     // state without a candidate Block or commitment to compare.
                     state.apply_block_finalization(ph); // state-root-unchecked-ok: fork-point-wal-group
                 if let Err(e) = state.validate_node_finalized(ph) {
                     log::error!("Reorg aborted: Node settlement replay failed at height {ph}: {e}");
-                    return;
+                    return ReorgOutcome::Transient;
                 }
                 }
                 pending_height = Some(h);
@@ -1629,14 +1913,14 @@ async fn try_reorg_inner<F>(
             if let Some(ph) = pending_height {
                 if let Err(e) = state.apply_transitions_batch_at_height(ph, block_transitions) {
                     log::error!("Reorg aborted: WAL replay batch failed at height {ph}: {e}");
-                    return;
+                    return ReorgOutcome::Transient;
                 }
                 // Same reconstruction-only exception as the grouped WAL path:
                 // there is no candidate Block commitment at the fork point.
                 state.apply_block_finalization(ph); // state-root-unchecked-ok: fork-point-wal-tail
                 if let Err(e) = state.validate_node_finalized(ph) {
                     log::error!("Reorg aborted: Node settlement replay failed at height {ph}: {e}");
-                    return;
+                    return ReorgOutcome::Transient;
                 }
             }
         }
@@ -1683,14 +1967,14 @@ async fn try_reorg_inner<F>(
                     "Reorg aborted: candidate block at height {} failed consensus",
                     blk.height
                 );
-                return;
+                return ReorgOutcome::InvalidChain;
             },
             Err(e) => {
                 log::warn!(
                     "Reorg aborted: consensus error on block {}: {e}",
                     blk.height
                 );
-                return;
+                return ReorgOutcome::Transient;
             },
         }
         let transitions = extract_transitions(
@@ -1706,7 +1990,7 @@ async fn try_reorg_inner<F>(
                 "Reorg aborted: validation replay failed for block {}: {e}",
                 blk.height
             );
-            return;
+            return ReorgOutcome::InvalidChain;
         }
         // Equality is enforced by the real in-memory and persistence call
         // sites below. This unchecked finalization advances only the disposable
@@ -1717,7 +2001,7 @@ async fn try_reorg_inner<F>(
                 "Reorg aborted: validation view could not append block {}: {e}",
                 blk.height
             );
-            return;
+            return ReorgOutcome::InvalidChain;
         }
     }
 
@@ -1731,7 +2015,7 @@ async fn try_reorg_inner<F>(
     // Execute the reorg on the in-memory chain.
     if let Err(e) = chain.execute_reorg(&plan, fork_state_for_reorg) {
         log::error!("Reorg execution failed: {e}");
-        return;
+        return ReorgOutcome::Aborted;
     }
 
     // Apply state transitions for each new block. If any transition fails,
@@ -1793,7 +2077,7 @@ async fn try_reorg_inner<F>(
             plan.blocks_to_revert,
             plan.blocks_to_apply.len(),
         );
-        return;
+        return ReorgOutcome::InvalidChain;
     }
 
     // Prepare the ENTIRE durable replacement before rolling storage back.
@@ -1830,7 +2114,7 @@ async fn try_reorg_inner<F>(
                     blk.height
                 );
                 *chain = pre_reorg_snapshot;
-                return;
+                return ReorgOutcome::Transient;
             }
             // state-root-checked-reject: persist-restore-return
             if let Err(e) = evolving_state.apply_block_finalization_checked_at(version, blk) {
@@ -1841,7 +2125,7 @@ async fn try_reorg_inner<F>(
                     blk.height
                 );
                 *chain = pre_reorg_snapshot;
-                return;
+                return ReorgOutcome::Transient;
             }
             let checkpoint_state = match st.checkpoint_state_bytes(blk.height, &evolving_state) {
                 Ok(checkpoint_state) => checkpoint_state,
@@ -1852,7 +2136,7 @@ async fn try_reorg_inner<F>(
                         blk.height
                     );
                     *chain = pre_reorg_snapshot;
-                    return;
+                    return ReorgOutcome::Transient;
                 },
             };
             prepared_persistence.push((blk.clone(), transitions, checkpoint_state));
@@ -1871,7 +2155,7 @@ async fn try_reorg_inner<F>(
 
         if let Err(e) = st.rollback_to_height(plan.fork_height, new_tip).await {
             log::error!("Reorg storage rollback failed: {e}");
-            return;
+            return ReorgOutcome::Aborted;
         }
 
         for (blk, transitions, checkpoint_state) in prepared_persistence {
@@ -1886,7 +2170,7 @@ async fn try_reorg_inner<F>(
                 .await
             {
                 log::error!("Reorg persist failed at height {height}: {e}");
-                return;
+                return ReorgOutcome::Aborted;
             }
         }
     }
@@ -1904,6 +2188,7 @@ async fn try_reorg_inner<F>(
         new_tip,
         new_tip_height,
     );
+    ReorgOutcome::Reorged
 }
 
 /// Remove all transactions that were confirmed in the block range
@@ -1913,7 +2198,7 @@ async fn try_reorg_inner<F>(
 /// This prevents `protocol_replay_keys` from growing without bound when blocks
 /// arrive via P2P gossip or block-sync, as the P2P apply path never called
 /// `drain_confirmed` on the mempool before this fix.
-async fn drain_mempool_for_confirmed_range(
+pub(crate) async fn drain_mempool_for_confirmed_range(
     height_before: u64,
     blockchain: &Arc<RwLock<Blockchain>>,
     mempool: &Arc<RwLock<Mempool>>,
@@ -1941,6 +2226,7 @@ async fn drain_mempool_for_confirmed_range(
             confirmed_tx_ids.len()
         );
     }
+    sweep_stale_node_txs(blockchain, mempool).await;
 }
 
 /// Consumes P2P events and integrates them into the local node state.
@@ -2142,19 +2428,22 @@ async fn run_p2p_event_loop_with_persist_control(
             }
 
             P2pEvent::NewTransactions(tx_bytes_vec) => {
-                let (signing_keys, height) = {
+                // panic-ok: capacity is the length of a vector this node already holds (one entry per received tx)
+                let mut decoded = Vec::with_capacity(tx_bytes_vec.len());
+                for tx_bytes in tx_bytes_vec {
+                    match bincode::deserialize::<Transaction>(&tx_bytes) {
+                        Ok(tx) => decoded.push(tx),
+                        Err(e) => note_payload_decode_failure("transaction", "live gossip", &e),
+                    }
+                }
+                // Released before the pool lock, as every other ingress does.
+                let (signing_keys, height, admissible) = {
                     let chain = blockchain.read().await;
-                    (chain.state.signing_keys.clone(), chain.height)
+                    let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);
+                    (chain.state.signing_keys.clone(), chain.height, admissible)
                 };
                 let mut mp = mempool.write().await;
-                for tx_bytes in tx_bytes_vec {
-                    let tx: Transaction = match bincode::deserialize(&tx_bytes) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            note_payload_decode_failure("transaction", "live gossip", &e);
-                            continue;
-                        },
-                    };
+                for tx in admissible {
                     // Mempool naturally rejects duplicates.
                     let _ = ingest_gossiped_transaction_at_height(&mut mp, tx, &signing_keys, Some(height));
                 }
@@ -2957,6 +3246,47 @@ fn should_log_declined_registration(total: u64) -> bool {
     total <= DECLINED_LOG_FIRST || total.is_power_of_two()
 }
 
+/// State-checked half of gossip admission. The pool holds no chain state.
+pub(crate) fn admissible_gossip_txs(
+    state: &wrfcoin_native_chain::blockchain::state::State,
+    height: u64,
+    txs: Vec<Transaction>,
+) -> Vec<Transaction> {
+    txs.into_iter()
+        .filter(|tx| match wrfcoin_shared_protocol::mempool::node_admission::check(state, tx, height) {
+            Ok(()) => true,
+            Err(refusal) => {
+                log::debug!("P2P node transaction not admitted: {}", refusal.code());
+                false
+            },
+        })
+        .collect()
+}
+
+/// Clear node-service copies that can never be mined. A producer learns this at assembly, but a
+/// node that never assembles a block would hold them. Ordinary kinds are left alone on purpose:
+/// this is not a general age limit, which would change what producers can still include.
+async fn sweep_stale_node_txs(blockchain: &Arc<RwLock<Blockchain>>, mempool: &Arc<RwLock<Mempool>>) {
+    let pending = mempool.read().await.pending_node_txs();
+    if pending.is_empty() {
+        return;
+    }
+    // determinism-ok: local pool housekeeping; never enters block bytes, state or consensus decisions.
+    let now = chrono::Utc::now().timestamp();
+    let stale: Vec<CryptoHash> = {
+        let chain = blockchain.read().await;
+        pending
+            .iter()
+            .filter(|tx| wrfcoin_shared_protocol::mempool::node_admission::is_stale(&chain.state, tx, chain.height, now))
+            .filter_map(|tx| tx.id)
+            .collect()
+    };
+    if !stale.is_empty() {
+        mempool.write().await.drain_confirmed_block_txs(&stale);
+        log::info!("Cleared {} stale node transaction(s) from the mempool", stale.len());
+    }
+}
+
 /// Outcome of offering one gossiped transaction to the local mempool.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum GossipIngest {
@@ -3038,7 +3368,7 @@ mod tests {
         include!("../../../tests/support/e1_stage_a_tests.rs");
     }
     use super::{
-        AuthoritativeSyncRejectionAttribution, CORE_METRICS, ForkCandidateBuffer,
+        AuthoritativeSyncRejectionAttribution, CORE_METRICS, FAILED_FORK_TIP_TTL, ForkCandidateBuffer, MAX_REORG_ATTEMPTS_PER_INSERT, detect_fork_candidates,
         OrphanBlockBuffer, P2pBlockApplyOutcome, P2pBlockSource, PeerPersistTestControl,
         StateDivergenceRecoveryPolicy,
         SyncServeAdmission, SyncServeResponder, apply_p2p_block, collect_block_sync_response,
@@ -3094,6 +3424,68 @@ mod tests {
 
     fn test_address_string(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 20]))
+    }
+
+    /// An EnvironmentalOffset with an out-of-range scoring factor is REFUSED at
+    /// gossip/mempool admission, while an otherwise-identical offset carrying
+    /// in-range factors IS admitted, so the check refuses only the out-of-range
+    /// value, not the transaction type. The producer then builds a block from a
+    /// non-empty mempool, and the out-of-range offset is absent from it.
+    ///
+    /// Scope: this proves the admission guard (both directions) and that the
+    /// producer does not choke on the surviving traffic. It does NOT exercise the
+    /// producer-selection `retain` (`proof_of_publishing.rs`), because admission
+    /// already keeps the out-of-range tx out of the mempool, and no public API
+    /// lets a test inject one past admission; that `retain` is belt-and-suspenders
+    /// against a future enqueue path that skips admission (the mempool is in-memory,
+    /// so a binary upgrade can't leave one behind). Block VALIDITY is likewise unchanged
+    /// and not tested here: a peer's block carrying such a tx is still accepted and
+    /// scored saturated — the producer fix, covered by the shared-protocol tests.
+    #[tokio::test]
+    async fn admission_refuses_an_out_of_range_offset_and_producer_builds_clean() {
+        use wrfcoin_native_chain::blockchain::transaction::{
+            Transaction, TransactionInput, TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        let mk = |ty: TransactionType, data: &str, tag: &str| {
+            let mut tx = Transaction::new(
+                vec![TransactionInput { txid: hash_string(tag), vout: 0, signature: None, public_key: None, coinbase_data: None }],
+                vec![TransactionOutput { amount: 0, address: test_address_string(0x5a), script: "OP_TRUE".to_string(), nft_data: None }],
+            );
+            tx.tx_type = ty; tx.fee = 1; tx.data = Some(data.to_string()); tx.set_id(); tx
+        };
+        let keys = wrfcoin_native_chain::security::key_registry::SigningKeyRegistry::default();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        {
+            let mut mp = mempool.write().await;
+            // In-range offset → ADMITTED (same path as the out-of-range one; only the
+            // scoring factors differ), so the mempool is non-empty for the build.
+            let real = mk(TransactionType::EnvironmentalOffset, r#"{"amount":0.5,"verification":1.0,"impact":1.0}"#, "range-ok");
+            let real_out = super::ingest_gossiped_transaction_at_height(&mut mp, real, &keys, Some(15_000));
+            assert_eq!(real_out, super::GossipIngest::Admitted, "in-range offset must be admitted (got {real_out:?})");
+            // Out-of-range offset → REFUSED at admission (never reaches the mempool).
+            let oversized = mk(TransactionType::EnvironmentalOffset, r#"{"amount":100000000000000.0,"verification":1.0,"impact":1.0}"#, "range-bad");
+            let out = super::ingest_gossiped_transaction_at_height(&mut mp, oversized, &keys, Some(15_000));
+            assert_ne!(out, super::GossipIngest::Admitted, "an out-of-range offset must NOT be admitted (got {out:?})");
+            // Exactly the in-range one survived admission.
+            assert_eq!(mp.get_transactions_by_type(TransactionType::EnvironmentalOffset, 10).len(), 1, "only the in-range offset is in the mempool");
+        }
+        // The producer builds a block from the non-empty mempool.
+        let consensus = test_consensus();
+        let chain = Arc::new(RwLock::new(Blockchain::default()));
+        let block = consensus
+            .create_pop_block_with_state(Arc::clone(&chain), Arc::clone(&mempool), &test_address_string(0x61))
+            .await
+            .expect("producer builds a clean block");
+        // The out-of-range offset is absent (it was never admitted). The in-range one
+        // may or may not be selected depending on scoring/quorum rules; the point
+        // here is only that nothing out-of-range reaches the producer.
+        assert!(
+            block.transactions.iter().all(|t| {
+                t.data.as_deref().map_or(true, |d| !d.contains("100000000000000"))
+            }),
+            "no out-of-range offset in the produced block"
+        );
     }
 
     /// Serializes the tests that assert an exact delta on the process-global
@@ -4284,6 +4676,140 @@ mod tests {
         );
     }
 
+    /// End to end: a follower on the losing side of a one-block fork backtracks,
+    /// the competing ancestor reaches the fork buffer, and the existing reorg
+    /// path (apply_p2p_block -> detect_fork_from_buffer -> try_reorg_inner)
+    /// adopts the longer chain.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn follower_reorganises_after_a_sync_backtrack_fork_reconverge() {
+        use libp2p::PeerId;
+        use wrfcoin_p2p::{
+            node::handle_planned_sync_response_for_test, sync::SyncManager, P2pEvent,
+        };
+
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        let consensus = test_consensus();
+        let mut fork_buffer = ForkCandidateBuffer::new();
+        let mut orphan_buffer = OrphanBlockBuffer::new();
+        let (local_height, local_tip) = {
+            let c = chain.read().await;
+            (c.height, c.tip)
+        };
+        assert_eq!(local_height, 2);
+        let common = chain.read().await.block_at_height(1).expect("common block").clone();
+
+        // Production-shaped shadow: authoritative height/tip, no block window.
+        let mut shadow = Blockchain::default();
+        shadow.height = local_height;
+        shadow.tip = local_tip;
+        let peer = PeerId::random();
+        let mut manager = SyncManager::new(local_height);
+        manager.record_peer_status(peer, 3);
+
+        for round in 0..2 {
+            let fork_blocks = fork.clone();
+            let common = common.clone();
+            let (_, mut events) = handle_planned_sync_response_for_test(
+                &mut manager,
+                move |request| {
+                    let mut out: Vec<Block> = Vec::new();
+                    if request.start_height <= 1 {
+                        out.push(common);
+                    }
+                    out.extend(
+                        fork_blocks
+                            .into_iter()
+                            .filter(|b| b.height >= request.start_height)
+                            .filter(|b| b.height < request.start_height + u64::from(request.count)),
+                    );
+                    out
+                },
+                &mut shadow,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: unexpected sync error {e:?}"));
+            while let Some(event) = events.recv().await {
+                if let P2pEvent::SyncedBlock { block_bytes, .. } = event {
+                    let block: Block = bincode::deserialize(&block_bytes).expect("block");
+                    apply_p2p_block_at(
+                        SigningProtocolVersion::V2,
+                        block,
+                        P2pBlockSource::HistoricalSync,
+                        &chain,
+                        &storage,
+                        &consensus,
+                        None,
+                        &mut fork_buffer,
+                        &mut orphan_buffer,
+                        std::convert::identity,
+                    )
+                    .await;
+                }
+            }
+            if round == 0 {
+                assert_eq!(
+                    chain.read().await.height,
+                    2,
+                    "the tip+1 block alone cannot reorganise the follower"
+                );
+            }
+        }
+
+        let after = chain.read().await;
+        assert_eq!(after.height, 3, "backtrack must complete the reorg");
+        assert_eq!(after.tip, fork[1].hash.expect("fork tip hash"));
+    }
+
+    /// A flood of junk candidates must not push out a real, linked ancestor.
+    #[test]
+    fn fork_candidate_buffer_flood_preserves_linked_ancestors() {
+        let anchor = CryptoHash::hash_bytes(b"anchor");
+        let real_2 = test_block(2, anchor, 1);
+        let real_2_hash = real_2.hash.expect("hash");
+        let real_3 = test_block(3, real_2_hash, 2);
+
+        let mut buffer = ForkCandidateBuffer::new();
+        buffer.insert_with_anchor(real_2.clone(), true);
+        buffer.insert(real_3.clone());
+        buffer.insert(real_2.clone()); // duplicate is a no-op
+        assert_eq!(buffer.total_count(), 2);
+        flood(&mut buffer, 2_000);
+        assert!(has(&buffer, &real_2) && has(&buffer, &real_3), "linked ancestors must survive junk");
+        assert!(buffer.total_count() <= buffer.max_entries);
+    }
+
+    /// Junk that arrives FIRST must not lock the real branch out.
+    #[test]
+    fn fork_candidate_buffer_junk_first_does_not_stall_the_real_branch() {
+        let anchor = CryptoHash::hash_bytes(b"anchor");
+        let real_2 = test_block(2, anchor, 1);
+        let real_3 = test_block(3, real_2.hash.expect("hash"), 2);
+
+        let mut buffer = ForkCandidateBuffer::new();
+        flood(&mut buffer, 2_000); // fills heights 1..=6 with junk
+        buffer.insert_with_anchor(real_2.clone(), true);
+        buffer.insert(real_3.clone());
+        assert!(has(&buffer, &real_2), "anchored real ancestor must displace junk");
+        assert!(has(&buffer, &real_3), "its child is linked once the ancestor is in");
+        flood(&mut buffer, 2_000);
+        assert!(has(&buffer, &real_2) && has(&buffer, &real_3), "and stays through a second flood");
+    }
+
+    fn flood(buffer: &mut ForkCandidateBuffer, n: u64) {
+        for nonce in 0..n {
+            let h = 1 + nonce % 6;
+            buffer.insert(test_block(h, CryptoHash::hash_bytes(&nonce.to_le_bytes()), 100 + nonce));
+        }
+    }
+
+    fn has(buffer: &ForkCandidateBuffer, blk: &Block) -> bool {
+        buffer
+            .blocks
+            .get(&blk.height)
+            .is_some_and(|v| v.iter().any(|b| b.hash == blk.hash))
+    }
+
     /// A signed non-member candidate must be rejected by the real reorg
     /// validation loop before `execute_reorg` can replace the local chain.
     /// The first candidate block is signed by the seeded member and both
@@ -4632,7 +5158,7 @@ mod tests {
             ),
             (
                 "persist-restore-return",
-                &["*chain = pre_reorg_snapshot;", "return;"],
+                &["*chain = pre_reorg_snapshot;", "return ReorgOutcome::Transient;"],
             ),
         ];
         for (marker, required_tokens) in checked_rejections {
@@ -5424,6 +5950,322 @@ mod tests {
         );
     }
 
+    /// Local chain of height 2 plus the hash of its block 1 (the fork anchor).
+    fn anchor_fixture() -> (Blockchain, CryptoHash) {
+        let mut local = Blockchain::default();
+        extend_chain(&mut local, 2, 100);
+        let h1 = local.block_at_height(1).expect("block 1");
+        let anchor = h1.hash.unwrap_or_else(|| h1.calculate_hash());
+        (local, anchor)
+    }
+
+    /// Reviewer scenario: one hash-valid child of our block h-1 buffered first
+    /// must not hide the real branch.
+    #[test]
+    fn rv_single_anchored_junk_blocks_reorg() {
+        let (local, anchor) = anchor_fixture();
+        let junk_2 = test_block(2, anchor, 900);
+        let real_2 = test_block(2, anchor, 901);
+        let real_3 = test_block(3, real_2.hash.expect("hash"), 902);
+
+        let mut buffer = ForkCandidateBuffer::new();
+        buffer.insert_with_anchor(junk_2, true);
+        buffer.insert_with_anchor(real_2.clone(), true);
+        buffer.insert(real_3.clone());
+
+        let fork = detect_fork_from_buffer(&buffer, &local).expect("real branch must be found");
+        assert_eq!(fork.len(), 2);
+        assert_eq!(fork[0].hash, real_2.hash);
+        assert_eq!(fork[1].hash, real_3.hash);
+    }
+
+    #[test]
+    fn forged_anchored_junk_before_the_real_branch_still_reorgs() {
+        let (local, anchor) = anchor_fixture();
+        let mut buffer = ForkCandidateBuffer::new();
+        for n in 0..4 {
+            buffer.insert_with_anchor(test_block(2, anchor, 800 + n), true);
+        }
+        let real_2 = test_block(2, anchor, 901);
+        let real_3 = test_block(3, real_2.hash.expect("hash"), 902);
+        buffer.insert_with_anchor(real_2.clone(), true);
+        buffer.insert(real_3.clone());
+        assert!(has(&buffer, &real_2), "a real anchored block displaces a childless forgery");
+        let fork = detect_fork_from_buffer(&buffer, &local).expect("real branch must be found");
+        assert_eq!(fork.last().and_then(|b| b.hash), real_3.hash);
+    }
+
+    #[test]
+    fn anchored_junk_after_the_real_branch_does_not_rotate_it_out() {
+        let (local, anchor) = anchor_fixture();
+        let real_2 = test_block(2, anchor, 901);
+        let real_3 = test_block(3, real_2.hash.expect("hash"), 902);
+        let mut buffer = ForkCandidateBuffer::new();
+        buffer.insert_with_anchor(real_2.clone(), true);
+        buffer.insert(real_3.clone());
+        for n in 0..8 {
+            buffer.insert_with_anchor(test_block(2, anchor, 700 + n), true);
+        }
+        assert!(has(&buffer, &real_2) && has(&buffer, &real_3), "r2 with a child outranks childless forgeries");
+        let fork = detect_fork_from_buffer(&buffer, &local).expect("real branch must be found");
+        assert_eq!(fork.last().and_then(|b| b.hash), real_3.hash);
+    }
+
+    /// Anchoring alone (no child, no link) must protect an entry from
+    /// unanchored junk; `is_protected` degrading to `is_linked` fails this.
+    #[test]
+    fn anchored_entry_without_children_outlives_unanchored_junk() {
+        let (_local, anchor) = anchor_fixture();
+        let real_2 = test_block(2, anchor, 901);
+        let mut buffer = ForkCandidateBuffer::new();
+        buffer.insert_with_anchor(real_2.clone(), true);
+        for n in 0..10u64 {
+            buffer.insert(test_block(2, CryptoHash::hash_bytes(&n.to_le_bytes()), 600 + n));
+        }
+        assert!(has(&buffer, &real_2));
+    }
+
+    /// A stale sibling in the middle of the branch must not truncate it.
+    #[test]
+    fn build_chain_from_takes_the_longest_branch_over_stale_siblings() {
+        let anchor = CryptoHash::hash_bytes(b"anchor");
+        let real_2 = test_block(2, anchor, 1);
+        let r2 = real_2.hash.expect("hash");
+        let stale_3 = test_block(3, r2, 2);
+        let real_3 = test_block(3, r2, 3);
+        let real_4 = test_block(4, real_3.hash.expect("hash"), 4);
+        let mut buffer = ForkCandidateBuffer::new();
+        buffer.insert(test_block(2, anchor, 9));
+        buffer.insert(real_2);
+        buffer.insert(stale_3);
+        buffer.insert(real_3);
+        buffer.insert(real_4.clone());
+        let chain = buffer.build_chain_from(2, anchor).expect("chain");
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[2].hash, real_4.hash);
+    }
+
+    /// Hash-valid junk chain (no producer signature, no state roots).
+    fn junk_chain(first_height: u64, last_height: u64, parent: CryptoHash, nonce: u64) -> Vec<Block> {
+        let mut prev = parent;
+        let mut out = Vec::new();
+        for h in first_height..=last_height {
+            let b = test_block(h, prev, nonce + h);
+            prev = b.hash.expect("hash");
+            out.push(b);
+        }
+        out
+    }
+
+    /// Feed `blocks` through the real `apply_p2p_block_at` path with one shared fork buffer.
+    async fn feed_all(
+        blocks: Vec<Block>,
+        chain: &Arc<RwLock<Blockchain>>,
+        storage: &Arc<RwLock<Storage>>,
+        fork_buffer: &mut ForkCandidateBuffer,
+    ) {
+        let consensus = test_consensus();
+        let mut orphan_buffer = OrphanBlockBuffer::new();
+        for block in blocks {
+            apply_p2p_block_at(
+                SigningProtocolVersion::V2,
+                block,
+                P2pBlockSource::HistoricalSync,
+                chain,
+                storage,
+                &consensus,
+                None,
+                fork_buffer,
+                &mut orphan_buffer,
+                std::convert::identity,
+            )
+            .await;
+        }
+    }
+
+    async fn common_hash(chain: &Arc<RwLock<Blockchain>>) -> CryptoHash {
+        let c = chain.read().await;
+        let b = c.block_at_height(1).expect("common block");
+        b.hash.unwrap_or_else(|| b.calculate_hash())
+    }
+
+    /// A genesis-anchored junk chain (3 long) outlasts the real 2-block branch.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn longer_anchored_junk_chain_does_not_shadow_the_real_branch() {
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        let junk = junk_chain(1, 3, CryptoHash::default(), 5_000);
+        let mut buffer = ForkCandidateBuffer::new();
+        feed_all(junk, &chain, &storage, &mut buffer).await;
+        assert_eq!(chain.read().await.height, 2, "junk must not reorg");
+        feed_all(fork.clone(), &chain, &storage, &mut buffer).await;
+        let c = chain.read().await;
+        assert_eq!(c.height, 3);
+        assert_eq!(c.tip, fork[1].hash.expect("tip"));
+    }
+
+    /// Equal-length junk buffered first wins the tie but must not stall the real branch.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn equal_length_junk_buffered_first_does_not_shadow_the_real_branch() {
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        let anchor = common_hash(&chain).await;
+        let mut buffer = ForkCandidateBuffer::new();
+        feed_all(junk_chain(2, 3, anchor, 6_000), &chain, &storage, &mut buffer).await;
+        assert_eq!(chain.read().await.height, 2);
+        feed_all(fork.clone(), &chain, &storage, &mut buffer).await;
+        let c = chain.read().await;
+        assert_eq!(c.height, 3);
+        assert_eq!(c.tip, fork[1].hash.expect("tip"));
+    }
+
+    /// More junk chains than the per-insert attempt bound, all buffered before
+    /// the real branch arrives: the real branch is still reached.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn junk_chains_beyond_the_attempt_bound_do_not_starve_the_real_branch() {
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        let anchor = common_hash(&chain).await;
+        let mut buffer = ForkCandidateBuffer::new();
+        // Tips arrive last so every junk chain is complete in the buffer
+        // before any attempt could have pruned it: feed all height-2 blocks,
+        // then all height-3 blocks.
+        let mut tails = Vec::new();
+        for n in 0..MAX_REORG_ATTEMPTS_PER_INSERT as u64 + 3 {
+            let mut c = junk_chain(2, 3, anchor, 7_000 + n * 100);
+            let tail = c.pop().expect("tail");
+            feed_all(c, &chain, &storage, &mut buffer).await;
+            tails.push(tail);
+        }
+        feed_all(tails, &chain, &storage, &mut buffer).await;
+        assert_eq!(chain.read().await.height, 2, "junk must never reorg");
+        feed_all(fork.clone(), &chain, &storage, &mut buffer).await;
+        // Strict: a single in-order delivery must be enough.
+        let c = chain.read().await;
+        assert_eq!(c.height, 3);
+        assert_eq!(c.tip, fork[1].hash.expect("tip"));
+    }
+
+    /// A transient abort (here: the persistence hook yields a divergent state,
+    /// so the persist-prep commitment check rolls the reorg back) must not
+    /// condemn the honest chain: re-served blocks must still reorg.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn transient_reorg_abort_does_not_blacklist_the_honest_branch() {
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        let consensus = test_consensus();
+        let mut buffer = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        apply_p2p_block_at(SigningProtocolVersion::V2, fork[0].clone(), P2pBlockSource::HistoricalSync,
+            &chain, &storage, &consensus, None, &mut buffer, &mut orphan, std::convert::identity).await;
+        apply_p2p_block_at(SigningProtocolVersion::V2, fork[1].clone(), P2pBlockSource::HistoricalSync,
+            &chain, &storage, &consensus, None, &mut buffer, &mut orphan,
+            |mut s| { s.create_account(Address([0xdd; 20]), Balance::new(0)); s }).await;
+        assert_eq!(chain.read().await.height, 2, "first attempt aborted");
+        assert!(buffer.failed_tips.is_empty(), "a transient abort must not record a rejected tip");
+        for b in fork.iter() {
+            apply_p2p_block_at(SigningProtocolVersion::V2, b.clone(), P2pBlockSource::HistoricalSync,
+                &chain, &storage, &consensus, None, &mut buffer, &mut orphan, std::convert::identity).await;
+        }
+        let c = chain.read().await;
+        assert_eq!(c.height, 3, "honest chain must still be reachable");
+        assert_eq!(c.tip, fork[1].hash.expect("tip"));
+    }
+
+    /// A deterministically invalid chain is still remembered and pruned.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn invalid_reorg_candidate_is_blacklisted() {
+        let (chain, storage, _fork) = committed_reorg_fixture().await;
+        let anchor = common_hash(&chain).await;
+        let junk = junk_chain(2, 3, anchor, 4_000);
+        let tip = junk[1].hash.expect("tip");
+        let mut buffer = ForkCandidateBuffer::new();
+        feed_all(junk, &chain, &storage, &mut buffer).await;
+        assert_eq!(chain.read().await.height, 2);
+        assert!(buffer.is_failed_tip(&tip), "rejected junk tip is remembered");
+        assert!(detect_fork_candidates(&buffer, &*chain.read().await).is_empty());
+    }
+
+    /// Junk anchored below the finalized height makes `plan_reorg_with_loader`
+    /// return `Ok(None)`; that is a deterministic rejection, so it must be
+    /// pruned instead of pinning the (4-per-height) buffer against the honest branch.
+    #[tokio::test]
+    #[serial_test::serial(upgrade_deadline)]
+    async fn below_finalized_junk_is_blacklisted_and_the_honest_branch_wins() {
+        let (chain, storage, fork) = committed_reorg_fixture().await;
+        chain.write().await.set_finalized_height(1);
+        let mut buffer = ForkCandidateBuffer::new();
+        let mut tips = Vec::new();
+        for n in 0..4u64 {
+            let junk = junk_chain(1, 3, CryptoHash::default(), 70_000 + n * 100);
+            tips.push(junk[2].hash.expect("tip"));
+            feed_all(junk, &chain, &storage, &mut buffer).await;
+        }
+        assert_eq!(chain.read().await.height, 2, "junk must not reorg");
+        for tip in &tips {
+            assert!(buffer.is_failed_tip(tip), "below-finalized junk is a deterministic rejection");
+        }
+        feed_all(fork.clone(), &chain, &storage, &mut buffer).await;
+        let c = chain.read().await;
+        assert_eq!(c.height, 3);
+        assert_eq!(c.tip, fork[1].hash.expect("tip"));
+    }
+
+    #[test]
+    fn rejected_tips_are_forgotten_after_the_ttl() {
+        let mut buffer = ForkCandidateBuffer::new();
+        let tip = CryptoHash::hash_bytes(b"tip");
+        let old = std::time::Instant::now()
+            .checked_sub(FAILED_FORK_TIP_TTL + std::time::Duration::from_secs(1));
+        let Some(old) = old else { return };
+        buffer.failed_tips.push_back((tip, old));
+        assert!(!buffer.is_failed_tip(&tip));
+        buffer.failed_tips.push_back((tip, std::time::Instant::now()));
+        assert!(buffer.is_failed_tip(&tip));
+    }
+
+    #[test]
+    fn detect_fork_candidates_lists_every_chain_longest_first_and_skips_failed_tips() {
+        let (local, anchor) = anchor_fixture();
+        let junk_2 = test_block(2, anchor, 900);
+        let junk_3 = test_block(3, junk_2.hash.expect("hash"), 903);
+        let real_2 = test_block(2, anchor, 901);
+        let real_3 = test_block(3, real_2.hash.expect("hash"), 902);
+        let mut buffer = ForkCandidateBuffer::new();
+        for (b, a) in [(&junk_2, true), (&real_2, true), (&junk_3, false), (&real_3, false)] {
+            buffer.insert_with_anchor(b.clone(), a);
+        }
+        let all = detect_fork_candidates(&buffer, &local);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].last().and_then(|b| b.hash), junk_3.hash, "tie keeps buffering order");
+        assert_eq!(all[1].last().and_then(|b| b.hash), real_3.hash);
+
+        buffer.note_failed_chain(&all[0]);
+        let rest = detect_fork_candidates(&buffer, &local);
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].last().and_then(|b| b.hash), real_3.hash);
+        assert!(has(&buffer, &junk_2), "the fork-point child is never pruned");
+        assert!(!has(&buffer, &junk_3), "the rejected tip is pruned");
+        assert!(has(&buffer, &real_2) && has(&buffer, &real_3), "honest branch untouched");
+    }
+
+    #[test]
+    fn note_failed_chain_keeps_blocks_shared_with_another_branch() {
+        let anchor = CryptoHash::hash_bytes(b"anchor");
+        let r2 = test_block(2, anchor, 1);
+        let r3 = test_block(3, r2.hash.expect("hash"), 2);
+        let j4 = test_block(4, r3.hash.expect("hash"), 3);
+        let r4 = test_block(4, r3.hash.expect("hash"), 4);
+        let mut buffer = ForkCandidateBuffer::new();
+        for b in [&r2, &r3, &j4, &r4] {
+            buffer.insert(b.clone());
+        }
+        buffer.note_failed_chain(&[r2.clone(), r3.clone(), j4.clone()]);
+        assert!(has(&buffer, &r2) && has(&buffer, &r3) && has(&buffer, &r4));
+        assert!(!has(&buffer, &j4));
+    }
+
     #[test]
     fn fork_candidate_buffer_build_chain_from_requires_contiguous_prev_hashes() {
         let anchor_hash = CryptoHash::hash_bytes(b"anchor");
@@ -5432,15 +6274,17 @@ mod tests {
 
         let mut buffer = ForkCandidateBuffer {
             blocks: Default::default(),
+            anchored: Default::default(),
             max_entries: 8,
+            failed_tips: Default::default(),
         };
         buffer.insert(block_1.clone());
         buffer.insert(test_block(2, CryptoHash::hash_bytes(b"wrong-parent"), 12));
 
-        assert!(
-            buffer.build_chain_from(1, anchor_hash).is_none(),
-            "a missing parent link at the next height must reject the candidate chain"
-        );
+        let prefix = buffer
+            .build_chain_from(1, anchor_hash)
+            .expect("the linked prefix is still a candidate");
+        assert_eq!(prefix.len(), 1, "a wrong-parent block at the next height must not be spliced in");
 
         buffer.insert(test_block(2, block_1_hash, 13));
         let chain = buffer
@@ -5459,7 +6303,9 @@ mod tests {
 
         let mut candidate_buffer = ForkCandidateBuffer {
             blocks: Default::default(),
+            anchored: Default::default(),
             max_entries: 8,
+            failed_tips: Default::default(),
         };
         let candidate_1 = test_block(1, CryptoHash::default(), 201);
         let candidate_1_hash = candidate_1.hash.expect("fixture block should have hash");
@@ -6775,6 +7621,11 @@ mod tests {
             field!("node_receipt_registry", |s| field_json(
                 &s.node_receipt_registry.as_ref().map(|r| r.canonical_body())
             )),
+            // Address-keyed: compared as an ordered entry list. Parity:
+            // native-chain/tests/send_allowlist_parity.rs (producer, applier, WAL).
+            field!("send_allowlists", |s| field_json(
+                &s.send_allowlists.iter().collect::<Vec<_>>()
+            )),
         ]
     }
 
@@ -6909,6 +7760,7 @@ mod tests {
                 governance_signature: if online { signature(&a, 99) } else { vec![] },
                 payout_key: online.then(|| pk(owner)),
                 payout_signature: if online { signature(&a, owner) } else { vec![] },
+                payout_passkey: None,
             }
         }
         pub fn state() -> State {
@@ -7022,6 +7874,1337 @@ mod tests {
         forged.set_id();
         let mut invalid = Mempool::new(&Config::default());
         assert_eq!(ingest_gossiped_transaction_at_height(&mut invalid, forged, &keys, Some(f::A)), GossipIngest::Rejected, "canonical height cannot authorize forged gossip");
+    }
+
+    /// Producer-only separation guard: with a signed node-bond Deposit and a
+    /// low-quality, quorum-attested ContributionReveal pending together, the
+    /// producer never mines them in one block. They land in consecutive blocks,
+    /// and producer, P2P applier, independent extraction and the persisted WAL
+    /// agree on every block.
+    #[test]
+    fn producer_separates_node_service_from_reveals_and_roots_agree() {
+        const CHILD: &str = "WRFCOIN_NODE_SERVICE_REVEAL_GUARD_CHILD";
+        const NAME: &str = "p2p_events::tests::producer_separates_node_service_from_reveals_and_roots_agree";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, "1")
+                .env("WRFCOIN_CHAIN_ID", "777")
+                .env("WRFCOIN_NETWORK_ID", "testnet")
+                .output()
+                .expect("isolated guard child");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "guard child failed:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(guard_e2e_body());
+    }
+
+    async fn guard_e2e_body() {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::state::StateTransition as ST;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let (o1_sk, o1_id) = oracle(911);
+        let (o2_sk, o2_id) = oracle(912);
+        let recipient = Address([0x78; 20]);
+        let station_id = "station-guard";
+
+        let mut initial = f::state();
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        initial
+            .apply_transition(ST::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        initial.create_account(recipient, Balance::new(0));
+        initial
+            .register_weather_station(WeatherStation {
+                station_id: station_id.to_string(),
+                owner_address: recipient.to_string(),
+                location: StationLocation { latitude: 10.5, longitude: 20.5, elevation_meters: Some(220.0) },
+                hardware_model: "guard-fixture".to_string(),
+                calibration_date: None,
+                is_active: true,
+                reputation_score: 50,
+                data_quality_tier: DataQualityTier::Gold,
+                provenance_class: ContributionProvenanceClass::Real,
+                ring_public_key: None,
+            })
+            .unwrap();
+        initial.recalculate_state_root();
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, f::A - 1, 4591);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(Storage::open(&dir.path().join("guard.redb"), 10_000).unwrap()));
+        store.write().await.force_checkpoint(&initial, f::A - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+
+        let mut reveal_height = None;
+        let mut deposit_height = None;
+        for height in [f::A, f::A + 1, f::A + 2] {
+            if height == f::A + 1 {
+                let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+                let metrics = serde_json::json!({"quality": 0.20, "volume": 1.0, "uniqueness": 1.0});
+                let nonce = "nonce-guard".to_string();
+                let commit_id = Transaction::compute_commit_id(&metrics, &nonce, station_id, timestamp, "contribution");
+                let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+                let mut commit_payload = CommitPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                };
+                commit_payload.sign_authorization(&oracle(913).0);
+                let reveal_payload = RevealPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    data: metrics,
+                    nonce,
+                    data_cid: None,
+                    data_hash: None,
+                    storage_provider: None,
+                    provenance: None,
+                    manifest: None,
+                    verification_receipt: None,
+                    compute_receipt: None,
+                    quality_tier: None,
+                };
+                let mk = |tx_type: TransactionType, tag: &str, data: String| {
+                    let mut tx = Transaction::new(
+                        vec![TransactionInput {
+                            txid: hash_string(&format!("in-guard-{tag}")),
+                            vout: 0,
+                            signature: None,
+                            public_key: None,
+                            coinbase_data: None,
+                        }],
+                        vec![TransactionOutput {
+                            amount: 1,
+                            address: format!("0x{}", hex::encode(recipient.0)),
+                            script: "OP_TRUE".to_string(),
+                            nft_data: None,
+                        }],
+                    );
+                    tx.tx_type = tx_type;
+                    tx.timestamp = tx_ts;
+                    tx.data = Some(data);
+                    tx.set_id();
+                    tx
+                };
+                let commit_tx = mk(TransactionType::ContributionCommit, "commit", serde_json::to_string(&commit_payload).unwrap());
+                let mut reveal_tx = mk(TransactionType::ContributionReveal, "reveal", serde_json::to_string(&reveal_payload).unwrap());
+                reveal_tx.sender_address = recipient;
+                reveal_tx.fee = 1;
+                reveal_tx.set_id();
+                let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                    let mut payload = OracleAttestationPayload {
+                        commit_id: commit_id.clone(),
+                        oracle_id: oracle_id.to_string(),
+                        approved: true,
+                        signature: None,
+                        confidence: Some(1.0),
+                        timestamp,
+                        nonce: Some(format!("nonce-guard-{tag}")),
+                    };
+                    payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                    mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap())
+                };
+                let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+                for id in [&o1_id, &o2_id] {
+                    keys.ensure_legacy_identity_key(id, wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle, 0)
+                        .unwrap();
+                }
+                let mut mp = mempool.write().await;
+                for tx in [commit_tx, reveal_tx, attestation(&o1_sk, &o1_id, "att1"), attestation(&o2_sk, &o2_id, "att2")] {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                    .expect("signed Deposit admitted");
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(Arc::clone(&producer), Arc::clone(&mempool), &test_address_string(0x61))
+                .await
+                .unwrap_or_else(|e| panic!("producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+            let reveals = count(TransactionType::ContributionReveal);
+            let node_service = count(TransactionType::NodeBondLifecycle)
+                + count(TransactionType::NodeServiceBatch)
+                + count(TransactionType::NodeFraudReport);
+            if reveals > 0 {
+                reveal_height = Some(height);
+            }
+            if node_service > 0 {
+                deposit_height = Some(height);
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(wire, P2pBlockSource::HistoricalSync, &applier, &store, &peer_consensus, None, &mut fork, &mut orphan)
+                .await;
+            let p = producer.read().await;
+            let a = applier.read().await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state.apply_transitions_batch_at_height(height, inputs).unwrap();
+            let extractor_ok = extracted_state.apply_block_finalization_checked(&block).is_ok()
+                && extracted_state.state_root == p.state.state_root;
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let wal_ok = !rows.is_empty() && {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let applier_ok = a.height == height && a.state.state_root == p.state.state_root;
+            eprintln!(
+                "guard e2e h{height}: reveals={reveals} node_service={node_service} applier_ok={applier_ok} \
+                 extractor_ok={extractor_ok} wal_ok={wal_ok} producer_streak={:?}",
+                p.state.low_quality_streaks.get(&recipient)
+            );
+            assert!(applier_ok, "h{height}: P2P applier root must equal the producer root");
+            assert!(extractor_ok, "h{height}: extractor root must equal the producer root");
+            assert!(wal_ok, "h{height}: WAL replay root must equal the producer root");
+            assert!(!(reveals > 0 && node_service > 0), "h{height}: producer mixed node-service and reveal");
+        }
+        assert_eq!(reveal_height, Some(f::A + 1), "the attested reveal lands in its commit block");
+        assert_eq!(deposit_height, Some(f::A + 2), "the Deposit lands in the very next block");
+        assert_eq!(producer.read().await.state.low_quality_streaks.get(&recipient).copied(), Some(1));
+    }
+
+    /// Separation guard, flip branch and deferral counter across consecutive
+    /// `create_next_block` calls. A Deposit stays pending while every block
+    /// carries a fresh acceptable, quorum-attested reveal: the Deposit waits for
+    /// `NODE_SERVICE_GUARD_MAX_DEFERRALS` blocks, then takes the block while
+    /// that block's reveal waits (its commit and attestations still land in the
+    /// block), and the reveal lands in the next block. Producer, P2P applier,
+    /// independent extraction and the persisted WAL agree on every block.
+    #[test]
+    fn producer_guard_flips_after_consecutive_deferrals_and_roots_agree() {
+        const CHILD: &str = "WRFCOIN_NODE_SERVICE_GUARD_FLIP_CHILD";
+        const NAME: &str = "p2p_events::tests::producer_guard_flips_after_consecutive_deferrals_and_roots_agree";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, "1")
+                .env("WRFCOIN_CHAIN_ID", "777")
+                .env("WRFCOIN_NETWORK_ID", "testnet")
+                .output()
+                .expect("isolated guard flip child");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "guard flip child failed:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(guard_flip_e2e_body());
+    }
+
+    async fn guard_flip_e2e_body() {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::state::StateTransition as ST;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        const MAX_DEFERRALS: u64 = 4; // NODE_SERVICE_GUARD_MAX_DEFERRALS
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let (o1_sk, o1_id) = oracle(921);
+        let (o2_sk, o2_id) = oracle(922);
+        let recipient = Address([0x79; 20]);
+        let station_id = "station-guard-flip";
+
+        let mut initial = f::state();
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        initial
+            .apply_transition(ST::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        initial.create_account(recipient, Balance::new(0));
+        initial
+            .register_weather_station(WeatherStation {
+                station_id: station_id.to_string(),
+                owner_address: recipient.to_string(),
+                location: StationLocation { latitude: 11.5, longitude: 21.5, elevation_meters: Some(210.0) },
+                hardware_model: "guard-fixture".to_string(),
+                calibration_date: None,
+                is_active: true,
+                reputation_score: 50,
+                data_quality_tier: DataQualityTier::Gold,
+                provenance_class: ContributionProvenanceClass::Real,
+                ring_public_key: None,
+            })
+            .unwrap();
+        initial.recalculate_state_root();
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, f::A - 1, 4592);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(Storage::open(&dir.path().join("guard-flip.redb"), 10_000).unwrap()));
+        store.write().await.force_checkpoint(&initial, f::A - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+        let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+        for id in [&o1_id, &o2_id] {
+            keys.ensure_legacy_identity_key(id, wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle, 0)
+                .unwrap();
+        }
+
+        // One acceptable (0.9), quorum-attested commit + reveal group per block.
+        let group = |i: u64| -> (String, Vec<Transaction>) {
+            let timestamp: i64 = chrono::Utc::now().timestamp() - 5 - i as i64;
+            let metrics = serde_json::json!({"quality": 0.9, "volume": 1.0, "uniqueness": 1.0});
+            let nonce = format!("nonce-flip-{i}");
+            let commit_id = Transaction::compute_commit_id(&metrics, &nonce, station_id, timestamp, "contribution");
+            let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+            let mut commit_payload = CommitPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: "contribution".to_string(),
+                auth_pubkey: None,
+                auth_signature: None,
+            };
+            commit_payload.sign_authorization(&oracle(923).0);
+            let reveal_payload = RevealPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: "contribution".to_string(),
+                data: metrics,
+                nonce,
+                data_cid: None,
+                data_hash: None,
+                storage_provider: None,
+                provenance: None,
+                manifest: None,
+                verification_receipt: None,
+                compute_receipt: None,
+                quality_tier: None,
+            };
+            let mk = |tx_type: TransactionType, tag: &str, data: String| {
+                let mut tx = Transaction::new(
+                    vec![TransactionInput {
+                        txid: hash_string(&format!("in-flip-{i}-{tag}")),
+                        vout: 0,
+                        signature: None,
+                        public_key: None,
+                        coinbase_data: None,
+                    }],
+                    vec![TransactionOutput {
+                        amount: 1,
+                        address: format!("0x{}", hex::encode(recipient.0)),
+                        script: "OP_TRUE".to_string(),
+                        nft_data: None,
+                    }],
+                );
+                tx.tx_type = tx_type;
+                tx.timestamp = tx_ts;
+                tx.data = Some(data);
+                tx.set_id();
+                tx
+            };
+            let commit_tx = mk(TransactionType::ContributionCommit, "commit", serde_json::to_string(&commit_payload).unwrap());
+            let mut reveal_tx = mk(TransactionType::ContributionReveal, "reveal", serde_json::to_string(&reveal_payload).unwrap());
+            reveal_tx.sender_address = recipient;
+            reveal_tx.fee = 1;
+            reveal_tx.set_id();
+            let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                let mut payload = OracleAttestationPayload {
+                    commit_id: commit_id.clone(),
+                    oracle_id: oracle_id.to_string(),
+                    approved: true,
+                    signature: None,
+                    confidence: Some(1.0),
+                    timestamp,
+                    nonce: Some(format!("nonce-flip-{i}-{tag}")),
+                };
+                payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap())
+            };
+            let txs = vec![commit_tx, reveal_tx, attestation(&o1_sk, &o1_id, "att1"), attestation(&o2_sk, &o2_id, "att2")];
+            (commit_id, txs)
+        };
+
+        let flip = f::A + 1 + MAX_DEFERRALS;
+        let mut flipped_commit = None;
+        let mut deposit_height = None;
+        for height in f::A..=flip + 1 {
+            if (f::A + 1..=flip).contains(&height) {
+                let (commit_id, txs) = group(height);
+                let mut mp = mempool.write().await;
+                for tx in txs {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                if height == f::A + 1 {
+                    let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                    mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                        .expect("signed Deposit admitted");
+                }
+                if height == flip {
+                    flipped_commit = Some(commit_id);
+                }
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(Arc::clone(&producer), Arc::clone(&mempool), &test_address_string(0x61))
+                .await
+                .unwrap_or_else(|e| panic!("producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+            let reveals = count(TransactionType::ContributionReveal);
+            let attestations = count(TransactionType::OracleAttestation);
+            let node_service = count(TransactionType::NodeBondLifecycle)
+                + count(TransactionType::NodeServiceBatch)
+                + count(TransactionType::NodeFraudReport);
+            if node_service > 0 {
+                deposit_height = Some(height);
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(wire, P2pBlockSource::HistoricalSync, &applier, &store, &peer_consensus, None, &mut fork, &mut orphan)
+                .await;
+            let p = producer.read().await;
+            let a = applier.read().await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state.apply_transitions_batch_at_height(height, inputs).unwrap();
+            let extractor_ok = extracted_state.apply_block_finalization_checked(&block).is_ok()
+                && extracted_state.state_root == p.state.state_root;
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let wal_ok = !rows.is_empty() && {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let applier_ok = a.height == height && a.state.state_root == p.state.state_root;
+            eprintln!(
+                "guard flip h{height}: reveals={reveals} attestations={attestations} node_service={node_service} \
+                 applier_ok={applier_ok} extractor_ok={extractor_ok} wal_ok={wal_ok}"
+            );
+            assert!(applier_ok, "h{height}: P2P applier root must equal the producer root");
+            assert!(extractor_ok, "h{height}: extractor root must equal the producer root");
+            assert!(wal_ok, "h{height}: WAL replay root must equal the producer root");
+            assert!(!(reveals > 0 && node_service > 0), "h{height}: producer mixed node-service and reveal");
+            match height {
+                h if h == f::A => {},
+                h if h < flip => {
+                    assert_eq!((reveals, node_service), (1, 0), "h{h}: reveal kept, Deposit deferred");
+                },
+                h if h == flip => {
+                    assert_eq!((reveals, node_service), (0, 1), "flip: the Deposit takes the block");
+                    assert_eq!(attestations, 2, "flip: the waiting reveal's attestations land in this block");
+                    let c = flipped_commit.as_ref().unwrap();
+                    assert!(p.state.pending_commits.contains_key(c), "flip: its commit is registered");
+                },
+                _ => {
+                    assert_eq!((reveals, node_service), (1, 0), "after the flip the waiting reveal lands");
+                    let reveal = block.transactions.iter().find(|t| t.tx_type == TransactionType::ContributionReveal).unwrap();
+                    assert_eq!(&reveal.parse_reveal_payload().unwrap().commit_id, flipped_commit.as_ref().unwrap());
+                },
+            }
+        }
+        assert_eq!(deposit_height, Some(flip), "the Deposit lands after the deferral bound");
+    }
+
+
+    /// #3591: a block carrying a node-bond Deposit AND a low-quality attested
+    /// ContributionReveal. Feature off, the extractor's streak replay derives no
+    /// streak transitions for it (today's behaviour). Feature on, the replay
+    /// begins the node-service block first, the Deposit block derives the same
+    /// streak transitions as an identical block without the Deposit, and
+    /// producer, P2P applier, independent extraction and persisted WAL replay
+    /// agree.
+    ///
+    /// Each mode runs in its own child process: the feature schedule is
+    /// process-wide.
+    #[test]
+    fn streak_replay_node_service_3591() {
+        const CHILD: &str = "WRFCOIN_STREAK_REPLAY_3591_CHILD";
+        const NAME: &str = "p2p_events::tests::streak_replay_node_service_3591";
+        let Some(mode) = std::env::var_os(CHILD) else {
+            for mode in ["off", "on"] {
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, mode)
+                    .env("WRFCOIN_CHAIN_ID", "777")
+                    .env("WRFCOIN_NETWORK_ID", "testnet")
+                    .output()
+                    .expect("isolated #3591 child");
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && stdout.contains("1 passed"),
+                    "#3591 child ({mode}) failed:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let feature_on = mode == "on";
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                use node_bond_parity_fixture as f;
+                use wrfcoin_shared_protocol::crypto::chain_binding::{
+                    ConsensusFeature, feature_active, refresh_feature_schedule_extensions,
+                };
+                let _schedule = f::state(); // installs the synthetic node-share schedule
+                // The block under test mixes a node-service tx and a reveal, as a
+                // producer without the separation guard still may.
+                wrfcoin_shared_protocol::consensus::proof_of_publishing::disable_node_service_guard_for_tests();
+                if feature_on {
+                    refresh_feature_schedule_extensions(vec![(
+                        "streak_replay_node_service".to_string(),
+                        f::A,
+                    )]);
+                }
+                assert_eq!(
+                    feature_active(ConsensusFeature::StreakReplayNodeService, f::A + 1),
+                    feature_on
+                );
+                let with_deposit = mine_low_quality_block_3591(true, feature_on).await;
+                let without_deposit = mine_low_quality_block_3591(false, feature_on).await;
+                let streaks = |t: &[StateTransition3591]| -> Vec<(String, Option<u32>)> {
+                    t.iter()
+                        .filter_map(|t| match t {
+                            StateTransition3591::SetLowQualityStreak { address, streak } => {
+                                Some((address.to_string(), *streak))
+                            },
+                            _ => None,
+                        })
+                        .collect()
+                };
+                // The control block (no node-service tx) derives the streak in both modes.
+                assert!(
+                    !streaks(&without_deposit.extracted).is_empty(),
+                    "control: a low-quality attested reveal derives a streak transition"
+                );
+                assert!(without_deposit.applier_agrees, "control: producer and applier agree");
+                assert_eq!(
+                    without_deposit.producer_streak,
+                    Some(1),
+                    "control: the producer counted one low-quality reveal"
+                );
+                if feature_on {
+                    assert_eq!(with_deposit.producer_streak, Some(1), "gate on: producer streak");
+                    assert_eq!(
+                        streaks(&with_deposit.extracted),
+                        streaks(&without_deposit.extracted),
+                        "gate on: the Deposit block derives the same streak transitions"
+                    );
+                    assert!(with_deposit.applier_agrees, "gate on: producer and applier agree");
+                    assert!(with_deposit.extractor_agrees, "gate on: extractor root agrees");
+                    assert!(with_deposit.wal_agrees, "gate on: WAL replay root agrees");
+                } else {
+                    assert!(
+                        streaks(&with_deposit.extracted).is_empty(),
+                        "gate off: today's replay derives nothing on a node-service block"
+                    );
+                }
+            });
+    }
+
+    use wrfcoin_native_chain::blockchain::state::StateTransition as StateTransition3591;
+
+    /// `streak_replay_recipient_parity`: one quorum-attested Low (0.20) reveal
+    /// at `STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT + 1` per recipient shape.
+    /// Gate off: the producer's streak, as today. Gate on: producer, P2P
+    /// applier, independent extraction and persisted WAL agree, and the
+    /// extractor derives exactly the producer's streak transitions. Each mode
+    /// runs in its own child process (the feature schedule is process-wide).
+    fn run_recipient_parity_case(case: &'static str) {
+        const CHILD: &str = "WRFCOIN_RECIPIENT_PARITY_CHILD";
+        let name = format!("p2p_events::tests::recipient_parity_{case}");
+        let Some(mode) = std::env::var_os(CHILD) else {
+            for mode in ["off", "on"] {
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--nocapture"])
+                    .env(CHILD, mode)
+                    .env("WRFCOIN_CHAIN_ID", "777")
+                    .env("WRFCOIN_NETWORK_ID", "testnet")
+                    .output()
+                    .expect("isolated recipient parity child");
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && stdout.contains("1 passed"),
+                    "recipient parity child ({case}, {mode}) failed:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let feature_on = mode == "on";
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(recipient_parity_case_body(case, feature_on));
+    }
+
+    #[test]
+    fn recipient_parity_synthetic() {
+        run_recipient_parity_case("synthetic");
+    }
+    #[test]
+    fn recipient_parity_unclassified() {
+        run_recipient_parity_case("unclassified");
+    }
+    #[test]
+    fn recipient_parity_owner_not_first_output() {
+        run_recipient_parity_case("owner_not_first_output");
+    }
+    #[test]
+    fn recipient_parity_wrf_owner() {
+        run_recipient_parity_case("wrf_owner");
+    }
+    #[test]
+    fn recipient_parity_inactive_station() {
+        run_recipient_parity_case("inactive_station");
+    }
+    #[test]
+    fn recipient_parity_same_block_owner_transfer() {
+        run_recipient_parity_case("same_block_owner_transfer");
+    }
+    /// Pre-seeded streak at threshold - 1 and enough balance: the Low reveal
+    /// reaches the threshold and the slash applies (streak cleared).
+    #[test]
+    fn recipient_parity_slash_applies_at_threshold() {
+        run_recipient_parity_case("slash_applies_at_threshold");
+    }
+    /// As above with a zero balance: the slash cannot apply and the streak
+    /// stays at the threshold.
+    #[test]
+    fn recipient_parity_slash_refused_on_insufficient_balance() {
+        run_recipient_parity_case("slash_refused_on_insufficient_balance");
+    }
+    /// An acceptable reveal clears a pre-seeded streak.
+    #[test]
+    fn recipient_parity_good_reveal_resets_streak() {
+        run_recipient_parity_case("good_reveal_resets_streak");
+    }
+    /// Two Low reveals (two stations, one owner) in one block: 1 then 2.
+    #[test]
+    fn recipient_parity_two_low_reveals_same_block() {
+        run_recipient_parity_case("two_low_reveals_same_block");
+    }
+    /// Only `streak_replay_recipient_parity` is scheduled (never
+    /// `streak_replay_node_service`): a block mixing a node-bond Deposit and the
+    /// reveal, as a producer without the separation guard may mine it.
+    #[test]
+    fn recipient_parity_node_service_block() {
+        run_recipient_parity_case("node_service_block");
+    }
+
+    async fn recipient_parity_case_body(case: &'static str, feature_on: bool) {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT;
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::blockchain::station_owner::StationOwnerTransferPayload;
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ChainIdentity, ConsensusFeature, FeatureSchedule, feature_active, install_feature_schedule,
+            refresh_feature_schedule_extensions,
+        };
+        use wrfcoin_shared_protocol::governance::schedule_extension::ScheduleEntry;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        const FEATURE: &str = "streak_replay_recipient_parity";
+        // The node-service case needs node share live, so it runs from the
+        // fixture's activation `f::A`; the recipient cases run past the
+        // ownership-binding height with node share unscheduled.
+        let node_service = case == "node_service_block";
+        let base = if node_service { f::A } else { STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT };
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let owner_key = |b: u8| PrivateKey::from_bytes(&[b; 32]).unwrap();
+        let wrf_address = |k: &PrivateKey| PublicKey::from_private_key(k).to_address();
+        let parse_owner = |owner: &str| -> Address {
+            owner.trim_start_matches("0x").trim_start_matches("wrf").parse().unwrap()
+        };
+
+        let mut genesis_schedule = vec![
+            ("account_authorization_dispatch".to_string(), f::A),
+            (ConsensusFeature::StationActiveRewardGate.name().to_string(), 1),
+            (ConsensusFeature::StationOwnerConsent.name().to_string(), 1),
+        ];
+        if node_service {
+            genesis_schedule.push(("node_share_settlement".to_string(), f::A));
+            wrfcoin_shared_protocol::consensus::proof_of_publishing::disable_node_service_guard_for_tests();
+        }
+        // Before the fixture: the first installed schedule is the process's.
+        install_feature_schedule(FeatureSchedule::from_entries(genesis_schedule).unwrap());
+        let mut initial = f::state();
+        if !node_service {
+            initial.feature_schedule_extensions[0].entries.clear();
+            refresh_feature_schedule_extensions(Vec::new());
+        }
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        if feature_on {
+            initial.feature_schedule_extensions[0].entries.push(ScheduleEntry::new(FEATURE, base));
+            let overlay = initial.feature_schedule_extensions[0]
+                .entries
+                .iter()
+                .map(|e| (e.feature.clone(), e.activation_height))
+                .collect();
+            refresh_feature_schedule_extensions(overlay);
+        }
+        assert_eq!(feature_active(ConsensusFeature::StreakReplayRecipientParity, base + 1), feature_on);
+        assert!(!feature_active(ConsensusFeature::StreakReplayNodeService, base + 1));
+
+        let (o1_sk, o1_id) = oracle(931);
+        let (o2_sk, o2_id) = oracle(932);
+        initial
+            .apply_transition(StateTransition3591::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        // The reveal's first output and sender: never the registered owner.
+        let first_output = Address([0x7a; 20]);
+        initial.create_account(first_output, Balance::new(0));
+        let station_id = "station-recipient-parity";
+        let (old_owner_key, new_owner_key) = (owner_key(0xD1), owner_key(0xD2));
+        // (registered owner, provenance, active, expected producer streak recipient)
+        let (owner, provenance, active, expected): (Option<String>, ContributionProvenanceClass, bool, Option<Address>) =
+            match case {
+                "synthetic" => (Some(Address([0x71; 20]).to_string()), ContributionProvenanceClass::Synthetic, true, None),
+                "unclassified" => (None, ContributionProvenanceClass::Unclassified, true, None),
+                "owner_not_first_output" => {
+                    (Some(Address([0x72; 20]).to_string()), ContributionProvenanceClass::Real, true, Some(Address([0x72; 20])))
+                },
+                "wrf_owner" => {
+                    let o = wrf_address(&old_owner_key);
+                    let a = parse_owner(&o);
+                    (Some(o), ContributionProvenanceClass::Real, true, Some(a))
+                },
+                "inactive_station" => (Some(Address([0x73; 20]).to_string()), ContributionProvenanceClass::Real, false, None),
+                "same_block_owner_transfer" => (
+                    Some(wrf_address(&old_owner_key)),
+                    ContributionProvenanceClass::Real,
+                    true,
+                    Some(parse_owner(&wrf_address(&new_owner_key))),
+                ),
+                "node_service_block" => {
+                    (Some(first_output.to_string()), ContributionProvenanceClass::Real, true, Some(first_output))
+                },
+                // Balance-sensitive cases: the owner is not the first output.
+                "slash_applies_at_threshold"
+                | "slash_refused_on_insufficient_balance"
+                | "good_reveal_resets_streak"
+                | "two_low_reveals_same_block" => {
+                    (Some(Address([0x74; 20]).to_string()), ContributionProvenanceClass::Real, true, Some(Address([0x74; 20])))
+                },
+                other => panic!("unknown case {other}"),
+            };
+        let policy = initial.governance.params.data_quality_policy.clone();
+        let threshold = policy.low_quality_slash_streak;
+        let slash_amount = policy.low_quality_slash_amount;
+        assert!(threshold >= 2 && slash_amount > 0, "fixture needs a multi-step slash policy");
+        // (pre-seeded streak, owner balance, reveal quality, reveals in the block)
+        let (seed_streak, seed_balance, quality, reveal_count): (Option<u32>, u128, f64, usize) = match case {
+            "slash_applies_at_threshold" => (Some(threshold - 1), slash_amount * 10, 0.20, 1),
+            "slash_refused_on_insufficient_balance" => (Some(threshold - 1), 0, 0.20, 1),
+            "good_reveal_resets_streak" => (Some(threshold - 1), 0, 0.95, 1),
+            "two_low_reveals_same_block" => (None, 0, 0.20, 2),
+            _ => (None, 0, 0.20, 1),
+        };
+        // What the producer ends with, and the streak transitions it derives.
+        let (expected_streaks, expected_transitions): (Vec<(Address, u32)>, Vec<(Address, Option<u32>)>) =
+            match (case, expected) {
+                ("slash_applies_at_threshold", Some(a)) => (vec![], vec![(a, Some(threshold)), (a, None)]),
+                ("slash_refused_on_insufficient_balance", Some(a)) => (vec![(a, threshold)], vec![(a, Some(threshold))]),
+                ("good_reveal_resets_streak", Some(a)) => (vec![], vec![(a, None)]),
+                ("two_low_reveals_same_block", Some(a)) => (vec![(a, 2)], vec![(a, Some(1)), (a, Some(2))]),
+                (_, Some(a)) => (vec![(a, 1)], vec![(a, Some(1))]),
+                (_, None) => (vec![], vec![]),
+            };
+        let station_ids: Vec<String> =
+            (0..reveal_count).map(|i| if i == 0 { station_id.to_string() } else { format!("{station_id}-{i}") }).collect();
+        if let Some(owner) = &owner {
+            initial.create_account(parse_owner(owner), Balance::new(seed_balance));
+            if let Some(streak) = seed_streak {
+                initial
+                    .apply_transition(StateTransition3591::SetLowQualityStreak {
+                        address: parse_owner(owner),
+                        streak: Some(streak),
+                    })
+                    .unwrap();
+            }
+        }
+        for station_id in station_ids.iter().filter(|_| owner.is_some()) {
+            let owner = owner.as_ref().unwrap();
+            initial
+                .register_weather_station(WeatherStation {
+                    station_id: station_id.to_string(),
+                    owner_address: owner.clone(),
+                    location: StationLocation { latitude: 12.5, longitude: 22.5, elevation_meters: Some(230.0) },
+                    hardware_model: "recipient-parity-fixture".to_string(),
+                    calibration_date: None,
+                    is_active: active,
+                    reputation_score: 50,
+                    data_quality_tier: DataQualityTier::Gold,
+                    provenance_class: provenance,
+                    ring_public_key: None,
+                })
+                .unwrap();
+        }
+        initial.recalculate_state_root();
+
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, base - 1, 5591);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(Storage::open(&dir.path().join("recipient-parity.redb"), 10_000).unwrap()));
+        store.write().await.force_checkpoint(&initial, base - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+        let streaks = |t: &[StateTransition3591]| -> Vec<(Address, Option<u32>)> {
+            t.iter()
+                .filter_map(|t| match t {
+                    StateTransition3591::SetLowQualityStreak { address, streak } => Some((*address, *streak)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        for height in [base, base + 1] {
+            if height == base + 1 {
+                let mk = |tx_type: TransactionType, tag: &str, data: String, tx_ts: chrono::DateTime<chrono::Utc>| {
+                    let mut tx = Transaction::new(
+                        vec![TransactionInput {
+                            txid: hash_string(&format!("in-rp-{case}-{tag}")),
+                            vout: 0,
+                            signature: None,
+                            public_key: None,
+                            coinbase_data: None,
+                        }],
+                        vec![TransactionOutput {
+                            amount: 1,
+                            address: format!("0x{}", hex::encode(first_output.0)),
+                            script: "OP_TRUE".to_string(),
+                            nft_data: None,
+                        }],
+                    );
+                    tx.tx_type = tx_type;
+                    tx.timestamp = tx_ts;
+                    tx.data = Some(data);
+                    tx.set_id();
+                    tx
+                };
+                let mut pop_txs = Vec::new();
+                for (gi, station_id) in station_ids.iter().enumerate() {
+                    let station_id = station_id.as_str();
+                    let timestamp: i64 = chrono::Utc::now().timestamp() - 5 - gi as i64;
+                    let metrics = serde_json::json!({"quality": quality, "volume": 1.0, "uniqueness": 1.0});
+                    let nonce = format!("nonce-rp-{case}-{gi}");
+                    let commit_id = Transaction::compute_commit_id(&metrics, &nonce, station_id, timestamp, "contribution");
+                    let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+                    let mut commit_payload = CommitPayload {
+                        commit_id: commit_id.clone(),
+                        station_id: station_id.to_string(),
+                        timestamp,
+                        contribution_type: "contribution".to_string(),
+                        auth_pubkey: None,
+                        auth_signature: None,
+                    };
+                    commit_payload.sign_authorization(&oracle(933).0);
+                    let reveal_payload = RevealPayload {
+                        commit_id: commit_id.clone(),
+                        station_id: station_id.to_string(),
+                        timestamp,
+                        contribution_type: "contribution".to_string(),
+                        data: metrics,
+                        nonce,
+                        data_cid: None,
+                        data_hash: None,
+                        storage_provider: None,
+                        provenance: None,
+                        manifest: None,
+                        verification_receipt: None,
+                        compute_receipt: None,
+                        quality_tier: None,
+                    };
+                    let commit_tx = mk(TransactionType::ContributionCommit, &format!("commit-{gi}"), serde_json::to_string(&commit_payload).unwrap(), tx_ts);
+                    let mut reveal_tx = mk(TransactionType::ContributionReveal, &format!("reveal-{gi}"), serde_json::to_string(&reveal_payload).unwrap(), tx_ts);
+                    reveal_tx.sender_address = first_output;
+                    reveal_tx.fee = 1;
+                    reveal_tx.set_id();
+                    let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                        let mut payload = OracleAttestationPayload {
+                            commit_id: commit_id.clone(),
+                            oracle_id: oracle_id.to_string(),
+                            approved: true,
+                            signature: None,
+                            confidence: Some(1.0),
+                            timestamp,
+                            nonce: Some(format!("nonce-rp-{case}-{tag}")),
+                        };
+                        payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                        mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap(), tx_ts)
+                    };
+                    pop_txs.extend([
+                        commit_tx,
+                        reveal_tx,
+                        attestation(&o1_sk, &o1_id, &format!("att1-{gi}")),
+                        attestation(&o2_sk, &o2_id, &format!("att2-{gi}")),
+                    ]);
+                }
+                let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+                for id in [&o1_id, &o2_id] {
+                    keys.ensure_legacy_identity_key(id, wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle, 0)
+                        .unwrap();
+                }
+                let mut mp = mempool.write().await;
+                if case == "same_block_owner_transfer" {
+                    let identity = ChainIdentity::active();
+                    let pk = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
+                    let mut p = StationOwnerTransferPayload::new(
+                        station_id,
+                        wrf_address(&old_owner_key),
+                        pk(&old_owner_key),
+                        wrf_address(&new_owner_key),
+                        pk(&new_owner_key),
+                        0,
+                        height + 100,
+                    );
+                    p.sign_as_owner_with_domain(&identity.chain_id, &identity.network_id, &old_owner_key);
+                    p.countersign_with_domain(&identity.chain_id, &identity.network_id, &new_owner_key);
+                    let transfer = mk(TransactionType::StationRegistration, "transfer", serde_json::to_string(&p).unwrap(), chrono::Utc::now());
+                    mp.add_transaction(transfer).expect("owner transfer admitted");
+                }
+                for tx in pop_txs {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                if case == "node_service_block" {
+                    let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                    mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                        .expect("signed Deposit admitted");
+                }
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(Arc::clone(&producer), Arc::clone(&mempool), &test_address_string(0x61))
+                .await
+                .unwrap_or_else(|e| panic!("[{case}] producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+            if height == base + 1 {
+                assert_eq!(count(TransactionType::ContributionReveal), reveal_count, "[{case}] reveals mined");
+                if case == "same_block_owner_transfer" {
+                    assert_eq!(count(TransactionType::StationRegistration), 1, "[{case}] transfer in the same block");
+                }
+                if case == "node_service_block" {
+                    assert_eq!(count(TransactionType::NodeBondLifecycle), 1, "[{case}] Deposit in the same block");
+                }
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(wire, P2pBlockSource::HistoricalSync, &applier, &store, &peer_consensus, None, &mut fork, &mut orphan)
+                .await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state.apply_transitions_batch_at_height(height, inputs.clone()).unwrap();
+            let extractor_finalized = extracted_state.apply_block_finalization_checked(&block).is_ok();
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let p = producer.read().await;
+            let wal_ok = !rows.is_empty() && {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let producer_streaks: Vec<(Address, u32)> =
+                p.state.low_quality_streaks.iter().map(|(a, s)| (*a, *s)).collect();
+            eprintln!(
+                "recipient parity [{case}] gate={feature_on} h{height}: producer_streaks={producer_streaks:?} \
+                 extracted_streaks={:?}",
+                streaks(&inputs)
+            );
+            if height == base + 1 {
+                if case == "same_block_owner_transfer" {
+                    let station = p.state.station_registry.get(station_id).unwrap();
+                    assert_eq!(station.owner_address, wrf_address(&new_owner_key), "[{case}] the transfer applied");
+                }
+                let mut sorted_streaks = producer_streaks.clone();
+                sorted_streaks.sort();
+                assert_eq!(sorted_streaks, expected_streaks, "[{case}] producer streak");
+                if let (Some(a), true) = (expected, case.starts_with("slash_")) {
+                    // A Low reveal earns nothing, so only the slash moves the balance.
+                    let balance = p.state.get_account(&a).map(|acc| acc.balance.0).unwrap_or(0);
+                    let want = if case == "slash_applies_at_threshold" { seed_balance - slash_amount } else { seed_balance };
+                    assert_eq!(balance, want, "[{case}] producer balance after the block");
+                }
+            }
+            if !feature_on {
+                continue;
+            }
+            drop(p);
+            assert_block_apply_parity_at(&format!("recipient parity {case}"), height, &producer, &applier).await;
+            let p = producer.read().await;
+            assert!(extractor_finalized && extracted_state.state_root == p.state.state_root, "[{case}] h{height}: extractor root");
+            assert!(wal_ok, "[{case}] h{height}: WAL replay root");
+            if height == base + 1 {
+                assert_eq!(
+                    streaks(&inputs),
+                    expected_transitions,
+                    "[{case}] the extractor derives the producer's streak transitions"
+                );
+            }
+        }
+    }
+
+
+    struct LowQualityBlock3591 {
+        extracted: Vec<StateTransition3591>,
+        producer_streak: Option<u32>,
+        applier_agrees: bool,
+        extractor_agrees: bool,
+        wal_agrees: bool,
+    }
+
+    /// Producer at `A`, then block `A + 1` with a low-quality (0.20) attested
+    /// reveal, optionally plus a signed node-bond Deposit.
+    async fn mine_low_quality_block_3591(with_deposit: bool, feature_on: bool) -> LowQualityBlock3591 {
+        use node_bond_parity_fixture as f;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
+            TransactionOutput,
+        };
+        use wrfcoin_native_chain::crypto::hash::hash_string;
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::common::types::{Address, Balance};
+        use wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAction;
+        use wrfcoin_shared_protocol::station_registry::{
+            ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
+        };
+        fn oracle(seed: u64) -> (PrivateKey, String) {
+            use rand::SeedableRng;
+            let sk = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(seed));
+            let id = PublicKey::from_private_key(&sk).to_string();
+            (sk, id)
+        }
+        let (o1_sk, o1_id) = oracle(901);
+        let (o2_sk, o2_id) = oracle(902);
+        let recipient = Address([0x77; 20]);
+        let station_id = "station-3591";
+
+        let mut initial = f::state();
+        initial.node_bond_registry = None;
+        initial.node_receipt_registry = None;
+        initial.node_settlement = None;
+        initial.node_fraud = None;
+        if feature_on {
+            // Scheduled the way an applied #3277 extension schedules it: the
+            // node refreshes the process overlay from these state entries on
+            // every applied block, so a test-only overlay would be wiped.
+            initial.feature_schedule_extensions[0].entries.push(
+                wrfcoin_shared_protocol::governance::schedule_extension::ScheduleEntry::new(
+                    "streak_replay_node_service",
+                    f::A,
+                ),
+            );
+        }
+        initial
+            .apply_transition(StateTransition3591::SetOracleConfig {
+                oracle_set: vec![o1_id.clone(), o2_id.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        initial.create_account(recipient, Balance::new(0));
+        initial
+            .register_weather_station(WeatherStation {
+                station_id: station_id.to_string(),
+                owner_address: recipient.to_string(),
+                location: StationLocation {
+                    latitude: 10.5,
+                    longitude: 20.5,
+                    elevation_meters: Some(220.0),
+                },
+                hardware_model: "parity-fixture".to_string(),
+                calibration_date: None,
+                is_active: true,
+                reputation_score: 50,
+                data_quality_tier: DataQualityTier::Gold,
+                provenance_class: ContributionProvenanceClass::Real,
+                ring_public_key: None,
+            })
+            .unwrap();
+        initial.recalculate_state_root();
+        let mut genesis = Blockchain::default();
+        extend_chain(&mut genesis, f::A - 1, 3591);
+        genesis.state = initial.clone();
+        let producer = Arc::new(RwLock::new(genesis.clone()));
+        let applier = Arc::new(RwLock::new(genesis));
+        let consensus = test_consensus();
+        let peer_consensus = test_consensus();
+        let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("streak-3591.redb"), 10_000).unwrap(),
+        ));
+        store.write().await.force_checkpoint(&initial, f::A - 1).await.unwrap();
+        let mut fork = ForkCandidateBuffer::new();
+        let mut orphan = OrphanBlockBuffer::new();
+        let mut extracted_state = initial.clone();
+        let mut wal = initial.clone();
+
+        let mut out = LowQualityBlock3591 {
+            extracted: Vec::new(),
+            producer_streak: None,
+            applier_agrees: false,
+            extractor_agrees: false,
+            wal_agrees: false,
+        };
+        for height in [f::A, f::A + 1] {
+            if height == f::A + 1 {
+                let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+                let metrics = serde_json::json!({"quality": 0.20, "volume": 1.0, "uniqueness": 1.0});
+                let nonce = "nonce-3591".to_string();
+                let commit_id = Transaction::compute_commit_id(
+                    &metrics, &nonce, station_id, timestamp, "contribution",
+                );
+                let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap();
+                let mut commit_payload = CommitPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    auth_pubkey: None,
+                    auth_signature: None,
+                };
+                commit_payload.sign_authorization(&oracle(903).0);
+                let reveal_payload = RevealPayload {
+                    commit_id: commit_id.clone(),
+                    station_id: station_id.to_string(),
+                    timestamp,
+                    contribution_type: "contribution".to_string(),
+                    data: metrics,
+                    nonce,
+                    data_cid: None,
+                    data_hash: None,
+                    storage_provider: None,
+                    provenance: None,
+                    manifest: None,
+                    verification_receipt: None,
+                    compute_receipt: None,
+                    quality_tier: None,
+                };
+                let mk = |tx_type: TransactionType, tag: &str, data: String| {
+                    let mut tx = Transaction::new(
+                        vec![TransactionInput {
+                            txid: hash_string(&format!("in-3591-{tag}")),
+                            vout: 0,
+                            signature: None,
+                            public_key: None,
+                            coinbase_data: None,
+                        }],
+                        vec![TransactionOutput {
+                            amount: 1,
+                            address: format!("0x{}", hex::encode(recipient.0)),
+                            script: "OP_TRUE".to_string(),
+                            nft_data: None,
+                        }],
+                    );
+                    tx.tx_type = tx_type;
+                    tx.timestamp = tx_ts;
+                    tx.data = Some(data);
+                    tx.set_id();
+                    tx
+                };
+                let commit_tx = mk(
+                    TransactionType::ContributionCommit,
+                    "commit",
+                    serde_json::to_string(&commit_payload).unwrap(),
+                );
+                let mut reveal_tx = mk(
+                    TransactionType::ContributionReveal,
+                    "reveal",
+                    serde_json::to_string(&reveal_payload).unwrap(),
+                );
+                reveal_tx.sender_address = recipient;
+                reveal_tx.fee = 1;
+                reveal_tx.set_id();
+                let attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                    let mut payload = OracleAttestationPayload {
+                        commit_id: commit_id.clone(),
+                        oracle_id: oracle_id.to_string(),
+                        approved: true,
+                        signature: None,
+                        confidence: Some(1.0),
+                        timestamp,
+                        nonce: Some(format!("nonce-3591-{tag}")),
+                    };
+                    payload.signature = Some(sk.sign(payload.signing_message().as_bytes()).to_string());
+                    mk(TransactionType::OracleAttestation, tag, serde_json::to_string(&payload).unwrap())
+                };
+                let mut keys = wrfcoin_shared_protocol::security::key_registry::SigningKeyRegistry::default();
+                for id in [&o1_id, &o2_id] {
+                    keys.ensure_legacy_identity_key(
+                        id,
+                        wrfcoin_shared_protocol::security::key_registry::SigningRole::Oracle,
+                        0,
+                    )
+                    .unwrap();
+                }
+                let mut mp = mempool.write().await;
+                for tx in [
+                    commit_tx,
+                    reveal_tx,
+                    attestation(&o1_sk, &o1_id, "att1"),
+                    attestation(&o2_sk, &o2_id, "att2"),
+                ] {
+                    mp.add_transaction_with_signing_keys(tx, Some(&keys)).expect("pop tx admitted");
+                }
+                if with_deposit {
+                    let deposit = f::transaction(&f::auth(10, 1, 0, NodeBondAction::Deposit, 1), 100_000);
+                    mp.add_transaction_with_signing_keys_at_height(deposit, None, Some(height - 1))
+                        .expect("signed Deposit admitted");
+                }
+            }
+            let before = extracted_state.clone();
+            let block = consensus
+                .create_pop_block_with_state(
+                    Arc::clone(&producer),
+                    Arc::clone(&mempool),
+                    &test_address_string(0x61),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("producer height {height}: {e}"));
+            assert_eq!(block.height, height);
+            if height == f::A + 1 {
+                let count = |ty: TransactionType| block.transactions.iter().filter(|t| t.tx_type == ty).count();
+                assert_eq!(count(TransactionType::ContributionReveal), 1, "low-quality reveal mined");
+                assert_eq!(count(TransactionType::NodeBondLifecycle), usize::from(with_deposit), "Deposit mined");
+            }
+            let wire: Block = bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+            apply_p2p_block(
+                wire,
+                P2pBlockSource::HistoricalSync,
+                &applier,
+                &store,
+                &peer_consensus,
+                None,
+                &mut fork,
+                &mut orphan,
+            )
+            .await;
+            let p = producer.read().await;
+            let a = applier.read().await;
+            let inputs = extract_transitions(&before, &block, height, block.timestamp.timestamp());
+            extracted_state
+                .apply_transitions_batch_at_height(height, inputs.clone())
+                .unwrap();
+            extracted_state.apply_block_finalization_checked(&block).unwrap();
+            let rows = store.read().await.load_wal_transitions_range(height, height).unwrap();
+            let wal_ok = if rows.is_empty() {
+                false
+            } else {
+                wal.apply_transitions_batch_at_height(height, rows.into_iter().map(|(_, t)| t)).unwrap();
+                wal.apply_block_finalization_checked(&block).is_ok() && wal.state_root == p.state.state_root
+            };
+            let applier_ok = a.height == height && a.state.state_root == p.state.state_root;
+            if height == f::A {
+                assert!(applier_ok && wal_ok, "the empty activation block agrees everywhere");
+                assert_eq!(extracted_state.state_root, p.state.state_root);
+            } else {
+                out = LowQualityBlock3591 {
+                    extracted: inputs,
+                    producer_streak: p.state.low_quality_streaks.get(&recipient).copied(),
+                    applier_agrees: applier_ok,
+                    extractor_agrees: extracted_state.state_root == p.state.state_root,
+                    wal_agrees: wal_ok,
+                };
+            }
+        }
+        out
     }
 
     /// Cross the durable None -> Some checkpoint marker, a real signed bond
@@ -7295,14 +9478,24 @@ mod tests {
         producer_chain: &Arc<RwLock<Blockchain>>,
         applier_chain: &Arc<RwLock<Blockchain>>,
     ) {
+        assert_block_apply_parity_at(label, 1, producer_chain, applier_chain).await;
+    }
+
+    /// [`assert_block_apply_parity`] for the block at `height`.
+    async fn assert_block_apply_parity_at(
+        label: &str,
+        height: u64,
+        producer_chain: &Arc<RwLock<Blockchain>>,
+        applier_chain: &Arc<RwLock<Blockchain>>,
+    ) {
         let producer = producer_chain.read().await;
         let applier = applier_chain.read().await;
 
-        // Both must have actually applied block 1.
-        assert_eq!(producer.height, 1, "[{label}] producer must be at height 1");
+        // Both must have actually applied the block.
+        assert_eq!(producer.height, height, "[{label}] producer must be at height {height}");
         assert_eq!(
-            applier.height, 1,
-            "[{label}] applier must accept block 1 (height 0 means apply_p2p_block \
+            applier.height, height,
+            "[{label}] applier must accept block {height} (a lower height means apply_p2p_block \
              rejected it — investigate consensus validation before reading the field diff)"
         );
         assert_eq!(
@@ -7310,7 +9503,7 @@ mod tests {
             "[{label}] tips must match (same block)"
         );
 
-        eprintln!("\n===== #1682 PRODUCER/APPLIER STATE DIFF [{label}] (height 1) =====");
+        eprintln!("\n===== #1682 PRODUCER/APPLIER STATE DIFF [{label}] (height {height}) =====");
         eprintln!("producer state_root    : {}", producer.state.state_root);
         eprintln!("applier  state_root    : {}", applier.state.state_root);
         eprintln!("producer accounts.len(): {}", producer.state.accounts.len());
@@ -8172,6 +10365,387 @@ mod tests {
         let _ = std::fs::remove_file(&storage_path);
     }
 
+    /// #3565: apply a mined scenario block through the real `apply_p2p_block`,
+    /// the extracted-transitions batch and the persisted WAL rows, and require
+    /// every leg to reach the producer's `state_root` (each leg re-checks the
+    /// block's root commitment through `apply_block_finalization_checked_at`).
+    async fn assert_producer_applier_wal_root_parity_3565(scenario: &AttestedRewardScenario, label: &str) {
+        assert_producer_applier_wal_root_parity_at_base_3565(scenario, label, 0).await
+    }
+
+    /// [`assert_producer_applier_wal_root_parity_3565`] for a producer that sat at
+    /// `base_height` with the fixture's deterministic tip.
+    async fn assert_producer_applier_wal_root_parity_at_base_3565(
+        scenario: &AttestedRewardScenario,
+        label: &str,
+        base_height: u64,
+    ) {
+        let block = scenario.block_1.clone();
+        let producer_root = scenario.producer_chain.read().await.state.state_root;
+
+        let storage_path = std::env::temp_dir().join(format!(
+            "wrfcoin-p2p-device-limit-3565-{label}-{}.redb",
+            fastrand::u64(..)
+        ));
+        let _ = std::fs::remove_file(&storage_path);
+        let applier_storage = Arc::new(RwLock::new(
+            // A checkpoint interval no fixture height reaches, so the block's
+            // transitions stay in the WAL rather than being folded into a
+            // checkpoint (h3000 is a multiple of the default 100).
+            Storage::open(&storage_path, u64::MAX)
+                .expect("applier storage opens"),
+        ));
+        let mut applier_genesis = Blockchain::default();
+        (scenario.seed_genesis)(&mut applier_genesis);
+        if base_height > 0 {
+            applier_genesis.height = base_height;
+            applier_genesis.tip =
+                wrfcoin_native_chain::crypto::hash::hash_string(&format!("base-tip-{base_height}"));
+        }
+        let applier_seed = applier_genesis.state.clone();
+        let applier_chain = Arc::new(RwLock::new(applier_genesis));
+        let applier_consensus = test_consensus();
+        let mut fork_buffer = ForkCandidateBuffer::new();
+        let mut orphan_buffer = OrphanBlockBuffer::new();
+        let wire_block: Block = bincode::deserialize(
+            &bincode::serialize(&block).expect("block serializes for P2P"),
+        )
+        .expect("block deserializes for P2P");
+        apply_p2p_block(
+            wire_block,
+            P2pBlockSource::HistoricalSync,
+            &applier_chain,
+            &applier_storage,
+            &applier_consensus,
+            None,
+            &mut fork_buffer,
+            &mut orphan_buffer,
+        )
+        .await;
+        {
+            let applier = applier_chain.read().await;
+            assert_eq!(applier.height, block.height, "{label}: applier must accept the block");
+            assert_eq!(
+                applier.state.state_root, producer_root,
+                "{label}: P2P applier state_root must match the producer"
+            );
+        }
+
+        let version = wrfcoin_shared_protocol::crypto::chain_binding::protocol_version_at(block.height);
+        let applier_transitions =
+            extract_transitions(&applier_seed, &block, block.height, block.timestamp.timestamp());
+        let mut extracted = applier_seed.clone();
+        extracted
+            .apply_transitions_batch_at_height(block.height, applier_transitions.clone())
+            .expect("extracted transitions apply");
+        extracted
+            .apply_block_finalization_checked_at(version, &block)
+            .expect("extracted state must match the block commitment");
+        assert_eq!(extracted.state_root, producer_root, "{label}: extracted state_root");
+
+        let replayed = applier_storage
+            .read()
+            .await
+            .load_wal_transitions_range(block.height, block.height)
+            .expect("P2P-written WAL transitions must load");
+        assert_eq!(
+            replayed.len(),
+            applier_transitions.len(),
+            "{label}: vacuity guard: WAL must contain every extracted transition"
+        );
+        let mut wal = applier_seed;
+        wal.apply_transitions_batch_at_height(
+            block.height,
+            replayed.into_iter().map(|(_, transition)| transition),
+        )
+        .expect("P2P-written WAL batch must apply");
+        wal.apply_block_finalization_checked_at(version, &block)
+            .expect("WAL-replayed state must match the block commitment");
+        assert_eq!(wal.state_root, producer_root, "{label}: WAL replay state_root");
+        drop(applier_chain);
+        drop(applier_storage);
+        let _ = std::fs::remove_file(&storage_path);
+    }
+
+    fn count_3565(block: &Block, tx_type: TransactionType) -> usize {
+        block.transactions.iter().filter(|tx| tx.tx_type == tx_type).count()
+    }
+
+    /// The single contribution reward the block records, and the age of its
+    /// reading at the block (header timestamp minus the reveal's committed
+    /// timestamp).
+    fn reward_and_age_3565(block: &Block) -> (u128, i64) {
+        let entries: Vec<wrfcoin_native_chain::blockchain::state::ContributionRewardRecord> =
+            serde_json::from_str(block.metadata.get("reward_entries").expect("reward_entries"))
+                .expect("reward_entries JSON");
+        assert_eq!(entries.len(), 1, "vacuity guard: exactly one contribution decision");
+        let reveal = block
+            .transactions
+            .iter()
+            .find(|tx| tx.tx_type == TransactionType::ContributionReveal)
+            .and_then(|tx| tx.parse_reveal_payload())
+            .expect("the block carries the reveal");
+        (entries[0].amount.0, block.timestamp.timestamp() - reveal.timestamp)
+    }
+
+    fn reexec_child_3565(test: &str, child: &str) -> bool {
+        if std::env::var_os(child).is_some() {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .env(child, "1")
+            .status()
+            .expect("re-exec child");
+        assert!(status.success(), "isolated #3565 child {test} failed");
+        true
+    }
+
+    /// #3565 gate ON (scheduled from height 1, isolated child: the schedule is
+    /// process-global). Two quorum-attested reveals from ONE station are staged
+    /// in the mempool; the real producer keeps exactly one and both commits.
+    /// Producer, P2P applier, extracted transitions and WAL replay agree on the
+    /// root. A 1805 s old reading is paid `late_data_multiplier_bps(age)` of the
+    /// fresh reading's reward, exactly.
+    #[tokio::test]
+    async fn device_submission_limit_keeps_one_reveal_per_station_with_parity_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_keeps_one_reveal_per_station_with_parity_3565",
+            "WRFCOIN_3565_ON_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::late_data_multiplier_bps;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(
+                ConsensusFeature::DeviceSubmissionLimit.name().to_string(),
+                1,
+            )])
+            .expect("schedule"),
+        );
+
+        // Owner-signed commits: from activation a commit must be authorized by
+        // the station's registered owner key (#3565 pre-activation fix (a)).
+        let two = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "vacuity guard: both commits mined");
+        assert_eq!(
+            count_3565(&two.block_1, TransactionType::ContributionReveal),
+            1,
+            "gate ON: one reveal per station per block"
+        );
+        assert_producer_applier_wal_root_parity_3565(&two, "on-two-reveals").await;
+        let (fresh_amount, fresh_age) = reward_and_age_3565(&two.block_1);
+        assert!(fresh_age <= 600, "fixture: the fresh reading is inside full pay ({fresh_age}s)");
+        assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
+
+        let late = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        let multiplier = late_data_multiplier_bps(late_age);
+        assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
+        assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "gate ON: late data is paid less, on the curve");
+    }
+
+    /// #3565 gate OFF control (isolated child, nothing scheduled): the same
+    /// two-reveal mempool mines BOTH reveals, as on main, and an 1805 s old
+    /// reading is paid exactly what a fresh one is. Roots agree on every leg.
+    #[tokio::test]
+    async fn device_submission_limit_unscheduled_is_unchanged_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_unscheduled_is_unchanged_3565",
+            "WRFCOIN_3565_OFF_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{feature_active, ConsensusFeature};
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+
+        let two = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        )
+        .await;
+        assert!(!feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(
+            count_3565(&two.block_1, TransactionType::ContributionReveal),
+            2,
+            "gate OFF: both same-station reveals are mined, as on main"
+        );
+        assert_producer_applier_wal_root_parity_3565(&two, "off-two-reveals").await;
+
+        let fresh = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5,
+        )
+        .await;
+        let late = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "off-late").await;
+        assert_eq!(
+            reward_and_age_3565(&late.block_1).0,
+            reward_and_age_3565(&fresh.block_1).0,
+            "gate OFF: no late-data reduction"
+        );
+    }
+
+    fn reveal_ids_3565(block: &Block) -> Vec<(CryptoHash, String)> {
+        block
+            .transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionReveal)
+            .map(|tx| (tx.id.expect("mined tx has an id"), tx.parse_reveal_payload().expect("reveal").nonce))
+            .collect()
+    }
+
+    /// The reveals of `scenario`'s mempool that are still pending after mining.
+    async fn pending_reveal_nonces_3565(scenario: &AttestedRewardScenario) -> Vec<String> {
+        let mempool = scenario.producer_mempool.read().await;
+        let mut nonces: Vec<String> = mempool
+            .iter_transactions()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionReveal)
+            .filter_map(|tx| tx.parse_reveal_payload())
+            .map(|payload| payload.nonce)
+            .collect();
+        nonces.sort();
+        nonces
+    }
+
+    /// #3565 pre-activation fixes (b) and (a), gate ON from height 1 (isolated child).
+    /// (b) Delay, don't drop: of two owner-signed same-station reveals the
+    /// producer mines ONE and the other stays PENDING in the mempool for a later
+    /// block; roots agree on every leg. (a) Owner binding: when the commit is
+    /// signed by a key that is not the station's registered owner, the commit is
+    /// refused and evicted, so its reveal cannot occupy the station's slot.
+    #[tokio::test]
+    async fn device_limit_defers_the_extra_reveal_and_binds_commits_to_the_owner_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_limit_defers_the_extra_reveal_and_binds_commits_to_the_owner_3565",
+            "WRFCOIN_3565_DEFER_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+                .expect("schedule"),
+        );
+
+        let two = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+        )
+        .await;
+        assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "owner-signed commits are mined");
+        let mined = reveal_ids_3565(&two.block_1);
+        assert_eq!(mined.len(), 1, "one reveal per station per block");
+        let pending = pending_reveal_nonces_3565(&two).await;
+        assert_eq!(pending.len(), 1, "(b) the extra reveal is deferred, not evicted");
+        assert_ne!(pending[0], mined[0].1, "the pending reveal is the one not mined");
+        assert_producer_applier_wal_root_parity_3565(&two, "defer-two").await;
+
+        let not_owner = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, false, &[], &[],
+        )
+        .await;
+        assert_eq!(
+            count_3565(&not_owner.block_1, TransactionType::ContributionCommit),
+            0,
+            "(a) a commit not signed by the registered owner key is refused"
+        );
+        assert_eq!(count_3565(&not_owner.block_1, TransactionType::ContributionReveal), 0, "(a) so its reveal cannot occupy the slot");
+        assert_producer_applier_wal_root_parity_3565(&not_owner, "not-owner").await;
+    }
+
+    /// #3565 (b) with the #2777 fence: gate ON, block at h3000 (the fence's
+    /// activation height). The FIRST same-station reveal has no attestations and
+    /// is held back for lack of quorum; the second has quorum. The producer must
+    /// mine the second, not lose both, and keep the first pending. Roots agree.
+    #[tokio::test]
+    async fn device_limit_quorum_held_first_reveal_does_not_block_its_sibling_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_limit_quorum_held_first_reveal_does_not_block_its_sibling_3565",
+            "WRFCOIN_3565_QUORUM_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+                .expect("schedule"),
+        );
+        let base = RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1;
+        let scenario = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), base, None, 2, 5, true, &[0], &[],
+        )
+        .await;
+        assert_eq!(scenario.block_1.height, RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT, "fixture: the #2777 fence is active");
+        let mined = reveal_ids_3565(&scenario.block_1);
+        assert_eq!(mined.len(), 1, "the quorum-ready sibling is mined");
+        assert_eq!(mined[0].1, "nonce-attest-1", "it is the attested (second) reveal");
+        assert_eq!(pending_reveal_nonces_3565(&scenario).await, vec!["nonce-attest".to_string()], "the quorum-held first reveal stays pending");
+        assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "quorum-held", base).await;
+    }
+
+    /// #3565 review B1, end to end through the real producer, gate ON. An
+    /// attacker stages a `ContributionCommit` + `ContributionReveal` for the
+    /// victim's registered station whose payloads say `contribution_type:
+    /// "forecast"`, signed by a NON-owner key, beside the owner's normal pair.
+    /// The forecast-typed contribution commit must not be mined (before the fix
+    /// the `State` forecast exemption let it apply), and the owner's reveal is
+    /// the one that takes the station's slot. Roots agree on every leg.
+    #[tokio::test]
+    async fn device_limit_refuses_a_forecast_typed_contribution_commit_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_limit_refuses_a_forecast_typed_contribution_commit_3565",
+            "WRFCOIN_3565_TYPE_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+                .expect("schedule"),
+        );
+        let scenario = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[0],
+        )
+        .await;
+        let forecast_typed_commits = scenario
+            .block_1
+            .transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionCommit)
+            .filter_map(|tx| tx.parse_commit_payload())
+            .filter(|payload| payload.contribution_type == "forecast")
+            .count();
+        assert_eq!(forecast_typed_commits, 0, "B1: a forecast-typed ContributionCommit is refused");
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionCommit), 1, "the owner's commit is mined");
+        let mined = reveal_ids_3565(&scenario.block_1);
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].1, "nonce-attest-1", "the owner's reveal takes the slot");
+        assert_producer_applier_wal_root_parity_3565(&scenario, "forecast-typed").await;
+    }
+
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block
     /// `prune_commit_reveal_expired` sweep (now via the shared
     /// `State::apply_block_finalization`); the applier replay path previously
@@ -8827,6 +11401,9 @@ mod tests {
             "node_receipt_registry",
             "node_settlement",
             "node_fraud",
+            // Producer/applier/WAL parity with a populated policy:
+            // native-chain/tests/send_allowlist_parity.rs.
+            "send_allowlists",
         ]
         .into_iter()
         .collect();
@@ -9753,6 +12330,8 @@ mod tests {
     /// identically-seeded genesis.
     struct AttestedRewardScenario {
         producer_chain: Arc<RwLock<Blockchain>>,
+        /// The producer's mempool after mining (#3565: deferred reveals stay here).
+        producer_mempool: Arc<RwLock<Mempool>>,
         block_1: Block,
         recipient: wrfcoin_shared_protocol::common::types::Address,
         /// Re-seed an applier genesis exactly like the producer's.
@@ -9823,6 +12402,70 @@ mod tests {
         base_height: u64,
         reveal_data: Option<serde_json::Value>,
     ) -> AttestedRewardScenario {
+        mine_attested_reward_block_with_reveals(
+            quality,
+            provenance_class,
+            configure_genesis,
+            base_height,
+            reveal_data,
+            1,
+            5,
+        )
+        .await
+    }
+
+    /// [`mine_attested_reward_block_with_reveal_data`] with `reveal_count`
+    /// quorum-attested commit/reveal pairs from the SAME station staged in one
+    /// mempool (#3565), each stamped `reveal_age_secs` before now. `(1, 5)` is
+    /// the historical single-reveal scenario, byte for byte (same nonce, tags
+    /// and timestamp offset).
+    async fn mine_attested_reward_block_with_reveals(
+        quality: f64,
+        provenance_class: wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass,
+        configure_genesis: Arc<dyn Fn(&mut Blockchain) + Send + Sync>,
+        base_height: u64,
+        reveal_data: Option<serde_json::Value>,
+        reveal_count: usize,
+        reveal_age_secs: i64,
+    ) -> AttestedRewardScenario {
+        mine_attested_reward_block_with_options(
+            quality,
+            provenance_class,
+            configure_genesis,
+            base_height,
+            reveal_data,
+            reveal_count,
+            reveal_age_secs,
+            false,
+            &[],
+            &[],
+        )
+        .await
+    }
+
+    /// The full #3565 fixture. `owner_signs_commit` registers the station to
+    /// the address of the commit-authorization key (so commits pass the gated
+    /// owner binding); `false` keeps the historical fixed owner `0x77…`.
+    /// `unattested` lists reveal groups that get NO oracle attestations (they
+    /// lack quorum and are held back by the #2777 fence at or above its
+    /// activation height). `forecast_typed_groups` (#3565 review B1) turns those
+    /// groups into an attacker's: a `ContributionCommit`/`ContributionReveal`
+    /// whose payload says `contribution_type: "forecast"`, signed by a key that
+    /// is NOT the station owner. `(false, &[], &[])` is the historical fixture,
+    /// byte for byte.
+    #[allow(clippy::too_many_arguments)]
+    async fn mine_attested_reward_block_with_options(
+        quality: f64,
+        provenance_class: wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass,
+        configure_genesis: Arc<dyn Fn(&mut Blockchain) + Send + Sync>,
+        base_height: u64,
+        reveal_data: Option<serde_json::Value>,
+        reveal_count: usize,
+        reveal_age_secs: i64,
+        owner_signs_commit: bool,
+        unattested: &[usize],
+        forecast_typed_groups: &[usize],
+    ) -> AttestedRewardScenario {
         use wrfcoin_native_chain::blockchain::state::StateTransition;
         use wrfcoin_native_chain::blockchain::transaction::{
             CommitPayload, OracleAttestationPayload, RevealPayload, TransactionInput,
@@ -9845,7 +12488,16 @@ mod tests {
         let (o1_sk, o1_id) = oracle_identity(901);
         let (o2_sk, o2_id) = oracle_identity(902);
 
-        let recipient = Address([0x77; 20]);
+        let recipient = if owner_signs_commit {
+            let derived = PublicKey::from_private_key(&oracle_identity(903).0).to_address();
+            let bytes: [u8; 20] = hex::decode(derived.trim_start_matches("wrf"))
+                .expect("derived address is hex")
+                .try_into()
+                .expect("derived address is 20 bytes");
+            Address(bytes)
+        } else {
+            Address([0x77; 20])
+        };
         let station_id = "station-attest";
         let o1_id_for_seed = o1_id.clone();
         let o2_id_for_seed = o2_id.clone();
@@ -9887,50 +12539,11 @@ mod tests {
         // producer's 3600s submission window (the consensus manager runs on the
         // wall clock; a fixed past timestamp is filtered as stale and the reward
         // path never runs).
-        let timestamp: i64 = chrono::Utc::now().timestamp() - 5;
+        let timestamp: i64 = chrono::Utc::now().timestamp() - reveal_age_secs;
         let metrics = reveal_data.unwrap_or_else(|| {
             serde_json::json!({"quality": quality, "volume": 1.0, "uniqueness": 1.0})
         });
-        let nonce = "nonce-attest".to_string();
-        let commit_id = Transaction::compute_commit_id(
-            &metrics,
-            &nonce,
-            station_id,
-            timestamp,
-            contribution_type,
-        );
         let tx_ts = chrono::DateTime::from_timestamp(timestamp, 0).expect("ts");
-
-        let mut commit_payload = CommitPayload {
-            commit_id: commit_id.clone(),
-            station_id: station_id.to_string(),
-            timestamp,
-            contribution_type: contribution_type.to_string(),
-            auth_pubkey: None,
-            auth_signature: None,
-        };
-        // #1848 fail-closes commit admission: an unsigned commit is rejected at
-        // the mempool. Sign the authorization exactly as the collector/backend
-        // do (the auth key is not bound to the reward recipient — the reward
-        // follows the reveal sender — so a dedicated fixture key is fine).
-        commit_payload.sign_authorization(&oracle_identity(903).0);
-        let reveal_payload = RevealPayload {
-            commit_id: commit_id.clone(),
-            station_id: station_id.to_string(),
-            timestamp,
-            contribution_type: contribution_type.to_string(),
-            data: metrics,
-            nonce,
-            data_cid: None,
-            data_hash: None,
-            storage_provider: None,
-            provenance: None,
-            manifest: None,
-            verification_receipt: None,
-            compute_receipt: None,
-            quality_tier: None,
-        };
-
         let mk_tx = |tx_type: TransactionType, tag: &str, data: String| {
             let mut tx = Transaction::new(
                 vec![TransactionInput {
@@ -9954,43 +12567,94 @@ mod tests {
             tx
         };
 
-        let commit_tx = mk_tx(
-            TransactionType::ContributionCommit,
-            "commit",
-            serde_json::to_string(&commit_payload).unwrap(),
-        );
-        let mut reveal_tx = mk_tx(
-            TransactionType::ContributionReveal,
-            "reveal",
-            serde_json::to_string(&reveal_payload).unwrap(),
-        );
-        reveal_tx.sender_address = recipient;
-        // Non-zero fee so the reveal is not treated as a feeless weather tx
-        // (which would require a valid compute receipt and be rejected by
-        // `verify_block`). Mirrors the shared-protocol mining tests.
-        reveal_tx.fee = 1;
-        reveal_tx.set_id();
-
-        let signed_attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
-            let mut payload = OracleAttestationPayload {
-                commit_id: commit_id.clone(),
-                oracle_id: oracle_id.to_string(),
-                approved: true,
-                signature: None,
-                confidence: Some(1.0),
+        let mut pop_txs: Vec<Transaction> = Vec::with_capacity(4 * reveal_count);
+        for index in 0..reveal_count {
+            let sfx = if index == 0 { String::new() } else { format!("-{index}") };
+            let nonce = format!("nonce-attest{sfx}");
+            let attacker = forecast_typed_groups.contains(&index);
+            let contribution_type = if attacker { "forecast" } else { contribution_type };
+            let commit_id = Transaction::compute_commit_id(
+                &metrics,
+                &nonce,
+                station_id,
                 timestamp,
-                nonce: Some(format!("nonce-{tag}")),
+                contribution_type,
+            );
+
+            let mut commit_payload = CommitPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: contribution_type.to_string(),
+                auth_pubkey: None,
+                auth_signature: None,
             };
-            let sig = sk.sign(payload.signing_message().as_bytes()).to_string();
-            payload.signature = Some(sig);
-            mk_tx(
-                TransactionType::OracleAttestation,
-                tag,
-                serde_json::to_string(&payload).unwrap(),
-            )
-        };
-        let att1 = signed_attestation(&o1_sk, &o1_id, "att1");
-        let att2 = signed_attestation(&o2_sk, &o2_id, "att2");
+            // #1848 fail-closes commit admission: an unsigned commit is rejected at
+            // the mempool. Sign the authorization exactly as the collector/backend
+            // do (the auth key is not bound to the reward recipient — the reward
+            // follows the reveal sender — so a dedicated fixture key is fine).
+            commit_payload.sign_authorization(&oracle_identity(if attacker { 904 } else { 903 }).0);
+            let reveal_payload = RevealPayload {
+                commit_id: commit_id.clone(),
+                station_id: station_id.to_string(),
+                timestamp,
+                contribution_type: contribution_type.to_string(),
+                data: metrics.clone(),
+                nonce,
+                data_cid: None,
+                data_hash: None,
+                storage_provider: None,
+                provenance: None,
+                manifest: None,
+                verification_receipt: None,
+                compute_receipt: None,
+                quality_tier: None,
+            };
+
+
+            let commit_tx = mk_tx(
+                TransactionType::ContributionCommit,
+                &format!("commit{sfx}"),
+                serde_json::to_string(&commit_payload).unwrap(),
+            );
+            let mut reveal_tx = mk_tx(
+                TransactionType::ContributionReveal,
+                &format!("reveal{sfx}"),
+                serde_json::to_string(&reveal_payload).unwrap(),
+            );
+            reveal_tx.sender_address = recipient;
+            // Non-zero fee so the reveal is not treated as a feeless weather tx
+            // (which would require a valid compute receipt and be rejected by
+            // `verify_block`). Mirrors the shared-protocol mining tests.
+            reveal_tx.fee = 1;
+            reveal_tx.set_id();
+
+            let signed_attestation = |sk: &PrivateKey, oracle_id: &str, tag: &str| {
+                let mut payload = OracleAttestationPayload {
+                    commit_id: commit_id.clone(),
+                    oracle_id: oracle_id.to_string(),
+                    approved: true,
+                    signature: None,
+                    confidence: Some(1.0),
+                    timestamp,
+                    nonce: Some(format!("nonce-{tag}")),
+                };
+                let sig = sk.sign(payload.signing_message().as_bytes()).to_string();
+                payload.signature = Some(sig);
+                mk_tx(
+                    TransactionType::OracleAttestation,
+                    tag,
+                    serde_json::to_string(&payload).unwrap(),
+                )
+            };
+            if unattested.contains(&index) {
+                pop_txs.extend([commit_tx, reveal_tx]);
+                continue;
+            }
+            let att1 = signed_attestation(&o1_sk, &o1_id, &format!("att1{sfx}"));
+            let att2 = signed_attestation(&o2_sk, &o2_id, &format!("att2{sfx}"));
+            pop_txs.extend([commit_tx, reveal_tx, att1, att2]);
+        }
 
         let mut producer_genesis = Blockchain::default();
         seed_genesis(&mut producer_genesis);
@@ -10019,7 +12683,7 @@ mod tests {
                 .expect("register oracle 2 signing key");
 
             let mut mp = producer_mempool.write().await;
-            for tx in [commit_tx, reveal_tx, att1, att2] {
+            for tx in pop_txs {
                 mp.add_transaction_with_signing_keys(tx, Some(&registry))
                     .expect("mempool admits pop tx");
             }
@@ -10037,6 +12701,7 @@ mod tests {
 
         AttestedRewardScenario {
             producer_chain,
+            producer_mempool,
             block_1,
             recipient,
             seed_genesis,
