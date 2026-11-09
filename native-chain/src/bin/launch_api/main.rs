@@ -4152,6 +4152,9 @@ mod tests {
     #[path = "node_receipt_slice3.rs"]
     mod node_receipt_slice3;
     #[cfg(feature = "p2p")]
+    #[path = "node_tx_admission.rs"]
+    mod node_tx_admission;
+    #[cfg(feature = "p2p")]
     #[path = "node_receipt_p2p_fetch.rs"]
     mod node_receipt_p2p_fetch;
     #[path = "node_settlement_slice4.rs"]

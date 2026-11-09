@@ -161,7 +161,7 @@ pub struct NodeReceiptRegistry {
     pub accepted: BTreeMap<[u8; 32], AcceptedNodeClaim>,
     pub owner_batch_counts: BTreeMap<Address, u64>,
 }
-fn ticket_key(claim: &BondedServiceClaim) -> [u8; 32] {
+pub(crate) fn ticket_key(claim: &BondedServiceClaim) -> [u8; 32] {
     let t = &claim.ticket;
     *hash_bytes(
         &BodyBuilder::new()

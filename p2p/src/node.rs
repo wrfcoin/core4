@@ -4869,6 +4869,96 @@ mod tests {
             .expect_err("V2 after V1 within 250ms should be rate-limited");
         assert_eq!(err, WeatherDataAdmissionError::RateLimited);
     }
+
+    /// `contains_disabled_transaction_admission` is the
+    /// relay/publish gate that maps to gossipsub `Ignore`. It must match a
+    /// transaction whose scoring factor is out of range (so the node stops
+    /// forwarding it) and must NOT match real traffic (so honest readings keep
+    /// flowing). A batch is refused whole if any member matches. This is the
+    /// classification only; relay behaviour is exercised at the integration level.
+    #[test]
+    fn disabled_admission_matches_only_out_of_range_scoring_txs() {
+        use bincode::Options as _;
+        use wrfcoin_shared_protocol::blockchain::transaction::{
+            Transaction, TransactionInput, TransactionOutput, TransactionType,
+        };
+
+        fn tx(ty: TransactionType, data: &str) -> Transaction {
+            let mut t = Transaction::new(
+                vec![TransactionInput {
+                    txid: wrfcoin_shared_protocol::crypto::hash::hash_string(data),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 0,
+                    address: "0x".to_string() + &"5a".repeat(20),
+                    script: "OP_TRUE".to_string(),
+                    nft_data: None,
+                }],
+            );
+            t.tx_type = ty;
+            t.fee = 1;
+            t.data = Some(data.to_string());
+            t.set_id();
+            t
+        }
+        // ContributionReveal/ForecastReveal scoring keys are read from the parsed
+        // reveal PAYLOAD's `data` object, so wrap the data in a valid RevealPayload
+        // (exactly as the scorer parses it via parse_reveal_payload).
+        fn reveal(data_obj: &str) -> Transaction {
+            let payload = format!(
+                r#"{{"commit_id":"c1","station_id":"KXYZ","timestamp":1700000000,"contribution_type":"contribution","data":{data_obj},"nonce":"n1"}}"#
+            );
+            tx(TransactionType::ContributionReveal, &payload)
+        }
+        // Mirror the deserialize options the gate uses (fixint).
+        fn enc(t: &Transaction) -> Vec<u8> {
+            bincode::DefaultOptions::new().with_fixint_encoding().serialize(t).unwrap()
+        }
+        fn msg(txs: &[Transaction]) -> WrfcoinMessage {
+            WrfcoinMessage::NewTransactions { tx_bytes: txs.iter().map(enc).collect() }
+        }
+        let matches = |m: &WrfcoinMessage| super::contains_disabled_transaction_admission(m);
+
+        // Real, in-range traffic → NOT matched (keeps flowing).
+        let real_reveal = reveal(r#"{"temperature_c":21.5,"humidity":44.0}"#);
+        let in_range_reveal = reveal(r#"{"quality":0.9,"volume":0.5,"uniqueness":0.25}"#);
+        let in_range_offset = tx(
+            TransactionType::EnvironmentalOffset,
+            r#"{"amount":0.5,"verification":1.0,"impact":1.0}"#,
+        );
+        let unparseable = WrfcoinMessage::NewTransactions { tx_bytes: vec![vec![0xff, 0x00, 0x13]] };
+        let transfer_with_qualityish = tx(TransactionType::Transfer, r#"{"quality":1e300}"#);
+        for m in [
+            msg(&[real_reveal.clone()]),
+            msg(&[in_range_reveal.clone()]),
+            msg(&[in_range_offset]),
+            unparseable,
+            msg(&[transfer_with_qualityish]),
+        ] {
+            assert!(!matches(&m), "real/in-range/unparseable traffic must not be ignored: {m:?}");
+        }
+
+        // Out-of-range scoring factors → matched (the node stops relaying them).
+        let oversized_reveal = reveal(r#"{"quality":1e300,"volume":0.5,"uniqueness":0.5}"#);
+        let oversized_offset = tx(TransactionType::EnvironmentalOffset, r#"{"amount":100000000000000.0,"verification":1.0,"impact":1.0}"#);
+        let integer_quality = reveal(r#"{"quality":85,"volume":0.5,"uniqueness":0.5}"#);
+        for m in [msg(&[oversized_reveal.clone()]), msg(&[oversized_offset]), msg(&[integer_quality])] {
+            assert!(matches(&m), "out-of-range scoring tx must be matched (ignored): {m:?}");
+        }
+
+        // A batch with any out-of-range member is refused whole.
+        assert!(
+            matches(&msg(&[real_reveal, in_range_reveal, oversized_reveal])),
+            "a mixed batch containing an out-of-range tx must be matched"
+        );
+
+        // Non-transaction messages are never matched.
+        assert!(!matches(&WrfcoinMessage::NewTransactions { tx_bytes: vec![] }), "empty batch is not matched");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6470,6 +6560,46 @@ pub async fn handle_sync_response_for_test(
     Ok(event_rx)
 }
 
+/// Like [`handle_sync_response_for_test`] but drives a caller-owned
+/// [`SyncManager`], so multi-round exchanges (fork backtrack) keep their state.
+/// The manager plans its own next request; `respond` builds the reply for it.
+#[cfg(any(test, feature = "test-harness"))]
+#[doc(hidden)]
+pub async fn handle_planned_sync_response_for_test(
+    manager: &mut SyncManager,
+    respond: impl FnOnce(&BlockRequest) -> Vec<wrfcoin_shared_protocol::blockchain::block::Block>,
+    chain: &mut Blockchain,
+) -> Result<(BlockRequest, mpsc::Receiver<P2pEvent>), SyncError> {
+    let now = Instant::now();
+    let planned = manager
+        .plan_requests(now)
+        .into_iter()
+        .next()
+        // panic-ok: test-harness-only helper; a manager with a queued range always plans one request
+        .expect("the manager must plan a request");
+    let mut behaviour = request_response::Behaviour::with_codec(
+        crate::sync::BlockSyncCodec,
+        std::iter::once((
+            libp2p::StreamProtocol::new(crate::sync::BLOCK_SYNC_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )),
+        request_response::Config::default(),
+    );
+    let request_id = behaviour.send_request(&planned.peer_id, planned.request.clone());
+    manager.register_request(request_id, planned.peer_id, &planned.request, now);
+    let blocks = respond(&planned.request);
+    let imported = manager.handle_response(
+        request_id,
+        BlockResponse { blocks, retry_after_ms: None },
+        now,
+        chain,
+    )?;
+    let (event_tx, event_rx) = mpsc::channel(imported.len().saturating_add(1).max(1));
+    emit_sync_result(&event_tx, planned.peer_id, &imported, None).await;
+    drop(event_tx);
+    Ok((planned.request, event_rx))
+}
+
 // ---------------------------------------------------------------------------
 // Publish helper
 // ---------------------------------------------------------------------------
@@ -6559,7 +6689,9 @@ fn retain_unpublishable(
 fn contains_disabled_transaction_admission(message: &WrfcoinMessage) -> bool {
     use bincode::Options as _;
     use wrfcoin_shared_protocol::{
-        blockchain::transaction::Transaction, mempool::local_admission_disabled,
+        blockchain::transaction::Transaction,
+        consensus::proof_of_publishing::scoring_value_out_of_range,
+        mempool::local_admission_disabled,
     };
     let WrfcoinMessage::NewTransactions { tx_bytes } = message else {
         return false;
@@ -6572,7 +6704,14 @@ fn contains_disabled_transaction_admission(message: &WrfcoinMessage) -> bool {
             .allow_trailing_bytes()
             .with_limit(bytes.len() as u64)
             .deserialize::<Transaction>(bytes)
-            .is_ok_and(|tx| local_admission_disabled(tx.tx_type))
+            // Also stop relaying a transaction whose scoring factor is out of
+            // range: the mempool refuses it, so this node does not forward it
+            // either. The inbound caller maps this to gossipsub `Ignore` (NOT
+            // `Reject`), so a peer that forwarded it is not penalised. It only
+            // reduces relay and does not touch block gossip.
+            .is_ok_and(|tx| {
+                local_admission_disabled(tx.tx_type) || scoring_value_out_of_range(&tx).is_some()
+            })
     })
 }
 
