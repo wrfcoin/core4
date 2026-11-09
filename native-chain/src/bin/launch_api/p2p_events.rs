@@ -1479,8 +1479,12 @@ where
         }
     }
 
+    // The post-block state root rides on the same line, so an operator (or a
+    // test node comparison) can line up height, block hash and root per block
+    // from the log alone; `/state/snapshot` only reports the current tip.
     log::info!(
-        "Accepted P2P block height={block_height} hash={block_hash} txs={tx_count} transitions={transition_count}",
+        "Accepted P2P block height={block_height} hash={block_hash} txs={tx_count} transitions={transition_count} state_root={}",
+        hex::encode(current_state_root),
     );
     P2pBlockApplyOutcome::Applied
 }
