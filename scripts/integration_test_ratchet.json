@@ -797,6 +797,10 @@
       "target": "station_owner_cli"
     },
     {
+      "package": "wrfcoin_cli",
+      "target": "station_registrar_cli"
+    },
+    {
       "package": "wrfcoin-shared-protocol",
       "target": "station_registration_nonce_3345"
     },
