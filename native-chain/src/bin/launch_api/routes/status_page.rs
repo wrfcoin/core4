@@ -162,6 +162,50 @@ mod tests {
         assert!(STATUS_PAGE_HTML.contains(anchor), "the version fact links to the downloads page");
     }
 
+    /// Preview 6: the page warns, above the summary, when `/network/upgrade`
+    /// knows of a change this binary cannot follow (a signed notice it is too
+    /// old for, or an unknown feature in the effective schedule), says when,
+    /// and links to the downloads page. A scheduled change this binary already
+    /// implements is shown as "nothing to do", without the download link.
+    #[::core::prelude::v1::test]
+    fn the_page_warns_about_a_needed_or_scheduled_upgrade() {
+        let hero = STATUS_PAGE_HTML.find("id=\"hero\"").expect("the summary");
+        let banner = STATUS_PAGE_HTML
+            .find("id=\"upgrade-banner\"")
+            .expect("the page has an upgrade banner");
+        assert!(banner < hero, "the upgrade banner sits above the summary");
+        let section = &STATUS_PAGE_HTML[banner..hero];
+        assert!(section.contains("role=\"status\" aria-live=\"polite\" hidden>"), "hidden until needed");
+        assert!(
+            section.contains(
+                "<a href=\"https://wrfcoin.com/downloads\" target=\"_blank\" \
+                 rel=\"noopener noreferrer\">Get the newest installer</a>. \
+                 Check its SHA-256 before you run it"
+            ),
+            "the banner links to the downloads page and says to check the hash"
+        );
+        for text in [
+            "notice === 'past_deadline' || unknownActive",
+            "e.known === false && e.active_at_next === true",
+            "notice === 'upgrade_required' || unknownPending",
+            "e.known === false && e.active_at_next !== true",
+            "'Update needed: this node can no longer follow the chain'",
+            "'Update needed before block ' + fmtInt(at)",
+            "This version of the node does not have them and stops syncing at that block.",
+            "'A node release is announced'",
+            "'Network change scheduled at block '",
+            "This version of the node already has it: nothing to do.",
+            "$('upgrade-links').hidden = !w.download;",
+            "setPill($('node-pill'), 'update needed'",
+            "function renderAll() { renderUpgrade();",
+        ] {
+            assert!(STATUS_PAGE_HTML.contains(text), "the upgrade warning must carry {text:?}");
+        }
+        // The data comes from the node's own route, read on every slow tick.
+        assert!(STATUS_PAGE_HTML.contains("upgrade: '/network/upgrade',"));
+        assert!(STATUS_PAGE_HTML.contains("if (slow) keys.push('upgrade',"));
+    }
+
     #[::core::prelude::v1::test]
     fn the_page_makes_no_external_request() {
         let page = page_without_navigation_links();

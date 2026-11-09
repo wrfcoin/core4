@@ -222,6 +222,14 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .guide pre { margin: var(--s-xs) 0 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--s-sm) var(--s-md); overflow-x: auto; font-family: var(--mono); font-size: 0.8125rem; color: var(--text); white-space: pre; }
 .guide p { margin: 0; color: var(--text-2); font-size: 0.875rem; max-width: 80ch; }
 .fact dd.warn { color: var(--warning); }
+/* Upgrade warning: what /network/upgrade says this node must do, above everything else. */
+.upgrade { border: 1px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.1); border-radius: var(--r-lg); padding: var(--s-md); margin-bottom: var(--s-lg); display: grid; gap: var(--s-xs); }
+@media (min-width: 600px) { .upgrade { padding: var(--s-md) var(--s-lg); } }
+.upgrade.bad { border-color: rgba(239, 68, 68, 0.6); background: rgba(239, 68, 68, 0.1); }
+.upgrade.info { border-color: rgba(14, 165, 233, 0.5); background: rgba(14, 165, 233, 0.08); }
+.upgrade-title { margin: 0; font-size: 1.0625rem; font-weight: 700; overflow-wrap: anywhere; }
+.upgrade-detail { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 80ch; overflow-wrap: anywhere; }
+.upgrade-links { margin: 0; font-size: 0.875rem; font-weight: 600; }
 .next-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
@@ -242,6 +250,12 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div id="asof-age">waiting for the first sample</div>
     </div>
   </header>
+
+  <section class="upgrade" id="upgrade-banner" role="status" aria-live="polite" hidden>
+    <p class="upgrade-title" id="upgrade-title"></p>
+    <p class="upgrade-detail" id="upgrade-detail"></p>
+    <p class="upgrade-links" id="upgrade-links"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Get the newest installer</a>. Check its SHA-256 before you run it; the installer keeps your chain data, keys and settings.</p>
+  </section>
 
   <section class="hero" id="hero" aria-labelledby="sync-text">
     <p class="hero-intro" id="hero-intro">This page shows the <strong>WRFCoin node running on this computer</strong>. The node program serves it to your browser from this machine; nothing on this page is sent anywhere else. You can close this tab at any time: the node keeps running.</p>
@@ -852,7 +866,10 @@ function renderNode() {
   }
   $('kv-blocks-mem').textContent = res && typeof res.blocks_in_memory === 'number' ? fmtInt(res.blocks_in_memory) : '—';
   $('kv-accounts').textContent = res && typeof res.account_count === 'number' ? fmtInt(res.account_count) + (typeof res.nft_count === 'number' ? ' · ' + fmtInt(res.nft_count) + ' NFTs' : '') : '—';
-  if (upgrade) {
+  const warning = upgradeWarning(upgrade, info);
+  if (warning) {
+    $('kv-upgrade').textContent = warning.title;
+  } else if (upgrade) {
     let t = upgrade.status || '—';
     if (typeof upgrade.activation_height === 'number') t += ' · activation at ' + fmtInt(upgrade.activation_height);
     if (typeof upgrade.blocks_remaining === 'number' && upgrade.blocks_remaining > 0) t += ' · ' + fmtInt(upgrade.blocks_remaining) + ' blocks to go';
@@ -863,7 +880,7 @@ function renderNode() {
 
   const anyNode = !!(info || res || cap || health);
   if (!anyNode) setPill($('node-pill'), 'no data', '');
-  else if (upgrade && upgrade.status && upgrade.status !== 'ready' && upgrade.status !== 'none') setPill($('node-pill'), 'upgrade ' + upgrade.status, 'warn');
+  else if (warning && warning.level !== 'info') setPill($('node-pill'), 'update needed', warning.level === 'bad' ? 'bad' : 'warn');
   else setPill($('node-pill'), 'running', 'ok');
 
   const errs = [];
@@ -871,6 +888,93 @@ function renderNode() {
     if (k in failed) errs.push(describe(failed[k]) + ': ' + ROUTES[k]);
   }
   setErr($('err-node'), errs);
+}
+
+// ---------- upgrade warning ----------
+// What GET /network/upgrade says this node must do, in plain words. It reads
+// two things the node already knows: the governance-signed upgrade notice
+// (status, activation_height, release_commit) and the effective feature
+// schedule (scheduled.entries: genesis plus applied schedule extensions, each
+// marked known when this binary implements it). The page fetches nothing off
+// this node, so a release that is not announced on chain is not known here;
+// "Check for updates" under the version covers that.
+const BLOCK_SECS = 77; // the chain 888 block cadence, for "about N hours"
+function inBlocks(blocks) {
+  if (typeof blocks !== 'number' || !isFinite(blocks) || blocks <= 0) return 'from the next block';
+  return 'in about ' + compactDuration(blocks * BLOCK_SECS) + ' (' + fmtInt(blocks) + ' block' + (blocks === 1 ? '' : 's') + ')';
+}
+function isHex(v) { return typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v); }
+// Returns null, or { level: 'bad' | 'warn' | 'info', title, detail, download }.
+function upgradeWarning(upgrade, info) {
+  if (!upgrade || typeof upgrade !== 'object') return null;
+  const sched = upgrade.scheduled && typeof upgrade.scheduled === 'object' ? upgrade.scheduled : null;
+  const entries = (sched && Array.isArray(sched.entries) ? sched.entries : [])
+    .filter((e) => e && typeof e.activation_height === 'number' && typeof e.feature === 'string')
+    .sort((a, b) => a.activation_height - b.activation_height);
+  const tip = typeof upgrade.tip_height === 'number' ? upgrade.tip_height : null;
+  const notice = upgrade.status;
+  const noticeAt = typeof upgrade.activation_height === 'number' ? upgrade.activation_height : null;
+  const unknownActive = entries.find((e) => e.known === false && e.active_at_next === true);
+  const unknownPending = entries.find((e) => e.known === false && e.active_at_next !== true);
+
+  if (notice === 'past_deadline' || unknownActive) {
+    const at = unknownActive ? unknownActive.activation_height : noticeAt;
+    return {
+      level: 'bad',
+      title: 'Update needed: this node can no longer follow the chain',
+      detail: 'From block ' + fmtInt(at) + ' the network runs rules'
+        + (unknownActive ? ' (' + unknownActive.feature + ')' : '')
+        + ' that this version of the node does not have, so it stops there to stay safe. Install the newest installer.',
+      download: true
+    };
+  }
+  if (notice === 'upgrade_required' || unknownPending) {
+    // The sooner of the two deadlines is the one that stops the node.
+    const fromNotice = notice === 'upgrade_required' && noticeAt !== null ? noticeAt : null;
+    const useEntry = unknownPending && (fromNotice === null || unknownPending.activation_height <= fromNotice);
+    const at = useEntry ? unknownPending.activation_height : fromNotice;
+    const left = tip !== null ? at - tip : null;
+    return {
+      level: 'warn',
+      title: 'Update needed before block ' + fmtInt(at),
+      detail: 'The network turns on new rules' + (useEntry ? ' (' + unknownPending.feature + ')' : '')
+        + ' at block ' + fmtInt(at) + ', ' + inBlocks(left) + '. This version of the node does not have them and stops syncing at that block. Install the newest installer before then.',
+      download: true
+    };
+  }
+  const build = info && isHex(info.node_build) ? info.node_build : null;
+  const release = isHex(upgrade.release_commit) ? upgrade.release_commit : null;
+  if (notice === 'ready' && build && release && noticeAt !== null && tip !== null && tip < noticeAt
+      && release.indexOf(build) !== 0 && build.indexOf(release) !== 0) {
+    return {
+      level: 'info',
+      title: 'A node release is announced',
+      detail: 'The network announced release ' + release.slice(0, 8) + ' for block ' + fmtInt(noticeAt)
+        + '. This node runs ' + build + ', which can follow that change, so updating is optional.',
+      download: true
+    };
+  }
+  const nextKnown = entries.find((e) => e.known === true && e.active_at_next === false);
+  if (nextKnown) {
+    return {
+      level: 'info',
+      title: 'Network change scheduled at block ' + fmtInt(nextKnown.activation_height),
+      detail: 'The network turns on ' + nextKnown.feature + ' at block ' + fmtInt(nextKnown.activation_height)
+        + ', ' + inBlocks(nextKnown.blocks_remaining) + '. This version of the node already has it: nothing to do.',
+      download: false
+    };
+  }
+  return null;
+}
+function renderUpgrade() {
+  const w = stopState === 'stopped' ? null : upgradeWarning(last.upgrade, last.info);
+  const banner = $('upgrade-banner');
+  banner.hidden = !w;
+  if (!w) return;
+  banner.className = 'upgrade' + (w.level === 'warn' ? '' : ' ' + w.level);
+  $('upgrade-title').textContent = w.title;
+  $('upgrade-detail').textContent = w.detail;
+  $('upgrade-links').hidden = !w.download;
 }
 
 // ---------- newcomer summary ----------
@@ -1062,7 +1166,7 @@ async function stopNode() {
 }
 $('stop-btn').addEventListener('click', stopNode);
 
-function renderAll() { renderHero(); renderChain(); renderHost(); renderNode(); renderStop(); renderAsOf(); }
+function renderAll() { renderUpgrade(); renderHero(); renderChain(); renderHost(); renderNode(); renderStop(); renderAsOf(); }
 
 // ---------- tick ----------
 async function tick() {

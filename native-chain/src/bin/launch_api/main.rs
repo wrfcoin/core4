@@ -3805,7 +3805,11 @@ async fn main() -> std::io::Result<()> {
 
     // API-only address index for reward history. Reads the chain and nothing
     // reads it back; see reward_index.rs.
-    state::reward_index::spawn_refresh(state.reward_address_index.clone(), state.blockchain.clone());
+    state::reward_index::spawn_refresh(
+        state.reward_address_index.clone(),
+        state.blockchain.clone(),
+        state.storage.clone(),
+    );
 
     // Capture references for the shutdown handler before `state` is moved
     // into the HttpServer closure.
@@ -4033,6 +4037,8 @@ mod tests {
     mod node_share_slice6b;
     #[path = "reward_address_index.rs"]
     mod reward_address_index;
+    #[path = "reward_history_newest.rs"]
+    mod reward_history_newest;
     #[path = "node_bond_slice6a.rs"]
     mod node_bond_slice6a;
     #[path = "producers_bonds_list.rs"]
@@ -4145,6 +4151,9 @@ mod tests {
     }
     #[path = "node_receipt_slice3.rs"]
     mod node_receipt_slice3;
+    #[cfg(feature = "p2p")]
+    #[path = "node_tx_admission.rs"]
+    mod node_tx_admission;
     #[cfg(feature = "p2p")]
     #[path = "node_receipt_p2p_fetch.rs"]
     mod node_receipt_p2p_fetch;

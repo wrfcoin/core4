@@ -19,3 +19,4 @@ mod preauth_seam;
 mod wire_layout_fixtures;
 mod wire_format_skew_live_2884;
 mod bonded_fetch_node;
+mod silent_gossip_watchdog;
