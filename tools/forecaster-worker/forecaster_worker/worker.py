@@ -149,6 +149,7 @@ def local_draft(forecast: dict, wallet, now: int) -> dict:
 def run_cycle(cfg: Config, site, model, store, wallet, *, dry_run: bool, now: int | None = None) -> CycleReport:
     now = int(time.time()) if now is None else now
     report = CycleReport()
+    site.logout()   # a token from an earlier cycle has expired by now
     status = site.forecast_status()
     if status is None:
         report.say("Website forecasts are switched off on the site right now.")

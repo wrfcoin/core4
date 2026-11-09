@@ -116,6 +116,10 @@ class Site:
     def logged_in(self) -> bool:
         return self._token is not None
 
+    def logout(self) -> None:
+        """Forget the login token. Tokens are short-lived, so each cycle logs in afresh when it has work."""
+        self._token = None
+
     def draft(self, alias: str, variable: str, lead_hours: int, value: float) -> dict:
         return self._call("POST", "/forecasts/draft",
                           {"stationAlias": alias, "variable": variable, "leadHours": lead_hours, "value": value}, auth=True)

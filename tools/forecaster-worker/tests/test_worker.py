@@ -293,6 +293,9 @@ class FakeSite:
         self.logins += 1
         self.logged_in = True
 
+    def logout(self):
+        self.logged_in = False
+
     def draft(self, alias, variable, lead, value):
         if alias == self.refuse_station:
             raise SiteError(403, "STATION_NOT_OPEN", "not open")
@@ -353,6 +356,12 @@ class CycleTest(unittest.TestCase):
         again, _ = self.run_once(site, dry_run=False, store=Store(self.folder.name))
         self.assertEqual(len(site.submitted), 4)
         self.assertEqual(again.forecasts, [])
+        self.assertEqual(site.logins, 1)                    # nothing to send, so no second login
+        site.now = self.NOW + 86400
+        tomorrow = run_cycle(self.cfg, site, FakeModel(), Store(self.folder.name), self.wallet, dry_run=False,
+                             now=self.NOW + 86400)
+        self.assertEqual(site.logins, 2)                    # a new day: a fresh login, not yesterday's token
+        self.assertEqual(len(tomorrow.forecasts), 4)
 
     def test_at_most_four_forecasts_a_cycle_and_closed_stations_are_skipped(self):
         site = FakeSite(self.NOW, sorted(self.ids), self.ids)
