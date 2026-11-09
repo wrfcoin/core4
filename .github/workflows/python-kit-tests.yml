@@ -1,4 +1,4 @@
-# Python kit tests: tools/forecast-kit and tools/report-kit (epic #3604).
+# Python kit tests: tools/forecast-kit, tools/report-kit and tools/forecaster-worker (epic #3604).
 #
 # Before this workflow no hosted job ran either kit's unittest suite, so a PR
 # touching only those paths had no REAL-GREEN evidence at all.
@@ -60,7 +60,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           printf 'changed paths:\n%s\n' "$changed"
-          if printf '%s\n' "$changed" | grep -Eq '^(tools/forecast-kit/|tools/report-kit/|forecast-score/|\.github/workflows/python-kit-tests\.yml$)'; then
+          if printf '%s\n' "$changed" | grep -Eq '^(tools/forecast-kit/|tools/report-kit/|tools/forecaster-worker/|forecast-score/|\.github/workflows/python-kit-tests\.yml$)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -69,7 +69,7 @@ jobs:
       - name: No kit path changed (reported, not skipped)
         if: steps.select.outputs.run != 'true'
         run: |
-          echo "No change under tools/forecast-kit/, tools/report-kit/, forecast-score/ or this workflow; no kit suite is relevant to this PR."
+          echo "No change under tools/forecast-kit/, tools/report-kit/, tools/forecaster-worker/, forecast-score/ or this workflow; no kit suite is relevant to this PR."
           echo "python-kit-tests: no kit path changed in this PR" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
           total=0
-          for kit in tools/forecast-kit tools/report-kit; do
+          for kit in tools/forecast-kit tools/report-kit tools/forecaster-worker; do
             if [ ! -d "$kit/tests" ]; then
               echo "$kit: no tests directory on this tree"
               continue
