@@ -9,6 +9,18 @@ edition = "2021"
 integration-guard = ["wrf-primitives/integration-guard"]
 default = []
 test-support = []
+# Test-only switch that turns the producer's node-service / reveal separation
+# guard off for a process (`disable_node_service_guard_for_tests`). Enabled
+# ONLY from native-chain's [dev-dependencies]; never from a normal dependency,
+# so no shipped binary carries it.
+node-service-guard-test-switch = []
+# Test-only process-wide consensus hooks: `install_schedule_extension_authority_for_tests`,
+# `install_bond_admission_pin_for_tests`, `install_station_registrar_pin_for_tests` and the
+# other in-process test pins. Enabled ONLY from [dev-dependencies]
+# (this crate's own, native-chain's and the CLI's); never from a normal dependency, so
+# no shipped binary carries them. `test-support` does not imply it: p2p enables
+# `test-support` as a normal dependency, so that feature reaches the node binary.
+consensus-test-hooks = []
 # HSM (PKCS#11) block-signer impl. Required for release builds; excluded
 # from default to keep the minimal build surface small and to allow tests
 # to run without a PKCS#11 module installed. See core4#1394 and
@@ -88,10 +100,21 @@ wrfcoin-privacy = { path = "../privacy" }
 cryptoki = { version = "0.7", optional = true }
 cryptoki-sys = { version = "0.1", optional = true }
 
+# Windows only: read a key file's owner and DACL so `security::key_file::
+# open_owner_only_key_file` can refuse a key another account can read (the
+# Windows counterpart of the Unix 0600 check). Already in the lock file.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # Integration tests link the library without cfg(test). Enable its test-only
 # helpers for test targets, without exposing them to normal library consumers.
-wrfcoin-shared-protocol = { path = ".", features = ["test-support"] }
+wrfcoin-shared-protocol = { path = ".", features = ["test-support", "consensus-test-hooks"] }
 wrf-primitives = { workspace = true, features = ["integration-guard"] }
 proptest = "1.0"
 criterion = { workspace = true }

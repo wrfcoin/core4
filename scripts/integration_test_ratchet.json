@@ -15,6 +15,18 @@
     },
     {
       "package": "test_server",
+      "target": "passkey_bond_payout_parity"
+    },
+    {
+      "package": "test_server",
+      "target": "bond_admission_key_parity"
+    },
+    {
+      "package": "test_server",
+      "target": "security_key_feature_parity"
+    },
+    {
+      "package": "test_server",
       "target": "schedule_extension_bootstrap_parity_3277",
       "review": {
         "source_pr": 3368,
@@ -334,6 +346,10 @@
     },
     {
       "package": "wrfcoin-native-chain",
+      "target": "security_key_spend_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
       "target": "schedule_extension_routes_3277",
       "review": {
         "source_pr": 3364,
@@ -416,6 +432,10 @@
     },
     {
       "package": "wrfcoin-native-chain",
+      "target": "transfer_fee_burn_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
       "target": "upgrade_notice_runtime"
     },
     {
@@ -449,6 +469,10 @@
     {
       "package": "wrfcoin-p2p",
       "target": "cold_start_convergence"
+    },
+    {
+      "package": "wrfcoin-p2p",
+      "target": "fork_backtrack_reconverge"
     },
     {
       "package": "wrfcoin-p2p",
@@ -501,6 +525,14 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "privacy_legacy_3413"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "session_key_transfers"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "transfer_fee_burn"
     },
     {
       "package": "wrfcoin-shared-protocol",
@@ -765,6 +797,10 @@
       "target": "station_owner_cli"
     },
     {
+      "package": "wrfcoin_cli",
+      "target": "station_registrar_cli"
+    },
+    {
       "package": "wrfcoin-shared-protocol",
       "target": "station_registration_nonce_3345"
     },
@@ -787,6 +823,14 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "passkey_webauthn_2169"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "security_key_fee_burn"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "security_key_spend"
     },
     {
       "package": "wrfcoin-shared-protocol",
@@ -851,6 +895,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "node_tx_mempool"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "signing_preimage_v2_golden"
     },
     {
@@ -864,6 +912,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "slashing_integration"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "sponsored_first_send"
     },
     {
       "package": "wrfcoin-shared-protocol",
@@ -987,6 +1039,50 @@
         "owning_issue": 3398,
         "covers": "Gate-OFF report submissions refuse without changing serialized state or root bytes; fixture roots and block hashes match unchanged main staking goldens."
       }
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "send_allowlist_parity"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "send_allowlist_guards"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "send_allowlist_interactions"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_bond_payout"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "passkey_bond_payout_vectors"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key_unpinned"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key_unpinned"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key_unscheduled"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "producer_reprune_guard"
     }
   ],
   "external_coverage": [
@@ -1033,22 +1129,22 @@
     {
       "package": "wrfcoin-execution-engine",
       "target": "basic_docker",
-      "reason": "bollard client against the live Docker daemon (core4#2893); the persistent build runner is not in the docker group and cannot open /var/run/docker.sock, an owner-only fix (infra#881)."
+      "reason": "bollard client against the live Docker daemon (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "e2e_pipeline_no_mocks",
-      "reason": "#![cfg(feature = \"docker-tests\")]; a real DockerRunner (bollard) against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; a real DockerRunner (bollard) against the Docker daemon (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "tdd_2_1_docker_harness",
-      "reason": "#![cfg(feature = \"docker-tests\")]; Docker-based WRF execution harness, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; Docker-based WRF execution harness (core4#2893)."
     },
     {
       "package": "wrfcoin-execution-engine",
       "target": "wrf_nano_dry_run",
-      "reason": "#![cfg(feature = \"docker-tests\")]; DockerRunner::new() against the Docker daemon, same host-permission gap as basic_docker (core4#2893)."
+      "reason": "#![cfg(feature = \"docker-tests\")]; DockerRunner::new() against the Docker daemon (core4#2893)."
     }
   ],
   "zero_test_exceptions": [

@@ -25,7 +25,12 @@ fn appended_evidence_transaction_discriminant_is_36() {
     assert_eq!(bincode::deserialize::<TransactionType>(&37u32.to_le_bytes()).unwrap(), TransactionType::NodeBondLifecycle);
     assert_eq!(bincode::deserialize::<TransactionType>(&38u32.to_le_bytes()).unwrap(), TransactionType::NodeServiceBatch);
     assert_eq!(bincode::deserialize::<TransactionType>(&39u32.to_le_bytes()).unwrap(), TransactionType::NodeFraudReport);
-    assert!(bincode::deserialize::<TransactionType>(&40u32.to_le_bytes()).is_err());
+    assert_eq!(bincode::deserialize::<TransactionType>(&40u32.to_le_bytes()).unwrap(), TransactionType::SessionKeyAction);
+    // Security-key wallets (`security_key_spend`) append 41.
+    assert_eq!(bincode::deserialize::<TransactionType>(&41u32.to_le_bytes()).unwrap(), TransactionType::SecurityKeyAction);
+    // Send allowlist appends 42.
+    assert_eq!(bincode::deserialize::<TransactionType>(&42u32.to_le_bytes()).unwrap(), TransactionType::SendAllowlist);
+    assert!(bincode::deserialize::<TransactionType>(&43u32.to_le_bytes()).is_err());
 }
 
 #[test]

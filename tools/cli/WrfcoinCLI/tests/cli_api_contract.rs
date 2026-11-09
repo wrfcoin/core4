@@ -57,10 +57,28 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
     std::fs::create_dir(&dir)?;
     let data = dir.join("data.json");
     std::fs::write(&data, r#"{"temperature":20}"#)?;
-    let input = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
-        data_file: data, nonce: "reveal-nonce".into(), timestamp: 1700000000 };
     let signer = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(3065));
+    let forecaster = wrfcoin_shared_protocol::common::types::Address::from_public_key(
+        &PublicKey::from_private_key(&signer)).to_hex();
+    let input = ForecastInput { forecaster: forecaster.clone(), station_id: "station-forecast".into(),
+        data_file: data, nonce: "reveal-nonce".into(), timestamp: 1700000000 };
     let commit = commit_body(&input, &signer, &signing_chain_id(), &signing_network_id())?;
+    // The commit must be signed by the forecaster's own key (#3290): another
+    // key, or a forecaster that is not an address, is refused before signing.
+    let other = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(3066));
+    let error = commit_body(&input, &other, &signing_chain_id(), &signing_network_id())
+        .err().expect("a key that is not the forecaster's must be refused").to_string();
+    assert!(error.contains("is not the address of --signer-key"), "{error}");
+    let label = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
+        data_file: input.data_file.clone(), nonce: "reveal-nonce".into(), timestamp: 1700000000 };
+    let error = commit_body(&label, &signer, &signing_chain_id(), &signing_network_id())
+        .err().expect("a non-address forecaster must be refused").to_string();
+    assert!(error.contains("must be a 0x wallet address") && error.contains(&forecaster), "{error}");
+    let upper = ForecastInput { forecaster: format!("0x{}", forecaster[2..].to_uppercase()),
+        station_id: "station-forecast".into(), data_file: input.data_file.clone(),
+        nonce: "reveal-nonce".into(), timestamp: 1700000000 };
+    assert!(commit_body(&upper, &signer, &signing_chain_id(), &signing_network_id()).is_ok(),
+        "a case variant of the same address is the same forecaster");
     let id = Transaction::compute_commit_id(&serde_json::json!({"temperature":20}),
         "reveal-nonce", "station-forecast", 1700000000, "forecast");
     assert_eq!(commit["commit_hash"], id);
@@ -105,7 +123,7 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
         command.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-url").args(["--output", "json", "forecast", kind,
             "--node-url", &server.url(), "--token", "test-bearer",
-            "--forecaster", "wrf1forecast", "--station-id", "station-forecast",
+            "--forecaster", forecaster.as_str(), "--station-id", "station-forecast",
             "--nonce", "reveal-nonce", "--timestamp", "1700000000", "--data-file"])
             .arg(&input.data_file);
         if kind == "commit" {
@@ -129,7 +147,7 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
         command.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-url").args(["--output", "json", "forecast", kind,
             "--validate-only", "--node-url", &server.url(), "--token", "validate-only-bearer-canary",
-            "--forecaster", "wrf1forecast", "--station-id", "station-forecast",
+            "--forecaster", forecaster.as_str(), "--station-id", "station-forecast",
             "--nonce", "reveal-nonce", "--timestamp", "1700000000", "--data-file"])
             .arg(&input.data_file);
         if kind == "commit" {
@@ -532,7 +550,7 @@ fn forecast_receipt_cli_offline_boundaries_3149() -> anyhow::Result<()> {
 }
 
 /// Real binary contract: only explicit --submit writes, and neither key is emitted.
-#[cfg(all(unix, debug_assertions))]
+#[cfg(unix)]
 #[tokio::test]
 async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
@@ -641,9 +659,9 @@ async fn bond_grant_request_reads_signs_and_only_submits_explicitly() -> anyhow:
     Ok(())
 }
 
-// Debug builds only: release builds refuse --key-file before the peer check runs
-// (seed-file signing is debug-only); the release counterpart is below.
-#[cfg(all(unix, debug_assertions))]
+// Seed-file signing is accepted in every build on testnet; the network refusal
+// is pinned below.
+#[cfg(unix)]
 #[tokio::test]
 async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
@@ -690,9 +708,12 @@ async fn bond_grant_refuses_peer_mismatch_and_never_echoes_invalid_keys() -> any
     Ok(())
 }
 
-#[cfg(all(unix, not(debug_assertions)))]
+/// A seed-file server key is testnet-only (owner decision 2026-10-31): any other
+/// network reported by the node is refused before the block read or any POST,
+/// and neither the seed nor its path is echoed.
+#[cfg(unix)]
 #[tokio::test]
-async fn release_bond_grant_refuses_key_file_without_network_or_echo() -> anyhow::Result<()> {
+async fn bond_grant_key_file_is_refused_off_testnet_without_echo() -> anyhow::Result<()> {
     use libp2p_identity::Keypair;
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("grant-release-{}", uuid::Uuid::new_v4()));
@@ -700,25 +721,32 @@ async fn release_bond_grant_refuses_key_file_without_network_or_echo() -> anyhow
     let seed_file = dir.join("server-seed-path-canary.seed");
     let peer_file = dir.join("peer.key");
     let seed_hex = hex::encode([43u8; 32]);
+    let peer = Keypair::ed25519_from_bytes([44u8; 32])?;
     std::fs::write(&seed_file, &seed_hex)?;
-    std::fs::write(&peer_file, Keypair::ed25519_from_bytes([44u8; 32])?.to_protobuf_encoding()?)?;
+    std::fs::write(&peer_file, peer.to_protobuf_encoding()?)?;
     for path in [&seed_file, &peer_file] { std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?; }
-    // The refusal comes before any request: the node must see nothing at all.
-    let mut node = mockito::Server::new_async().await;
-    let no_get = node.mock("GET", mockito::Matcher::Any).expect(0).create_async().await;
-    let no_post = node.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"))
-        .env("HOME", &dir).args(["--output","json","node","bond","grant-request","--owner-address",
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","--api-url",&node.url(),"--submit",&node.url(),"--key-file"])
-        .arg(&seed_file).arg("--p2p-key-file").arg(&peer_file).output()?;
-    assert!(!output.status.success());
-    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    assert!(text.contains("seed-file signing is only available in debug builds"), "{text}");
-    for secret in [seed_hex.as_str(), "server-seed-path-canary", seed_file.to_str().expect("utf-8 temp path")] {
-        assert!(!text.contains(secret), "release refusal must not echo the key or its path");
+    for network in ["mainnet", "devnet"] {
+        let mut node = mockito::Server::new_async().await;
+        let info = node.mock("GET", "/network/info").with_header("content-type", "application/json")
+            .with_body(serde_json::json!({"chain_id":"888","network_id":network,"chain_height":102,
+                "local_peer_id":peer.public().to_peer_id().to_string()}).to_string())
+            .expect(1).create_async().await;
+        let no_block = node.mock("GET", "/chain/block/100").expect(0).create_async().await;
+        let no_post = node.mock("POST", mockito::Matcher::Any).expect(0).create_async().await;
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"))
+            .env("HOME", &dir).args(["--output","json","node","bond","grant-request","--owner-address",
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","--api-url",&node.url(),"--submit",&node.url(),"--key-file"])
+            .arg(&seed_file).arg("--p2p-key-file").arg(&peer_file).output()?;
+        assert!(!output.status.success());
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(text.contains("accepted on testnet only"), "{network}: {text}");
+        for secret in [seed_hex.as_str(), "server-seed-path-canary", seed_file.to_str().expect("utf-8 temp path")] {
+            assert!(!text.contains(secret), "the refusal must not echo the key or its path"); // secret-leak-ok: fixed message; the canary value is never formatted
+        }
+        info.assert_async().await;
+        no_block.assert_async().await;
+        no_post.assert_async().await;
     }
-    no_get.assert_async().await;
-    no_post.assert_async().await;
     std::fs::remove_dir_all(dir)?;
     Ok(())
 }

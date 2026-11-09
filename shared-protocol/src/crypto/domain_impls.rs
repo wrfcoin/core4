@@ -697,11 +697,15 @@ mod tests {
     fn node_share_contract_domains_match_the_registry() {
         use crate::consensus::node_share_contracts::{
             NodeServiceTicket, NodeSettlementEndorsement, NodeBondAuthorization, NodeBondPossession,
+            NodeBondPayoutPasskeyApproval,
         };
         assert!(tag_matches_registry::<NodeServiceTicket>(SignedObjectKind::NodeServiceTicket));
         assert!(tag_matches_registry::<NodeSettlementEndorsement>(SignedObjectKind::NodeSettlementEndorsement));
         assert!(tag_matches_registry::<NodeBondAuthorization>(SignedObjectKind::NodeBondAuthorization));
         assert!(tag_matches_registry::<NodeBondPossession>(SignedObjectKind::NodeBondPossession));
+        assert!(tag_matches_registry::<NodeBondPayoutPasskeyApproval>(
+            SignedObjectKind::NodeBondPayoutPasskeyApproval
+        ));
     }
 
     #[test]
@@ -724,12 +728,14 @@ mod tests {
         // NodeServiceReceipt (#3129 — consumer-signed snapshot service evidence;
         // its impl lives in consensus::node_service_receipt), plus four bonded
         // Node S1 subjects (Refs #2848, consensus::node_share_contracts),
-        // plus S3 owner batch authorization (consensus::node_receipt_registry).
+        // plus S3 owner batch authorization (consensus::node_receipt_registry),
+        // plus the passkey_bond_payout challenge subject
+        // (consensus::node_share_contracts::NodeBondPayoutPasskeyApproval).
         let with_impls = SIGNED_OBJECT_REGISTRY
             .iter()
             .filter(|e| e.coverage.has_impl())
             .count();
         assert!(tag_matches_registry::<crate::consensus::node_receipt_registry::NodeReceiptSubmissionAuthorization>(SignedObjectKind::NodeReceiptSubmissionAuthorization));
-        assert_eq!(with_impls, 27);
+        assert_eq!(with_impls, 28);
     }
 }

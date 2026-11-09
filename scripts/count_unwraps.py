@@ -48,9 +48,12 @@ test in scripts/test_count_unwraps.py.
 Known bounds, stated so the gate's own docs can stay honest (#2278 review):
   * `#[cfg_attr(test, ...)]` and custom test macros other than the three
     listed are NOT recognized.
-  * `mod tests;` pointing at a separate file is not followed — but a file
-    like that under a ratcheted path would be counted as production, which
-    over-counts (fails closed), not under.
+  * A `#[cfg(test)] mod x;` pointing at a separate file is followed and that
+    file is excluded, but only when the declaration is top-level in its file,
+    resolves to an existing file, and nothing else in the crate declares or
+    `include!`s a module of that name. Anything else stays counted, which
+    over-counts (fails closed), not under. `#[cfg(all(test, ...))]` on such a
+    declaration is not recognized and also stays counted.
   * Macro-generated `.unwrap()` calls invisible in source are not counted;
     source text inside `macro_rules!` bodies is counted as production.
   * An UNTERMINATED literal or block comment is deliberately not treated as
@@ -208,6 +211,14 @@ def strip_comments_and_strings(src: str) -> str:
     return "".join(out)
 
 
+MOD_DECL = re.compile(
+    r"(?P<attrs>(?:#\s*\[[^\]]*\]\s*)*)"
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>\w+)\s*;"
+)
+PATH_ATTR = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]')
+INCLUDE_LITERAL = re.compile(r'\binclude!\s*\(\s*"([^"]*)"')
+
+
 def test_regions(clean: str) -> list[tuple[int, int]]:
     """Spans of #[cfg(test)]/#[test]-style items in comment/string-free text."""
     regions: list[tuple[int, int]] = []
@@ -248,8 +259,73 @@ def count_file(path: Path) -> int:
     return total
 
 
+def crate_src(root: Path) -> Path:
+    """The crate's `src` dir holding `root`, or `root` itself outside a crate."""
+    for parent in [root, *root.parents]:
+        if (parent / "Cargo.toml").is_file() and (parent / "src").is_dir():
+            src = parent / "src"
+            return src if root == src or src in root.parents else root
+    return root
+
+
+def brace_depth(clean: str, end: int) -> int:
+    return clean.count("{", 0, end) - clean.count("}", 0, end)
+
+
+def test_only_files(root: Path) -> set[Path]:
+    """Files reachable only through a top-level `#[cfg(test)] mod x;`.
+
+    Any non-test declaration or `include!` of the same name anywhere in the
+    crate keeps the file counted, so an unresolvable case over-counts.
+    """
+    candidates: list[tuple[str, Path]] = []
+    production_names: set[str] = set()
+    for path in sorted(crate_src(root).rglob("*.rs")):
+        try:
+            src = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        clean = strip_comments_and_strings(src)
+        regions = test_regions(clean)
+        for m in INCLUDE_LITERAL.finditer(src):
+            production_names.add(Path(m.group(1)).stem)
+        for m in MOD_DECL.finditer(clean):
+            if any(a <= m.start() < b for a, b in regions):
+                continue
+            attrs = "".join(m.group("attrs").split())
+            path_attr = PATH_ATTR.search(src, m.start(), m.end())
+            if "#[cfg(test)]" not in attrs:
+                production_names.add(m.group("name"))
+                if path_attr:
+                    production_names.add(Path(path_attr.group(1)).stem)
+                continue
+            if brace_depth(clean, m.start()) != 0:
+                continue
+            name = m.group("name")
+            if path_attr:
+                options = [path.parent / path_attr.group(1)]
+            else:
+                base = path.parent
+                if path.name not in ("mod.rs", "lib.rs", "main.rs"):
+                    base = base / path.stem
+                options = [base / f"{name}.rs", base / name / "mod.rs"]
+            target = next((o for o in options if o.is_file()), None)
+            if target is not None:
+                candidates.append((name, target.resolve()))
+    return {
+        target
+        for name, target in candidates
+        if name not in production_names and target.stem not in production_names
+    }
+
+
 def count_root(root: Path) -> int:
-    return sum(count_file(p) for p in sorted(root.rglob("*.rs")))
+    excluded = test_only_files(root)
+    return sum(
+        count_file(p)
+        for p in sorted(root.rglob("*.rs"))
+        if p.resolve() not in excluded
+    )
 
 
 def main(argv: list[str]) -> int:
