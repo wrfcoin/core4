@@ -1195,14 +1195,16 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// means every producer upgrades together.
 pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[];
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_BOND_ADMISSION_PIN: std::sync::OnceLock<(String, Vec<String>)> =
     std::sync::OnceLock::new();
 
 /// Tests only: pin `keys` for `genesis_hash` in this process. Compiled only
-/// into test builds (`test-support` is a dev-dependency feature), so a shipped
-/// binary reads [`BOND_ADMISSION_KEY_PINS`] and nothing else. First install wins.
-#[cfg(any(test, feature = "test-support"))]
+/// under `cfg(test)` or the `consensus-test-hooks` feature, which only
+/// [dev-dependencies] enable (not `test-support`, which p2p enables as a normal
+/// dependency), so a shipped binary reads [`BOND_ADMISSION_KEY_PINS`] and
+/// nothing else. First install wins.
+#[cfg(any(test, feature = "consensus-test-hooks"))]
 pub fn install_bond_admission_pin_for_tests(genesis_hash: &str, keys: Vec<String>) {
     let _ = TEST_BOND_ADMISSION_PIN.get_or_init(|| (genesis_hash.to_string(), keys));
 }
@@ -1211,7 +1213,7 @@ pub fn install_bond_admission_pin_for_tests(genesis_hash: &str, keys: Vec<String
 /// `genesis_hash`; empty when none is. Answers whether or not the feature is
 /// active: consensus callers gate it on the carrying height.
 pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "consensus-test-hooks"))]
     if let Some((genesis, keys)) = TEST_BOND_ADMISSION_PIN.get() {
         if genesis == genesis_hash {
             return keys.clone();
@@ -1330,10 +1332,12 @@ pub fn authority_from_genesis(
     })
 }
 
-/// Tests only: install an arbitrary authority. Compiled only into test
-/// builds (`test-support` is a dev-dependency feature), so no shipped
-/// binary can construct one from anything but block 1 and the pins.
-#[cfg(any(test, feature = "test-support"))]
+/// Tests only: install an arbitrary authority. Compiled only under
+/// `cfg(test)` or the `consensus-test-hooks` feature, which only
+/// [dev-dependencies] enable (not `test-support`, which p2p enables as a
+/// normal dependency), so no shipped binary can construct one from anything
+/// but block 1 and the pins.
+#[cfg(any(test, feature = "consensus-test-hooks"))]
 pub fn install_schedule_extension_authority_for_tests(
     chain_id: &str,
     network_id: &str,
