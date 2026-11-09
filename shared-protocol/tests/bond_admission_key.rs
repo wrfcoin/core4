@@ -151,8 +151,8 @@ fn feature_is_registered_appended_and_schedulable_only_where_a_key_is_pinned() {
     let f = ConsensusFeature::BondAdmissionKey;
     assert_eq!(f.name(), "bond_admission_key");
     assert_eq!(ConsensusFeature::parse("bond_admission_key"), Some(f));
-    // Ordinal 30; later features append after it (31 is reserved, 32 is
-    // `station_registrar_key`).
+    // Ordinal 30; later features append after it (31 is
+    // `streak_replay_recipient_parity`, 32 is `station_registrar_key`).
     assert_eq!(ConsensusFeature::ALL[30], f);
     assert_eq!(bincode::serialize(&f).unwrap(), 30u32.to_le_bytes());
     assert!(f.has_behaviour());
@@ -598,6 +598,7 @@ fn only_the_bond_path_and_the_scheduling_guards_read_the_pins() {
             "shared-protocol/src/crypto/chain_binding.rs",
             "shared-protocol/src/governance/schedule_extension.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_bond.rs",
+            "tools/cli/WrfcoinCLI/src/commands/node_bond_admit.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_bond_update.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_deposit.rs",
         ]

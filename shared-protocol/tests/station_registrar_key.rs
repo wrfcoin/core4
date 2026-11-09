@@ -318,6 +318,60 @@ fn registrar_refuses_anything_outside_the_phone_shape() {
     ));
 }
 
+/// `verify_station_registrar_authorization_with_domain` (the CLI signer's
+/// self-check) says yes exactly when consensus applies the tx as a registrar
+/// registration: same signature predicate, same pins, same rule function.
+#[test]
+fn offline_registrar_check_agrees_with_consensus() {
+    use wrfcoin_shared_protocol::crypto::domain_signing::{signing_chain_id, signing_network_id};
+    install();
+    let (chain, network) = (signing_chain_id(), signing_network_id());
+    let owner = key(0xA9);
+    type Mutation = fn(&mut StationRegistrationPayload);
+    let shapes: [(&str, Mutation); 6] = [
+        ("control", |_| {}),
+        ("gold tier", |p| p.data_quality_tier = DataQualityTier::Gold),
+        ("other hardware", |p| {
+            p.hardware_model = "davis-vantage".into()
+        }),
+        ("elevation", |p| p.elevation_meters = Some(180.0)),
+        ("off-grid latitude", |p| p.latitude = 46.78),
+        ("nonce 1", |p| p.expected_nonce = Some(1)),
+    ];
+    let mut accepted = 0;
+    for (name, mutate) in shapes {
+        for signer in [REGISTRAR, SPARE, WRONG, GOVERNANCE] {
+            let mut p = phone(&owner);
+            mutate(&mut p);
+            let tx = signed(p, &owner, signer);
+            let consensus = is_registrar(&tx.station_registration_step(K));
+            let offline = tx.verify_station_registrar_authorization_with_domain(
+                &chain,
+                &network,
+                &genesis_hex(),
+            );
+            assert_eq!(offline, consensus, "{name}, signer {signer:#x}");
+            accepted += usize::from(offline);
+            // A chain instance with no pin accepts nothing offline either.
+            assert!(!tx.verify_station_registrar_authorization_with_domain(
+                &chain,
+                &network,
+                &hex::encode([3u8; 32])
+            ));
+            // Signed for one chain, never valid for another.
+            assert!(!tx.verify_station_registrar_authorization_with_domain(
+                "other-chain",
+                &network,
+                &genesis_hex()
+            ));
+        }
+    }
+    assert_eq!(
+        accepted, 2,
+        "only the control, signed by the online key or the spare"
+    );
+}
+
 #[test]
 fn governance_path_is_unchanged_while_active() {
     install();
