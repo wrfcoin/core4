@@ -456,6 +456,13 @@ pub struct P2pConfig {
     /// from `WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS`; see [`crate::announce`].
     pub announce_non_global_addrs: bool,
 
+    /// Answer the bonded snapshot fetch protocol ([`crate::bonded_fetch`]) on
+    /// the P2P port, so a bonded consumer can fetch this node's signed snapshot
+    /// without reaching its HTTP API. Default `false`: the protocol is then not
+    /// even listed, and requests fail negotiation. Parsed from
+    /// [`SERVE_BONDED_SNAPSHOTS_ENV`].
+    pub serve_bonded_snapshots: bool,
+
     // -- Genesis handshake ----------------------------------------------------
     /// Network identifier sent in the genesis handshake (e.g. "mainnet", "testnet").
     pub network_id: String,
@@ -478,6 +485,20 @@ pub struct P2pConfig {
     /// Parsed from `WRFCOIN_P2P_BOOTSTRAP_REDIAL_MAX_BACKOFF_SECS` (default: 300).
     pub bootstrap_redial_max_backoff: Duration,
 
+    // -- Silent-gossip watchdog ------------------------------------------------
+    /// How long the node may go without any `ChainStatus` or `NewBlock` gossip
+    /// from its connected peers before it probes them directly over block sync.
+    /// Peers advertise `ChainStatus` every ~block_time/6 (about 13 s on chain
+    /// 888), so five minutes of nothing means gossip has stopped, not that the
+    /// chain is slow. `0` disables the watchdog.
+    /// Parsed from `WRFCOIN_P2P_GOSSIP_SILENCE_SECS` (default: 300).
+    pub gossip_silence_timeout: Duration,
+
+    /// How long a silence probe waits for an answer before the node gives up
+    /// on that connection, disconnects it and lets bootstrap redial rebuild it.
+    /// Parsed from `WRFCOIN_P2P_GOSSIP_PROBE_TIMEOUT_SECS` (default: 60).
+    pub gossip_probe_timeout: Duration,
+
     /// What this node is for (#2120). Defaults to [`NodeRole::Public`].
     pub role: NodeRole,
 
@@ -491,6 +512,17 @@ pub struct P2pConfig {
     /// facts and neither may silently mean "unrestricted"; that confusion is how a gate
     /// ends up open while looking configured.
     pub sentry_allowlist: Option<Vec<PeerId>>,
+}
+
+/// Opt-in switch for serving bonded snapshot fetches over P2P (owner decision
+/// 2026-10-31). Off by default: it is new surface on the public port.
+pub const SERVE_BONDED_SNAPSHOTS_ENV: &str = "WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS";
+
+/// [`SERVE_BONDED_SNAPSHOTS_ENV`] parsed exactly as [`P2pConfig`] parses it, so
+/// a status read (the node dashboard's "bonded mode") reports what the P2P node
+/// was configured with, not a second guess at the spelling.
+pub fn serve_bonded_snapshots_from_env() -> bool {
+    env_bool(SERVE_BONDED_SNAPSHOTS_ENV, false)
 }
 
 impl Default for P2pConfig {
@@ -585,6 +617,7 @@ impl Default for P2pConfig {
                 .and_then(|s| s.parse::<Multiaddr>().ok()),
             only_global_ips: env_bool("WRFCOIN_AUTONAT_ONLY_GLOBAL_IPS", true),
             announce_non_global_addrs: env_bool(crate::announce::ANNOUNCE_NON_GLOBAL_ADDRS_ENV, false),
+            serve_bonded_snapshots: serve_bonded_snapshots_from_env(),
             network_id: std::env::var("WRFCOIN_NETWORK_ID")
                 .unwrap_or_else(|_| "mainnet".to_string()),
             chain_id: std::env::var("WRFCOIN_CHAIN_ID")
@@ -597,6 +630,14 @@ impl Default for P2pConfig {
             bootstrap_redial_max_backoff: Duration::from_secs(env_u64(
                 "WRFCOIN_P2P_BOOTSTRAP_REDIAL_MAX_BACKOFF_SECS",
                 300,
+            )),
+            gossip_silence_timeout: Duration::from_secs(env_u64(
+                "WRFCOIN_P2P_GOSSIP_SILENCE_SECS",
+                300,
+            )),
+            gossip_probe_timeout: Duration::from_secs(env_u64(
+                "WRFCOIN_P2P_GOSSIP_PROBE_TIMEOUT_SECS",
+                60,
             )),
             // #2120: Public + no interfaces + no allowlist == today's behaviour
             // exactly. Roles are opt-in; see NodeRole's docs for why the default

@@ -157,6 +157,24 @@ pub enum TransactionType {
     NodeServiceBatch,
     /// Attributable bonded-service evidence, append-only index 39.
     NodeFraudReport,
+    /// Register or revoke a session key (`accounts::session_keys`), signed by
+    /// the account's primary key; append-only index 40. Carries a
+    /// [`crate::accounts::session_keys::SessionKeyActionPayload`] as JSON in
+    /// `data`. Refused at admission, producer self-screen, block validation
+    /// and apply unless `ConsensusFeature::SessionKeys` is active.
+    SessionKeyAction,
+    /// Security-key wallet action (`security_key_spend`), append-only index 41.
+    /// Carries a [`crate::accounts::security_key::SecurityKeyActionPayload`] as
+    /// JSON in `data` and is applied through the governance sink
+    /// (`ProcessGovernanceTransaction`), so an invalid action is dropped at
+    /// block assembly rather than faulting a block. A block carrying one below
+    /// the feature's activation height is invalid.
+    SecurityKeyAction,
+    /// Owner-signed send-allowlist action
+    /// (`accounts::send_allowlist::SignedSendAllowlistAction` in `data`),
+    /// append-only index 42. Refused everywhere below the unscheduled
+    /// `ConsensusFeature::SendAllowlist` activation.
+    SendAllowlist,
 }
 
 impl fmt::Display for TransactionType {
@@ -201,7 +219,10 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeBondLifecycle => write!(f, "NodeBondLifecycle"),
             TransactionType::NodeServiceBatch => write!(f, "NodeServiceBatch"),
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
+            TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
+            TransactionType::SendAllowlist => write!(f, "SendAllowlist"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
+            TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }
     }
 }
@@ -603,6 +624,16 @@ pub struct StationRegistrationPayload {
     /// #3336: elevation in millimetres. See [`Self::latitude_e7`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation_mm: Option<i64>,
+}
+
+/// Which key admitted a station registration
+/// ([`Transaction::station_registration_authority_at_height`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationRegistrationAuthority {
+    /// An oracle-governance key: the pre-existing path, unchanged.
+    Governance,
+    /// A pinned `station_registrar_key` key, inside the registrar's limits.
+    Registrar,
 }
 
 /// #3336: largest |latitude| in 1e-7 degree units (90°).
@@ -2491,6 +2522,119 @@ pub struct TransparentTransferPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub passkey_auth: Option<crate::accounts::passkey::PasskeyAuthorization>,
+    /// A sponsor's signed promise to pay this transfer's fee (sponsored first
+    /// sends, `accounts::paymaster::SponsorAuthorization`). Read only once
+    /// `ConsensusFeature::Paymaster` is active; before that it is ignored and
+    /// the transfer applies exactly as it does without it. Deserialised
+    /// leniently — a malformed member reads as `None` — so a payload an older
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "crate::accounts::paymaster::deserialize_lenient_sponsorship",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sponsorship: Option<crate::accounts::paymaster::SponsorAuthorization>,
+    /// Session-key authorization of the debit: a device key the `from`
+    /// account registered (`accounts::session_keys`) signs
+    /// [`session_key_transfer_authorization_message_with_domain`]. The third
+    /// alternative to ed25519 / passkey, consulted only once
+    /// `ConsensusFeature::SessionKeys` is active and only when the other two
+    /// fail; state apply then checks the key is registered to `from`, live,
+    /// and that this transfer fits its scope and limits. Deserialised
+    /// leniently exactly like `passkey_auth`, so a payload a pre-feature
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_session_key_auth",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_key_auth: Option<SessionKeyTransferAuth>,
+}
+
+/// A session key's signature over one transparent transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKeyTransferAuth {
+    /// Hex ed25519 public key of the registered session key.
+    pub session_public_key: String,
+    /// Hex ed25519 signature over
+    /// [`session_key_transfer_authorization_message_with_domain`].
+    pub signature: String,
+}
+
+impl SessionKeyTransferAuth {
+    /// Address of the session key (the key under which `State::session_keys`
+    /// records its grant), or `None` if the key is not valid hex ed25519.
+    pub fn session_key_address(&self) -> Option<Address> {
+        PublicKey::from_hex(self.session_public_key.trim())
+            .ok()
+            .map(|pk| Address::from_public_key(&pk))
+    }
+}
+
+/// Same contract as `accounts::passkey::deserialize_lenient_passkey`: a
+/// member that is not a well-formed [`SessionKeyTransferAuth`] reads as
+/// `None`, so adding this field never makes a payload that an older binary
+/// parses (and, if ed25519-authorised, accepts) unparseable here.
+fn deserialize_lenient_session_key_auth<'de, D>(
+    deserializer: D,
+) -> Result<Option<SessionKeyTransferAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value::<SessionKeyTransferAuth>(value).ok()))
+}
+
+/// Domain separator for a session key's transparent-transfer authorization.
+/// Distinct from the owner's [`TRANSPARENT_TRANSFER_AUTH_DOMAIN`] so a session
+/// signature is never an owner authorization, nor the reverse.
+pub const SESSION_KEY_TRANSFER_AUTH_DOMAIN: &[u8] = b"wrfcoin_session_key_transfer_auth_v1";
+
+/// The bytes a session key signs to authorize one transparent transfer:
+/// chain domain, `from`, `to`, `amount`, the `from` account nonce, and the
+/// session public key itself (so one key's signature can never be presented
+/// as another key's). Same framing as
+/// [`transparent_transfer_authorization_message_with_domain`].
+pub fn session_key_transfer_authorization_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(SESSION_KEY_TRANSFER_AUTH_DOMAIN.len() + 128);
+    buf.extend_from_slice(SESSION_KEY_TRANSFER_AUTH_DOMAIN);
+    push_chain_domain(&mut buf, chain_id, network_id);
+    buf.extend_from_slice(&(from.len() as u32).to_le_bytes());
+    buf.extend_from_slice(from.as_bytes());
+    buf.extend_from_slice(&(to.len() as u32).to_le_bytes());
+    buf.extend_from_slice(to.as_bytes());
+    buf.extend_from_slice(&amount.to_le_bytes());
+    buf.extend_from_slice(&nonce.to_le_bytes());
+    buf.extend_from_slice(session_public_key.as_bytes());
+    buf
+}
+
+/// [`session_key_transfer_authorization_message_with_domain`] under the
+/// node's signing identity.
+pub fn session_key_transfer_authorization_message(
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    session_key_transfer_authorization_message_with_domain(
+        &signing_chain_id(),
+        &signing_network_id(),
+        from,
+        to,
+        amount,
+        nonce,
+        session_public_key,
+    )
 }
 
 /// Domain separator for transparent-transfer authorization signatures (#1727).
@@ -2605,17 +2749,37 @@ impl TransparentTransferPayload {
     pub fn verify_authorization_with_view<V: crate::accounts::authorization::AuthorizationView>(
         &self, view: &V, nonce: u64, height: u64, timestamp: Timestamp,
     ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, None)
+            .is_ok()
+    }
+
+    /// The from-bound debit check with the transaction's optional
+    /// `security_key_auth` assertion (`security_key_spend`). The assertion is
+    /// read only for an account whose State-backed rule requires it; for every
+    /// other account (and for every pre-block `EmptyAuthorizationView` caller)
+    /// this is exactly [`Self::verify_authorization_with_view`].
+    pub fn authorize_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> Result<(), crate::accounts::authorization::AuthorizationError> {
+        use crate::accounts::authorization::AuthorizationError;
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
-            return false;
+            return Err(AuthorizationError::MalformedSignature);
         };
         // Bind the signer to the account being debited. `from` must be a real
         // hex address; protocol transfers debit a keyed account, never a label.
         let Ok(from_address) = self.from.parse::<Address>() else {
-            return false;
+            return Err(AuthorizationError::SignerIsNotSender);
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &from_address,
             &self.authorization_message(nonce),
@@ -2623,10 +2787,10 @@ impl TransparentTransferPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
-        .is_ok()
     }
 
     /// Whether this payload carries a (well-formed) passkey authorization
@@ -2647,6 +2811,42 @@ impl TransparentTransferPayload {
                 .is_ok(),
             None => false,
         }
+    }
+
+    /// Sign this payload with a registered session key, populating
+    /// `session_key_auth`. Leaves `auth_pubkey`/`auth_signature` untouched.
+    pub fn sign_session_key_authorization(&mut self, session_key: &PrivateKey, nonce: u64) {
+        let public_key = PublicKey::from_private_key(session_key);
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        self.session_key_auth = Some(SessionKeyTransferAuth {
+            session_public_key: public_key.to_hex(),
+            signature: session_key.sign(&message).to_hex(),
+        });
+    }
+
+    /// **Ungated, stateless** check of `session_key_auth`: the session key's
+    /// signature verifies over this transfer at `nonce`. Says nothing about
+    /// whether the key is registered to `from` or within its limits — that is
+    /// state, checked by `State` at apply (`session_keys::consume_transfer`).
+    pub fn verify_session_key_signature(&self, nonce: u64) -> bool {
+        let Some(auth) = &self.session_key_auth else {
+            return false;
+        };
+        let (Ok(public_key), Ok(signature)) = (
+            PublicKey::from_hex(auth.session_public_key.trim()),
+            Signature::from_hex(auth.signature.trim()),
+        ) else {
+            return false;
+        };
+        if self.from.parse::<Address>().is_err() {
+            return false;
+        }
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        public_key.verify(&message, &signature)
     }
 
     /// Authorization at a consensus height (#2169): the ed25519 rule
@@ -2677,7 +2877,44 @@ impl TransparentTransferPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
-        self.verify_authorization_with_view(view, nonce, height, timestamp)
+        self.verify_owner_authorization_at_height_with_view(view, nonce, height, timestamp)
+            || (crate::accounts::session_keys::session_keys_active(height)
+                && self.verify_session_key_signature(nonce))
+    }
+
+    /// The owner's own authorization at a consensus height: ed25519 or, once
+    /// active, passkey — exactly the pre-session-key rule. State apply uses
+    /// this to decide whether a transfer is owner-signed (no session use is
+    /// consumed) or must be charged to a session key.
+    pub fn verify_owner_authorization_at_height_with_view<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+    ) -> bool {
+        self.verify_owner_authorization_at_height_with_view_and_security_key(
+            view, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_owner_authorization_at_height_with_view`] with the
+    /// transaction's optional `security_key_auth` assertion
+    /// (`security_key_spend`). Used by state apply, which holds the State view.
+    pub fn verify_owner_authorization_at_height_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, security_key)
+            .is_ok()
             || (crate::accounts::passkey::passkey_auth_active(height)
                 && self.verify_passkey_authorization(nonce))
     }
@@ -2690,9 +2927,26 @@ impl TransparentTransferPayload {
     /// block validation and state apply; on a chain that never schedules the
     /// feature this is exactly `verify_authorization`.
     pub fn verify_authorization_for_admission(&self, nonce: u64) -> bool {
-        self.verify_authorization(nonce)
+        (self.verify_authorization(nonce)
             || (crate::accounts::passkey::passkey_auth_scheduled()
                 && self.verify_passkey_authorization(nonce))
+            || (crate::accounts::session_keys::session_keys_scheduled()
+                && self.verify_session_key_signature(nonce)))
+            && self.sponsorship_admissible(nonce)
+    }
+
+    /// Mempool screen for a carried sponsorship: on a chain that schedules
+    /// `paymaster`, a sponsorship whose signature does not verify over this
+    /// transfer is refused. On every other chain the field is ignored, as it
+    /// is by state apply, so admission is unchanged. Height-dependent rules
+    /// (expiry, balance, rate limits) are enforced by state apply.
+    pub fn sponsorship_admissible(&self, nonce: u64) -> bool {
+        match &self.sponsorship {
+            Some(auth) if crate::accounts::paymaster::sponsorship_scheduled() => auth
+                .verify_signature(&self.from, &self.to, self.amount, nonce)
+                .is_ok(),
+            _ => true,
+        }
     }
 }
 
@@ -2828,6 +3082,24 @@ impl StakeAuthPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
+        self.verify_authorization_with_view_and_security_key(
+            view, is_unstake, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_authorization_with_view`] with the transaction's
+    /// optional `security_key_auth` assertion (`security_key_spend`).
+    pub fn verify_authorization_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        is_unstake: bool,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
@@ -2838,7 +3110,7 @@ impl StakeAuthPayload {
         let Ok(account_address) = self.account.parse::<Address>() else {
             return false;
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &account_address,
             &self.authorization_message(is_unstake, nonce),
@@ -2846,6 +3118,7 @@ impl StakeAuthPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
@@ -3614,7 +3887,12 @@ impl Transaction {
         chain_id: &str,
         network_id: &str,
     ) -> bool {
-        self.verify_station_registration_authorization_for(chain_id, network_id, false)
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_authorized_oracle_governance,
+        )
     }
 
     /// #3336: verify against the fixed-point governance preimage
@@ -3625,14 +3903,58 @@ impl Transaction {
         chain_id: &str,
         network_id: &str,
     ) -> bool {
-        self.verify_station_registration_authorization_for(chain_id, network_id, true)
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            true,
+            &is_authorized_oracle_governance,
+        )
     }
 
+    /// Offline (CLI) form of the `station_registrar_key` path in
+    /// [`Self::station_registration_authority_at_height`]: is this tx signed
+    /// by a key pinned for `genesis_hash` (the f64 preimage, as before
+    /// `station_coordinates_fixed_point`), with a valid owner proof, and
+    /// inside the registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`])?
+    /// The same predicate and the same rule function consensus runs, minus the
+    /// height gate and the node's installed chain authority. No node calls it.
+    pub fn verify_station_registrar_authorization_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        genesis_hash: &str,
+    ) -> bool {
+        let registrar_keys =
+            crate::governance::schedule_extension::station_registrar_keys(genesis_hash);
+        if registrar_keys.is_empty() {
+            return false;
+        }
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.contains(&key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_registrar,
+        ) {
+            return false;
+        }
+        self.parse_station_registration().is_some_and(|payload| {
+            crate::consensus::station_registrar::registrar_shape_refusal(&payload, false).is_none()
+        })
+    }
+
+    /// `authorized` decides which `auth_pubkey`s may sign: the oracle-governance
+    /// allowlist, or (`station_registrar_key`) the registrar keys in force.
     fn verify_station_registration_authorization_for(
         &self,
         chain_id: &str,
         network_id: &str,
         fixed: bool,
+        authorized: &dyn Fn(&str) -> bool,
     ) -> bool {
         let Some(payload) = self.parse_station_registration() else {
             return false;
@@ -3649,7 +3971,7 @@ impl Transaction {
         ) else {
             return false;
         };
-        if !is_authorized_oracle_governance(auth_pk_hex) {
+        if !authorized(auth_pk_hex) {
             return false;
         }
         let (Ok(auth_pk), Ok(auth_sig)) = (
@@ -3711,6 +4033,22 @@ impl Transaction {
     ///
     /// [`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`]: crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
     pub fn verify_station_registration_authorization_at_height(&self, block_height: u64) -> bool {
+        self.station_registration_authority_at_height(block_height).is_some()
+    }
+
+    /// Which authority admits this registration at `block_height`, or `None`.
+    ///
+    /// The governance path is exactly what it was before
+    /// `station_registrar_key`. Only when it fails, and only while the
+    /// registrar feature is active on a chain with a pinned registrar key, is
+    /// the registrar path tried: a registrar-key signature, then the
+    /// registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`]),
+    /// which include the ownership binding at every height.
+    pub fn station_registration_authority_at_height(
+        &self,
+        block_height: u64,
+    ) -> Option<StationRegistrationAuthority> {
         // #3336: from `StationCoordinatesFixedPoint`'s activation the
         // governance signature covers the fixed-point preimage; below it, the
         // f64-bit preimage exactly as before.
@@ -3718,20 +4056,46 @@ impl Transaction {
             crate::crypto::chain_binding::ConsensusFeature::StationCoordinatesFixedPoint,
             block_height,
         );
-        if !self.verify_station_registration_authorization_for(
-            &signing_chain_id(),
-            &signing_network_id(),
+        let chain_id = signing_chain_id();
+        let network_id = signing_network_id();
+        if self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
             fixed,
+            &is_authorized_oracle_governance,
         ) {
-            return false;
+            if block_height
+                < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
+            {
+                return Some(StationRegistrationAuthority::Governance);
+            }
+            return self
+                .parse_station_registration()
+                .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+                .then_some(StationRegistrationAuthority::Governance);
         }
-        if block_height
-            < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
-        {
-            return true;
+        // `station_registrar_key`: empty below activation and on a chain with
+        // no pinned key, so this returns `None` exactly as before.
+        let registrar_keys = crate::consensus::station_registrar::registrar_keys_at(block_height);
+        if registrar_keys.is_empty() {
+            return None;
         }
-        self.parse_station_registration()
-            .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.iter().any(|pinned| *pinned == key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
+            fixed,
+            &is_registrar,
+        ) {
+            return None;
+        }
+        let payload = self.parse_station_registration()?;
+        crate::consensus::station_registrar::registrar_shape_refusal(&payload, fixed)
+            .is_none()
+            .then_some(StationRegistrationAuthority::Registrar)
     }
 
     /// The ONE entry point every extractor uses for a station-registration tx
@@ -3766,8 +4130,17 @@ impl Transaction {
         {
             return None;
         }
-        if !self.verify_station_registration_authorization_at_height(block_height) {
-            return None;
+        let authority = self.station_registration_authority_at_height(block_height)?;
+        if authority == StationRegistrationAuthority::Registrar {
+            // `station_registrar_key`: its own transition, so the apply arm
+            // can enforce the stateful limits; the per-block slot is enforced
+            // by the extractors (`RegistrarBlockSlot`).
+            return Some(
+                crate::blockchain::state::StateTransition::ApplyStationRegistrarRegistration {
+                    station: Self::station_from_registration_at_height(&payload, block_height),
+                    block_height,
+                },
+            );
         }
         Some(if payload.is_v2() {
             crate::blockchain::state::StateTransition::ApplyStationRegistrationV2 {
@@ -3958,12 +4331,32 @@ impl Transaction {
             TransactionType::Unstake => true,
             _ => return false,
         };
+        let security_key = self.security_key_spend_proof();
         match self.parse_stake_auth_payload() {
-            Some(payload) => payload.verify_authorization_with_view(
-                view, is_unstake, self.nonce, height, timestamp,
+            Some(payload) => payload.verify_authorization_with_view_and_security_key(
+                view, is_unstake, self.nonce, height, timestamp, security_key.as_ref(),
             ),
             None => false,
         }
+    }
+
+    /// The optional `security_key_auth` member of this transaction's JSON
+    /// `data` (`security_key_spend`), read leniently: anything malformed reads
+    /// as absent and never makes the payload unparseable.
+    pub fn security_key_spend_proof(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyAssertionWire> {
+        crate::accounts::security_key::spend_proof_from_tx_data(self.data.as_deref())
+    }
+
+    /// Parse a `SecurityKeyAction` payload from tx data.
+    pub fn parse_security_key_action_payload(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyActionPayload> {
+        if self.tx_type != TransactionType::SecurityKeyAction {
+            return None;
+        }
+        serde_json::from_str(self.data.as_deref()?).ok()
     }
 
     /// Parse layer2 batch submit payload from tx data.
@@ -4378,8 +4771,17 @@ impl Transaction {
         if self.tx_type != TransactionType::Transfer {
             return false;
         }
+        let security_key = self.security_key_spend_proof();
         match self.parse_transparent_transfer_payload() {
-            Some(payload) => payload.verify_authorization_with_view(view, self.nonce, height, timestamp),
+            Some(payload) => payload
+                .authorize_with_view_and_security_key(
+                    view,
+                    self.nonce,
+                    height,
+                    timestamp,
+                    security_key.as_ref(),
+                )
+                .is_ok(),
             None => false,
         }
     }
@@ -5980,6 +6382,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         // Unsigned → not authorized.
         assert!(!payload.verify_authorization(0));
@@ -6009,6 +6413,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         forged.sign_authorization(&attacker, 0);
         assert!(
@@ -6069,6 +6475,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         }
     }
 

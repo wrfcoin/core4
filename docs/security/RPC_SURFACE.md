@@ -8,8 +8,8 @@ historical CLI/backend route notes in `docs/ROUTE_MATRIX.md` and
 
 ## Scope and classification rule
 
-- Inventory total: **153 methods** (150 HTTP, 3 WebSocket, 0 JSON-RPC).
-- Classification totals: **30 public**, **78 authenticated**, **39 admin**, and **6 disabled-in-release**.
+- Inventory total: **156 methods** (153 HTTP, 3 WebSocket, 0 JSON-RPC).
+- Classification totals: **30 public**, **80 authenticated**, **40 admin**, and **6 disabled-in-release**.
 - The inventory is the union of the default routes and the `p2p`, `zk`, `execution`, and `privacy` feature-gated routes. A feature annotation in the handler column identifies conditional registration.
 - `public` means no bearer token is required. `authenticated` means any non-operator role enforced by `require_role` or the authenticated WebSocket handshake. `admin` means `ApiRole::Operator` is enforced. Health/readiness remain public because anonymous callers receive deliberately reduced responses; localhost/operator callers receive detail.
 - Applied mechanically: a method that can alter peers or partition state, modify validator/oracle/signing-key state, seed or purge node state, control bridge safety, mine blocks, submit rollup batches, or otherwise perform an operator mutation is `admin`. User-signed protocol transactions remain `authenticated`, except the deliberately permissionless signed submission route.
@@ -41,16 +41,22 @@ that exploitation is currently demonstrated.
 | `GET /network/info` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_info` | `public` | no | no | global-read |
 | `GET /network/scarcity` | `http` | `native-chain/src/bin/launch_api/routes/scarcity.rs:scarcity::get_scarcity` | `authenticated` | no | no | global-read |
 | `GET /network/upgrade` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_upgrade` | `public` | no | no | global-read |
+| `GET /network/producers` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_network_producers` | `authenticated` | no | no | global-read (activity scan capped at 2048 in-memory blocks) |
+| `GET /node/bonds` | `http` | `native-chain/src/bin/launch_api/routes/node_bonds.rs:node_bonds::list` | `authenticated` | no | no | global-read (keyset page capped at 200 rows; 404 while the Node feature is unscheduled) |
 | `GET /blockchain` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_blockchain_compat` | `public` | no | no | global-read |
 | `GET /chain/blocks` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_blocks` | `public` | no | no | global-read |
 | `GET /chain/block/{height}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_chain_block_by_height` | `public` | no | no | global-read |
 | `GET /addresses/{address}/transactions` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_transactions` | `authenticated` | no | no | global-read |
+| `GET /addresses/{address}/credits` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_credits` | `authenticated` | no | no | global-read (page above 100 rows refused; at most 1000 index keys checked per read; `order=newest` reads the same index newest first) |
 | `GET /mempool/pending` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_mempool_pending` | `authenticated` | no | no | global-read |
 | `GET /chain/header/{height}` | `http` | `native-chain/src/bin/launch_api/routes/light.rs:light::get_chain_header` | `public` | no | no | global-read |
 | `GET /da/chunk/{height}/{index}` | `http` | `native-chain/src/bin/launch_api/routes/light.rs:light::get_da_chunk` | `public` | no | no | global-read |
 | `POST /transactions/submit` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::submit_transaction_compat` | `authenticated` | yes | no | global-write + legacy-submit |
 | `POST /transactions/permissionless/submit` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::submit_permissionless_transaction` | `public` | yes | no | global-write + signer-submit |
 | `GET /participation/policy` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_participation_policy` | `public` | no | no | global-read |
+| `GET /accounts/{address}/session-keys` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::list_session_keys` | `authenticated` | no | no | global-read |
+| `POST /session-keys/submit` | `http` | `native-chain/src/bin/launch_api/routes/session_keys.rs:session_keys::submit_session_key_action` | `authenticated` | yes | no | global-write + legacy-submit (failed authorization) |
+| `GET /accounts/{address}/security-key` | `http` | `native-chain/src/bin/launch_api/routes/security_key.rs:security_key::get_security_key_status` | `public` | no | no | global-read |
 | `GET /addresses/{address}` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_address_compat` | `authenticated` | no | no | global-read |
 | `GET /prometheus` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |
 | `GET /metrics` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_prometheus_metrics` | `authenticated` | no | no | global-read |
@@ -98,6 +104,7 @@ that exploitation is currently demonstrated.
 | `GET /transactions/station/registrations` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::list_station_registrations` | `admin` | no | no (O(1) registry ceiling, bounded page selection) | global-read |
 | `GET /transactions/station/registrations/{station_id}` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::get_station_registration` | `authenticated` | no | no | global-read |
 | `GET /transactions/station/registrations/{station_id}/owner-ledger` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::get_station_owner_ledger` | `authenticated` | no | no | global-read |
+| `GET /accounts/{address}/send-allowlist` | `http` | `native-chain/src/bin/launch_api/routes/send_allowlist.rs:send_allowlist::show` | `authenticated` | no | no | global-read |
 | `POST /transactions/station/owner-actions` | `http` | `native-chain/src/bin/launch_api/routes/station.rs:station::submit_station_owner_transactions` | `authenticated` | yes | no | global-write |
 | `GET /transactions/contributions/status` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_contribution_statuses` | `authenticated` | no | no | global-read |
 | `GET /transactions/contributions/{station_id}/observations` | `http` | `native-chain/src/bin/launch_api/routes/transactions.rs:transactions::get_station_observations` | `authenticated` | no | yes | global-read |
@@ -120,6 +127,7 @@ that exploitation is currently demonstrated.
 | `GET /network/signing-keys/{role}` | `http` | `native-chain/src/bin/launch_api/routes/signing_keys.rs:signing_keys::get_signing_keys_by_role` | `admin` | no | no | global-read |
 | `GET /state/snapshot` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot` | `authenticated` | no | yes | global-read |
 | `GET /state/snapshot/entries` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_entries` | `authenticated` | no | yes | global-read |
+| `GET /state/snapshot/prefix-counts` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_prefix_counts` | `authenticated` | no | yes | global-read |
 | `GET /state/snapshot/proof/{key_hex}` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_state_snapshot_proof` | `authenticated` | no | no | global-read |
 | `POST /state/snapshot/verify-inclusion` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::verify_state_snapshot_inclusion` | `authenticated` | no | no | global-write |
 | `GET /state/snapshot/sync-payload` | `http` | `native-chain/src/bin/launch_api/routes/snapshot.rs:snapshot::get_snapshot_sync_payload` | `authenticated` | no | yes | global-read |
@@ -137,6 +145,7 @@ that exploitation is currently demonstrated.
 | `GET /node/capability` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_node_capability` | `public` | no | no | global-read |
 | `GET /node/metrics/host` | `http` | `native-chain/src/bin/launch_api/routes/host_metrics.rs:host_metrics::get_host_metrics` | `admin` | no | no | global-read |
 | `GET /dashboard` | `http` | `native-chain/src/bin/launch_api/routes/status_page.rs:status_page::dashboard` | `public` | no | no | global-read |
+| `POST /node/shutdown` | `http` | `native-chain/src/bin/launch_api/routes/node_shutdown.rs:node_shutdown::shutdown_node` | `admin` | yes | no | global-write |
 | `GET /node/partition-status` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_partition_status` | `public` | no | no | global-read |
 | `POST /operator/partition-mode` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::set_partition_mode` | `admin` | yes | no | global-write |
 | `POST /debug/seed-account` | `http` | `native-chain/src/bin/launch_api/routes/debug.rs:debug::seed_account (feature: dev-endpoints)` | `disabled-in-release` | yes | no | global-write |
@@ -304,7 +313,7 @@ Every route in `configure_launch_routes` is registered inside one `web::scope(""
 | Check | Rule | Refusal |
 | --- | --- | --- |
 | `Host` | must name this node: `localhost`, `127.0.0.1`, `[::1]` plus `WRFCOIN_API_ALLOWED_HOSTS` (comma-separated names, port ignored). A request whose `Host` is not allowlisted is refused **even though it reached the socket** — that is the DNS-rebinding defence. `X-Forwarded-Host` is deliberately ignored. | 403 `HOST_NOT_ALLOWED` |
-| `Origin` | when present, must be in the allowlist: `LAUNCH_API_CORS_ORIGINS` (the same list CORS is built from), or the two local dev origins when unset outside production, or nothing in production. Refused before the handler executes, not by withholding a CORS header. `null` is never allowed. | 403 `ORIGIN_NOT_ALLOWED` |
+| `Origin` | when present, must be in the allowlist: `LAUNCH_API_CORS_ORIGINS` (the same list CORS is built from), or the two local dev origins when unset outside production, or nothing in production. Refused before the handler executes, not by withholding a CORS header. `null` is never allowed. One exception: when the browser asserts `Sec-Fetch-Site: same-origin` **and** the `Origin` is exactly `http(s)://` plus the `Host` header the browser sent (which must itself pass the `Host` check), the request comes from the node's own page — the `/dashboard` Stop button's `POST /node/shutdown` — and is judged as a same-origin request with no `Origin`; the handler's Operator bearer check still decides. | 403 `ORIGIN_NOT_ALLOWED` |
 | No `Origin` | a **browser-originated** request (any `Sec-Fetch-*` header) to an `admin` method must carry an allowlisted `Origin` — unless the browser itself asserts `Sec-Fetch-Site: same-origin`, i.e. the page was served by this node (`GET /dashboard`, #3599) and the `Host` check has already passed; a same-origin GET never carries `Origin`, so such a request is judged like a non-browser client. Other requests without one proceed while `WRFCOIN_API_ALLOW_NO_ORIGIN` is `1` (the default — the CLI, curl and node-to-node calls send none). | 403 `ORIGIN_REQUIRED` |
 
 Wildcards are unrepresentable: `*` in either allowlist, or an origin that is not
@@ -434,3 +443,15 @@ token), mutates state (mempool admission and gossip), no unbounded work (40 KiB 
 per-token limit 30 requests/minute (429). It is **not mounted** (404) unless
 `WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1` (default off) and `NodeShareSettlement` is active. A non-forking
 change: it admits a transaction type the mempool and `apply` already handle.
+
+## Security-key wallet action route (`security_key_spend`)
+
+`POST /accounts/security-key/actions` (`routes/security_key.rs:security_key::submit_security_key_action`) is
+registered through a `web::resource(..)` (32 KiB JSON limit), which the table scanner (`.route(` only) does not
+see. Classification: `authenticated` (Contributor token), mutates state (mempool admission of a
+`SecurityKeyAction`), bounded work (one ed25519 and at most two P-256 verifications in a State dry-run at tip+1;
+failed attempts charge the caller's legacy-submit budget). It answers 503 `FEATURE_NOT_ACTIVE` until
+`security_key_spend` is active at the next block. Non-forking: it only admits a transaction the mempool and the
+governance sink already handle, and consensus re-checks it at the inclusion height. The read
+`GET /accounts/{address}/security-key` is in the table above. `/transactions/submit` and `/session-keys/submit`
+also accept an optional `security_key_auth` assertion (no new route).

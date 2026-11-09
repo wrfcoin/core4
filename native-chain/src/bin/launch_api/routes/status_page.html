@@ -178,9 +178,59 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .fact dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
 .fact dd { margin: 2px 0 0; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact dd.mono { font-size: 0.9375rem; }
+.fact .update-link { display: block; margin-top: 2px; font-size: 0.8125rem; font-weight: 500; }
+.fact.reach, .fact.mode { grid-column: span 2; }
 @media (max-width: 599px) { .facts { grid-template-columns: 1fr 1fr; } .fact.wide { grid-column: 1 / -1; } }
 .hero-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .hero.down { border-color: rgba(239, 68, 68, 0.5); }
+/* Stop control: the node's own off switch, at the bottom of the summary. */
+.control { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-sm) var(--s-md); border-top: 1px solid var(--border); padding-top: var(--s-md); }
+.control-text { flex: 1 1 280px; min-width: 0; display: grid; gap: 2px; }
+.control-title { margin: 0; font-size: 0.9375rem; font-weight: 600; }
+.control .note { max-width: 72ch; }
+.control .note.bad { color: var(--error); }
+.control .note.done { color: var(--text); font-weight: 600; }
+.btn.danger { background: transparent; border-color: rgba(239, 68, 68, 0.6); color: var(--error); padding: 8px 18px; font-size: 0.875rem; font-weight: 600; }
+.btn.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); border-color: var(--error); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* What's next: the participation ladder. Calm, no numbers beyond the real ones. */
+.next { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s-md); margin-bottom: var(--s-lg); display: grid; gap: var(--s-md); }
+@media (min-width: 600px) { .next { padding: var(--s-lg); } }
+.next-head { display: grid; gap: var(--s-xs); }
+.next-head h2 { font-size: 1.125rem; }
+.next-head p { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 72ch; }
+.ladder { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: var(--s-sm); }
+@media (min-width: 900px) { .ladder { gap: var(--s-md); } }
+.rung { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s-md); min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: var(--s-sm) var(--s-md); align-content: start; }
+.rung.here { border-color: rgba(16, 185, 129, 0.55); }
+.rung .num { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-3); color: var(--text-2); font-weight: 700; font-size: 0.9375rem; font-variant-numeric: tabular-nums; }
+.rung.here .num { background: var(--success); color: #fff; }
+.rung-body { min-width: 0; display: grid; gap: var(--s-xs); }
+.rung h3 { margin: 0; font-size: 1rem; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-xs) var(--s-sm); }
+.rung p { margin: 0; color: var(--text-2); font-size: 0.875rem; }
+.rung .links { display: flex; flex-wrap: wrap; gap: var(--s-xs) var(--s-md); font-size: 0.875rem; }
+/* Open your port: the short guide under the ladder, collapsed until asked for. */
+.guide { grid-template-columns: minmax(0, 1fr); }
+.guide > *, .guide-steps li { min-width: 0; }
+.guide code { overflow-wrap: anywhere; }
+.guide summary { cursor: pointer; font-size: 1.125rem; font-weight: 600; list-style-position: inside; }
+.guide summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
+.guide[open] summary { margin-bottom: var(--s-sm); }
+.guide-steps { margin: 0; padding-left: 1.25rem; display: grid; gap: var(--s-sm); color: var(--text-2); font-size: 0.875rem; max-width: 80ch; }
+.guide-steps li::marker { color: var(--text); font-weight: 600; }
+.guide-steps b { color: var(--text); font-weight: 600; }
+.guide pre { margin: var(--s-xs) 0 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--s-sm) var(--s-md); overflow-x: auto; font-family: var(--mono); font-size: 0.8125rem; color: var(--text); white-space: pre; }
+.guide p { margin: 0; color: var(--text-2); font-size: 0.875rem; max-width: 80ch; }
+.fact dd.warn { color: var(--warning); }
+/* Upgrade warning: what /network/upgrade says this node must do, above everything else. */
+.upgrade { border: 1px solid rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.1); border-radius: var(--r-lg); padding: var(--s-md); margin-bottom: var(--s-lg); display: grid; gap: var(--s-xs); }
+@media (min-width: 600px) { .upgrade { padding: var(--s-md) var(--s-lg); } }
+.upgrade.bad { border-color: rgba(239, 68, 68, 0.6); background: rgba(239, 68, 68, 0.1); }
+.upgrade.info { border-color: rgba(14, 165, 233, 0.5); background: rgba(14, 165, 233, 0.08); }
+.upgrade-title { margin: 0; font-size: 1.0625rem; font-weight: 700; overflow-wrap: anywhere; }
+.upgrade-detail { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 80ch; overflow-wrap: anywhere; }
+.upgrade-links { margin: 0; font-size: 0.875rem; font-weight: 600; }
+.next-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
 </style>
@@ -201,6 +251,12 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
     </div>
   </header>
 
+  <section class="upgrade" id="upgrade-banner" role="status" aria-live="polite" hidden>
+    <p class="upgrade-title" id="upgrade-title"></p>
+    <p class="upgrade-detail" id="upgrade-detail"></p>
+    <p class="upgrade-links" id="upgrade-links"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Get the newest installer</a>. Check its SHA-256 before you run it; the installer keeps your chain data, keys and settings.</p>
+  </section>
+
   <section class="hero" id="hero" aria-labelledby="sync-text">
     <p class="hero-intro" id="hero-intro">This page shows the <strong>WRFCoin node running on this computer</strong>. The node program serves it to your browser from this machine; nothing on this page is sent anywhere else. You can close this tab at any time: the node keeps running.</p>
     <div class="sync-line">
@@ -213,11 +269,80 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       <div class="fact"><dt>Other nodes</dt><dd id="fact-peers">—</dd></div>
       <div class="fact"><dt>Chain</dt><dd id="fact-chain">—</dd></div>
       <div class="fact wide"><dt>Genesis</dt><dd class="mono" id="fact-genesis">—</dd></div>
-      <div class="fact"><dt>Node version</dt><dd id="fact-version">—</dd></div>
+      <div class="fact wide reach"><dt>Reachable at</dt><dd class="mono" id="fact-reach">—</dd></div>
+      <div class="fact wide mode"><dt>Mode</dt><dd id="fact-mode">—</dd></div>
+      <div class="fact"><dt>Node version</dt><dd><span id="fact-version">—</span> <span class="update-link"><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Check for updates</a></span></dd></div>
       <div class="fact"><dt>Blocks / min</dt><dd id="fact-bpm">measuring</dd></div>
     </dl>
-    <p class="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
+    <p class="hero-note" id="hero-note">A node that only syncs keeps its own checked copy of the WRFCoin test chain and shares blocks with other nodes. It does not earn coins or rewards, and this page shows no balances.</p>
+    <div class="control" id="stop-control">
+      <div class="control-text">
+        <p class="control-title">Stop the node</p>
+        <p class="note" id="stop-note" aria-live="polite">The Stop button needs this node's operator token (enter it under Host, below). You can also stop the node from the Start menu: Stop WRFCoin Node.</p>
+      </div>
+      <button class="btn danger" type="button" id="stop-btn" disabled>Stop node</button>
+    </div>
   </section>
+
+  <section class="next" id="whats-next" aria-labelledby="h-next">
+    <div class="next-head">
+      <h2 id="h-next">What's next</h2>
+      <p>Nodes take on more over time. You climb by reliable time on the rung below, not by computer power.</p>
+    </div>
+    <ol class="ladder">
+      <li class="rung here" id="rung-sync">
+        <span class="num" aria-hidden="true">1</span>
+        <div class="rung-body">
+          <h3>Sync node <span class="pill ok" id="pill-sync">You are here</span></h3>
+          <p>Keeps its own checked copy of the chain and shares blocks with other nodes. Leave it running: time online is what counts for the next step. A sync node is not paid.</p>
+        </div>
+      </li>
+      <li class="rung" id="rung-bonded">
+        <span class="num" aria-hidden="true">2</span>
+        <div class="rung-body">
+          <h3>Bonded node <span class="pill info" id="pill-bonded">Preview</span></h3>
+          <p>Locks a 250.36 WRF bond and serves chain snapshots to new nodes, and is paid each epoch (about 11 hours) for that service. Newcomers can get the bond once, as a faucet bond grant, after their node has been a visible peer for 24 hours. Needs a P2P address other nodes can reach.</p>
+          <p class="links"><a href="#open-port" id="open-port-link">Open your port (TCP 9000)</a><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Bonded node guide</a><a href="https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md" target="_blank" rel="noopener noreferrer">Join the testnet</a></p>
+        </div>
+      </li>
+      <li class="rung">
+        <span class="num" aria-hidden="true">3</span>
+        <div class="rung-body">
+          <h3>Attester (oracle) <span class="pill">Coming</span></h3>
+          <p>Vouches for the quality of weather data. Seated by governance after proven service as a bonded node.</p>
+        </div>
+      </li>
+      <li class="rung">
+        <span class="num" aria-hidden="true">4</span>
+        <div class="rung-body">
+          <h3>Block producer <span class="pill">Coming</span></h3>
+          <p>Makes blocks. Seated by governance from proven bonded nodes.</p>
+        </div>
+      </li>
+    </ol>
+    <p class="next-note">Nothing here happens by itself, and this page promises no income. Steps marked Coming are not open yet.</p>
+  </section>
+
+  <details class="next guide" id="open-port">
+    <summary>Open your port (TCP 9000)</summary>
+    <p>A bonded node must be reachable by other nodes. You open exactly one port, <b>TCP 9000</b> (the node's peer-to-peer port). This page and the node's API stay on this computer (127.0.0.1) and are never reachable from outside.</p>
+    <ol class="guide-steps">
+      <li><b>Give this PC a fixed address</b> on your network: in your router, reserve its current address (often called "DHCP reservation"). PowerShell shows the address: <code class="mono">Get-NetIPAddress -AddressFamily IPv4</code>.</li>
+      <li><b>Forward TCP 9000 on your router</b> to that address, port 9000. One rule, nothing else. Note the router's public (WAN) address.</li>
+      <li><b>Allow it in Windows Firewall.</b> In PowerShell as administrator:
+        <pre>New-NetFirewallRule -DisplayName 'WRFCoin node P2P (TCP 9000)' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9000 -Program "$env:LOCALAPPDATA\Programs\WRFCoin Node\launch_api.exe" -Profile Any</pre>
+        If you once answered Cancel to the firewall prompt, remove that block rule first (the full guide shows how).</li>
+      <li><b>Tell the node.</b> Create <code class="mono">%LOCALAPPDATA%\WRFCoin\reachable.conf</code> with your public address in the second line:
+        <pre>WRFCOIN_P2P_HOST=0.0.0.0
+WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/203.0.113.7/tcp/9000</pre></li>
+      <li><b>Bonded mode (testnet).</b> Once you have a server key (<code class="mono">wrfcoin-node.ps1 -Action ServerKey</code>) and your bond's service alias, add two lines to the same file:
+        <pre>WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1
+WRFCOIN_SERVICE_ID=&lt;your bond's service alias&gt;</pre>
+        The node refuses to start if any piece is missing, so a half-set-up node never runs.</li>
+    </ol>
+    <p>Restart the node (Start menu: Stop WRFCoin Node, then WRFCoin Node). <b>Reachable at</b> above then shows your address, and <b>Mode</b> shows Bonded. Check from outside your network (a phone on mobile data): <code class="mono">Test-NetConnection &lt;your address&gt; -Port 9000</code>. To close the port, delete <code class="mono">reachable.conf</code>, restart, and remove the router and firewall rules.</p>
+    <p class="links"><a href="https://github.com/wrfcoin/core4/blob/main/docs/operator/windows-node.md#open-your-port-optional" target="_blank" rel="noopener noreferrer">Full guide: Open your port and bonded mode</a></p>
+  </details>
 
   <h2 class="details-title">Details for operators</h2>
   <main class="grid">
@@ -269,7 +394,7 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
       </div>
       <div class="locked" id="host-locked">
         <h3><span class="lock" aria-hidden="true"></span>Operator token required</h3>
-        <p>CPU, memory, swap and disk come from <span class="mono">/node/metrics/host</span>, which only the operator role may read. Paste this node's operator API token: it is kept in this tab's session storage only, sent to this node as an <span class="mono">Authorization</span> header, never placed in the URL and never logged.</p>
+        <p>CPU, memory, swap and disk come from <span class="mono">/node/metrics/host</span>, which only the operator role may read. Paste this node's operator API token (on Windows the Start-menu entry WRFCoin Node fills it in for you): it is kept in this tab's session storage only, sent to this node as an <span class="mono">Authorization</span> header, never sent in a URL and never logged. The same token unlocks the Stop button above.</p>
         <form class="token-form" id="token-form" autocomplete="off">
           <input id="token-input" type="password" placeholder="operator token" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Operator token">
           <button class="btn primary" type="submit">Unlock</button>
@@ -356,8 +481,10 @@ const ROUTES = {
   resources: '/node/resources',
   capability: '/node/capability',
   upgrade: '/network/upgrade',
+  peer: '/network/peer_id',
   health: '/health',
-  host: '/node/metrics/host'
+  host: '/node/metrics/host',
+  shutdown: '/node/shutdown'
 };
 const TOKEN_KEY = 'wrfcoin.dashboard.operatorToken';
 const TICK_MS = 10000;
@@ -381,13 +508,31 @@ let timer = null;
 let intervalMs = TICK_MS;
 let token = null;
 try { token = sessionStorage.getItem(TOKEN_KEY) || null; } catch (_) { token = null; }
+let stopState = null;   // null, 'stopping' or 'stopped'
+let stopError = null;   // why the last stop request was refused
+const STOP_CONFIRM = 'Stop your node? It stops syncing until you start it again from the Start menu.';
+const STOPPED_TEXT = 'Node stopped. Start it again from Start menu \u2192 WRFCoin Node.';
+
+// The Windows Start-menu entry opens /dashboard#operator=<token>. A fragment is
+// never sent to the server and never logged; take the token into session
+// storage (as if pasted) and remove it from the address bar at once.
+(function takeTokenFromFragment() {
+  const hash = location.hash || '';
+  if (hash.indexOf('#operator=') !== 0) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (_) { /* nothing to clear */ }
+  const value = hash.slice('#operator='.length).trim();
+  if (!/^[A-Za-z0-9._~-]{16,512}$/.test(value)) return;
+  token = value;
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch (_) { /* a private window may refuse; the token still works for this page load */ }
+})();
 
 // ---------- fetch ----------
-async function getJson(path, withToken) {
+// The page's only request helper: every path comes from ROUTES.
+async function request(path, method, withToken) {
   const headers = { 'Accept': 'application/json' };
   if (withToken && token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const res = await fetch(path, { method: 'GET', headers, cache: 'no-store', credentials: 'omit' });
+    const res = await fetch(path, { method, headers, cache: 'no-store', credentials: 'omit' });
     let data = null;
     try { data = await res.json(); } catch (_) { data = null; }
     return { ok: res.ok, status: res.status, data };
@@ -395,6 +540,7 @@ async function getJson(path, withToken) {
     return { ok: false, status: 0, data: null };
   }
 }
+function getJson(path, withToken) { return request(path, 'GET', withToken); }
 
 function errorCode(data) {
   return data && data.error && typeof data.error.code === 'string' ? data.error.code : null;
@@ -410,6 +556,12 @@ function fmtInt(n) {
   if (typeof n !== 'number' || !isFinite(n)) return null;
   return Math.round(n).toLocaleString('en-US');
 }
+// "v0.5.0 (68f6d291)": the build commit is only known for release builds.
+function versionLabel(version, info) {
+  const build = info && typeof info.node_build === 'string' && /^[0-9a-f]{7,40}$/.test(info.node_build) ? info.node_build : null;
+  return 'v' + version + (build ? ' (' + build + ')' : '');
+}
+
 function setStat(el, value, opts) {
   // Integer part large; fraction and unit small, after WrfStatCard.
   opts = opts || {};
@@ -686,7 +838,7 @@ function renderHost() {
 function renderNode() {
   const info = last.info, res = last.resources, cap = last.capability, health = last.health, stats = last.stats, upgrade = last.upgrade;
   const version = (info && info.node_version) || (health && health.version) || null;
-  setStat($('st-version'), version ? 'v' + version : null);
+  setStat($('st-version'), version ? versionLabel(version, info) : null);
   $('st-version-hint').textContent = info && info.network_id ? info.network_id + ' node' : 'node software';
 
   // Prefer the swarm's own uptime; /health only reports it to loopback or operator callers;
@@ -714,7 +866,10 @@ function renderNode() {
   }
   $('kv-blocks-mem').textContent = res && typeof res.blocks_in_memory === 'number' ? fmtInt(res.blocks_in_memory) : '—';
   $('kv-accounts').textContent = res && typeof res.account_count === 'number' ? fmtInt(res.account_count) + (typeof res.nft_count === 'number' ? ' · ' + fmtInt(res.nft_count) + ' NFTs' : '') : '—';
-  if (upgrade) {
+  const warning = upgradeWarning(upgrade, info);
+  if (warning) {
+    $('kv-upgrade').textContent = warning.title;
+  } else if (upgrade) {
     let t = upgrade.status || '—';
     if (typeof upgrade.activation_height === 'number') t += ' · activation at ' + fmtInt(upgrade.activation_height);
     if (typeof upgrade.blocks_remaining === 'number' && upgrade.blocks_remaining > 0) t += ' · ' + fmtInt(upgrade.blocks_remaining) + ' blocks to go';
@@ -725,7 +880,7 @@ function renderNode() {
 
   const anyNode = !!(info || res || cap || health);
   if (!anyNode) setPill($('node-pill'), 'no data', '');
-  else if (upgrade && upgrade.status && upgrade.status !== 'ready' && upgrade.status !== 'none') setPill($('node-pill'), 'upgrade ' + upgrade.status, 'warn');
+  else if (warning && warning.level !== 'info') setPill($('node-pill'), 'update needed', warning.level === 'bad' ? 'bad' : 'warn');
   else setPill($('node-pill'), 'running', 'ok');
 
   const errs = [];
@@ -733,6 +888,93 @@ function renderNode() {
     if (k in failed) errs.push(describe(failed[k]) + ': ' + ROUTES[k]);
   }
   setErr($('err-node'), errs);
+}
+
+// ---------- upgrade warning ----------
+// What GET /network/upgrade says this node must do, in plain words. It reads
+// two things the node already knows: the governance-signed upgrade notice
+// (status, activation_height, release_commit) and the effective feature
+// schedule (scheduled.entries: genesis plus applied schedule extensions, each
+// marked known when this binary implements it). The page fetches nothing off
+// this node, so a release that is not announced on chain is not known here;
+// "Check for updates" under the version covers that.
+const BLOCK_SECS = 77; // the chain 888 block cadence, for "about N hours"
+function inBlocks(blocks) {
+  if (typeof blocks !== 'number' || !isFinite(blocks) || blocks <= 0) return 'from the next block';
+  return 'in about ' + compactDuration(blocks * BLOCK_SECS) + ' (' + fmtInt(blocks) + ' block' + (blocks === 1 ? '' : 's') + ')';
+}
+function isHex(v) { return typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v); }
+// Returns null, or { level: 'bad' | 'warn' | 'info', title, detail, download }.
+function upgradeWarning(upgrade, info) {
+  if (!upgrade || typeof upgrade !== 'object') return null;
+  const sched = upgrade.scheduled && typeof upgrade.scheduled === 'object' ? upgrade.scheduled : null;
+  const entries = (sched && Array.isArray(sched.entries) ? sched.entries : [])
+    .filter((e) => e && typeof e.activation_height === 'number' && typeof e.feature === 'string')
+    .sort((a, b) => a.activation_height - b.activation_height);
+  const tip = typeof upgrade.tip_height === 'number' ? upgrade.tip_height : null;
+  const notice = upgrade.status;
+  const noticeAt = typeof upgrade.activation_height === 'number' ? upgrade.activation_height : null;
+  const unknownActive = entries.find((e) => e.known === false && e.active_at_next === true);
+  const unknownPending = entries.find((e) => e.known === false && e.active_at_next !== true);
+
+  if (notice === 'past_deadline' || unknownActive) {
+    const at = unknownActive ? unknownActive.activation_height : noticeAt;
+    return {
+      level: 'bad',
+      title: 'Update needed: this node can no longer follow the chain',
+      detail: 'From block ' + fmtInt(at) + ' the network runs rules'
+        + (unknownActive ? ' (' + unknownActive.feature + ')' : '')
+        + ' that this version of the node does not have, so it stops there to stay safe. Install the newest installer.',
+      download: true
+    };
+  }
+  if (notice === 'upgrade_required' || unknownPending) {
+    // The sooner of the two deadlines is the one that stops the node.
+    const fromNotice = notice === 'upgrade_required' && noticeAt !== null ? noticeAt : null;
+    const useEntry = unknownPending && (fromNotice === null || unknownPending.activation_height <= fromNotice);
+    const at = useEntry ? unknownPending.activation_height : fromNotice;
+    const left = tip !== null ? at - tip : null;
+    return {
+      level: 'warn',
+      title: 'Update needed before block ' + fmtInt(at),
+      detail: 'The network turns on new rules' + (useEntry ? ' (' + unknownPending.feature + ')' : '')
+        + ' at block ' + fmtInt(at) + ', ' + inBlocks(left) + '. This version of the node does not have them and stops syncing at that block. Install the newest installer before then.',
+      download: true
+    };
+  }
+  const build = info && isHex(info.node_build) ? info.node_build : null;
+  const release = isHex(upgrade.release_commit) ? upgrade.release_commit : null;
+  if (notice === 'ready' && build && release && noticeAt !== null && tip !== null && tip < noticeAt
+      && release.indexOf(build) !== 0 && build.indexOf(release) !== 0) {
+    return {
+      level: 'info',
+      title: 'A node release is announced',
+      detail: 'The network announced release ' + release.slice(0, 8) + ' for block ' + fmtInt(noticeAt)
+        + '. This node runs ' + build + ', which can follow that change, so updating is optional.',
+      download: true
+    };
+  }
+  const nextKnown = entries.find((e) => e.known === true && e.active_at_next === false);
+  if (nextKnown) {
+    return {
+      level: 'info',
+      title: 'Network change scheduled at block ' + fmtInt(nextKnown.activation_height),
+      detail: 'The network turns on ' + nextKnown.feature + ' at block ' + fmtInt(nextKnown.activation_height)
+        + ', ' + inBlocks(nextKnown.blocks_remaining) + '. This version of the node already has it: nothing to do.',
+      download: false
+    };
+  }
+  return null;
+}
+function renderUpgrade() {
+  const w = stopState === 'stopped' ? null : upgradeWarning(last.upgrade, last.info);
+  const banner = $('upgrade-banner');
+  banner.hidden = !w;
+  if (!w) return;
+  banner.className = 'upgrade' + (w.level === 'warn' ? '' : ' ' + w.level);
+  $('upgrade-title').textContent = w.title;
+  $('upgrade-detail').textContent = w.detail;
+  $('upgrade-links').hidden = !w.download;
 }
 
 // ---------- newcomer summary ----------
@@ -748,7 +990,7 @@ function setSyncBar(pct, cls) {
 function renderHero() {
   const info = last.info, sync = last.sync, stats = last.stats;
   const hero = $('hero');
-  hero.className = 'hero' + (unreachable ? ' down' : '');
+  hero.className = 'hero' + (unreachable && stopState !== 'stopped' ? ' down' : '');
   const height = (sync && sync.chain_height) ?? (info && info.chain_height) ?? null;
   const peers = (stats && stats.connected_peers) ?? (sync && sync.peer_count) ?? (info && info.peer_count) ?? null;
   const p2p = sync && sync.p2p_sync ? sync.p2p_sync : null;
@@ -761,7 +1003,10 @@ function renderHero() {
     : 'It is connected to ' + fmtInt(peers) + ' other node' + (peers === 1 ? '' : 's') + '.';
 
   let text, detail, pct = null, cls = '';
-  if (unreachable) {
+  if (stopState === 'stopped') {
+    text = 'Node stopped';
+    detail = 'Start it again from Start menu \u2192 WRFCoin Node, and open this page again.';
+  } else if (unreachable) {
     text = "Can't reach your node";
     detail = 'The node program did not answer. It may have stopped: start it again, and this page reconnects by itself.';
   } else if (typeof height !== 'number') {
@@ -802,20 +1047,134 @@ function renderHero() {
   const genesis = info && typeof info.genesis_hash === 'string' && info.genesis_hash !== 'unknown' ? info.genesis_hash : null;
   $('fact-genesis').textContent = genesis ? shortHash(genesis) : (info ? 'not known yet' : '—');
   $('fact-genesis').title = genesis || '';
+  // The address other nodes are told to dial (WRFCOIN_P2P_EXTERNAL_ADDR), without
+  // the /p2p/<id> suffix. None set: the node only connects out.
+  const peerInfo = last.peer;
+  const ext = peerInfo && typeof peerInfo.external_addr === 'string' ? peerInfo.external_addr.replace(/\/p2p\/[^/]+$/, '') : null;
+  $('fact-reach').textContent = ext || (peerInfo ? 'outbound only (no open port)' : '—');
+  $('fact-reach').title = ext ? ext + ': the address other nodes are told to dial (reachable.conf, WRFCOIN_P2P_EXTERNAL_ADDR)' : '';
+  renderMode(peerInfo, ext);
   const version = (info && info.node_version) || (last.health && last.health.version) || null;
-  $('fact-version').textContent = version ? 'v' + version : '—';
+  $('fact-version').textContent = version ? versionLabel(version, info) : '—';
   const bpm = blocksPerMinute();
   $('fact-bpm').textContent = bpm === null ? 'measuring' : bpm.toFixed(1);
 }
 
-function renderAll() { renderHero(); renderChain(); renderHost(); renderNode(); renderAsOf(); }
+// ---------- mode: sync-only or bonded ----------
+const SYNC_NOTE = $('hero-note').textContent;
+const BONDED_NOTE = 'Bonded mode: besides syncing, this node serves signed chain snapshots to other bonded nodes over its open port. '
+  + 'It is paid only for an epoch in which another bonded node fetched a snapshot from it and the receipt was submitted in time; this page shows no balances.';
+// /network/peer_id says whether the node serves bonded snapshot fetches
+// (WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS), under which service id, and with which
+// server key. No answer: the mode is not known, and the ladder stays as built.
+function renderMode(peerInfo, ext) {
+  const bonded = peerInfo && peerInfo.bonded && typeof peerInfo.bonded === 'object' ? peerInfo.bonded : null;
+  const mode = $('fact-mode');
+  const serving = !!(bonded && bonded.serving === true);
+  const key = serving && typeof bonded.server_key === 'string' ? bonded.server_key : null;
+  const id = serving && typeof bonded.service_id === 'string' ? bonded.service_id : '';
+  mode.className = '';
+  if (!bonded) {
+    mode.textContent = '—';
+    mode.title = '';
+  } else if (!serving) {
+    mode.textContent = 'Sync-only';
+    mode.title = 'Bonded mode is off (reachable.conf: WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS)';
+  } else if (!key) {
+    mode.textContent = 'Bonded, no server key';
+    mode.className = 'warn';
+    mode.title = 'This node serves bonded fetches but has no server key, so every fetch is refused. Create server.key and restart.';
+  } else if (!ext) {
+    mode.textContent = 'Bonded, port not set';
+    mode.className = 'warn';
+    mode.title = 'Bonded mode is on but no external address is set; other nodes cannot dial this one.';
+  } else {
+    mode.textContent = 'Bonded' + (id ? ' (' + id + ')' : '');
+    mode.title = 'Service id ' + id + '; server key ' + key;
+  }
+  $('hero-note').textContent = serving ? BONDED_NOTE : SYNC_NOTE;
+  $('rung-sync').className = serving ? 'rung' : 'rung here';
+  $('pill-sync').className = serving ? 'pill' : 'pill ok';
+  $('pill-sync').textContent = serving ? 'Done' : 'You are here';
+  $('rung-bonded').className = serving ? 'rung here' : 'rung';
+  $('pill-bonded').className = serving ? 'pill ok' : 'pill info';
+  $('pill-bonded').textContent = serving ? 'You are here' : 'Preview';
+}
+$('open-port-link').addEventListener('click', () => { $('open-port').open = true; });
+if ((location.hash || '').indexOf('#open-port') === 0) $('open-port').open = true;
+
+// ---------- stop ----------
+function renderStop() {
+  const btn = $('stop-btn'), note = $('stop-note');
+  btn.hidden = stopState === 'stopped';
+  btn.disabled = !token || stopState !== null || unreachable;
+  btn.textContent = stopState === 'stopping' ? 'Stopping\u2026' : 'Stop node';
+  note.className = 'note';
+  if (stopState === 'stopped') {
+    note.className = 'note done';
+    note.textContent = STOPPED_TEXT;
+  } else if (stopState === 'stopping') {
+    note.textContent = 'Stopping: the node is disconnecting from other nodes and saving its place. This can take up to a minute.';
+  } else if (stopError) {
+    note.className = 'note bad';
+    note.textContent = stopError;
+  } else if (!token) {
+    note.textContent = "The Stop button needs this node's operator token (enter it under Host, below). You can also stop the node from the Start menu: Stop WRFCoin Node.";
+  } else {
+    note.textContent = 'Stops syncing and closes the node program cleanly, the same as Start menu \u2192 Stop WRFCoin Node. Closing this tab does not stop the node.';
+  }
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitForStop() {
+  // The node answers 202, then shuts down; it is stopped once it no longer answers at all.
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const r = await getJson(ROUTES.health, false);
+    if (r.status === 0) {
+      stopState = 'stopped';
+      unreachable = true;
+      renderAll();
+      return;
+    }
+  }
+  stopState = null;
+  stopError = 'The node is still shutting down after 3 minutes. Look at its log, or use Start menu \u2192 Stop WRFCoin Node.';
+  renderAll();
+  schedule();
+}
+async function stopNode() {
+  if (!token || stopState !== null) return;
+  if (!window.confirm(STOP_CONFIRM)) return;
+  stopError = null;
+  stopState = 'stopping';
+  if (timer) { clearTimeout(timer); timer = null; }
+  renderStop();
+  const r = await request(ROUTES.shutdown, 'POST', true);
+  if (r.ok || r.status === 0) { waitForStop(); return; }
+  stopState = null;
+  const code = errorCode(r.data);
+  if (GUARD_CODES.includes(code)) {
+    stopError = "This node's origin guard refused the stop request (" + code + '). Use Start menu \u2192 Stop WRFCoin Node.';
+  } else if ((r.status === 401 || r.status === 403) && (code === null || TOKEN_CODES.includes(code))) {
+    stopError = 'The node refused the operator token (HTTP ' + r.status + '). Check the token under Host, then try again.';
+  } else {
+    stopError = 'The node did not accept the stop request (HTTP ' + r.status + (code ? ', ' + code : '') + ').';
+  }
+  renderAll();
+  schedule();
+}
+$('stop-btn').addEventListener('click', stopNode);
+
+function renderAll() { renderUpgrade(); renderHero(); renderChain(); renderHost(); renderNode(); renderStop(); renderAsOf(); }
 
 // ---------- tick ----------
 async function tick() {
+  if (stopState !== null) return;
   tickCount += 1;
   const slow = tickCount === 1 || tickCount % SLOW_EVERY === 1;
   const keys = ['info', 'sync', 'stats', 'resources', 'capability'];
-  if (slow) keys.push('upgrade', 'health');
+  if (slow) keys.push('upgrade', 'health', 'peer');
   if (token) keys.push('host');
   const results = await Promise.all(keys.map((k) => getJson(ROUTES[k], k === 'host')));
   let anyOk = false, any429 = false;
@@ -847,7 +1206,7 @@ async function tick() {
 }
 function schedule() {
   if (timer) clearTimeout(timer);
-  if (document.hidden) { timer = null; return; }
+  if (document.hidden || stopState !== null) { timer = null; return; }
   timer = setTimeout(tick, intervalMs);
 }
 document.addEventListener('visibilitychange', () => {
@@ -866,7 +1225,9 @@ $('token-form').addEventListener('submit', (ev) => {
   try { sessionStorage.setItem(TOKEN_KEY, token); } catch (_) { /* a private window may refuse; the token still works for this page load */ }
   delete failed.host;
   delete failedCode.host;
+  stopError = null;
   renderHost();
+  renderStop();
   if (timer) clearTimeout(timer);
   tick();
 });
@@ -876,7 +1237,9 @@ $('forget-token').addEventListener('click', () => {
   delete failed.host;
   delete failedCode.host;
   try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* nothing stored */ }
+  stopError = null;
   renderHost();
+  renderStop();
 });
 
 // ---------- copy genesis ----------

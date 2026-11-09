@@ -1,8 +1,8 @@
 ; WRFCoin Node for Windows - Inno Setup 6 script (per-user, no admin).
 ;
 ; Built in CI by .github/workflows/windows-node-build.yml:
-;   ISCC.exe /DAppVersion=<ver> /DSourceExe=<path\launch_api.exe> /DOutputDir=<dir> wrfcoin-node.iss
-; Installs launch_api.exe, the chain-888 sync-node config and the launcher to
+;   ISCC.exe /DAppVersion=<ver> /DSourceExe=<path\launch_api.exe> /DSourceCli=<path\wrfcoin.exe> /DOutputDir=<dir> wrfcoin-node.iss
+; Installs launch_api.exe, the wrfcoin.exe operator CLI, the chain-888 sync-node config and the launcher to
 ; %LOCALAPPDATA%\Programs\WRFCoin Node. Node data goes to %LOCALAPPDATA%\WRFCoin
 ; (created and locked to the current user by wrfcoin-node.ps1 -Action Setup).
 
@@ -11,6 +11,9 @@
 #endif
 #ifndef SourceExe
   #define SourceExe "..\..\target\release\launch_api.exe"
+#endif
+#ifndef SourceCli
+  #define SourceCli "..\..\target\release\wrfcoin.exe"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\..\target\installer"
@@ -54,6 +57,7 @@ RestartApplications=no
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "launch_api.exe"; Flags: ignoreversion
+Source: "{#SourceCli}"; DestDir: "{app}"; DestName: "wrfcoin.exe"; Flags: ignoreversion
 Source: "chain-888.conf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "wrfcoin-node.ps1"; DestDir: "{app}"; Flags: ignoreversion
 

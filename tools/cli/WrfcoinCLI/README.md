@@ -376,15 +376,18 @@ signer file contains an Ed25519 hex private key and must have permissions no
 wider than 0600. Keep the forecast JSON object, nonce and timestamp identical
 between commit and reveal; the CLI computes the canonical forecast commit ID.
 Set the signing chain/network to the destination node's configured identity.
+`--forecaster` must be the `0x` wallet address of the `--signer-key` key: the CLI
+refuses any other pair before signing, because a forecast commit signed by a
+key that is not the forecaster's is refused under `forecaster_key_binding`.
 
 ```sh
 chmod 600 forecaster.key
 wrfcoin --output json forecast commit --node-url http://localhost:8556 \
-  --forecaster wrf1forecast --station-id station-forecast \
+  --forecaster 0x<address of forecaster.key> --station-id station-forecast \
   --data-file forecast.json --nonce forecast-001 --timestamp 1788979200 \
   --signer-key forecaster.key --chain-id 777 --network-id testnet
 wrfcoin --output json forecast reveal --node-url http://localhost:8556 \
-  --forecaster wrf1forecast --station-id station-forecast \
+  --forecaster 0x<address of forecaster.key> --station-id station-forecast \
   --data-file forecast.json --nonce forecast-001 --timestamp 1788979200 \
   --manifest-file manifest.json --receipt-file receipt.json
 ```

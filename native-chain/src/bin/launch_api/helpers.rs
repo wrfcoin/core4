@@ -441,10 +441,107 @@ pub fn require_forecaster_bound_to_bearer(
             req,
             StatusCode::FORBIDDEN,
             "FORECASTER_BEARER_UNBOUND",
-            "forecast submissions are wallet-scoped: this bearer carries no wallet claim \
-             (bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS to the token, or use an operator bearer)",
+            "forecast submissions are wallet-scoped: this bearer carries no wallet claim. \
+             Sign the forecast with the forecaster's own key (auth_pubkey and auth_signature), \
+             or use an operator bearer. Bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS only on a \
+             Contributor token that serves that one wallet: on a token shared by many \
+             contributors (a backend relaying phones) it makes them all one identity, \
+             capped at 8 stations by default",
         )),
     }
+}
+
+/// Forecast submitter resolution: the bearer binding above, or a key-bound relay.
+///
+/// A relay (for example the web backend, holding one shared Contributor
+/// bearer) may submit a forecast commit or reveal for a forecaster its bearer
+/// is not bound to when the forecaster's **own key** authorized it:
+///
+/// - `auth_pubkey` is present and `forecaster` is exactly
+///   `Address::from_public_key(auth_pubkey)`, and
+/// - `auth_signature` verifies, under that key, over the canonical forecast
+///   commit-authorization message for this `station_id` and `commit_id`.
+///
+/// On the reveal route the route then re-derives `commit_id` from the revealed
+/// data, so a relayed reveal is bound to a commit the forecaster signed.
+///
+/// The bearer binding is tried first and is unchanged: a wallet-bound bearer
+/// for this forecaster, or an operator bearer, resolves exactly as before. If
+/// neither the bearer nor the key binds the forecaster, the bearer's refusal is
+/// returned unchanged. A key that matches the forecaster but whose signature
+/// does not verify is refused with `INVALID_FORECAST_AUTHORIZATION`.
+///
+/// A key-bound submission resolves to the canonical address string
+/// (`Address::to_hex`), so the transaction sender is the address of its
+/// `auth_pubkey`, which is what the forecaster key binding rule asks.
+///
+/// Request budgets: a direct submission is charged to the forecaster, as
+/// before. A relayed one is charged to the submitting bearer together with the
+/// forecaster ([`ForecastSubmitter::quota_key`]), never to the forecaster
+/// alone, so one relay's traffic cannot spend another submitter's budget.
+///
+/// Node-local admission only: mempool and block validation of the resulting
+/// transaction are unchanged.
+pub fn resolve_forecast_submitter(
+    req: &HttpRequest,
+    state: &AppState,
+    forecaster: &str,
+    station_id: &str,
+    commit_id: &str,
+    auth_pubkey: Option<&str>,
+    auth_signature: Option<&str>,
+) -> Result<ForecastSubmitter, HttpResponse> {
+    use wrfcoin_native_chain::blockchain::transaction::commit_authorization_message;
+    use wrfcoin_native_chain::common::types::Address;
+    use wrfcoin_native_chain::crypto::signature::Signature;
+
+    let bearer_refusal = match require_forecaster_bound_to_bearer(req, state, forecaster) {
+        Ok(canonical) => {
+            return Ok(ForecastSubmitter { quota_key: canonical.clone(), forecaster: canonical, relayed: false });
+        },
+        Err(refusal) => refusal,
+    };
+    let Some(public_key) = auth_pubkey.and_then(|hex| PublicKey::from_hex(hex.trim()).ok()) else {
+        return Err(bearer_refusal);
+    };
+    let key_address = Address::from_public_key(&public_key);
+    if forecaster.trim().parse::<Address>().ok() != Some(key_address) {
+        return Err(bearer_refusal);
+    }
+    let message = commit_authorization_message(station_id, commit_id, "forecast");
+    let signed = auth_signature
+        .and_then(|hex| Signature::from_hex(hex.trim()).ok())
+        .is_some_and(|signature| public_key.verify(&message, &signature));
+    if !signed {
+        return Err(envelope_error(
+            req,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_FORECAST_AUTHORIZATION",
+            "a relayed forecast needs auth_signature by the forecaster's key over this station_id and commit_hash",
+        ));
+    }
+    let forecaster = key_address.to_hex();
+    // The bearer is identified by a digest of its token, so the limiter key
+    // never holds the secret itself.
+    let bearer = bearer_token_from_request(req).unwrap_or_default();
+    let bearer_digest = wrfcoin_native_chain::crypto::hash::hash_bytes(bearer.as_bytes()).to_hex();
+    Ok(ForecastSubmitter {
+        quota_key: format!("relay:{}:{forecaster}", &bearer_digest[..32.min(bearer_digest.len())]),
+        forecaster,
+        relayed: true,
+    })
+}
+
+/// Who a forecast submission is for, and whose request budget it spends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForecastSubmitter {
+    /// Canonical forecaster: the transaction sender.
+    pub forecaster: String,
+    /// Key for the forecast quota and the commit rate limit: the forecaster on
+    /// the direct path; the submitting bearer plus the forecaster on a relay.
+    pub quota_key: String,
+    /// True when accepted through the key-bound relay path.
+    pub relayed: bool,
 }
 
 /// Returns `true` if the request comes from localhost OR carries a valid Operator bearer token.
@@ -1105,6 +1202,8 @@ pub fn build_transparent_opt_out_payload(
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
+        session_key_auth: None,
     }
 }
 
@@ -1123,6 +1222,21 @@ pub async fn enqueue_protocol_transaction_with_nonce(
     sender_label: &str,
     payload: serde_json::Value,
     nonce: u64,
+) -> Result<TxAcceptedResponse, String> {
+    enqueue_protocol_transaction_with_nonce_and_fee(state, tx_type, sender_label, payload, nonce, 0)
+        .await
+}
+
+/// [`enqueue_protocol_transaction_with_nonce`] with a declared `tx.fee`
+/// (the burned transfer fee, `transfer_fee_burn`). `fee = 0` builds exactly
+/// the envelope the fee-less helper builds.
+pub async fn enqueue_protocol_transaction_with_nonce_and_fee(
+    state: web::Data<AppState>,
+    tx_type: wrfcoin_native_chain::blockchain::transaction::TransactionType,
+    sender_label: &str,
+    payload: serde_json::Value,
+    nonce: u64,
+    fee: u64,
 ) -> Result<TxAcceptedResponse, String> {
     use wrfcoin_native_chain::blockchain::transaction::{
         Transaction, TransactionInput, TransactionOutput,
@@ -1153,6 +1267,7 @@ pub async fn enqueue_protocol_transaction_with_nonce(
     let mut tx = Transaction::new(inputs, outputs);
     tx.tx_type = tx_type;
     tx.nonce = nonce;
+    tx.fee = fee;
     tx.data = Some(payload.to_string());
     if let Ok(addr) = sender_label.parse::<wrfcoin_native_chain::common::types::Address>() {
         tx.sender_address = addr;
@@ -1222,6 +1337,43 @@ impl GossipPropagation {
             error: None,
         }
     }
+}
+
+/// The answer to a node-service re-post whose payload is already pending: success, and the pending
+/// copy goes out again, so a gossip that was dropped the first time recovers. The transport skips a
+/// repeat of the same bytes inside its 60 s duplicate window, so this is for re-posts after that.
+pub(crate) fn node_tx_already_pending(
+    state: &web::Data<AppState>,
+    submitted: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+    pending: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+) -> HttpResponse {
+    #[cfg(feature = "p2p")]
+    if let Some(ref p2p) = state.p2p {
+        queue_transaction_gossip(
+            &p2p.command_tx,
+            bincode::serialize(pending).map_err(|error| error.to_string()),
+            &state.tx_gossip_backpressure_streak,
+        );
+    }
+    #[cfg(not(feature = "p2p"))]
+    let _ = state;
+    HttpResponse::Accepted().json(serde_json::json!({
+        "tx_id": submitted.id.map(|id| id.to_hex()),
+        "pending_tx_id": pending.id.map(|id| id.to_hex()),
+        "admitted": true,
+        "included": false,
+        "duplicate": true,
+    }))
+}
+
+/// The pending copy with exactly this transaction's bytes, if any.
+pub(crate) async fn exact_pending_node_tx(
+    state: &web::Data<AppState>,
+    tx: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+) -> Option<std::sync::Arc<wrfcoin_native_chain::blockchain::transaction::Transaction>> {
+    let id = tx.id?;
+    let pending = state.mempool.read().await.get_transaction(&id)?;
+    (pending.calculate_hash() == tx.calculate_hash()).then_some(pending)
 }
 
 #[cfg(feature = "p2p")]

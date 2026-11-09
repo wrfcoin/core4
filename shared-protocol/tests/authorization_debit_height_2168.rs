@@ -28,6 +28,8 @@ fn transfer_apply_uses_the_inclusion_height_for_the_state_backed_debit_view() {
         transparent_opt_out: true, opt_out_audit_tag: None,
         auth_pubkey: None, auth_signature: None, authority: None, authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
+        session_key_auth: None,
     };
     let mut tx = Transaction::new(vec![], vec![]);
     tx.tx_type = TransactionType::Transfer;
@@ -72,6 +74,16 @@ fn pre_block_empty_view_agrees_with_state_view_for_every_storable_rule() {
         AuthorizationRule::SignerIsSender,
         AuthorizationRule::SmartAccount { program: [3; 32] },
         AuthorizationRule::Delegated { program: [4; 32], valid_until: None },
+        // Storable only through `SecurityKeyAction` (never a generic
+        // declaration); its EmptyView safety (State view strictly stronger)
+        // is pinned in `security_key_spend.rs`.
+        AuthorizationRule::SignerPlusSecurityKey {
+            policy: wrfcoin_shared_protocol::accounts::security_key::SecurityKeyPolicy {
+                keys: vec![],
+                escape_delay_blocks: 0,
+                pending_escape: None,
+            },
+        },
     ];
     for rule in rules {
         // Deliberately exhaustive: adding an enum variant fails compilation
@@ -80,6 +92,7 @@ fn pre_block_empty_view_agrees_with_state_view_for_every_storable_rule() {
             AuthorizationRule::SignerIsSender => {},
             AuthorizationRule::SmartAccount { .. } => {},
             AuthorizationRule::Delegated { .. } => {},
+            AuthorizationRule::SignerPlusSecurityKey { .. } => {},
         }
         let declaration = AccountAuthorization::declaring(rule.clone());
         let declaration_check = wrfcoin_shared_protocol::accounts::authorization::check_declaration(

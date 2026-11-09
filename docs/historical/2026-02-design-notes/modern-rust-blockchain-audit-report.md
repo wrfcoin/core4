@@ -1,10 +1,12 @@
+> **Superseded, design-only (February 2026).** An early brainstorm/analysis kept for history. It is not a description of the current testnet or a product roadmap; features it discusses (marketplaces, NFTs, bridges, DeFi and others) are not offered today. For what works now, see [STATUS](https://github.com/wrfcoin/docs/blob/main/STATUS.md).
+
 # WRFCoin vs. Modern Rust Blockchain: Gap Analysis Report
 
 > Generated 2026-02-14 by a 9-agent swarm (5 brainstorming + 4 auditing)
 > Updated 2026-02-14 (Session 2) by a 5-agent implementation swarm (crypto, consensus, state, rpc, identity)
 > Updated 2026-02-14 (Session 3) - 21 additional modules implemented bringing coverage to ~100%
 > Updated 2026-02-14 (Session 4) - Final 6 PARTIAL items upgraded to EXISTS, achieving true 100% coverage
-> Brainstorm document: `artifacts/modern-rust-blockchain-brainstorm.md`
+> Brainstorm document: `docs/historical/2026-02-design-notes/modern-rust-blockchain-brainstorm.md`
 
 ---
 

@@ -140,6 +140,68 @@ pub(crate) fn quantize_score_mu(v: f64) -> u64 {
     (v.max(0.0) * SCORE_PRECISION as f64) as u64
 }
 
+/// NON-CONSENSUS node policy: the consensus scorers read these numeric factors
+/// straight from a transaction's JSON into fixed-point arithmetic. This returns the KEY NAME of the first
+/// such factor that is present as a finite number outside `[0,1]` — the range
+/// every real client sends (real contribution reveals omit these keys; real
+/// forecast reveals carry accuracy in `[0,1]`; EnvironmentalOffset and
+/// NftExecution have no live submitter). It is used ONLY to keep this node's
+/// producer from admitting or mining such a transaction — NOT in block
+/// validation: a block received from elsewhere that carries one is still valid
+/// and is scored with the saturating arithmetic, so nodes with and without this
+/// check never disagree on validity. `None` means nothing to refuse.
+///
+/// `region` is excluded (a saturating `as u32` cast + map lookup, cannot
+/// overflow). Non-numeric values are ignored: the scorers read them with the
+/// same `as_f64` and decline the whole item to a zero score, which cannot
+/// overflow.
+pub fn scoring_value_out_of_range(
+    tx: &crate::blockchain::transaction::Transaction,
+) -> Option<&'static str> {
+    use crate::blockchain::transaction::TransactionType as T;
+    fn first_bad(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&'static str]) -> Option<&'static str> {
+        for k in keys {
+            if let Some(n) = obj.get(*k).and_then(serde_json::Value::as_f64) {
+                // determinism-ok: node policy only (mempool admission, producer selection, relay); block validity never reads this range check
+                if !n.is_finite() || !(0.0..=1.0).contains(&n) {
+                    return Some(k);
+                }
+            }
+        }
+        None
+    }
+    match tx.tx_type {
+        T::ContributionReveal => {
+            let p = tx.parse_reveal_payload()?;
+            first_bad(
+                p.data.as_object()?,
+                &["quality", "volume", "uniqueness", "assignment_utility", "redundancy", "data_desert", "proximity_need"],
+            )
+        },
+        T::ForecastReveal => {
+            let p = tx.parse_reveal_payload()?;
+            first_bad(p.data.as_object()?, &["accuracy", "complexity", "usefulness"])
+        },
+        T::EnvironmentalOffset => {
+            let v: serde_json::Value = serde_json::from_str(tx.data.as_deref()?).ok()?;
+            first_bad(v.as_object()?, &["amount", "verification", "impact"])
+        },
+        T::NftExecution => {
+            let nft = crate::nft::computational_nft::ComputationalNFT::from_json(tx.data.as_deref()?).ok()?;
+            for (name, val) in [("accuracy", nft.accuracy), ("creator_reputation", nft.creator_reputation)] {
+                if let Some(n) = val {
+                    // determinism-ok: node policy only (mempool admission, producer selection, relay); block validity never reads this range check
+                    if !n.is_finite() || !(0.0..=1.0).contains(&n) {
+                        return Some(name);
+                    }
+                }
+            }
+            None
+        },
+        _ => None,
+    }
+}
+
 /// Baseline forecast skill used in the reward path (f64 for emission API compatibility).
 const BASELINE_FORECAST_SKILL: f64 = 0.1;
 
@@ -2188,6 +2250,7 @@ struct BlockTxValidationAccumulators {
     /// Number of fee-less (zero-fee weather) transactions seen so far.
     feeless_tx_count: usize,
     node_bond_lifecycle_count: usize,
+    session_key_action_count: usize,
     node_receipt_batch_count: usize,
     node_fraud_report_count: usize,
     /// Per-worker fee-less transaction counts for the per-block rate limit.
@@ -2611,6 +2674,59 @@ fn producer_block_timestamp(
 /// the moment the window is tuned.
 pub const DEFAULT_SUBMISSION_TIME_WINDOW_SECS: u64 = 3600;
 
+/// Blocks before a node-share epoch close in which pending node-service
+/// transactions take precedence over contribution reveals (separation guard).
+pub(crate) const NODE_SERVICE_GUARD_EPOCH_TAIL_BLOCKS: u64 = 8;
+/// Consecutive node-service deferrals after which they take precedence.
+pub(crate) const NODE_SERVICE_GUARD_MAX_DEFERRALS: u32 = 4;
+
+/// Test-only: turn the separation guard off for this process, so a fixture can
+/// mine the mixed blocks a producer without the guard still emits. Compiled only
+/// with the `node-service-guard-test-switch` feature, which only native-chain's
+/// `[dev-dependencies]` enables, so no shipped binary carries it.
+#[cfg(any(test, feature = "node-service-guard-test-switch"))]
+static NODE_SERVICE_GUARD_DISABLED_FOR_TESTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[doc(hidden)]
+#[cfg(any(test, feature = "node-service-guard-test-switch"))]
+pub fn disable_node_service_guard_for_tests() {
+    NODE_SERVICE_GUARD_DISABLED_FOR_TESTS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn node_service_guard_disabled_for_tests() -> bool {
+    #[cfg(any(test, feature = "node-service-guard-test-switch"))]
+    {
+        NODE_SERVICE_GUARD_DISABLED_FOR_TESTS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(any(test, feature = "node-service-guard-test-switch")))]
+    {
+        false
+    }
+}
+
+/// The producer's recipient decision for one `ContributionReveal`
+/// ([`ProofOfPublishing::reveal_recipient`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevealRecipient {
+    /// Pays and moves the streak of this address.
+    Payee(Address),
+    /// Synthetic or unclassified provenance (#2460): a zero-amount decision
+    /// recorded at the legacy-resolved address.
+    Ineligible { legacy: Address },
+    /// The station is not effectively active (#3347).
+    InactiveRefused,
+    /// A Real station whose registered owner does not parse (#2743).
+    OwnerUnresolvable(String),
+}
+
+/// Outcome of the producer-only node-service / reveal separation guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeServiceRevealGuard {
+    NotMixed,
+    Mixed { deferred_reveals: usize, deferred_node_service: usize },
+}
+
 /// Implements the Proof-of-Publishing (PoP) consensus algorithm
 /// This extends the PoUA (Proof of Useful Analysis) with additional
 /// publishing-specific validation and token distribution logic
@@ -2711,6 +2827,27 @@ pub struct ProofOfPublishing {
     /// Maximum wall-clock milliseconds to spend on MLSAG ring-signature
     /// verification per block. Signatures beyond the budget are deferred.
     mlsag_verify_budget_ms: u64,
+
+    /// Consecutive blocks this producer built with node-service transactions
+    /// held back by the node-service / contribution-reveal separation guard.
+    node_service_guard_deferrals: u32,
+}
+
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+static HELD_AFTER_FIRST_PRUNE: std::sync::Mutex<Vec<Hash>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests only: make `create_next_block` remove these transactions from its
+/// candidate right after the first trial prune, as a selection step would
+/// (they stay in the mempool). Exercises the re-prune liveness guard.
+/// Compiled only with `consensus-test-hooks`, which no shipped crate enables.
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+pub fn hold_after_first_prune_for_tests(ids: Vec<Hash>) {
+    *HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+}
+
+#[cfg(any(test, feature = "consensus-test-hooks"))]
+fn held_after_first_prune_for_tests() -> Vec<Hash> {
+    HELD_AFTER_FIRST_PRUNE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 impl ProofOfPublishing {
@@ -2780,6 +2917,104 @@ impl ProofOfPublishing {
         quantize_score_mu(v)
     }
 
+    /// The separation guard's `reveal_can_wait` input: whether a reveal may move
+    /// to the next block. Before quality enforcement any reveal may; after it, a
+    /// Low-band reveal keeps its block (see `is_contribution_quality_acceptable`).
+    pub(crate) fn guard_reveal_can_wait(&self, next_height: u64, tx: &Transaction) -> bool {
+        next_height < self.data_quality_policy.quality_enforcement_activation_height
+            || self.is_contribution_quality_acceptable(tx)
+    }
+
+    /// Producer-only block-template guard (interim, non-forking).
+    ///
+    /// Keeps node-service transactions (`NodeBondLifecycle`, `NodeServiceBatch`,
+    /// `NodeFraudReport`) and `ContributionReveal`s in different blocks, so the
+    /// low-quality streak transitions a reveal produces are never derived in the
+    /// same block as a node-service batch. Selection policy only: no validation,
+    /// apply or extraction rule changes, and a block that mixes the two stays
+    /// valid exactly as before.
+    ///
+    /// Which side waits: node-service transactions, by default (their deadline
+    /// is the end of a node-share epoch; reveals expire within a few blocks).
+    /// They take precedence only near the end of an epoch, or after
+    /// `NODE_SERVICE_GUARD_MAX_DEFERRALS` consecutive deferrals, and then only
+    /// if every reveal in the candidate can wait one block (`reveal_can_wait`,
+    /// and its commit's reveal deadline is not reached). Removed transactions
+    /// are not marked skipped, so they remain in the mempool.
+    pub(crate) fn separate_node_service_from_reveals(
+        state: &State,
+        next_height: u64,
+        transactions: &mut Vec<Transaction>,
+        consecutive_deferrals: &mut u32,
+        reveal_can_wait: impl Fn(&Transaction) -> bool,
+    ) -> NodeServiceRevealGuard {
+        let is_node_service = |tx: &Transaction| {
+            matches!(
+                tx.tx_type,
+                TransactionType::NodeBondLifecycle
+                    | TransactionType::NodeServiceBatch
+                    | TransactionType::NodeFraudReport
+            )
+        };
+        let has_node_service = transactions.iter().any(is_node_service);
+        let has_reveal = transactions
+            .iter()
+            .any(|tx| tx.tx_type == TransactionType::ContributionReveal);
+        if !(has_node_service && has_reveal) {
+            *consecutive_deferrals = 0;
+            return NodeServiceRevealGuard::NotMixed;
+        }
+
+        let near_epoch_close = state
+            .node_bond_registry
+            .as_ref()
+            .and_then(|bonds| {
+                let activation = bonds.activation_height;
+                let epoch = crate::consensus::node_bond_registry::epoch_at(activation, next_height)?;
+                crate::consensus::node_bond_registry::epoch_close(activation, epoch)
+            })
+            .is_some_and(|close| close.saturating_sub(next_height) < NODE_SERVICE_GUARD_EPOCH_TAIL_BLOCKS);
+        let same_block_commits: FxHashSet<String> = transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionCommit)
+            .filter_map(|tx| tx.parse_commit_payload().map(|p| p.commit_id))
+            .collect();
+        let reveals_can_wait = transactions
+            .iter()
+            .filter(|tx| tx.tx_type == TransactionType::ContributionReveal)
+            .all(|tx| {
+                let Some(payload) = tx.parse_reveal_payload() else {
+                    return false;
+                };
+                let window_ok = same_block_commits.contains(&payload.commit_id)
+                    || state
+                        .pending_commits
+                        .get(&payload.commit_id)
+                        .is_some_and(|c| next_height.saturating_add(1) <= c.reveal_expires_at);
+                window_ok && reveal_can_wait(tx)
+            });
+        let node_service_first = (near_epoch_close
+            || *consecutive_deferrals >= NODE_SERVICE_GUARD_MAX_DEFERRALS)
+            && reveals_can_wait;
+
+        let before = transactions.len();
+        if node_service_first {
+            transactions.retain(|tx| tx.tx_type != TransactionType::ContributionReveal);
+            *consecutive_deferrals = 0;
+            NodeServiceRevealGuard::Mixed {
+                deferred_reveals: before - transactions.len(),
+                deferred_node_service: 0,
+            }
+        } else {
+            transactions.retain(|tx| !is_node_service(tx));
+            *consecutive_deferrals = consecutive_deferrals.saturating_add(1);
+            NodeServiceRevealGuard::Mixed {
+                deferred_reveals: 0,
+                deferred_node_service: before - transactions.len(),
+            }
+        }
+    }
+
     /// Creates a new ProofOfPublishing instance
     pub fn new(
         initial_difficulty: u32,
@@ -2816,6 +3051,7 @@ impl ProofOfPublishing {
                 crate::consensus::forecast_verification::BaselineForecastVerifier,
             ),
             mlsag_verify_budget_ms: wrfcoin_privacy::MLSAG_VERIFY_BUDGET_MS_DEFAULT,
+            node_service_guard_deferrals: 0,
         }
     }
 
@@ -3501,28 +3737,32 @@ impl ProofOfPublishing {
             .filter_map(|tx| tx.id.as_ref().copied())
             .collect::<FxHashSet<_>>();
 
+        // Priority classes above already took their slots, so this cannot touch them.
         let regular_transactions = if remaining_priority_slots > 0 {
-            mempool_guard
-                .iter_by_fee_order()
-                .filter(|tx| {
-                    !matches!(
-                        tx.tx_type,
-                        TransactionType::ContributionCommit
-                            | TransactionType::ForecastCommit
-                            | TransactionType::ContributionReveal
-                            | TransactionType::ForecastReveal
-                            | TransactionType::OracleAttestation
-                    )
-                })
-                .filter(|tx| {
-                    tx.id
-                        .as_ref()
-                        .map(|id| !priority_ids.contains(id))
-                        .unwrap_or(true)
-                })
-                .take(remaining_priority_slots)
-                .map(|tx| (**tx).clone())
-                .collect::<Vec<_>>()
+            crate::mempool::node_admission::node_kinds_first(
+                mempool_guard
+                    .iter_by_fee_order()
+                    .filter(|tx| {
+                        !matches!(
+                            tx.tx_type,
+                            TransactionType::ContributionCommit
+                                | TransactionType::ForecastCommit
+                                | TransactionType::ContributionReveal
+                                | TransactionType::ForecastReveal
+                                | TransactionType::OracleAttestation
+                        )
+                    })
+                    .filter(|tx| {
+                        tx.id
+                            .as_ref()
+                            .map(|id| !priority_ids.contains(id))
+                            .unwrap_or(true)
+                    }),
+                remaining_priority_slots,
+            )
+            .into_iter()
+            .map(|tx| (**tx).clone())
+            .collect::<Vec<_>>()
         } else {
             vec![]
         };
@@ -3566,6 +3806,7 @@ impl ProofOfPublishing {
             regular_transactions,
             feature_active(ConsensusFeature::VerifyUnitPricing, next_height)
                 .then_some(&VerifyPricing::CALIBRATED),
+            next_height,
         );
 
         // Build the recent-timestamp window the SAME way the sync verifier sees
@@ -3606,6 +3847,17 @@ impl ProofOfPublishing {
             *chain.tip.as_bytes(),
             &mut transactions,
         ));
+        let after_first_prune = transactions.len();
+        // Tests only (`consensus-test-hooks` is enabled only from this crate's
+        // dev-dependencies): stand in for a selection step that removes a
+        // transaction after the first prune, kept in the mempool.
+        #[cfg(any(test, feature = "consensus-test-hooks"))]
+        {
+            let held = held_after_first_prune_for_tests();
+            if !held.is_empty() {
+                transactions.retain(|tx| tx.id.is_none_or(|id| !held.contains(&id)));
+            }
+        }
 
         // ── Producer self-screen (#1730) ─────────────────────────────────────
         // Drop any assembled transaction a syncing peer would reject, using the
@@ -3680,6 +3932,32 @@ impl ProofOfPublishing {
             }
         }
 
+        // NON-CONSENSUS producer selection: never INCLUDE a
+        // transaction whose scoring factor is out of range. Admission already
+        // refuses these, and the mempool is in-memory (a binary
+        // upgrade restarts the node and clears it), so on this binary the mempool
+        // cannot already hold one — this `retain` is belt-and-suspenders against a
+        // future path that enqueues without the admission check, keeping the
+        // producer-selection guarantee independent of admission. Not part of `classify_block_transaction` /
+        // `verify_block`: a peer's block carrying one stays valid and is scored
+        // saturated.
+        transactions.retain(|tx| {
+            match scoring_value_out_of_range(tx) {
+                None => true,
+                Some(field) => {
+                    if let Some(id) = tx.id {
+                        skipped_mempool_tx_ids.push(id);
+                    }
+                    warn!(
+                        "Excluding {:?} from the candidate: scoring factor '{}' out of [0,1] \
+                         (scoring range check, producer policy)",
+                        tx.tx_type, field
+                    );
+                    false
+                },
+            }
+        });
+
         // #2777: a real contribution reveal closes its one-time reward decision
         // when mined.  Keep that reveal — and any partial attestation group for
         // it — in the mempool until the post-screen candidate would leave chain
@@ -3716,6 +3994,54 @@ impl ProofOfPublishing {
             info!(
                 "#3565: deferred {deferred_device_reveal_count} extra same-station reveal(s) to a later block at height {next_height}"
             );
+        }
+
+        // `station_registrar_key` (selection only): at most one registrar
+        // registration per block, and only one that would apply. Extras and
+        // ceiling-refused ones stay in the mempool for a later block; ones
+        // that can never apply are evicted. Inactive this is a no-op.
+        skipped_mempool_tx_ids.extend(Self::hold_back_registrar_registrations(
+            &chain.state,
+            next_height,
+            &mut transactions,
+        ));
+        // Producer-only separation guard: never place a node-service transaction
+        // and a contribution reveal in the same block. Selection policy only;
+        // the held-back side stays in the mempool for the next block.
+        let mut guard_deferrals = self.node_service_guard_deferrals;
+        let guard = if node_service_guard_disabled_for_tests() {
+            NodeServiceRevealGuard::NotMixed
+        } else {
+            Self::separate_node_service_from_reveals(
+            &chain.state,
+            next_height,
+            &mut transactions,
+            &mut guard_deferrals,
+            |tx| self.guard_reveal_can_wait(next_height, tx),
+            )
+        };
+        self.node_service_guard_deferrals = guard_deferrals;
+        if guard != NodeServiceRevealGuard::NotMixed {
+            debug!("node-service/reveal separation guard at height {next_height}: {guard:?}");
+        }
+
+        // General guard: anything a selection removal since the first prune
+        // stranded (self-screen, the #2777 fence, #3565 deferral, registrar
+        // selection, the node-service/reveal separation guard: a reveal whose
+        // commit was held back, a transaction that
+        // leaned on a removed one) is dropped and evicted by the same trial
+        // apply, rather than making this producer refuse its own block. It
+        // re-runs only when something was removed, so an ordinary block costs
+        // nothing extra, and it only ever removes transactions the block's own
+        // apply would have failed on.
+        if transactions.len() != after_first_prune {
+            skipped_mempool_tx_ids.extend(self.prune_invalid_launch_transactions(
+                &chain.state,
+                next_height,
+                block_creation_time.timestamp(),
+                *chain.tip.as_bytes(),
+                &mut transactions,
+            ));
         }
 
         // Calculate the publishing score for this block after stale/invalid entries have been
@@ -3947,9 +4273,10 @@ impl ProofOfPublishing {
         // Feature-scheduled: below the activation this is not evaluated at all
         // and block contents are byte-identical to a binary without it.
         if feature_active(ConsensusFeature::VerifyUnitPricing, block.height) {
-            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget(
+            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget_at_height(
                 block.transactions.iter(),
                 &crate::consensus::verify_cost::VerifyPricing::CALIBRATED,
+                block.height,
             ) {
                 return Err(Self::refuse(
                     "SP_CONS_VERIFY_BUDGET",
@@ -4152,6 +4479,7 @@ impl ProofOfPublishing {
         oracle_attestations: Vec<Transaction>,
         regular_transactions: Vec<Transaction>,
         verify_pricing: Option<&VerifyPricing>,
+        block_height: u64,
     ) -> Vec<Transaction> {
         // #2700: bound what this node PACKS by `MAX_BLOCK_SIZE`.
         //
@@ -4194,7 +4522,7 @@ impl ProofOfPublishing {
             }
             if let Some(pricing) = verify_pricing {
                 let candidate_units = packed_verify_units
-                    .saturating_add(pricing.units(&tx.verify_work()));
+                    .saturating_add(pricing.units(&tx.verify_work_at_height(block_height)));
                 if candidate_units.0 > pricing.block_verify_budget {
                     // Unlike the byte ceiling, skip an expensive transaction and
                     // keep looking: a later cheap transaction may still fit. The
@@ -4281,7 +4609,12 @@ impl ProofOfPublishing {
                         let quality_eval = self.evaluate_data_quality(quality_score.as_ref(), None);
                         let raw = self.score_data_collection(tx, height);
                         let mult = Self::quantize_f64(quality_eval.scoring_multiplier);
-                        raw * mult / SCORE_PRECISION
+                        // Saturating: `raw` is a (now-saturating) score output,
+                        // so this product stays bounded even if a future
+                        // multiplier exceeds 1.0. Identical to the checked result
+                        // for every historical value (scoring_multiplier is
+                        // governance-clamped to [0,1], so the product already fit).
+                        raw.saturating_mul(mult) / SCORE_PRECISION
                     } else {
                         0
                     }
@@ -4324,7 +4657,7 @@ impl ProofOfPublishing {
                                         {
                                             let skill_mu =
                                                 Self::quantize_f64(receipt.metrics.skill_score);
-                                            base * skill_mu / SCORE_PRECISION
+                                            base.saturating_mul(skill_mu) / SCORE_PRECISION
                                         },
                                         Some(receipt) => {
                                             debug!(
@@ -4346,10 +4679,11 @@ impl ProofOfPublishing {
                                             if outcome.verified {
                                                 let skill_mu =
                                                     Self::quantize_f64(outcome.skill_score);
-                                                base * skill_mu / SCORE_PRECISION
+                                                base.saturating_mul(skill_mu) / SCORE_PRECISION
                                             } else {
-                                                base * BASELINE_FORECAST_SCORE_MULTIPLIER_MU
-                                                    / SCORE_PRECISION
+                                                base.saturating_mul(
+                                                    BASELINE_FORECAST_SCORE_MULTIPLIER_MU,
+                                                ) / SCORE_PRECISION
                                             }
                                         },
                                         None => {
@@ -4360,10 +4694,11 @@ impl ProofOfPublishing {
                                             if outcome.verified {
                                                 let skill_mu =
                                                     Self::quantize_f64(outcome.skill_score);
-                                                base * skill_mu / SCORE_PRECISION
+                                                base.saturating_mul(skill_mu) / SCORE_PRECISION
                                             } else {
-                                                base * BASELINE_FORECAST_SCORE_MULTIPLIER_MU
-                                                    / SCORE_PRECISION
+                                                base.saturating_mul(
+                                                    BASELINE_FORECAST_SCORE_MULTIPLIER_MU,
+                                                ) / SCORE_PRECISION
                                             }
                                         },
                                     }
@@ -5030,61 +5365,39 @@ impl ProofOfPublishing {
                 .map(|record| record.provenance_class)
                 .unwrap_or(ContributionProvenanceClass::Unclassified);
 
-            // #2460 fail-closed provenance gate. Synthetic and unclassified
-            // traffic remains durably visible as a zero-amount decision but
-            // cannot enter reward, reputation, quality-streak, or slashing
-            // accounting intended for real contributors. Runs BEFORE the
-            // #2743 owner resolution so the ineligible zero record keeps its
-            // legacy-resolved address at every height, and so the
-            // owner-unresolvable counter below can only ever mean "a REAL
-            // station was refused payment".
-            if !provenance_class.is_reward_eligible() {
-                let legacy = tx
-                    .outputs
-                    .first()
-                    .map(|o| o.address.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                pending_rewards.push(ContributionRewardRecord {
-                    address: self.resolve_recipient_address(&legacy, &tx.sender_address),
-                    amount: Balance::new(0),
-                    reason: format!("contribution:{commit_id}"),
-                    station_id: reveal_payload.station_id.clone(),
-                    provenance_class,
-                });
-                continue;
-            }
-
-            // #3347: from `StationActiveRewardGate`'s activation an
-            // inactive (deactivated, or reported-stolen) station earns
-            // nothing. Zero-amount decision, same shape as the #2743 refusal
-            // below. Inactive at every height on an unscheduled chain.
-            if Self::station_reward_refused_inactive(
+            // The producer's recipient rule, shared with the transition
+            // extractor's streak replay (`streak_recipient_for_reveal`). The
+            // arms below keep each zero-amount decision's shape: #2460
+            // ineligible provenance (legacy-resolved address), #3347 inactive
+            // station, #2743 unresolvable owner (counted).
+            let recipient_address = match Self::reveal_recipient(
                 &reward_state,
                 block.height,
-                &reveal_payload.station_id,
-            ) {
-                pending_rewards.push(ContributionRewardRecord {
-                    address: Address([0; 20]),
-                    amount: Balance::new(0),
-                    reason: format!("contribution:{commit_id}"),
-                    station_id: reveal_payload.station_id.clone(),
-                    provenance_class,
-                });
-                continue;
-            }
-
-            // #2743: the payee. From the activation height this is the
-            // REGISTERED owner; before it, the legacy first-output/sender
-            // resolution. A Real station whose owner cannot be resolved is
-            // fail-closed: zero-amount decision, loud metadata, no guessing.
-            let recipient_address = match self.reward_recipient_for_station(
-                &reward_state,
-                block.height,
-                &reveal_payload.station_id,
                 tx,
+                &reveal_payload,
             ) {
-                Ok(address) => address,
-                Err(_refusal) => {
+                RevealRecipient::Payee(address) => address,
+                RevealRecipient::Ineligible { legacy } => {
+                    pending_rewards.push(ContributionRewardRecord {
+                        address: legacy,
+                        amount: Balance::new(0),
+                        reason: format!("contribution:{commit_id}"),
+                        station_id: reveal_payload.station_id.clone(),
+                        provenance_class,
+                    });
+                    continue;
+                },
+                RevealRecipient::InactiveRefused => {
+                    pending_rewards.push(ContributionRewardRecord {
+                        address: Address([0; 20]),
+                        amount: Balance::new(0),
+                        reason: format!("contribution:{commit_id}"),
+                        station_id: reveal_payload.station_id.clone(),
+                        provenance_class,
+                    });
+                    continue;
+                },
+                RevealRecipient::OwnerUnresolvable(_refusal) => {
                     owner_unresolvable_count = owner_unresolvable_count.saturating_add(1);
                     pending_rewards.push(ContributionRewardRecord {
                         address: Address([0; 20]),
@@ -6230,6 +6543,20 @@ impl ProofOfPublishing {
                     .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
                 Ok(Some(StateTransition::ApplyNodeBondLifecycle { payload, block_height }))
             },
+            // Session-key register/revoke. The SAME parse the P2P/WAL extractor
+            // uses, so producer == applier == WAL replay. The apply arm is
+            // gated on `ConsensusFeature::SessionKeys` and fails closed, so the
+            // producer prunes an inapplicable action and a peer rejects a block
+            // carrying one.
+            TransactionType::SessionKeyAction => {
+                let action = crate::accounts::session_keys::SessionKeyActionPayload::parse(tx)
+                    .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
+                Ok(Some(StateTransition::ApplySessionKeyAction {
+                    action,
+                    block_height,
+                    security_key_auth: tx.security_key_spend_proof(),
+                }))
+            },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
                     ConsensusInvariantError::MissingPopPayload {
@@ -6436,15 +6763,19 @@ impl ProofOfPublishing {
                 StateTransition::RecordGenesisEmissionConfig { config }));
         }
 
+        // `station_registrar_key`: at most one registrar registration per
+        // block, by transaction order; the applier's extractor uses the same
+        // slot, so producer == applier == WAL replay. Inert while inactive.
+        let mut registrar_slot = crate::consensus::station_registrar::RegistrarBlockSlot::new();
         for (tx_index, tx) in block.transactions.iter().enumerate() {
-            if let Some(transition) =
+            if let Some(transition) = registrar_slot.admit(
                 Self::launch_transition_for_transaction(
                     tx,
                     block.height,
                     block.timestamp.timestamp(),
                     tx_index,
-                )?
-            {
+                )?,
+            ) {
                 if let StateTransition::ApplyReveal { payload, .. } = &transition {
                     revealed_commit_ids.insert(payload.commit_id.clone());
                 }
@@ -6476,6 +6807,34 @@ impl ProofOfPublishing {
             })?;
 
         Ok(revealed_commit_ids)
+    }
+
+    /// The producer's state at the start of `process_contribution_rewards`,
+    /// rebuilt from the pre-block `state`: begin the node-service block, apply
+    /// `governance_transitions` (the block's), apply the launch batch, then the
+    /// producer settlement, in the order `create_next_block` applies them.
+    /// Returns that state and the commits revealed in the block. Used by the
+    /// transition extractor's streak replay under
+    /// `ConsensusFeature::StreakReplayRecipientParity`.
+    pub fn pre_reward_state_for_replay(
+        state: &State,
+        block: &Block,
+        governance_transitions: &[StateTransition],
+    ) -> Result<(State, FxHashSet<String>)> {
+        let mut replay = state.clone();
+        replay.begin_node_service_block(block.height, *block.prev_block_hash.as_bytes())?;
+        replay
+            .apply_transitions_batch(governance_transitions.iter().cloned())
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let revealed = Self::apply_launch_state_transitions_on_state(&mut replay, block)
+            .map_err(anyhow::Error::from)?;
+        if let Some(record) = replay.derive_producer_settlement(block.height, &block.producer_pubkey) {
+            replay.apply_transition_without_root_recompute(StateTransition::ApplyProducerSettlement {
+                producer_pubkey: block.producer_pubkey,
+                record,
+            })?;
+        }
+        Ok((replay, revealed))
     }
 
     /// Delegates to `apply_launch_state_transitions_on_state` via `chain.state`.
@@ -6591,6 +6950,10 @@ impl ProofOfPublishing {
     }
 
     fn resolve_recipient_address(&self, recipient: &str, sender_address: &Address) -> Address {
+        Self::resolve_legacy_recipient_address(recipient, sender_address)
+    }
+
+    fn resolve_legacy_recipient_address(recipient: &str, sender_address: &Address) -> Address {
         if let Ok(addr) = recipient.parse::<Address>() {
             return addr;
         }
@@ -6602,6 +6965,58 @@ impl ProofOfPublishing {
         let mut bytes = [0u8; 20];
         bytes.copy_from_slice(&hash_bytes[..20]);
         Address(bytes)
+    }
+
+    /// Who a `ContributionReveal`'s decision applies to, in the producer's
+    /// order: #2460 provenance eligibility (read from `state.pending_reveals`),
+    /// then the #3347 inactive-station refusal, then the #2743 payee (the
+    /// registered owner from `STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`,
+    /// `0x`/`wrf` prefixes accepted; the legacy first-output/sender rule
+    /// below it). `state` is the producer's pre-reward state for the block.
+    pub fn reveal_recipient(
+        state: &State,
+        block_height: u64,
+        tx: &Transaction,
+        payload: &crate::blockchain::transaction::RevealPayload,
+    ) -> RevealRecipient {
+        let provenance_class = state
+            .pending_reveals
+            .get(&payload.commit_id)
+            .map(|record| record.provenance_class)
+            .unwrap_or(ContributionProvenanceClass::Unclassified);
+        if !provenance_class.is_reward_eligible() {
+            let legacy = tx
+                .outputs
+                .first()
+                .map(|o| o.address.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            return RevealRecipient::Ineligible {
+                legacy: Self::resolve_legacy_recipient_address(&legacy, &tx.sender_address),
+            };
+        }
+        if Self::station_reward_refused_inactive(state, block_height, &payload.station_id) {
+            return RevealRecipient::InactiveRefused;
+        }
+        match Self::station_reward_recipient(state, block_height, &payload.station_id, tx) {
+            Ok(address) => RevealRecipient::Payee(address),
+            Err(refusal) => RevealRecipient::OwnerUnresolvable(refusal),
+        }
+    }
+
+    /// The address whose low-quality streak a quorum-attested reveal moves, or
+    /// `None` when the producer records only a zero-amount decision for it.
+    pub fn streak_recipient_for_reveal(
+        state: &State,
+        block_height: u64,
+        tx: &Transaction,
+        payload: &crate::blockchain::transaction::RevealPayload,
+    ) -> Option<Address> {
+        match Self::reveal_recipient(state, block_height, tx, payload) {
+            RevealRecipient::Payee(address) => Some(address),
+            RevealRecipient::Ineligible { .. }
+            | RevealRecipient::InactiveRefused
+            | RevealRecipient::OwnerUnresolvable(_) => None,
+        }
     }
 
     /// #3347: is a reward for `station_id` refused at `block_height` because
@@ -6662,13 +7077,22 @@ impl ProofOfPublishing {
         station_id: &str,
         tx: &Transaction,
     ) -> std::result::Result<Address, String> {
+        Self::station_reward_recipient(reward_state, block_height, station_id, tx)
+    }
+
+    fn station_reward_recipient(
+        reward_state: &State,
+        block_height: u64,
+        station_id: &str,
+        tx: &Transaction,
+    ) -> std::result::Result<Address, String> {
         if block_height < STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT {
             let legacy = tx
                 .outputs
                 .first()
                 .map(|o| o.address.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            return Ok(self.resolve_recipient_address(&legacy, &tx.sender_address));
+            return Ok(Self::resolve_legacy_recipient_address(&legacy, &tx.sender_address));
         }
         let Some(station) = reward_state.station_registry.get(station_id) else {
             return Err(format!(
@@ -6715,11 +7139,16 @@ impl ProofOfPublishing {
                     .map(|acc| {
                         let acc_sp = Self::quantize_f64(acc) as i64;
                         let half_sp = SCORE_PRECISION as i64 / 2;
-                        (SCORE_PRECISION as i64
-                            + (acc_sp - half_sp).max(0)
-                                * self.reward_config.accuracy_multiplier_bps as i64
-                                / crate::rewards::config::BPS_SCALE as i64)
-                            .max(0) as u64
+                        // Saturating i64 — acc from unclamped NFT JSON; see
+                        // score_data_analysis. Identical for in-range accuracy.
+                        (SCORE_PRECISION as i64).saturating_add(
+                            acc_sp
+                                .saturating_sub(half_sp)
+                                .max(0)
+                                .saturating_mul(self.reward_config.accuracy_multiplier_bps as i64)
+                                / crate::rewards::config::BPS_SCALE as i64,
+                        )
+                        .max(0) as u64
                     })
                     .unwrap_or(SCORE_PRECISION);
 
@@ -6728,21 +7157,28 @@ impl ProofOfPublishing {
                     .map(|rep| {
                         let rep_sp = Self::quantize_f64(rep) as i64;
                         let half_sp = SCORE_PRECISION as i64 / 2;
-                        (SCORE_PRECISION as i64
-                            + (rep_sp - half_sp).max(0)
-                                * self.reward_config.reputation_multiplier_bps as i64
-                                / crate::rewards::config::BPS_SCALE as i64)
-                            .max(0) as u64
+                        // Saturating i64 — reputation from unclamped NFT JSON.
+                        (SCORE_PRECISION as i64).saturating_add(
+                            rep_sp
+                                .saturating_sub(half_sp)
+                                .max(0)
+                                .saturating_mul(self.reward_config.reputation_multiplier_bps as i64)
+                                / crate::rewards::config::BPS_SCALE as i64,
+                        )
+                        .max(0) as u64
                     })
                     .unwrap_or(SCORE_PRECISION);
 
                 // Use u128 intermediates to avoid overflow: 10 * verification * complexity * region * accuracy * reputation
+                // Saturating u128: once a factor saturates (an out-of-range NFT
+                // metric), the product of five factors can exceed u128 too.
+                // Identical to the checked product for in-range factors (~1e6).
                 let score = 10u128
-                    * verification_bonus as u128
-                    * complexity_factor as u128
-                    * region_weight as u128
-                    * accuracy_factor as u128
-                    * reputation_factor as u128
+                    .saturating_mul(verification_bonus as u128)
+                    .saturating_mul(complexity_factor as u128)
+                    .saturating_mul(region_weight as u128)
+                    .saturating_mul(accuracy_factor as u128)
+                    .saturating_mul(reputation_factor as u128)
                     / (SCORE_PRECISION as u128).pow(5);
 
                 return score as u64;
@@ -6773,18 +7209,37 @@ impl ProofOfPublishing {
         let acc_raw = *metrics.get("accuracy").unwrap_or(&0.5);
         let acc_sp = Self::quantize_f64(acc_raw) as i64;
         let half_sp = SCORE_PRECISION as i64 / 2;
-        let accuracy_factor = (SCORE_PRECISION as i64
-            + (acc_sp - half_sp).max(0)
-                * self.reward_config.accuracy_multiplier_bps as i64
-                / crate::rewards::config::BPS_SCALE as i64)
-            .max(0) as u64;
+        // Saturating i64: `acc_sp` comes from an unclamped reveal metric (quantize
+        // of a huge value casts past i64), so the `-`, `*` and `+` here use
+        // saturating arithmetic. Saturation equals the
+        // checked result for every in-range accuracy (acc in [0,1] → acc_sp in
+        // [0,1e6] → all terms tiny), so no historical score changes.
+        let accuracy_factor = (SCORE_PRECISION as i64).saturating_add(
+            acc_sp
+                .saturating_sub(half_sp)
+                .max(0)
+                .saturating_mul(self.reward_config.accuracy_multiplier_bps as i64)
+                / crate::rewards::config::BPS_SCALE as i64,
+        )
+        .max(0) as u64;
 
-        // weighted = accuracy * 6 + complexity * 2 + usefulness * 2, then /10
-        let weighted = accuracy * 6 + complexity * 2 + usefulness * 2;
+        // weighted = accuracy * 6 + complexity * 2 + usefulness * 2, then /10.
+        // Saturating for the same reason as `score_data_collection`: these
+        // factors come from reveal/metrics JSON and are only finiteness-checked.
+        // Identical to checked for every non-overflowing (historical) value.
+        let weighted = accuracy
+            .saturating_mul(6)
+            .saturating_add(complexity.saturating_mul(2))
+            .saturating_add(usefulness.saturating_mul(2));
         let weighted_avg = weighted / 10;
 
         // base = 8 * weighted_avg * region_mu / SCORE_PRECISION * accuracy_factor / SCORE_PRECISION
-        let base_score = 8u128 * weighted_avg as u128 * region_mu as u128 * accuracy_factor as u128
+        // Saturating u128: with a saturated weighted_avg and/or accuracy_factor
+        // the triple product can exceed u128. Identical for in-range inputs.
+        let base_score = 8u128
+            .saturating_mul(weighted_avg as u128)
+            .saturating_mul(region_mu as u128)
+            .saturating_mul(accuracy_factor as u128)
             / (SCORE_PRECISION as u128).pow(2);
 
         self.apply_useful_work_policy_hooks(tx, &metrics, base_score as u64)
@@ -6810,12 +7265,30 @@ impl ProofOfPublishing {
             .unwrap_or(crate::rewards::config::BPS_SCALE) as u64
             * (SCORE_PRECISION / crate::rewards::config::BPS_SCALE as u64);
 
-        // weighted = quality * 5 + volume * 2 + uniqueness * 3, then /10
-        let weighted = quality * 5 + volume * 2 + uniqueness * 3;
+        // weighted = quality * 5 + volume * 2 + uniqueness * 3, then /10.
+        //
+        // Saturating, not checked: `quality`/`volume`/`uniqueness` are quantized
+        // directly from the reveal's own JSON, which `extract_collection_metrics`
+        // only screens for finiteness, so a reveal may carry an arbitrarily large
+        // finite value; saturation keeps the result bounded. Determinism:
+        // saturation is identical to the checked result for every value that does
+        // not overflow, and every score in accepted history is such a value, so no
+        // finalized score changes and this needs no feature flag. A non-overflowing
+        // out-of-range value (e.g. 1e3) scores exactly as before.
+        let weighted = quality
+            .saturating_mul(5)
+            .saturating_add(volume.saturating_mul(2))
+            .saturating_add(uniqueness.saturating_mul(3));
         let weighted_avg = weighted / 10;
 
         // base = 6 * weighted_avg * region_mu / SCORE_PRECISION
-        let base_score = 6u128 * weighted_avg as u128 * region_mu as u128 / SCORE_PRECISION as u128;
+        // Saturating u128 for uniformity with the other scorers (a saturated
+        // weighted_avg times a large region weight stays bounded); identical for
+        // in-range inputs.
+        let base_score = 6u128
+            .saturating_mul(weighted_avg as u128)
+            .saturating_mul(region_mu as u128)
+            / SCORE_PRECISION as u128;
 
         self.apply_useful_work_policy_hooks(tx, &metrics, base_score as u64)
     }
@@ -6828,6 +7301,15 @@ impl ProofOfPublishing {
     ) -> u64 {
         let mut adjusted = base_score;
 
+        // Every `adjusted * _` below is saturating. `base_score` is derived from
+        // reveal JSON through the scorers above, so after the saturating weighted
+        // sum it may be as large as `u64::MAX`, and a policy multiplier
+        // (`~SCORE_PRECISION`) could overflow it. Saturation equals the checked
+        // result for every value that did not overflow — i.e. every value in
+        // accepted history — so no historical score changes and no flag is
+        // needed. The division that follows each multiply pulls the result back
+        // down, so a saturated factor cannot inflate the reward either.
+
         // #464 task-assigner hooks: encourage underserved assignments and penalize redundancy.
         if self.task_assigner_policy.enabled {
             let assignment_utility =
@@ -6835,7 +7317,7 @@ impl ProofOfPublishing {
             if assignment_utility > SCORE_PRECISION / 2 {
                 let bonus =
                     Self::quantize_f64(self.task_assigner_policy.underserved_bonus_multiplier);
-                adjusted = adjusted * bonus / SCORE_PRECISION;
+                adjusted = adjusted.saturating_mul(bonus) / SCORE_PRECISION;
             }
             let redundancy = Self::quantize_f64(
                 metrics
@@ -6846,9 +7328,9 @@ impl ProofOfPublishing {
             );
             let penalty_mult =
                 Self::quantize_f64(self.task_assigner_policy.redundancy_penalty_multiplier);
-            let penalty = redundancy * penalty_mult / SCORE_PRECISION;
+            let penalty = redundancy.saturating_mul(penalty_mult) / SCORE_PRECISION;
             let factor = SCORE_PRECISION.saturating_sub(penalty).min(SCORE_PRECISION);
-            adjusted = adjusted * factor / SCORE_PRECISION;
+            adjusted = adjusted.saturating_mul(factor) / SCORE_PRECISION;
         }
 
         // #465 scarcity hooks: prioritize data deserts and high-proximity need.
@@ -6869,19 +7351,21 @@ impl ProofOfPublishing {
 
         let desert_mult = Self::quantize_f64(self.scarcity_policy.data_desert_multiplier);
         let desert_boost =
-            data_desert * desert_mult.saturating_sub(SCORE_PRECISION) / SCORE_PRECISION;
-        adjusted = adjusted * (SCORE_PRECISION + desert_boost) / SCORE_PRECISION;
+            data_desert.saturating_mul(desert_mult.saturating_sub(SCORE_PRECISION)) / SCORE_PRECISION;
+        adjusted =
+            adjusted.saturating_mul(SCORE_PRECISION.saturating_add(desert_boost)) / SCORE_PRECISION;
 
         let prox_mult = Self::quantize_f64(self.scarcity_policy.proximity_multiplier);
         let prox_boost =
-            proximity_need * prox_mult.saturating_sub(SCORE_PRECISION) / SCORE_PRECISION;
-        adjusted = adjusted * (SCORE_PRECISION + prox_boost) / SCORE_PRECISION;
+            proximity_need.saturating_mul(prox_mult.saturating_sub(SCORE_PRECISION)) / SCORE_PRECISION;
+        adjusted =
+            adjusted.saturating_mul(SCORE_PRECISION.saturating_add(prox_boost)) / SCORE_PRECISION;
 
         // #474 multidomain hooks (guarded): only enabled domains with compatible schema
         // may influence reward score.
         if let Some(weight) = self.multidomain_weight_for_tx(tx) {
             let weight_mu = Self::quantize_f64(weight);
-            adjusted = adjusted * weight_mu / SCORE_PRECISION;
+            adjusted = adjusted.saturating_mul(weight_mu) / SCORE_PRECISION;
         }
 
         adjusted
@@ -7157,9 +7641,16 @@ impl ProofOfPublishing {
                 let verification = Self::quantize_f64(*metrics.get("verification").unwrap_or(&0.5));
                 let impact = Self::quantize_f64(*metrics.get("impact").unwrap_or(&0.5));
 
-                // 5 * (amount * 3 + verification * 4 + impact * 3) / 10
-                let weighted = amount * 3 + verification * 4 + impact * 3;
-                let offset_score = 5 * weighted / 10;
+                // 5 * (amount * 3 + verification * 4 + impact * 3) / 10.
+                // Saturating for the same reason as `score_data_collection`:
+                // these factors are quantized from reveal/metrics JSON that is
+                // only finiteness-checked. Identical to checked for every
+                // non-overflowing (historical) value.
+                let weighted = amount
+                    .saturating_mul(3)
+                    .saturating_add(verification.saturating_mul(4))
+                    .saturating_add(impact.saturating_mul(3));
+                let offset_score = weighted.saturating_mul(5) / 10;
 
                 return offset_score;
             }
@@ -7453,6 +7944,40 @@ impl ProofOfPublishing {
         before - transactions.len()
     }
 
+    /// `station_registrar_key`: apply [`select_registrar_registrations`] to the
+    /// candidate. Returns the ids to evict; deferred ones are removed from the
+    /// candidate only.
+    ///
+    /// [`select_registrar_registrations`]: crate::consensus::station_registrar::select_registrar_registrations
+    fn hold_back_registrar_registrations(
+        state: &State,
+        next_height: u64,
+        transactions: &mut Vec<Transaction>,
+    ) -> Vec<Hash> {
+        let selection = crate::consensus::station_registrar::select_registrar_registrations(
+            state,
+            next_height,
+            transactions,
+        );
+        if selection.defer.is_empty() && selection.evict.is_empty() {
+            return Vec::new();
+        }
+        info!(
+            "station_registrar_key: deferred {} and evicted {} registrar registration(s) at height {next_height}",
+            selection.defer.len(),
+            selection.evict.len()
+        );
+        let evicted: Vec<Hash> =
+            selection.evict.iter().filter_map(|&i| transactions[i].id).collect();
+        let mut index = 0;
+        transactions.retain(|_| {
+            let keep = !selection.defer.contains(&index) && !selection.evict.contains(&index);
+            index += 1;
+            keep
+        });
+        evicted
+    }
+
     fn defer_real_contribution_groups_without_quorum(
         &self,
         state: &State,
@@ -7727,9 +8252,10 @@ impl ProofOfPublishing {
         // runs after the expensive work would price nothing. Counting is cheap
         // and derived from the transaction bytes, so every node agrees.
         if feature_active(ConsensusFeature::VerifyUnitPricing, block.height) {
-            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget(
+            if let Err(exceeded) = crate::consensus::verify_cost::check_block_verify_budget_at_height(
                 block.transactions.iter(),
                 &crate::consensus::verify_cost::VerifyPricing::CALIBRATED,
+                block.height,
             ) {
                 warn!("Rejecting block at height {}: {exceeded}", block.height);
                 return Ok(false);
@@ -8583,6 +9109,17 @@ impl ProofOfPublishing {
         // authorization model. Re-enabling this surface requires a from-bound
         // proposer authorization (the `verify_transparent_transfer_authorization`
         // shape); this only makes the unauthenticated surface unreachable.
+        // Security-key wallets: a `SecurityKeyAction` is only valid from the
+        // `security_key_spend` activation. Below it, a block carrying one is
+        // invalid on every node (an older binary cannot even decode the type),
+        // so no pre-activation block can contain one. From activation the
+        // action is checked against State by the governance sink, which drops
+        // an invalid action at assembly.
+        if tx.tx_type == TransactionType::SecurityKeyAction
+            && !crate::accounts::security_key::security_key_active(ctx.height)
+        {
+            return Some("SP_SECURITY_KEY_INACTIVE".into());
+        }
         if tx.tx_type == TransactionType::NodeFraudReport {
             if !feature_active(ConsensusFeature::NodeShareSettlement, ctx.height) { return Some("SP_NODE_FRAUD_INACTIVE".into()); }
             acc.node_fraud_report_count += 1;
@@ -8594,6 +9131,25 @@ impl ProofOfPublishing {
                 crate::consensus::node_fraud::verify_authorization(&p, &crate::crypto::chain_binding::ChainIdentity::new(c.chain_id,c.network_id), &genesis).ok()
             })();
             if valid.is_none() { return Some("SP_NODE_FRAUD_AUTHORIZATION".into()); }
+        }
+        // Send allowlist: below the unscheduled activation a block carrying
+        // the type is invalid on every node (an older binary cannot even
+        // decode it), and from activation the owner signature must verify.
+        // Stateful rules (nonce, delays, cooldown) are apply's: a stale action
+        // is dropped at assembly and fails a peer's apply, like a Transfer.
+        if tx.tx_type == TransactionType::SendAllowlist {
+            if !feature_active(ConsensusFeature::SendAllowlist, ctx.height) {
+                return Some("SP_SEND_ALLOWLIST_INACTIVE".into());
+            }
+            let valid = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(tx)
+                .is_some_and(|signed| {
+                    signed
+                        .verify(&crate::crypto::chain_binding::ChainIdentity::active().chain_id)
+                        .is_ok()
+                });
+            if !valid {
+                return Some("SP_SEND_ALLOWLIST_AUTHORIZATION".into());
+            }
         }
         if tx.tx_type == TransactionType::NodeServiceBatch {
             use crate::consensus::node_receipt_registry::*;
@@ -8617,7 +9173,7 @@ impl ProofOfPublishing {
                 let p = NodeBondLifecycle::parse(tx)?;
                 let c = crate::governance::schedule_extension::schedule_extension_authority()?.context();
                 let genesis: [u8; 32] = hex::decode(c.genesis_hash).ok()?.try_into().ok()?;
-                p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist).ok()
+                p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist, ctx.height).ok()
             })();
             if valid.is_none() { return Some("SP_NODE_BOND_AUTHORIZATION".into()); }
         }
@@ -8632,6 +9188,30 @@ impl ProofOfPublishing {
             && !tx.verify_commit_authorization_at_height(ctx.height)
         {
             return Some("SP_FORECASTER_KEY_UNBOUND".into());
+        }
+        // Session-key register/revoke: refused outright below
+        // `ConsensusFeature::SessionKeys` (so no valid pre-activation block can
+        // carry one), capped per block, and the state-free half of the action
+        // (key binding, owner + possession signatures, grant bounds) must
+        // verify. The stateful half runs in the apply arm.
+        if tx.tx_type == TransactionType::SessionKeyAction {
+            use crate::accounts::session_keys::{
+                MAX_SESSION_KEY_ACTIONS_PER_BLOCK, SessionKeyActionPayload, session_keys_active,
+                verify_stateless,
+            };
+            if !session_keys_active(ctx.height) {
+                return Some("SP_SESSION_KEYS_INACTIVE".into());
+            }
+            acc.session_key_action_count += 1;
+            if acc.session_key_action_count > MAX_SESSION_KEY_ACTIONS_PER_BLOCK {
+                return Some("SP_SESSION_KEYS_BLOCK_CAP".into());
+            }
+            let chain_id = &crate::crypto::chain_binding::ChainIdentity::active().chain_id;
+            let valid = SessionKeyActionPayload::parse(tx)
+                .is_some_and(|action| verify_stateless(&action, chain_id).is_ok());
+            if !valid {
+                return Some("SP_SESSION_KEYS_AUTHORIZATION".into());
+            }
         }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Some(crate::security::slash_evidence::dispatch_refusal(ctx.height).to_string());
@@ -9584,6 +10164,51 @@ mod tests {
         assert_eq!(DATA_QUALITY_SLASHING_ACTIVATION_HEIGHT, 0u64);
     }
 
+    /// The non-consensus admission/selection guard: real traffic passes, every
+    /// out-of-range scoring factor (per transaction type) is refused.
+    #[test]
+    fn scoring_value_out_of_range_passes_real_and_refuses_oversized() {
+        // Real contribution reveal (weather only — no scoring keys) → admitted.
+        let (_, real_reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal, "st", "contribution", 1_700_000_000,
+            serde_json::json!({ "temperature_c": 21.5, "humidity_pct": 55.0, "pressure_hpa": 1013.2 }),
+            "sv-real",
+        );
+        assert_eq!(scoring_value_out_of_range(&real_reveal), None);
+        // Real contribution reveal with in-range quality → admitted.
+        let (_, ok_reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal, "st", "contribution", 1_700_000_000,
+            serde_json::json!({ "quality": 0.9, "volume": 1.0, "uniqueness": 0.5 }), "sv-ok",
+        );
+        assert_eq!(scoring_value_out_of_range(&ok_reveal), None);
+        // Oversized contribution reveal → refused on the offending key.
+        let (_, bad_reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal, "st", "contribution", 1_700_000_000,
+            serde_json::json!({ "quality": 1.0e9 }), "sv-bad",
+        );
+        assert_eq!(scoring_value_out_of_range(&bad_reveal), Some("quality"));
+        // Real forecast reveal (accuracy in [0,1]) → admitted; oversized → refused.
+        let (_, fc_ok, _) = build_commit_and_reveal(
+            TransactionType::ForecastReveal, "st", "forecast", 1_700_000_000,
+            serde_json::json!({ "accuracy": 0.95, "complexity": 0.5, "usefulness": 1.0 }), "sv-fc-ok",
+        );
+        assert_eq!(scoring_value_out_of_range(&fc_ok), None);
+        let (_, fc_bad, _) = build_commit_and_reveal(
+            TransactionType::ForecastReveal, "st", "forecast", 1_700_000_000,
+            serde_json::json!({ "accuracy": 1.0e13 }), "sv-fc-bad",
+        );
+        assert_eq!(scoring_value_out_of_range(&fc_bad), Some("accuracy"));
+        // EnvironmentalOffset: in-range admitted, oversized refused.
+        assert_eq!(
+            scoring_value_out_of_range(&build_tx(TransactionType::EnvironmentalOffset,
+                Some(r#"{"amount":0.5,"verification":1.0,"impact":0.2}"#), "sv-off-ok")),
+            None);
+        assert_eq!(
+            scoring_value_out_of_range(&build_tx(TransactionType::EnvironmentalOffset,
+                Some(r#"{"amount":100000000000000.0}"#), "sv-off-bad")),
+            Some("amount"));
+    }
+
     fn build_tx(tx_type: TransactionType, data: Option<&str>, tag: &str) -> Transaction {
         let mut tx = Transaction::new(
             vec![TransactionInput {
@@ -9729,7 +10354,7 @@ mod tests {
         tx
     }
 
-    fn build_commit_and_reveal(
+    pub(super) fn build_commit_and_reveal(
         reveal_type: TransactionType,
         station_id: &str,
         contribution_type: &str,
@@ -9917,7 +10542,7 @@ mod tests {
         (private_key, oracle_id)
     }
 
-    fn register_real_test_station(chain: &mut Blockchain, station_id: &str, owner: Address) {
+    pub(super) fn register_real_test_station(chain: &mut Blockchain, station_id: &str, owner: Address) {
         register_test_station_with_provenance_2768(
             chain,
             station_id,
@@ -9969,6 +10594,248 @@ mod tests {
             },
             "location": "Tioga"
         })
+    }
+
+    /// Score a collection reveal carrying `quality`, for the overflow tests.
+    fn score_quality(pop: &ProofOfPublishing, quality: f64, tag: &str) -> u64 {
+        let (_, reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal,
+            "station-overflow",
+            "contribution",
+            1_700_500_000,
+            serde_json::json!({ "quality": quality }),
+            tag,
+        );
+        pop.score_data_collection(&reveal, RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT)
+    }
+
+    /// Score a reveal carrying an arbitrary metrics object, at the 888 height.
+    fn score_metrics(pop: &ProofOfPublishing, metrics: serde_json::Value, tag: &str) -> u64 {
+        let (_, reveal, _) = build_commit_and_reveal(
+            TransactionType::ContributionReveal,
+            "station-fields",
+            "contribution",
+            1_700_500_000,
+            metrics,
+            tag,
+        );
+        pop.score_data_collection(&reveal, RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT)
+    }
+
+    /// Every value `extract_collection_metrics` reads from reveal JSON, not just
+    /// quality/volume/uniqueness, stays bounded when oversized: whichever field
+    /// is large, the saturating arithmetic returns a bounded score. `region` (a
+    /// saturating `as u32` cast + map lookup) and the clamped fields are included
+    /// for completeness.
+    #[test]
+    fn every_scoring_field_stays_bounded() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10); // task_assigner enabled by default
+        let ceiling = u64::MAX / SCORE_PRECISION + 1;
+        for key in [
+            "quality", "volume", "uniqueness", "region",
+            "assignment_utility", "redundancy", "data_desert", "proximity_need",
+        ] {
+            for v in [7.0e6_f64, 1.0e12, 3.7e12, 1.0e300, f64::MAX] {
+                let score = score_metrics(&pop, serde_json::json!({ key: v }), &format!("f-{key}-{v:e}"));
+                assert!(score <= ceiling, "field {key}={v:e} produced {score} above the ceiling");
+            }
+        }
+    }
+
+    /// `assignment_utility` is read unclamped by the task-assigner hook. With the
+    /// policy ENABLED (the 888 default) an oversized value takes the underserved
+    /// branch; with it DISABLED the field is never read. Either way a
+    /// benign-quality reveal with a huge assignment_utility scores a bounded value.
+    #[test]
+    fn oversized_assignment_utility_stays_bounded_with_task_assigner_on_or_off() {
+        let ceiling = u64::MAX / SCORE_PRECISION + 1;
+        for enabled in [true, false] {
+            let mut pop = ProofOfPublishing::new(1, 60, 0, 10);
+            pop.set_task_assigner_policy(TaskAssignerPolicy { enabled, ..TaskAssignerPolicy::default() })
+                .expect("valid policy");
+            let metrics = serde_json::json!({ "quality": 0.9, "assignment_utility": 1.0e308 });
+            let score = score_metrics(&pop, metrics, &format!("au-{enabled}"));
+            assert!(score <= ceiling, "assignment_utility huge (task_assigner={enabled}) gave {score}");
+        }
+    }
+
+    /// The other scored paths that take values from a tx's JSON also return a
+    /// bounded value for oversized inputs: EnvironmentalOffset
+    /// (`score_environmental_offset`), the ForecastReveal base
+    /// (`score_data_analysis`) and NftExecution (`score_nft_execution`,
+    /// including its i64 accuracy/reputation factors).
+    #[test]
+    fn offset_forecast_and_nft_paths_saturate() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        // EnvironmentalOffset: bare tx, amount far past the u64 overflow point.
+        let offset = build_tx(
+            TransactionType::EnvironmentalOffset,
+            Some(r#"{"amount":100000000000000.0,"verification":1.0,"impact":1.0}"#),
+            "pf-offset",
+        );
+        let s = pop.calculate_block_publishing_score(&[offset], RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT);
+        assert!(s < u64::MAX, "offset path returned {s}");
+
+        // ForecastReveal base via score_data_analysis (valid manifest + commit),
+        // oversized accuracy — exercises both the weighted sum and the i64
+        // accuracy_factor.
+        let ts = 1_700_000_000i64;
+        let data = serde_json::json!({ "accuracy": 1.0e12, "complexity": 1.0, "usefulness": 1.0 });
+        let nonce = "nonce-pf-fc".to_string();
+        let cid = Transaction::compute_commit_id(&data, &nonce, "st-fc", ts, "forecast");
+        let manifest = ForecastArtifactManifest {
+            schema_version: 1, model_id: "m".to_string(), input_hash: "a".repeat(64),
+            output_hash: "b".repeat(64), produced_at: ts, region: "us-east".to_string(),
+            horizon_hours: 48, input_variables: vec!["humidity".into(),"pressure".into(),"temperature".into()],
+            output_variables: vec!["precipitation".into(),"temperature".into()],
+        };
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut cp = CommitPayload { commit_id: cid.clone(), station_id: "st-fc".into(), timestamp: ts,
+            contribution_type: "forecast".into(), auth_pubkey: None, auth_signature: None };
+        cp.sign_authorization(&PrivateKey::generate(&mut rng));
+        let rp = RevealPayload { commit_id: cid, station_id: "st-fc".into(), timestamp: ts,
+            contribution_type: "forecast".into(), data, nonce, data_cid: None, data_hash: None,
+            storage_provider: None, provenance: None, manifest: Some(manifest),
+            verification_receipt: None, compute_receipt: None, quality_tier: None };
+        let tx_ts = chrono::DateTime::from_timestamp(ts, 0).unwrap();
+        let mut fc = build_tx(TransactionType::ForecastCommit, None, "pf-fc-c");
+        fc.timestamp = tx_ts; fc.data = Some(serde_json::to_string(&cp).unwrap()); fc.set_id();
+        let mut fr = build_tx(TransactionType::ForecastReveal, None, "pf-fc-r");
+        fr.timestamp = tx_ts; fr.data = Some(serde_json::to_string(&rp).unwrap()); fr.set_id();
+        let s = pop.calculate_block_publishing_score(&[fc, fr], RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT);
+        assert!(s < u64::MAX, "forecast base path returned {s}");
+
+        // NftExecution: a valid NFT JSON with oversized accuracy + creator_reputation
+        // (the i64 factor multiplies).
+        let base = crate::nft::computational_nft::ComputationalNFT::new(
+            crate::nft::computational_nft::NftParams {
+                name: "n".into(), description: "d".into(), creator: "c".into(),
+                content_uri: "ipfs://x".into(), computation_type: "data-analysis".into(),
+                computation_complexity: 5,
+                resource_requirements: crate::nft::computational_nft::ResourceRequirements {
+                    min_cpu_cores: 1, min_ram_mb: 512, requires_gpu: false,
+                    min_gpu_memory_mb: None, estimated_execution_time: 10, max_execution_time: 60,
+                },
+                input_data: None, parameters: rustc_hash::FxHashMap::default(),
+            },
+            None, rustc_hash::FxHashMap::default(),
+        );
+        let mut v: serde_json::Value = serde_json::from_str(&base.to_json().unwrap()).unwrap();
+        v["accuracy"] = serde_json::json!(1.0e12);
+        v["creator_reputation"] = serde_json::json!(1.0e12);
+        let nft_tx = build_tx(TransactionType::NftExecution, Some(&v.to_string()), "pf-nft");
+        let s = pop.score_nft_execution(&nft_tx);
+        assert!(s < u64::MAX, "nft path returned {s}");
+    }
+
+    /// A reveal whose scoring factor is an arbitrarily large finite number scores
+    /// a finite, bounded value: the weighted sum and the policy-hook multiplies
+    /// use saturating `u64` arithmetic. The two test values cover both the
+    /// policy hooks and the weighted sum.
+    #[test]
+    fn an_oversized_scoring_metric_saturates() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        // The saturation ceiling: the final hook multiply saturates to
+        // `u64::MAX` and is then divided by `SCORE_PRECISION`, so a fully
+        // saturated score cannot exceed `u64::MAX / SCORE_PRECISION`. The real
+        // assertion is simply that each call returns; the bound
+        // documents that the result is the bounded saturated value, not a wrap.
+        let ceiling = u64::MAX / SCORE_PRECISION + 1;
+        for quality in [1.0e7_f64, 1.0e12, 3.7e12, 1.0e300, f64::MAX] {
+            let score = score_quality(&pop, quality, &format!("sat{quality:e}"));
+            assert!(
+                score <= ceiling,
+                "quality={quality:e} produced {score}, above the saturation ceiling {ceiling}"
+            );
+        }
+    }
+
+    /// Determinism: for every value that does not overflow, the saturating
+    /// scorer returns exactly what a faithful checked reimplementation of the
+    /// original formula returns, so no historical score changes and the change
+    /// needs no feature flag. A non-overflowing out-of-range value such as
+    /// `quality = 1e3` scores the same as before (it is in the sweep below). The
+    /// score here is the pure weighted-sum path both sides compute; the task
+    /// assigner defaults to enabled (`blockchain/state.rs`), but its hooks are
+    /// no-ops on this path because the reveal carries none of their keys.
+    #[test]
+    fn scoring_is_unchanged_for_every_non_overflowing_value() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let region_mu: u64 = crate::rewards::config::BPS_SCALE as u64
+            * (SCORE_PRECISION / crate::rewards::config::BPS_SCALE as u64);
+        // A reference computation using checked ops: `None` where the ORIGINAL
+        // code would have overflowed.
+        let reference = |q: f64| -> Option<u64> {
+            let quality = ProofOfPublishing::quantize_f64(q);
+            let volume = ProofOfPublishing::quantize_f64(0.5);
+            let uniqueness = ProofOfPublishing::quantize_f64(0.5);
+            let weighted = quality
+                .checked_mul(5)?
+                .checked_add(volume.checked_mul(2)?)?
+                .checked_add(uniqueness.checked_mul(3)?)?;
+            let weighted_avg = weighted / 10;
+            Some((6u128 * weighted_avg as u128 * region_mu as u128 / SCORE_PRECISION as u128) as u64)
+        };
+        // Sweep the whole in-range/safe band, including values >1.0 that are
+        // valid today (so clamping to [0,1] would have been a fork).
+        for q in [
+            0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 7.0, 100.0, 1.0e3, 1.0e5, 1.0e6, 2.0e6, 3.0e6,
+        ] {
+            let expected = reference(q).expect("sweep stays in the non-overflowing band");
+            assert_eq!(
+                score_quality(&pop, q, &format!("det{q:e}")),
+                expected,
+                "saturating score diverged from the checked original at quality={q:e}"
+            );
+        }
+    }
+
+    /// Saturation adds no earning headroom: `calculate_contribution_reward`
+    /// converts the score to basis points clamped at 10_000 and clamps the reward
+    /// to the block emission, so a saturated score pays no more than any score at
+    /// or above the full-band threshold and never exceeds the budget. This test
+    /// pins that clamp.
+    #[test]
+    fn a_saturated_metric_pays_no_more_than_the_reward_boundary_cap() {
+        let emission = crate::rewards::emission::TokenEmissionManager::default();
+        let budget = 1_000_000u64;
+        // Score 10.0 is the full-band threshold (score/10 ≥ 1.0).
+        let at_full_band = emission.calculate_contribution_reward(budget, 10.0, 1.0, None);
+        let saturated = emission.calculate_contribution_reward(budget, u64::MAX as f64, 1.0, None);
+        assert_eq!(
+            saturated, at_full_band,
+            "a saturated score must pay no more than a score already at the full-band boundary"
+        );
+        assert!(saturated <= budget, "reward is capped by the emission budget");
+    }
+
+    /// The full block-scoring path (`calculate_block_publishing_score`), not
+    /// just the scorer in isolation: an attested contribution reveal carrying an
+    /// oversized metric scores a bounded value, including the `raw * mult` call
+    /// site that multiplies the score output by the quality multiplier. Mirrors
+    /// `publishing_score_requires_attested_contribution_reveal` at the
+    /// rich-ambient activation height with an oversized value.
+    #[test]
+    fn an_attested_oversized_reveal_scores_a_bounded_value() {
+        let mut pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let (commit, reveal, commit_id) = build_commit_and_reveal(
+            TransactionType::ContributionReveal,
+            "station-overflow-block",
+            "contribution",
+            1_700_000_000,
+            serde_json::json!({ "quality": 1.0e300, "volume": 1.0e300, "uniqueness": 1.0e300 }),
+            "overflow-block",
+        );
+        let att_a = build_attestation(&commit_id, true, "ovf-a");
+        let att_b = build_attestation(&commit_id, true, "ovf-b");
+        // Returns a bounded score. The attestation floor (2_000_000) is the
+        // block minimum; the point is that scoring the oversized reveal did not
+        // overflow on the way there.
+        let score = pop.calculate_block_publishing_score(
+            &[commit, reveal, att_a, att_b],
+            RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT,
+        );
+        assert!(score > 0, "attested reveal must contribute a score; got {score}");
     }
 
     #[test]
@@ -10273,6 +11140,212 @@ mod tests {
             );
         }
     }
+
+    /// Fixture for the recipient-rule tests: a two-oracle chain with one
+    /// station per recipient shape, and a block at `height` carrying, per
+    /// station, a quorum-attested reveal of `quality` whose first output names
+    /// `addr(0x5e)` (never a registered owner).
+    fn streak_recipient_fixture(height: u64, quality: f64) -> (Blockchain, Block) {
+        let mut chain = Blockchain::default();
+        let (oracle_sk_a, oracle_id_a) = oracle_identity(3591_21);
+        let (oracle_sk_b, oracle_id_b) = oracle_identity(3591_22);
+        chain
+            .apply_state_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![oracle_id_a.clone(), oracle_id_b.clone()],
+                oracle_quorum: 2,
+            })
+            .expect("two-oracle configuration must apply");
+        let stations: [(&str, String, Option<ContributionProvenanceClass>); 6] = [
+            ("station-rp-0x", addr(0x51).to_string(), Some(ContributionProvenanceClass::Real)),
+            ("station-rp-wrf", format!("wrf{}", hex::encode([0x52u8; 20])), Some(ContributionProvenanceClass::Real)),
+            ("station-rp-synthetic", addr(0x53).to_string(), Some(ContributionProvenanceClass::Synthetic)),
+            ("station-rp-unparsable", "not-an-address".to_string(), Some(ContributionProvenanceClass::Real)),
+            ("station-rp-unregistered", String::new(), None),
+            ("station-rp-inactive", addr(0x54).to_string(), Some(ContributionProvenanceClass::Real)),
+        ];
+        let mut transactions = Vec::new();
+        for (index, (station_id, owner, provenance)) in stations.iter().enumerate() {
+            if let Some(provenance_class) = provenance {
+                chain
+                    .state
+                    .register_weather_station(WeatherStation {
+                        station_id: station_id.to_string(),
+                        owner_address: owner.clone(),
+                        location: StationLocation { latitude: 46.7867, longitude: -92.1005, elevation_meters: None },
+                        hardware_model: "recipient-parity-fixture".to_string(),
+                        calibration_date: None,
+                        is_active: *station_id != "station-rp-inactive",
+                        reputation_score: 0,
+                        data_quality_tier: DataQualityTier::Unverified,
+                        provenance_class: *provenance_class,
+                        ring_public_key: None,
+                    })
+                    .expect("fixture station registers");
+            }
+            let timestamp = 1_700_600_000 + index as i64 * 10;
+            let tag = format!("rp-{index}");
+            let (commit, mut reveal, commit_id) = build_commit_and_reveal(
+                TransactionType::ContributionReveal,
+                station_id,
+                "contribution",
+                timestamp,
+                serde_json::json!({"quality": quality, "volume": 1.0, "uniqueness": 1.0}),
+                &tag,
+            );
+            reveal.outputs[0].address = addr(0x5e).to_string();
+            reveal.set_id();
+            transactions.extend([
+                commit,
+                reveal,
+                signed_attestation_tx(&commit_id, &oracle_sk_a, &oracle_id_a, true, timestamp + 1, &format!("{tag}-a")),
+                signed_attestation_tx(&commit_id, &oracle_sk_b, &oracle_id_b, true, timestamp + 2, &format!("{tag}-b")),
+            ]);
+        }
+        let mut block = Block::new(3, chain.tip, transactions, 1, height);
+        block.timestamp = chrono::DateTime::from_timestamp(1_700_600_100, 0).unwrap();
+        (chain, block)
+    }
+
+    /// The producer's recipient rule per shape, read against the producer's
+    /// pre-reward state (launch transitions applied).
+    #[test]
+    fn streak_recipient_for_reveal_follows_the_producer_rule() {
+        for height in [10, STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT] {
+            let (mut chain, block) = streak_recipient_fixture(height, 0.20);
+            ProofOfPublishing::apply_launch_state_transitions_on_state(&mut chain.state, &block)
+                .expect("fixture block replays");
+            let decide = |station: &str| {
+                let tx = block
+                    .transactions
+                    .iter()
+                    .find(|t| {
+                        t.tx_type == TransactionType::ContributionReveal
+                            && t.parse_reveal_payload().unwrap().station_id == station
+                    })
+                    .unwrap();
+                let payload = tx.parse_reveal_payload().unwrap();
+                (
+                    ProofOfPublishing::reveal_recipient(&chain.state, height, tx, &payload),
+                    ProofOfPublishing::streak_recipient_for_reveal(&chain.state, height, tx, &payload),
+                )
+            };
+            let bound = height >= STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT;
+            let first_output = addr(0x5e);
+            let (r, streak) = decide("station-rp-0x");
+            let want = if bound { addr(0x51) } else { first_output };
+            assert_eq!((r, streak), (RevealRecipient::Payee(want), Some(want)), "h{height} 0x owner");
+            let (r, streak) = decide("station-rp-wrf");
+            let want = if bound { Address([0x52; 20]) } else { first_output };
+            assert_eq!((r, streak), (RevealRecipient::Payee(want), Some(want)), "h{height} wrf owner");
+            let (r, streak) = decide("station-rp-synthetic");
+            assert_eq!((r, streak), (RevealRecipient::Ineligible { legacy: first_output }, None), "h{height} synthetic");
+            let (r, streak) = decide("station-rp-unregistered");
+            assert_eq!((r, streak), (RevealRecipient::Ineligible { legacy: first_output }, None), "h{height} unclassified");
+            let (r, streak) = decide("station-rp-unparsable");
+            if bound {
+                assert!(matches!(r, RevealRecipient::OwnerUnresolvable(_)), "h{height} unparsable owner: {r:?}");
+                assert_eq!(streak, None);
+            } else {
+                assert_eq!((r, streak), (RevealRecipient::Payee(first_output), Some(first_output)));
+            }
+        }
+    }
+
+    /// Legacy rule below the binding height: an unparsable first output falls
+    /// back to the sender, and with a zero sender to a hash of the string.
+    #[test]
+    fn streak_recipient_legacy_fallbacks() {
+        let (mut chain, block) = streak_recipient_fixture(10, 0.20);
+        ProofOfPublishing::apply_launch_state_transitions_on_state(&mut chain.state, &block).unwrap();
+        let mut tx = block
+            .transactions
+            .iter()
+            .find(|t| t.tx_type == TransactionType::ContributionReveal)
+            .unwrap()
+            .clone();
+        let payload = tx.parse_reveal_payload().unwrap();
+        tx.outputs[0].address = format!("wrf{}", hex::encode([0x5fu8; 20]));
+        tx.sender_address = addr(0x60);
+        assert_eq!(ProofOfPublishing::streak_recipient_for_reveal(&chain.state, 10, &tx, &payload), Some(addr(0x60)));
+        tx.sender_address = Address([0; 20]);
+        let hashed = ProofOfPublishing::resolve_legacy_recipient_address(&tx.outputs[0].address, &tx.sender_address);
+        assert_ne!(hashed, Address([0; 20]));
+        assert_eq!(ProofOfPublishing::streak_recipient_for_reveal(&chain.state, 10, &tx, &payload), Some(hashed));
+    }
+
+    /// Producer regression: the reward decisions, streak entries and state root
+    /// of a fixed block, at a legacy and a bound height, for every recipient
+    /// shape and both quality bands, including an inactive station under
+    /// `station_active_reward_gate`. The pinned digest was recorded on the
+    /// commit before the `reveal_recipient` refactor, so the refactored
+    /// producer is byte-identical. Child process: the feature schedule is
+    /// process-wide.
+    #[test]
+    fn producer_reward_output_is_unchanged_by_the_recipient_refactor() {
+        const CHILD: &str = "WRFCOIN_RECIPIENT_REFACTOR_REGRESSION_CHILD";
+        const NAME: &str = "consensus::proof_of_publishing::tests::producer_reward_output_is_unchanged_by_the_recipient_refactor";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated regression child");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "regression child failed:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use sha3::{Digest, Sha3_256};
+        crate::crypto::chain_binding::install_feature_schedule(
+            crate::crypto::chain_binding::FeatureSchedule::from_entries(vec![(
+                crate::crypto::chain_binding::ConsensusFeature::StationActiveRewardGate.name().to_string(),
+                1,
+            )])
+            .unwrap(),
+        );
+        let pop = ProofOfPublishing::new(1, 60, 0, 40);
+        let mut hasher = Sha3_256::new();
+        for height in [10, STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT] {
+            for quality in [0.20, 0.95] {
+                let (mut chain, mut block) = streak_recipient_fixture(height, quality);
+                pop.apply_contribution_rewards(&mut chain, &mut block).expect("fixture block rewards");
+                let metadata: std::collections::BTreeMap<_, _> = block.metadata.iter().collect();
+                let line = format!(
+                    "h{height} q{quality} root={} streaks={:?} meta={}",
+                    hex::encode(chain.state.state_root.0),
+                    chain.state.low_quality_streaks.iter().collect::<std::collections::BTreeMap<_, _>>(),
+                    serde_json::to_string(&metadata).unwrap()
+                );
+                eprintln!("{line}");
+                hasher.update(line.as_bytes());
+            }
+        }
+        let digest = hex::encode(hasher.finalize());
+        eprintln!("recipient refactor regression digest: {digest}");
+        // The fixture really exercises the inactive-station refusal.
+        let (mut chain, block) = streak_recipient_fixture(STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT, 0.20);
+        ProofOfPublishing::apply_launch_state_transitions_on_state(&mut chain.state, &block).unwrap();
+        let tx = block
+            .transactions
+            .iter()
+            .find(|t| {
+                t.tx_type == TransactionType::ContributionReveal
+                    && t.parse_reveal_payload().unwrap().station_id == "station-rp-inactive"
+            })
+            .unwrap();
+        let payload = tx.parse_reveal_payload().unwrap();
+        assert_eq!(
+            ProofOfPublishing::reveal_recipient(&chain.state, block.height, tx, &payload),
+            RevealRecipient::InactiveRefused
+        );
+        assert_eq!(digest, RECIPIENT_REFACTOR_REGRESSION_DIGEST);
+    }
+
+    const RECIPIENT_REFACTOR_REGRESSION_DIGEST: &str =
+        "291e92c75ea1bb55c8392e0412c721236ed23449aca65e8bd121fcccb6ebb6c3"; // pragma: allowlist secret (regression digest of test fixtures, not a secret)
 
     /// Build a signing-key registry that registers each oracle id for the
     /// Oracle role (legacy identity-as-key mode), mirroring how production
@@ -11748,6 +12821,7 @@ mod tests {
             vec![],
             oversized.clone(),
             None,
+            0,
         );
 
         let packed: usize = assembled.iter().map(|t| t.size()).sum();
@@ -11779,6 +12853,7 @@ mod tests {
             vec![],
             small.clone(),
             None,
+            0,
         );
         assert_eq!(
             small_assembled.len(),
@@ -11828,6 +12903,7 @@ mod tests {
             vec![],
             vec![regular_a.clone(), regular_b.clone()],
             None,
+            0,
         );
 
         assert_eq!(assembled.len(), 7);
@@ -13884,7 +14960,7 @@ mod tests {
         let score = pop.calculate_block_publishing_score(&[commit_tx, reveal_tx.clone()], 100);
         let base = pop.score_data_analysis(&reveal_tx);
         let skill_mu = (skill * SCORE_PRECISION as f64) as u64;
-        let expected = base * skill_mu / SCORE_PRECISION;
+        let expected = base.saturating_mul(skill_mu) / SCORE_PRECISION;
         assert_eq!(score, expected, "expected {expected}, got {score}");
     }
 
@@ -16861,6 +17937,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(
@@ -16911,6 +17989,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         if let Some(key) = attacker_key {
             payload.sign_authorization(key, nonce);
@@ -26121,6 +27201,7 @@ pub fn auth(
         governance_signature: if online { signature(&a, 99) } else { vec![] },
         payout_key: online.then(|| pk(owner)),
         payout_signature: if online { signature(&a, owner) } else { vec![] },
+        payout_passkey: None,
     }
 }
 pub fn transaction(
@@ -26528,3 +27609,279 @@ mod device_submission_limit_3565 {
 #[cfg(test)]
 #[path = "node_settlement_producer_tests.rs"]
 mod node_settlement_producer_tests;
+
+#[cfg(test)]
+mod node_service_reveal_guard_tests {
+    use super::*;
+    use crate::consensus::node_bond_registry::{NodeBondRegistry, epoch_close};
+    use crate::contributions::commit_reveal::CommitRecord;
+    use std::collections::BTreeMap;
+
+    const ACTIVATION: u64 = 2;
+
+    fn tx(ty: TransactionType, tag: &str, data: Option<String>) -> Transaction {
+        let mut tx = Transaction::new(Vec::new(), Vec::new());
+        tx.tx_type = ty;
+        tx.data = data.or_else(|| Some(format!("{{\"tag\":\"{tag}\"}}")));
+        tx.set_id();
+        tx
+    }
+    fn commit(id: &str) -> Transaction {
+        let data = serde_json::json!({
+            "commit_id": id, "station_id": "s", "timestamp": 1, "contribution_type": "contribution"
+        });
+        tx(TransactionType::ContributionCommit, id, Some(data.to_string()))
+    }
+    fn reveal(id: &str) -> Transaction {
+        reveal_with_quality(id, 0.9)
+    }
+    fn reveal_with_quality(id: &str, quality: f64) -> Transaction {
+        let data = serde_json::json!({
+            "commit_id": id, "station_id": "s", "timestamp": 1,
+            "contribution_type": "contribution", "data": {"quality": quality}, "nonce": "n"
+        });
+        tx(TransactionType::ContributionReveal, id, Some(data.to_string()))
+    }
+    fn batch() -> Transaction {
+        tx(TransactionType::NodeServiceBatch, "batch", None)
+    }
+    fn state_with(commits: &[(&str, u64)]) -> State {
+        let mut state = State::new();
+        state.node_bond_registry = Some(NodeBondRegistry {
+            activation_height: ACTIVATION,
+            genesis_hash: [0; 32],
+            block_height: ACTIVATION,
+            lifecycle_tx_count: 0,
+            sequence: 0,
+            registrations: BTreeMap::new(),
+            frozen_epochs: BTreeMap::new(),
+        });
+        for (id, reveal_expires_at) in commits {
+            state.pending_commits.insert(
+                id.to_string(),
+                CommitRecord {
+                    commit_id: id.to_string(),
+                    station_id: "s".into(),
+                    contribution_type: "contribution".into(),
+                    provenance_class: Default::default(),
+                    committed_at: 0,
+                    commit_expires_at: *reveal_expires_at,
+                    reveal_expires_at: *reveal_expires_at,
+                },
+            );
+        }
+        state
+    }
+    fn close0() -> u64 {
+        epoch_close(ACTIVATION, 0).unwrap()
+    }
+    fn kinds(txs: &[Transaction]) -> (usize, usize) {
+        (
+            txs.iter().filter(|t| t.tx_type == TransactionType::NodeServiceBatch).count(),
+            txs.iter().filter(|t| t.tx_type == TransactionType::ContributionReveal).count(),
+        )
+    }
+    fn run(state: &State, height: u64, txs: &mut Vec<Transaction>, n: &mut u32, can_wait: bool) -> NodeServiceRevealGuard {
+        ProofOfPublishing::separate_node_service_from_reveals(state, height, txs, n, |_| can_wait)
+    }
+
+    #[test]
+    fn mixed_block_far_from_epoch_close_defers_node_service_and_keeps_reveals() {
+        let height = ACTIVATION + 10;
+        let state = state_with(&[("c1", height + 2)]);
+        let mut txs = vec![batch(), reveal("c1")];
+        let mut n = 0;
+        let r = run(&state, height, &mut txs, &mut n, true);
+        assert_eq!(r, NodeServiceRevealGuard::Mixed { deferred_reveals: 0, deferred_node_service: 1 });
+        assert_eq!(kinds(&txs), (0, 1));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn unmixed_blocks_are_untouched_and_reset_the_counter() {
+        let state = state_with(&[]);
+        let mut n = 3;
+        let mut only_batch = vec![batch(), batch()];
+        assert_eq!(run(&state, 50, &mut only_batch, &mut n, true), NodeServiceRevealGuard::NotMixed);
+        assert_eq!(kinds(&only_batch), (2, 0));
+        assert_eq!(n, 0);
+        let mut only_reveal = vec![commit("c9"), reveal("c9")];
+        assert_eq!(run(&state, 50, &mut only_reveal, &mut n, true), NodeServiceRevealGuard::NotMixed);
+        assert_eq!(only_reveal.len(), 2);
+    }
+
+    /// Worst case: a node-service transaction is ALWAYS in the candidate, so reservation can do
+    /// no worse. Reveals arrive with the shortest window chain 888 has. Every one must land.
+    #[test]
+    fn sweep_every_reveal_lands_in_its_window_with_node_kinds_always_present() {
+        for stride in [1u64, 2, 3, 5, 7] {
+            for start_deferrals in 0..=4u32 {
+                let mut n = start_deferrals;
+                let mut pending: Vec<(String, u64, u64)> = Vec::new();
+                let mut delays = [0u64; 4];
+                let from = ACTIVATION + 1;
+                let to = close0() + 40;
+                for h in from..to {
+                    if (h - from) % stride == 0 {
+                        // Commit in block h - 1, window 3, so the last block that may carry it is h + 2.
+                        pending.push((format!("c{h}"), h + 2, h));
+                    }
+                    let commits: Vec<(&str, u64)> = pending.iter().map(|(id, e, _)| (id.as_str(), *e)).collect();
+                    let state = state_with(&commits);
+                    let mut txs = vec![batch()];
+                    txs.extend(pending.iter().map(|(id, _, _)| reveal(id)));
+                    let _ = run(&state, h, &mut txs, &mut n, true);
+                    let (_, kept) = kinds(&txs);
+                    if kept > 0 {
+                        for (id, expires, arrived) in pending.drain(..) {
+                            assert!(h <= expires, "{id} mined at {h} past {expires}");
+                            delays[(h - arrived) as usize] += 1;
+                        }
+                    }
+                    assert!(pending.iter().all(|(_, expires, _)| h < *expires), "a reveal was at its last block and held back at {h}");
+                }
+                if start_deferrals == 0 {
+                    println!("SWEEP stride {stride}: reveals by delay in blocks 0,1,2,3 = {delays:?}");
+                }
+                assert_eq!(delays[3], 0);
+            }
+        }
+    }
+
+    /// Liveness (receipts): in the epoch tail a pending receipt batch takes the
+    /// block and the waitable reveal moves to the next block, inside its window.
+    #[test]
+    fn receipt_batch_in_the_epoch_tail_lands_in_epoch() {
+        let height = close0(); // last block of epoch 0
+        let state = state_with(&[("c1", height + 1)]);
+        let mut txs = vec![batch(), reveal("c1")];
+        let mut n = 0;
+        let r = run(&state, height, &mut txs, &mut n, true);
+        assert_eq!(r, NodeServiceRevealGuard::Mixed { deferred_reveals: 1, deferred_node_service: 0 });
+        assert_eq!(kinds(&txs), (1, 0), "receipt batch lands at the epoch close");
+        assert_eq!(
+            crate::consensus::node_bond_registry::epoch_at(ACTIVATION, height),
+            Some(0),
+            "the block that carries the batch is still in epoch 0"
+        );
+        // Next block (first of epoch 1, not in a tail): the deferred reveal is
+        // selected again and, with a new batch pending, keeps its block.
+        let mut next = vec![batch(), reveal("c1")];
+        let r = run(&state, height + 1, &mut next, &mut n, true);
+        assert_eq!(r, NodeServiceRevealGuard::Mixed { deferred_reveals: 0, deferred_node_service: 1 });
+        assert_eq!(kinds(&next), (0, 1), "the deferred reveal lands in the next block");
+    }
+
+    /// The closure `create_next_block` passes: before quality enforcement any
+    /// reveal may wait; after it a Low-band reveal may not, an acceptable one may.
+    #[test]
+    fn real_reveal_can_wait_closure_follows_quality_enforcement() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let enforced_from = pop.data_quality_policy.quality_enforcement_activation_height;
+        let h = enforced_from.max(1) + 10;
+        assert!(pop.guard_reveal_can_wait(h, &reveal_with_quality("g", 0.9)));
+        assert!(!pop.guard_reveal_can_wait(h, &reveal_with_quality("l", 0.20)));
+
+        let mut late = ProofOfPublishing::new(1, 60, 0, 10);
+        let mut policy = late.data_quality_policy.clone();
+        policy.quality_enforcement_activation_height = 100;
+        late.set_data_quality_policy(policy).unwrap();
+        assert!(late.guard_reveal_can_wait(50, &reveal_with_quality("l", 0.20)), "before enforcement");
+        assert!(!late.guard_reveal_can_wait(100, &reveal_with_quality("l", 0.20)), "from enforcement");
+
+        // Wired through the guard: in the epoch tail a Low reveal keeps its
+        // block and the batch waits; an acceptable one moves.
+        let height = close0();
+        let state = state_with(&[("c1", height + 2)]);
+        let mut low = vec![batch(), reveal_with_quality("c1", 0.20)];
+        ProofOfPublishing::separate_node_service_from_reveals(&state, height, &mut low, &mut 0, |t| {
+            pop.guard_reveal_can_wait(height, t)
+        });
+        assert_eq!(kinds(&low), (0, 1));
+        let mut good = vec![batch(), reveal_with_quality("c1", 0.9)];
+        ProofOfPublishing::separate_node_service_from_reveals(&state, height, &mut good, &mut 0, |t| {
+            pop.guard_reveal_can_wait(height, t)
+        });
+        assert_eq!(kinds(&good), (1, 0));
+    }
+
+    /// A ForecastReveal derives no low-quality streak, so a block with only
+    /// forecast reveals and a node-service transaction is left as it is.
+    #[test]
+    fn forecast_reveal_with_node_service_is_not_mixed() {
+        let state = state_with(&[]);
+        let data = serde_json::json!({
+            "commit_id": "f1", "station_id": "s", "timestamp": 1,
+            "contribution_type": "forecast", "data": {"quality": 0.9}, "nonce": "n"
+        });
+        let mut txs = vec![batch(), tx(TransactionType::ForecastReveal, "f1", Some(data.to_string()))];
+        let mut n = 2;
+        assert_eq!(run(&state, close0(), &mut txs, &mut n, true), NodeServiceRevealGuard::NotMixed);
+        assert_eq!(txs.len(), 2, "both kept");
+        assert_eq!(n, 0, "an unmixed block resets the deferral counter");
+    }
+
+    /// Liveness (reveals): a reveal at its deadline is never deferred, even in
+    /// the epoch tail; a Low reveal (needs in-block attestations) neither.
+    #[test]
+    fn reveal_at_its_deadline_or_not_waitable_is_never_deferred() {
+        let height = close0();
+        let at_deadline = state_with(&[("c1", height)]);
+        let mut txs = vec![batch(), reveal("c1")];
+        let mut n = 0;
+        run(&at_deadline, height, &mut txs, &mut n, true);
+        assert_eq!(kinds(&txs), (0, 1), "the expiring reveal keeps its block");
+
+        let roomy = state_with(&[("c1", height + 2)]);
+        let mut txs = vec![batch(), reveal("c1")];
+        run(&roomy, height, &mut txs, &mut 0, false);
+        assert_eq!(kinds(&txs), (0, 1), "a reveal that cannot wait keeps its block");
+
+        let unknown_commit = state_with(&[]);
+        let mut txs = vec![batch(), reveal("missing")];
+        run(&unknown_commit, height, &mut txs, &mut 0, true);
+        assert_eq!(kinds(&txs), (0, 1), "unknown deadline is treated as not waitable");
+    }
+
+    #[test]
+    fn same_block_commit_makes_its_reveal_waitable() {
+        let height = close0();
+        let state = state_with(&[]);
+        let mut txs = vec![batch(), commit("c2"), reveal("c2")];
+        run(&state, height, &mut txs, &mut 0, true);
+        assert_eq!(kinds(&txs), (1, 0));
+        assert_eq!(txs.iter().filter(|t| t.tx_type == TransactionType::ContributionCommit).count(), 1);
+    }
+
+    /// Liveness (node service under continuous reveal traffic): after the
+    /// deferral bound the node-service transaction takes the block.
+    #[test]
+    fn node_service_is_not_starved_by_continuous_reveals() {
+        let height = ACTIVATION + 10;
+        let state = state_with(&[("c1", height + 100)]);
+        let mut n = 0;
+        for i in 0..NODE_SERVICE_GUARD_MAX_DEFERRALS {
+            let mut txs = vec![batch(), reveal("c1")];
+            run(&state, height + u64::from(i), &mut txs, &mut n, true);
+            assert_eq!(kinds(&txs), (0, 1));
+        }
+        let mut txs = vec![batch(), reveal("c1")];
+        run(&state, height + u64::from(NODE_SERVICE_GUARD_MAX_DEFERRALS), &mut txs, &mut n, true);
+        assert_eq!(kinds(&txs), (1, 0), "bounded deferral");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn every_node_service_kind_is_separated() {
+        let state = state_with(&[("c1", 100)]);
+        for ty in [
+            TransactionType::NodeBondLifecycle,
+            TransactionType::NodeServiceBatch,
+            TransactionType::NodeFraudReport,
+        ] {
+            let mut txs = vec![tx(ty, "ns", None), reveal("c1")];
+            run(&state, ACTIVATION + 10, &mut txs, &mut 0, true);
+            assert!(txs.iter().all(|t| t.tx_type == TransactionType::ContributionReveal), "{ty:?}");
+        }
+    }
+}

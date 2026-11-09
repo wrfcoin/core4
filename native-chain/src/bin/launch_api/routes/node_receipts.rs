@@ -12,9 +12,10 @@ use wrfcoin_native_chain::{
 use wrfcoin_shared_protocol::{
     consensus::{node_receipt_registry::claim_hash, node_share_contracts::BondedServiceClaim},
     crypto::chain_binding::ChainIdentity,
+    mempool::node_admission,
 };
 
-fn identity() -> Option<ChainIdentity> {
+pub(crate) fn identity() -> Option<ChainIdentity> {
     let c =
         wrfcoin_shared_protocol::governance::schedule_extension::schedule_extension_authority()?
             .context();
@@ -284,6 +285,16 @@ pub async fn submit(
     let Some(carrying_height) = chain.height.checked_add(1) else {
         return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "NODE_SUBMISSION_REFUSED", "no valid carrying height");
     };
+    // Sending the same thing again is success, not a fault: already on chain, or already pending.
+    if node_admission::batch_included(&chain.state, &tx) {
+        return HttpResponse::Ok().json(serde_json::json!({"tx_id":tx.id.map(|hash| hash.to_hex()),"admitted":true,"included":true,"duplicate":true}));
+    }
+    if let Some(pending) = crate::helpers::exact_pending_node_tx(&state, &tx).await {
+        return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+    }
+    if let Err(refusal) = node_admission::check(&chain.state, &tx, chain.height) {
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, refusal.code(), refusal.message());
+    }
     // A licensed owner must submit authentic claims before consuming durable
     // journal capacity. Inclusion and nonce execution remain the applier's job.
     for claim in &payload.batch.claims {
@@ -328,19 +339,19 @@ pub async fn submit(
     // Serialize before admission; gossip only after the pool accepts it.
     #[cfg(feature = "p2p")]
     let serialized = bincode::serialize(&tx).map_err(|error| error.to_string());
-    if state
+    let admitted = state
         .mempool
         .write()
         .await
-        .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(height))
-        .is_err()
-    {
-        return envelope_error(
-            &req,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "NODE_SUBMISSION_REFUSED",
-            "Node submission refused by common admission policy",
-        );
+        .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(height));
+    if let Err(reason) = admitted {
+        // A rewrapped copy of this same signed batch is pending, which is just as good.
+        if let Some(pending) = state.mempool.read().await.pending_node_copy(&tx) {
+            return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+        }
+        log::info!("Node receipt submission {} refused: {reason}", id.as_deref().unwrap_or("?"));
+        // The pool's reasons are fixed text and limits. This route is operator-only.
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "NODE_SUBMISSION_REFUSED", reason.to_string());
     }
     // Without this the tx is mined only if this node produces the next block (#3588).
     #[cfg(feature = "p2p")]
@@ -352,6 +363,74 @@ pub async fn submit(
         );
     }
     HttpResponse::Accepted().json(serde_json::json!({"tx_id":id,"admitted":true,"included":false}))
+}
+
+/// `POST /network/snapshot-sync/p2p-fetch-auth` body.
+#[cfg(feature = "p2p")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchAuthRequest {
+    pub server_peer_id: String,
+    pub client_peer_id: String,
+}
+
+/// Receiver side of a P2P bonded fetch: this node's signer (the consumer key
+/// its bond registered) authorizes one CLI libp2p peer to fetch from one
+/// serving peer. The signature is under its own domain tag and can only ever
+/// open the bonded-fetch protocol; it is never a chain object. Operator only,
+/// and deliberately not behind the Node-service guard, because a fresh
+/// receiver has not installed the snapshot that activates that feature yet.
+#[cfg(feature = "p2p")]
+pub async fn fetch_auth(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    body: web::Json<FetchAuthRequest>,
+) -> impl Responder {
+    use wrfcoin_p2p::bonded_fetch::{BondedFetchAuth, MAX_PEER_ID_CHARS};
+    if let Err(response) = require_role(&req, &state, ApiRole::Operator) {
+        return response;
+    }
+    let peer_ok = |p: &str| {
+        p.len() <= MAX_PEER_ID_CHARS && p.parse::<libp2p::PeerId>().is_ok()
+    };
+    if !peer_ok(&body.server_peer_id) || !peer_ok(&body.client_peer_id) {
+        return envelope_error(&req, StatusCode::BAD_REQUEST, "BAD_REQUEST", "server_peer_id and client_peer_id must be libp2p peer ids");
+    }
+    let Some(signer) = state.snapshot_signing_key.as_ref() else {
+        return envelope_error(
+            &req,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NODE_RECEIVER_SIGNER_UNAVAILABLE",
+            "registered receiver signer unavailable",
+        );
+    };
+    let Ok(consumer_key) = <[u8; 32]>::try_from(signer.public_key().as_bytes()) else {
+        return envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "NODE_RECEIVER_SIGNER_UNAVAILABLE", "receiver signer key is not ed25519");
+    };
+    // determinism-ok: off-chain authorization timestamp, never a consensus input.
+    let issued_at = chrono::Utc::now().timestamp();
+    // determinism-ok: off-chain authorization nonce, never a consensus input.
+    let nonce: [u8; 16] = rand::random();
+    let preimage = BondedFetchAuth::signing_preimage(
+        ChainIdentity::active(),
+        &consumer_key,
+        &body.server_peer_id,
+        &body.client_peer_id,
+        issued_at,
+        &nonce,
+    );
+    let height = state.blockchain.read().await.height;
+    match signer.sign_at_height(&preimage, height) {
+        Ok(signature) => HttpResponse::Ok().json(BondedFetchAuth {
+            consumer_key: hex::encode(consumer_key),
+            server_peer_id: body.server_peer_id.clone(),
+            client_peer_id: body.client_peer_id.clone(),
+            issued_at,
+            nonce: hex::encode(nonce),
+            signature: signature.to_hex(),
+        }),
+        Err(_) => envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "NODE_RECEIVER_SIGNER_UNAVAILABLE", "receiver signer refused"),
+    }
 }
 
 /// Bounded experimental ingestion for the signed state plus required block

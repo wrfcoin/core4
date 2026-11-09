@@ -93,7 +93,8 @@ pub struct NetworkStats {
     /// workstation node) was invisible outside debug logs.
     pub outgoing_dial_failures: u64,
     /// Genesis handshakes republished when a peer subscribed to the handshake
-    /// topic, closing the publish/subscribe race (#2544).
+    /// topic, closing the publish/subscribe race (#2544), or when a recently
+    /// connected peer was due a retry (`handshake_redelivery`).
     pub genesis_handshake_republished: u64,
     /// Outbound dial candidates refused for concentrating the outbound peer set
     /// in one IPv4 `/24` (#2114).
@@ -160,6 +161,12 @@ pub struct NetworkStats {
     pub sync_peer_rotations: u64,
     /// Forced connection-refresh attempts after repeated block-sync timeouts.
     pub sync_connection_refresh_attempts: u64,
+    /// `ChainStatus` and `NewBlock` gossip messages received on the blocks topic.
+    pub chain_gossip_received: u64,
+    /// Times the silent-gossip watchdog probed its peers over block sync.
+    pub gossip_silence_probes: u64,
+    /// Connections the silent-gossip watchdog dropped so they redial.
+    pub gossip_silence_reconnects: u64,
     /// Planning attempts deferred because eligible peers were cooling down.
     pub sync_cooldown_deferrals: u64,
     /// Last-resort dispatches to a banned peer because no un-banned
@@ -257,6 +264,9 @@ pub(crate) struct MetricsCollector {
     pub sync_ranges_requeued: AtomicU64,
     pub sync_peer_rotations: AtomicU64,
     pub sync_connection_refresh_attempts: AtomicU64,
+    pub chain_gossip_received: AtomicU64,
+    pub gossip_silence_probes: AtomicU64,
+    pub gossip_silence_reconnects: AtomicU64,
     pub sync_cooldown_deferrals: AtomicU64,
     pub sync_last_resort_dispatches: AtomicU64,
     pub sync_reconnect_status_broadcasts: AtomicU64,
@@ -338,6 +348,9 @@ impl MetricsCollector {
             sync_ranges_requeued: AtomicU64::new(0),
             sync_peer_rotations: AtomicU64::new(0),
             sync_connection_refresh_attempts: AtomicU64::new(0),
+            chain_gossip_received: AtomicU64::new(0),
+            gossip_silence_probes: AtomicU64::new(0),
+            gossip_silence_reconnects: AtomicU64::new(0),
             sync_cooldown_deferrals: AtomicU64::new(0),
             sync_last_resort_dispatches: AtomicU64::new(0),
             sync_reconnect_status_broadcasts: AtomicU64::new(0),
@@ -442,6 +455,9 @@ impl MetricsCollector {
             sync_connection_refresh_attempts: AtomicU64::new(
                 snapshot.sync_connection_refresh_attempts,
             ),
+            chain_gossip_received: AtomicU64::new(snapshot.chain_gossip_received),
+            gossip_silence_probes: AtomicU64::new(snapshot.gossip_silence_probes),
+            gossip_silence_reconnects: AtomicU64::new(snapshot.gossip_silence_reconnects),
             sync_cooldown_deferrals: AtomicU64::new(snapshot.sync_cooldown_deferrals),
             sync_last_resort_dispatches: AtomicU64::new(snapshot.sync_last_resort_dispatches),
             sync_reconnect_status_broadcasts: AtomicU64::new(
@@ -607,6 +623,9 @@ impl MetricsCollector {
             sync_connection_refresh_attempts: self
                 .sync_connection_refresh_attempts
                 .load(Ordering::Relaxed),
+            chain_gossip_received: self.chain_gossip_received.load(Ordering::Relaxed),
+            gossip_silence_probes: self.gossip_silence_probes.load(Ordering::Relaxed),
+            gossip_silence_reconnects: self.gossip_silence_reconnects.load(Ordering::Relaxed),
             sync_cooldown_deferrals: self.sync_cooldown_deferrals.load(Ordering::Relaxed),
             sync_last_resort_dispatches: self
                 .sync_last_resort_dispatches
@@ -743,6 +762,18 @@ impl MetricsCollector {
     pub fn record_sync_reconnect_status_broadcast(&self) {
         self.sync_reconnect_status_broadcasts
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_chain_gossip_received(&self) {
+        self.chain_gossip_received.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_gossip_silence_probe(&self) {
+        self.gossip_silence_probes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_gossip_silence_reconnect(&self) {
+        self.gossip_silence_reconnects.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_sync_connection_refresh_attempt(&self) {

@@ -85,6 +85,9 @@ pub enum SignedObjectKind {
     NodeSettlementEndorsement,
     NodeBondAuthorization,
     NodeBondPossession,
+    /// The challenge a passkey payout account's WebAuthn assertion commits to
+    /// (`passkey_bond_payout`).
+    NodeBondPayoutPasskeyApproval,
     NodeReceiptSubmissionAuthorization,
     RetrievalAuditReceipt,
 }
@@ -124,6 +127,7 @@ impl SignedObjectKind {
             Self::NodeSettlementEndorsement => "NodeSettlementEndorsement",
             Self::NodeBondAuthorization => "NodeBondAuthorization",
             Self::NodeBondPossession => "NodeBondPossession",
+            Self::NodeBondPayoutPasskeyApproval => "NodeBondPayoutPasskeyApproval",
             Self::NodeReceiptSubmissionAuthorization => "NodeReceiptSubmissionAuthorization",
             Self::RetrievalAuditReceipt => "RetrievalAuditReceipt",
         }
@@ -467,6 +471,12 @@ pub const SIGNED_OBJECT_REGISTRY: &[SignedObjectEntry] = &[
         coverage: DomainCoverage::Implemented,
     },
     SignedObjectEntry {
+        kind: SignedObjectKind::NodeBondPayoutPasskeyApproval,
+        tag: b"wrfcoin.node_bond_payout_passkey.v1",
+        rust_type: "consensus::node_share_contracts::NodeBondPayoutPasskeyApproval",
+        coverage: DomainCoverage::Implemented,
+    },
+    SignedObjectEntry {
         kind: SignedObjectKind::NodeReceiptSubmissionAuthorization,
         tag: b"wrfcoin.node_receipt_submission.v1",
         rust_type: "consensus::node_receipt_registry::NodeReceiptSubmissionAuthorization",
@@ -518,6 +528,7 @@ pub const ALL_SIGNED_OBJECT_KINDS: &[SignedObjectKind] = &[
     SignedObjectKind::NodeSettlementEndorsement,
     SignedObjectKind::NodeBondAuthorization,
     SignedObjectKind::NodeBondPossession,
+    SignedObjectKind::NodeBondPayoutPasskeyApproval,
     SignedObjectKind::NodeReceiptSubmissionAuthorization,
     SignedObjectKind::RetrievalAuditReceipt,
 ];

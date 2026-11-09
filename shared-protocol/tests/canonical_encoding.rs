@@ -763,6 +763,10 @@ const CANONICAL_DEFERRED: &[(SignedObjectKind, &str)] = &[
         SignedObjectKind::NodeBondPossession,
         "S1 DomainSeparated body and fixed-integer bounded wire; executed signing and wire goldens; no parallel Canonical signing codec",
     ),
+    (
+        SignedObjectKind::NodeBondPayoutPasskeyApproval,
+        "passkey_bond_payout WebAuthn challenge subject: DomainSeparated body with an executed independent V2 golden (passkey_bond_payout_vectors); no parallel Canonical signing codec",
+    ),
 ];
 
 #[test]

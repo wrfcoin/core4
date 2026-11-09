@@ -60,9 +60,13 @@ pub const DEBIT_TIME_UNPLUMBED_2168: Timestamp = Timestamp(0);
 /// pre-block sites with no post-application State. The
 /// `pre_block_empty_view_agrees_with_state_view_for_every_storable_rule`
 /// tripwire enforces that they stay safe while refuse-at-declare leaves
-/// SignerIsSender as the sole storable rule. Before any other rule is
-/// storable, verify-block must gain this State-backed view or it will accept
-/// what apply refuses.
+/// SignerIsSender as the sole declarable rule. `SignerPlusSecurityKey`
+/// (`security_key_spend`) is storable through its own actions; it is safe for
+/// these EmptyView sites because the State view only ever ADDS a requirement
+/// (verify-block accepts a superset, the governance sink drops the rest
+/// deterministically), pinned by `security_key_spend_state_view_is_stricter`.
+/// Any rule that could accept what the ed25519 check refuses still needs
+/// verify-block to gain this State-backed view first.
 pub trait AuthorizationView {
     fn declared(&self, account: &Address) -> AccountAuthorization;
 }
@@ -112,6 +116,15 @@ pub enum AuthorizationRule {
         /// Delegation stops being honoured at this time, if set.
         valid_until: Option<Timestamp>,
     },
+    /// A passphrase (ed25519) account that also requires a registered FIDO2 /
+    /// WebAuthn P-256 security key to spend (`security_key_spend`). Written
+    /// only by `SecurityKeyAction` transactions
+    /// ([`crate::accounts::security_key::apply_action`]), never through
+    /// [`apply_declaration`]. Appended LAST so earlier bincode variant indices
+    /// are unchanged.
+    SignerPlusSecurityKey {
+        policy: crate::accounts::security_key::SecurityKeyPolicy,
+    },
 }
 
 impl AuthorizationRule {
@@ -123,7 +136,7 @@ impl AuthorizationRule {
     /// The program this rule dispatches to, if any.
     pub fn program(&self) -> Option<[u8; 32]> {
         match self {
-            Self::SignerIsSender => None,
+            Self::SignerIsSender | Self::SignerPlusSecurityKey { .. } => None,
             Self::SmartAccount { program } | Self::Delegated { program, .. } => Some(*program),
         }
     }
@@ -241,6 +254,19 @@ fn encode_authorization_for_preimage(authorization: &Option<AccountAuthorization
                         },
                     }
                 },
+                Some(AuthorizationRule::SignerPlusSecurityKey { policy }) => {
+                    // Refused by `check_declaration` before any signature is
+                    // checked; encoded only so the preimage stays total.
+                    push(&mut encoded, &[1]);
+                    push(&mut encoded, &[3]);
+                    push(&mut encoded, &(policy.keys.len() as u64).to_le_bytes());
+                    for key in &policy.keys {
+                        push(&mut encoded, &key.public_key_p256);
+                        push(&mut encoded, &key.rp_id_hash);
+                        push(&mut encoded, &key.credential_id);
+                    }
+                    push(&mut encoded, &policy.escape_delay_blocks.to_le_bytes());
+                },
             }
         },
     }
@@ -260,6 +286,14 @@ pub fn apply_declaration(
     let public_key = PublicKey::from_hex(&declaration.signer_public_key).map_err(|_| AuthorizationError::MalformedSignature)?;
     let signature = Signature::from_hex(&declaration.signature).map_err(|_| AuthorizationError::MalformedSignature)?;
     if Address::from_public_key(&public_key) != declaration.account { return Err(AuthorizationError::SignerIsNotSender.into()); }
+    // A security-key policy in force can only be changed by a key-signed
+    // `SecurityKeyAction` (or after its phrase-only escape matures): letting
+    // the phrase key alone overwrite it here would bypass the key entirely.
+    if existing.current.as_ref().and_then(|c| c.declared.as_ref()).is_some_and(|rule| {
+        matches!(rule, AuthorizationRule::SignerPlusSecurityKey { policy } if policy.enforced_at(height))
+    }) {
+        return Err(AuthorizationError::SecurityKeyRequired.into());
+    }
     if let Some(ref authorization) = declaration.authorization {
         if let Some(ref rule) = authorization.declared { check_declaration(rule, height, now)?; }
     }
@@ -306,6 +340,11 @@ pub fn authorization_for(
         return AuthorizationRule::SignerIsSender;
     }
     match &declaration.declared {
+        // A matured phrase-only escape lapses the security-key rule back to
+        // the account's own key, exactly like an expired delegation.
+        Some(AuthorizationRule::SignerPlusSecurityKey { policy }) if !policy.enforced_at(height) => {
+            AuthorizationRule::SignerIsSender
+        },
         Some(rule) if rule.in_force_at(now) => rule.clone(),
         _ => AuthorizationRule::SignerIsSender,
     }
@@ -341,6 +380,14 @@ pub enum AuthorizationError {
     InvalidSignature,
     /// A declared policy exists, but its validator has not landed yet.
     RuleNotImplemented,
+    /// The account requires a security-key assertion and none was supplied
+    /// (or the action needs one).
+    SecurityKeyRequired,
+    /// The supplied security-key assertion did not verify for this debit.
+    SecurityKeyInvalid,
+    /// Security-key rules are written by `SecurityKeyAction` transactions, not
+    /// by a generic declaration.
+    SecurityKeyRuleIsActionManaged,
 }
 
 impl std::fmt::Display for AuthorizationError {
@@ -363,6 +410,17 @@ impl std::fmt::Display for AuthorizationError {
             Self::RuleNotImplemented => {
                 write!(f, "account authorization rule is not implemented (#2168)")
             },
+            Self::SecurityKeyRequired => write!(
+                f,
+                "this account requires a security-key assertion to spend (security_key_spend)"
+            ),
+            Self::SecurityKeyInvalid => {
+                write!(f, "security-key assertion does not verify for this debit (security_key_spend)")
+            },
+            Self::SecurityKeyRuleIsActionManaged => write!(
+                f,
+                "security-key rules are managed by SecurityKeyAction transactions (security_key_spend)"
+            ),
         }
     }
 }
@@ -381,20 +439,63 @@ pub fn authorize_debit<V: AuthorizationView>(
     height: u64,
     now: Timestamp,
 ) -> Result<(), AuthorizationError> {
+    authorize_debit_with_security_key(view, from, message, auth, None, height, now)
+}
+
+fn verify_signer_is_sender(
+    from: &Address,
+    message: &[u8],
+    auth: SpendAuthorization<'_>,
+) -> Result<(), AuthorizationError> {
+    let public_key = PublicKey::from_hex(auth.signer_public_key)
+        .map_err(|_| AuthorizationError::MalformedSignature)?;
+    let signature =
+        Signature::from_hex(auth.signature).map_err(|_| AuthorizationError::MalformedSignature)?;
+    if Address::from_public_key(&public_key) != *from {
+        return Err(AuthorizationError::SignerIsNotSender);
+    }
+    if !public_key.verify(message, &signature) {
+        return Err(AuthorizationError::InvalidSignature);
+    }
+    Ok(())
+}
+
+/// [`authorize_debit`] with the optional security-key assertion a
+/// transaction carries (`security_key_auth`). The assertion is consulted only
+/// when the account's rule at `height` is
+/// [`AuthorizationRule::SignerPlusSecurityKey`]; for every other account this
+/// is exactly [`authorize_debit`].
+///
+/// Pre-block callers ([`EmptyAuthorizationView`]) never see a security-key
+/// rule, so they check the ed25519 half only. That is safe because this
+/// State-backed check is strictly stronger: it never accepts a debit the
+/// empty view refuses (pinned by `security_key_spend_state_view_is_stricter`).
+pub fn authorize_debit_with_security_key<V: AuthorizationView>(
+    view: &V,
+    from: &Address,
+    message: &[u8],
+    auth: SpendAuthorization<'_>,
+    security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    height: u64,
+    now: Timestamp,
+) -> Result<(), AuthorizationError> {
     let declaration = view.declared(from);
     match authorization_for(&declaration, height, now) {
-        AuthorizationRule::SignerIsSender => {
-            let public_key = PublicKey::from_hex(auth.signer_public_key)
-                .map_err(|_| AuthorizationError::MalformedSignature)?;
-            let signature = Signature::from_hex(auth.signature)
-                .map_err(|_| AuthorizationError::MalformedSignature)?;
-            if Address::from_public_key(&public_key) != *from {
-                return Err(AuthorizationError::SignerIsNotSender);
+        AuthorizationRule::SignerIsSender => verify_signer_is_sender(from, message, auth),
+        AuthorizationRule::SignerPlusSecurityKey { policy } => {
+            // Deny by default: a stored rule whose feature is not in force is
+            // refused, never weakened.
+            if !crate::accounts::security_key::security_key_active(height) {
+                return Err(AuthorizationError::RuleNotImplemented);
             }
-            if !public_key.verify(message, &signature) {
-                return Err(AuthorizationError::InvalidSignature);
-            }
-            Ok(())
+            verify_signer_is_sender(from, message, auth)?;
+            crate::accounts::security_key::verify_spend(&policy, from, message, security_key)
+                .map_err(|error| match error {
+                    crate::accounts::security_key::SecurityKeyError::ProofRequired => {
+                        AuthorizationError::SecurityKeyRequired
+                    },
+                    _ => AuthorizationError::SecurityKeyInvalid,
+                })
         },
         AuthorizationRule::SmartAccount { .. } | AuthorizationRule::Delegated { .. } => {
             Err(AuthorizationError::RuleNotImplemented)
@@ -425,6 +526,9 @@ pub fn check_declaration(
         AuthorizationRule::SmartAccount { .. } | AuthorizationRule::Delegated { .. }
     ) {
         return Err(AuthorizationError::RuleNotImplemented);
+    }
+    if matches!(rule, AuthorizationRule::SignerPlusSecurityKey { .. }) {
+        return Err(AuthorizationError::SecurityKeyRuleIsActionManaged);
     }
     if let Some(program) = rule.program() {
         if program == [0u8; 32] {

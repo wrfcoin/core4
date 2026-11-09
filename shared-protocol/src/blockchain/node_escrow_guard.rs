@@ -95,6 +95,10 @@ impl State {
                     || tx
                         .parse_slashing_report_payload()
                         .is_some_and(|p| identity(&p.validator_id))
+                    // Security-key action: same fence as DeclareAuthorization.
+                    || tx
+                        .parse_security_key_action_payload()
+                        .is_some_and(|p| identity(&p.account))
             },
             ApplyAccountRecovery {
                 account, action, ..
@@ -123,7 +127,8 @@ impl State {
             },
             ApplyStationRegistration { station }
             | ApplyStationRegistrationWithOwnerConsent { station, .. }
-            | ApplyStationRegistrationV2 { station, .. } => identity(&station.owner_address),
+            | ApplyStationRegistrationV2 { station, .. }
+            | ApplyStationRegistrarRegistration { station, .. } => identity(&station.owner_address),
             ApplyStationOwnerTransfer {
                 to_owner_address, ..
             }
