@@ -19,6 +19,10 @@
     },
     {
       "package": "test_server",
+      "target": "bond_admission_key_parity"
+    },
+    {
+      "package": "test_server",
       "target": "security_key_feature_parity"
     },
     {
@@ -468,6 +472,10 @@
     },
     {
       "package": "wrfcoin-p2p",
+      "target": "fork_backtrack_reconverge"
+    },
+    {
+      "package": "wrfcoin-p2p",
       "target": "missing_genesis_parent_regression"
     },
     {
@@ -789,6 +797,10 @@
       "target": "station_owner_cli"
     },
     {
+      "package": "wrfcoin_cli",
+      "target": "station_registrar_cli"
+    },
+    {
       "package": "wrfcoin-shared-protocol",
       "target": "station_registration_nonce_3345"
     },
@@ -880,6 +892,10 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "node_rejection_atomicity_3535"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "node_tx_mempool"
     },
     {
       "package": "wrfcoin-shared-protocol",
@@ -1043,6 +1059,30 @@
     {
       "package": "wrfcoin-shared-protocol",
       "target": "passkey_bond_payout_vectors"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "bond_admission_key_unpinned"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key_unpinned"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_registrar_key_unscheduled"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "producer_reprune_guard"
     }
   ],
   "external_coverage": [

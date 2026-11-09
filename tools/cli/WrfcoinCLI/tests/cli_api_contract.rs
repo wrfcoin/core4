@@ -57,10 +57,28 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
     std::fs::create_dir(&dir)?;
     let data = dir.join("data.json");
     std::fs::write(&data, r#"{"temperature":20}"#)?;
-    let input = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
-        data_file: data, nonce: "reveal-nonce".into(), timestamp: 1700000000 };
     let signer = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(3065));
+    let forecaster = wrfcoin_shared_protocol::common::types::Address::from_public_key(
+        &PublicKey::from_private_key(&signer)).to_hex();
+    let input = ForecastInput { forecaster: forecaster.clone(), station_id: "station-forecast".into(),
+        data_file: data, nonce: "reveal-nonce".into(), timestamp: 1700000000 };
     let commit = commit_body(&input, &signer, &signing_chain_id(), &signing_network_id())?;
+    // The commit must be signed by the forecaster's own key (#3290): another
+    // key, or a forecaster that is not an address, is refused before signing.
+    let other = PrivateKey::generate(&mut rand::rngs::StdRng::seed_from_u64(3066));
+    let error = commit_body(&input, &other, &signing_chain_id(), &signing_network_id())
+        .err().expect("a key that is not the forecaster's must be refused").to_string();
+    assert!(error.contains("is not the address of --signer-key"), "{error}");
+    let label = ForecastInput { forecaster: "wrf1forecast".into(), station_id: "station-forecast".into(),
+        data_file: input.data_file.clone(), nonce: "reveal-nonce".into(), timestamp: 1700000000 };
+    let error = commit_body(&label, &signer, &signing_chain_id(), &signing_network_id())
+        .err().expect("a non-address forecaster must be refused").to_string();
+    assert!(error.contains("must be a 0x wallet address") && error.contains(&forecaster), "{error}");
+    let upper = ForecastInput { forecaster: format!("0x{}", forecaster[2..].to_uppercase()),
+        station_id: "station-forecast".into(), data_file: input.data_file.clone(),
+        nonce: "reveal-nonce".into(), timestamp: 1700000000 };
+    assert!(commit_body(&upper, &signer, &signing_chain_id(), &signing_network_id()).is_ok(),
+        "a case variant of the same address is the same forecaster");
     let id = Transaction::compute_commit_id(&serde_json::json!({"temperature":20}),
         "reveal-nonce", "station-forecast", 1700000000, "forecast");
     assert_eq!(commit["commit_hash"], id);
@@ -105,7 +123,7 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
         command.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-url").args(["--output", "json", "forecast", kind,
             "--node-url", &server.url(), "--token", "test-bearer",
-            "--forecaster", "wrf1forecast", "--station-id", "station-forecast",
+            "--forecaster", forecaster.as_str(), "--station-id", "station-forecast",
             "--nonce", "reveal-nonce", "--timestamp", "1700000000", "--data-file"])
             .arg(&input.data_file);
         if kind == "commit" {
@@ -129,7 +147,7 @@ async fn forecast_submission_uses_files_canonical_hash_and_bearer() -> anyhow::R
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wrfcoin"));
         command.env("HOME", &dir).env("WRFCOIN_API_URL", "invalid-url").args(["--output", "json", "forecast", kind,
             "--validate-only", "--node-url", &server.url(), "--token", "validate-only-bearer-canary",
-            "--forecaster", "wrf1forecast", "--station-id", "station-forecast",
+            "--forecaster", forecaster.as_str(), "--station-id", "station-forecast",
             "--nonce", "reveal-nonce", "--timestamp", "1700000000", "--data-file"])
             .arg(&input.data_file);
         if kind == "commit" {

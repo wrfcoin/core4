@@ -23,6 +23,7 @@ use wrfcoin_shared_protocol::{
         domain_signing::DomainSeparated,
         signer::{BlockSigner, SharedKeyFallback, SignerEnv, load_block_signer_for},
     },
+    governance::schedule_extension::bond_admission_keys,
 };
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -31,6 +32,8 @@ pub enum BondSignerRole {
     Server,
     Consumer,
     Governance,
+    /// The pinned bond admission key co-signing a Deposit or Update.
+    Admission,
     Payout,
 }
 
@@ -60,6 +63,10 @@ pub enum BondCommands {
     },
     /// Assemble a keyless Deposit plan, then authorize and submit the approved packet once.
     Deposit(super::node_deposit::DepositArgs),
+    /// Assemble a keyless Update moving a registered bond's payout account
+    /// (amount 0, other fields from the node's bond), then authorize and
+    /// submit the approved packet once.
+    Update(super::node_bond_update::UpdateArgs),
     /// Read the canonical public owner address/key without signing or an API request.
     KeyInfo {
         #[clap(long)]
@@ -108,8 +115,26 @@ pub enum BondCommands {
         #[clap(long)]
         out: PathBuf,
     },
+    /// Admission service: check a Deposit/Update that names a pinned bond
+    /// admission key as co-signer (`bond_admission_key`), and with --key-file
+    /// co-sign it. A software key file is accepted on testnet only. Offline.
+    Admit(super::node_bond_admit::AdmitArgs),
+    /// Node side: bind this node's peer id and public P2P address to a packet
+    /// for the admission service (peer-identity signature). Offline.
+    AdmissionRequest(super::node_bond_admit::AdmissionRequestArgs),
+    /// Dial a P2P address ending in /p2p/<peer id> and ask the keyless
+    /// bonded-fetch Info: proves the node answers there. Sends no key or token.
+    Probe {
+        #[clap(long)]
+        addr: String,
+    },
     /// Submit a fully signed registration and 250 WRF bond deposit.
     RegisterBond {
+        #[clap(long)]
+        transaction_file: PathBuf,
+    },
+    /// Submit a fully signed Update (e.g. a new payout account).
+    SubmitUpdate {
         #[clap(long)]
         transaction_file: PathBuf,
     },
@@ -140,7 +165,7 @@ pub enum BondCommands {
     },
 }
 
-fn read_transaction(path: &Path) -> Result<Transaction> {
+pub(crate) fn read_transaction(path: &Path) -> Result<Transaction> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(40 * 1024 + 1)
@@ -192,7 +217,7 @@ pub(crate) fn read_payout_passkey(
 }
 
 /// Attach a verified passkey payout approval to an online lifecycle packet.
-fn attach_payout_passkey(
+pub(crate) fn attach_payout_passkey(
     tx: &mut Transaction,
     path: &Path,
     identity: &ChainIdentity,
@@ -219,7 +244,7 @@ fn public_id(value: &str) -> Result<String> {
 }
 
 /// Subject bytes and signer-key binding are checked before any signature.
-fn sign_packet(
+pub(crate) fn sign_packet(
     tx: &mut Transaction,
     role: BondSignerRole,
     identity: &ChainIdentity,
@@ -263,6 +288,18 @@ fn sign_packet(
             );
             a.signing_preimage_for(identity, SigningProtocolVersion::V2)
         },
+        BondSignerRole::Admission => {
+            // Deposit and Update only, and only a key this binary pins for
+            // the packet's chain: never the role a governance key signs under.
+            ensure!(
+                online
+                    && p.governance_key == Some(key)
+                    && bond_admission_keys(&hex::encode(a.genesis_hash))
+                        .contains(&hex::encode(key)),
+                "admission signer mismatch"
+            );
+            a.signing_preimage_for(identity, SigningProtocolVersion::V2)
+        },
         BondSignerRole::Payout => {
             ensure!(
                 online
@@ -278,7 +315,9 @@ fn sign_packet(
         BondSignerRole::Owner => p.signed.owner_signature = signature,
         BondSignerRole::Server => p.signed.server_signature = signature,
         BondSignerRole::Consumer => p.signed.consumer_signature = signature,
-        BondSignerRole::Governance => p.governance_signature = signature,
+        BondSignerRole::Governance | BondSignerRole::Admission => {
+            p.governance_signature = signature
+        },
         BondSignerRole::Payout => p.payout_signature = signature,
     }
     tx.data = Some(serde_json::to_string(&p)?);
@@ -313,6 +352,26 @@ fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedS
     }
     load_block_signer_for(env)?
         .ok_or_else(|| anyhow::anyhow!("dedicated Node bond signer unavailable"))
+}
+
+/// The packet a submit command sends, refused unless its lifecycle action is
+/// the one the command names (Deposit, Update, Exit or Withdraw).
+pub(crate) fn submittable(command: &BondCommands, transaction_file: &Path) -> Result<Transaction> {
+    let tx = read_transaction(transaction_file)?;
+    let p = NodeBondLifecycle::parse(&tx)
+        .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
+    let expected = match command {
+        BondCommands::RegisterBond { .. } => NodeBondAction::Deposit,
+        BondCommands::SubmitUpdate { .. } => NodeBondAction::Update,
+        BondCommands::Exit { .. } => NodeBondAction::Exit,
+        BondCommands::Withdraw { .. } => NodeBondAction::Withdraw,
+        _ => anyhow::bail!("not a submit command"),
+    };
+    ensure!(
+        p.signed.authorization.action == expected,
+        "lifecycle action mismatch"
+    );
+    Ok(tx)
 }
 
 pub async fn handle(command: &BondCommands) -> Result<Value> {
@@ -352,6 +411,18 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
     }
     if let BondCommands::Deposit(args) = command {
         return super::node_deposit::handle(args).await;
+    }
+    if let BondCommands::Update(args) = command {
+        return super::node_bond_update::handle(args).await;
+    }
+    if let BondCommands::Admit(args) = command {
+        return super::node_bond_admit::handle_admit(args).await;
+    }
+    if let BondCommands::AdmissionRequest(args) = command {
+        return super::node_bond_admit::handle_request(args).await;
+    }
+    if let BondCommands::Probe { addr } = command {
+        return super::snapshot::probe_info(addr).await;
     }
     if let BondCommands::PayoutChallenge { transaction_file, chain_id, network_id } = command {
         let tx = read_transaction(transaction_file)?;
@@ -446,23 +517,21 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         file.sync_all()?;
         return Ok(json!({"signed":true,"included":false,"output":out.display().to_string()}));
     }
+    if let BondCommands::RegisterBond { transaction_file }
+    | BondCommands::SubmitUpdate { transaction_file }
+    | BondCommands::Exit { transaction_file }
+    | BondCommands::Withdraw { transaction_file } = command
+    {
+        // Refuse a packet of the wrong action before any client is built.
+        submittable(command, transaction_file)?;
+    }
     let api = ApiClient::new(ApiConfig::default())?;
     match command {
         BondCommands::RegisterBond { transaction_file }
+        | BondCommands::SubmitUpdate { transaction_file }
         | BondCommands::Exit { transaction_file }
         | BondCommands::Withdraw { transaction_file } => {
-            let tx = read_transaction(transaction_file)?;
-            let p = NodeBondLifecycle::parse(&tx)
-                .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
-            let expected = match command {
-                BondCommands::RegisterBond { .. } => NodeBondAction::Deposit,
-                BondCommands::Exit { .. } => NodeBondAction::Exit,
-                _ => NodeBondAction::Withdraw,
-            };
-            ensure!(
-                p.signed.authorization.action == expected,
-                "lifecycle action mismatch"
-            );
+            let tx = submittable(command, transaction_file)?;
             Ok(api
                 .post("/node/bonds/submit", Some(serde_json::to_value(tx)?))
                 .await?)
@@ -478,6 +547,10 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
             .await?),
         BondCommands::Sign { .. }
         | BondCommands::Deposit(_)
+        | BondCommands::Update(_)
+        | BondCommands::Admit(_)
+        | BondCommands::AdmissionRequest(_)
+        | BondCommands::Probe { .. }
         | BondCommands::KeyInfo { .. }
         | BondCommands::GrantRequest { .. }
         | BondCommands::PayoutChallenge { .. }
@@ -489,7 +562,7 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
 
 #[cfg(test)]
 #[path = "../../../../../shared-protocol/tests/common/node_bond_fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 
 #[cfg(test)]
 mod tests {
@@ -599,6 +672,52 @@ mod tests {
                 .unwrap();
         }
     }
+    /// `--role admission` signs a Deposit or Update for a key pinned on the
+    /// packet's chain, and nothing else. The packet verifies as an admission
+    /// co-sign, not as a governance one.
+    #[test]
+    fn admission_role_signs_only_online_actions_for_a_pinned_key() {
+        use wrfcoin_shared_protocol::governance::schedule_extension::install_bond_admission_pin_for_tests;
+        install_bond_admission_pin_for_tests(&hex::encode([7u8; 32]), vec![hex::encode(fixture::pk(60))]);
+        let identity = ChainIdentity::new("777", "testnet");
+        let admission = EnvKeySigner::from_private_key(fixture::key(60), "synthetic-admission");
+
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.governance_key = Some(fixture::pk(60));
+        p.governance_signature.clear();
+        let mut tx = packet(&p);
+        sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).unwrap();
+        let signed = NodeBondLifecycle::parse(&tx).unwrap();
+        let cosigner = [hex::encode(fixture::pk(60))];
+        signed.verify_with_gates(&identity, &[7; 32], &[], &cosigner, false).unwrap();
+        assert!(signed.verify_with_gates(&identity, &[7; 32], &[], &[], false).is_err());
+
+        // A key the packet names but this binary does not pin for the chain.
+        let unpinned = EnvKeySigner::from_private_key(fixture::key(61), "synthetic-unpinned");
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.governance_key = Some(fixture::pk(61));
+        let mut tx = packet(&p);
+        assert!(sign_packet(&mut tx, BondSignerRole::Admission, &identity, &unpinned).is_err());
+
+        // The right key on another chain's packet.
+        let mut p = fixture::auth(10, 1, 0, NodeBondAction::Deposit, 1);
+        p.signed.authorization.genesis_hash = [8; 32];
+        p.governance_key = Some(fixture::pk(60));
+        let mut tx = packet(&p);
+        assert!(sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).is_err());
+
+        // Exit and Withdraw take no co-sign of any kind.
+        for action in [NodeBondAction::Exit, NodeBondAction::Withdraw] {
+            let mut p = fixture::auth(10, 1, 1, action, 2);
+            p.governance_key = Some(fixture::pk(60));
+            let mut tx = packet(&p);
+            assert!(
+                sign_packet(&mut tx, BondSignerRole::Admission, &identity, &admission).is_err(),
+                "{action:?}"
+            );
+        }
+    }
+
     #[test]
     fn passkey_payout_challenge_attach_and_offline_verify() {
         use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;

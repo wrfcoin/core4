@@ -27,6 +27,27 @@ The signer is resolved through the production BlockSigner loader, and must
 match the role's public key in the packet. Wrong-key or online exit signing is
 refused before signing. Output files must be new; existing files are preserved.
 
+From `bond_admission_key`'s activation, the co-signer on a Deposit or Update may
+be a bond admission key instead of a governance key. Assemble with
+`wrfcoin node bond deposit --governance-key <admission public key>
+--admission-cosign` and sign with `--role admission`. Both refuse a key this
+binary does not pin for the packet's genesis, so no packet can be built before a
+key is pinned. An admission key can only co-sign these two actions.
+
+For the testnet admission service (infra `testnet/services/bond-admission`):
+
+- `wrfcoin node bond admission-request --transaction-file <server+consumer
+  signed packet> --multiaddr /ip4/<public ip>/tcp/<port>/p2p/<own peer id>
+  --chain-id … --network-id …` signs the packet's authorization hash and the
+  address with the node's peer identity key. The service checks it.
+- `wrfcoin node bond admit --transaction-file … --chain-id … --network-id …`
+  checks the packet only: Deposit or Update, a pinned admission co-signer, no
+  co-sign yet, valid server and consumer signatures. It prints a public summary.
+  Add `--key-file <owner-only 64-hex seed file> --out <new file>` to co-sign.
+  A software admission key file is accepted on `testnet` only.
+- `wrfcoin node bond probe --addr /ip4/…/tcp/…/p2p/<peer id>` dials the node
+  and asks the keyless bonded-fetch `Info`. It sends no key or token.
+
 Configure the dedicated signer using `WRFCOIN_NODE_BOND_SIGNER_KEY_FILE` in a
 debug build, or build with `--features hsm` and configure
 `WRFCOIN_HSM_NODE_BOND_KEY_LABEL` plus the public-key label. There is no shared

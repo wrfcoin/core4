@@ -22,6 +22,7 @@
 pub mod announce;
 mod behaviour;
 mod bootstrap_redial;
+mod gossip_watchdog;
 pub mod bonded_fetch;
 pub mod bonded_fetch_serve;
 pub mod config;

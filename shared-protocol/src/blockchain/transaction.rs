@@ -626,6 +626,16 @@ pub struct StationRegistrationPayload {
     pub elevation_mm: Option<i64>,
 }
 
+/// Which key admitted a station registration
+/// ([`Transaction::station_registration_authority_at_height`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationRegistrationAuthority {
+    /// An oracle-governance key: the pre-existing path, unchanged.
+    Governance,
+    /// A pinned `station_registrar_key` key, inside the registrar's limits.
+    Registrar,
+}
+
 /// #3336: largest |latitude| in 1e-7 degree units (90°).
 pub const LATITUDE_E7_MAX: i64 = 900_000_000;
 /// #3336: largest |longitude| in 1e-7 degree units (180°).
@@ -3877,7 +3887,12 @@ impl Transaction {
         chain_id: &str,
         network_id: &str,
     ) -> bool {
-        self.verify_station_registration_authorization_for(chain_id, network_id, false)
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_authorized_oracle_governance,
+        )
     }
 
     /// #3336: verify against the fixed-point governance preimage
@@ -3888,14 +3903,58 @@ impl Transaction {
         chain_id: &str,
         network_id: &str,
     ) -> bool {
-        self.verify_station_registration_authorization_for(chain_id, network_id, true)
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            true,
+            &is_authorized_oracle_governance,
+        )
     }
 
+    /// Offline (CLI) form of the `station_registrar_key` path in
+    /// [`Self::station_registration_authority_at_height`]: is this tx signed
+    /// by a key pinned for `genesis_hash` (the f64 preimage, as before
+    /// `station_coordinates_fixed_point`), with a valid owner proof, and
+    /// inside the registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`])?
+    /// The same predicate and the same rule function consensus runs, minus the
+    /// height gate and the node's installed chain authority. No node calls it.
+    pub fn verify_station_registrar_authorization_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        genesis_hash: &str,
+    ) -> bool {
+        let registrar_keys =
+            crate::governance::schedule_extension::station_registrar_keys(genesis_hash);
+        if registrar_keys.is_empty() {
+            return false;
+        }
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.contains(&key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_registrar,
+        ) {
+            return false;
+        }
+        self.parse_station_registration().is_some_and(|payload| {
+            crate::consensus::station_registrar::registrar_shape_refusal(&payload, false).is_none()
+        })
+    }
+
+    /// `authorized` decides which `auth_pubkey`s may sign: the oracle-governance
+    /// allowlist, or (`station_registrar_key`) the registrar keys in force.
     fn verify_station_registration_authorization_for(
         &self,
         chain_id: &str,
         network_id: &str,
         fixed: bool,
+        authorized: &dyn Fn(&str) -> bool,
     ) -> bool {
         let Some(payload) = self.parse_station_registration() else {
             return false;
@@ -3912,7 +3971,7 @@ impl Transaction {
         ) else {
             return false;
         };
-        if !is_authorized_oracle_governance(auth_pk_hex) {
+        if !authorized(auth_pk_hex) {
             return false;
         }
         let (Ok(auth_pk), Ok(auth_sig)) = (
@@ -3974,6 +4033,22 @@ impl Transaction {
     ///
     /// [`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`]: crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
     pub fn verify_station_registration_authorization_at_height(&self, block_height: u64) -> bool {
+        self.station_registration_authority_at_height(block_height).is_some()
+    }
+
+    /// Which authority admits this registration at `block_height`, or `None`.
+    ///
+    /// The governance path is exactly what it was before
+    /// `station_registrar_key`. Only when it fails, and only while the
+    /// registrar feature is active on a chain with a pinned registrar key, is
+    /// the registrar path tried: a registrar-key signature, then the
+    /// registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`]),
+    /// which include the ownership binding at every height.
+    pub fn station_registration_authority_at_height(
+        &self,
+        block_height: u64,
+    ) -> Option<StationRegistrationAuthority> {
         // #3336: from `StationCoordinatesFixedPoint`'s activation the
         // governance signature covers the fixed-point preimage; below it, the
         // f64-bit preimage exactly as before.
@@ -3981,20 +4056,46 @@ impl Transaction {
             crate::crypto::chain_binding::ConsensusFeature::StationCoordinatesFixedPoint,
             block_height,
         );
-        if !self.verify_station_registration_authorization_for(
-            &signing_chain_id(),
-            &signing_network_id(),
+        let chain_id = signing_chain_id();
+        let network_id = signing_network_id();
+        if self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
             fixed,
+            &is_authorized_oracle_governance,
         ) {
-            return false;
+            if block_height
+                < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
+            {
+                return Some(StationRegistrationAuthority::Governance);
+            }
+            return self
+                .parse_station_registration()
+                .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+                .then_some(StationRegistrationAuthority::Governance);
         }
-        if block_height
-            < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
-        {
-            return true;
+        // `station_registrar_key`: empty below activation and on a chain with
+        // no pinned key, so this returns `None` exactly as before.
+        let registrar_keys = crate::consensus::station_registrar::registrar_keys_at(block_height);
+        if registrar_keys.is_empty() {
+            return None;
         }
-        self.parse_station_registration()
-            .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.iter().any(|pinned| *pinned == key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
+            fixed,
+            &is_registrar,
+        ) {
+            return None;
+        }
+        let payload = self.parse_station_registration()?;
+        crate::consensus::station_registrar::registrar_shape_refusal(&payload, fixed)
+            .is_none()
+            .then_some(StationRegistrationAuthority::Registrar)
     }
 
     /// The ONE entry point every extractor uses for a station-registration tx
@@ -4029,8 +4130,17 @@ impl Transaction {
         {
             return None;
         }
-        if !self.verify_station_registration_authorization_at_height(block_height) {
-            return None;
+        let authority = self.station_registration_authority_at_height(block_height)?;
+        if authority == StationRegistrationAuthority::Registrar {
+            // `station_registrar_key`: its own transition, so the apply arm
+            // can enforce the stateful limits; the per-block slot is enforced
+            // by the extractors (`RegistrarBlockSlot`).
+            return Some(
+                crate::blockchain::state::StateTransition::ApplyStationRegistrarRegistration {
+                    station: Self::station_from_registration_at_height(&payload, block_height),
+                    block_height,
+                },
+            );
         }
         Some(if payload.is_v2() {
             crate::blockchain::state::StateTransition::ApplyStationRegistrationV2 {

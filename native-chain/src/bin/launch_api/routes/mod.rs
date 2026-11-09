@@ -86,6 +86,10 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             "/addresses/{address}/transactions",
             web::get().to(chain::get_address_transactions),
         )
+        .route(
+            "/addresses/{address}/credits",
+            web::get().to(chain::get_address_credits),
+        )
         .route("/mempool/pending", web::get().to(chain::get_mempool_pending))
         .route(
             "/transactions/submit",

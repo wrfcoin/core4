@@ -15,6 +15,7 @@ use wrfcoin_shared_protocol::{
         node_share_contracts::*,
     },
     crypto::{chain_binding::ChainIdentity, hash::hash_bytes, signature::PublicKey},
+    governance::schedule_extension::bond_admission_keys,
 };
 
 #[derive(Args)]
@@ -39,8 +40,14 @@ pub struct DepositArgs {
     pub server_key: String,
     #[clap(long)]
     pub consumer_key: String,
+    /// Public key of the co-signer: a genesis governance key, or with
+    /// `--admission-cosign` a pinned bond admission key.
     #[clap(long)]
     pub governance_key: String,
+    /// The co-signer is a bond admission key (`bond_admission_key`): refuse
+    /// unless `--governance-key` is pinned for `--genesis-hash` in this binary.
+    #[clap(long)]
+    pub admission_cosign: bool,
     #[clap(long)]
     pub service_alias: String,
     #[clap(long)]
@@ -90,7 +97,7 @@ pub(crate) fn api_hash(value: &str) -> Option<[u8; 32]> {
         .unwrap_or(value);
     id(bare).ok()
 }
-fn number(v: &Value) -> Result<u64> {
+pub(crate) fn number(v: &Value) -> Result<u64> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .ok_or_else(|| anyhow::anyhow!("canonical height/nonce unavailable"))
@@ -107,13 +114,13 @@ const EPOCH_END_MARGIN_BLOCKS: u64 = 3;
 
 /// The node's own epoch at its own tip, checked against the known lengths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NodeEpoch {
-    height: u64,
-    epoch: u64,
+pub(crate) struct NodeEpoch {
+    pub(crate) height: u64,
+    pub(crate) epoch: u64,
     /// `None` only in early epoch 0, where every known length still fits.
-    epoch_blocks: Option<u64>,
+    pub(crate) epoch_blocks: Option<u64>,
     /// Last height of `epoch`; the earliest close when the length is open.
-    close_height: u64,
+    pub(crate) close_height: u64,
 }
 
 impl NodeEpoch {
@@ -123,7 +130,7 @@ impl NodeEpoch {
     fn from_node(activation: u64, height: u64, epoch: u64) -> Result<Self> {
         let offset = height
             .checked_sub(activation)
-            .ok_or_else(|| anyhow::anyhow!("Deposit refused before activation height"))?;
+            .ok_or_else(|| anyhow::anyhow!("bond lifecycle refused before activation height"))?;
         let mut fits = KNOWN_NODE_EPOCH_BLOCKS
             .into_iter()
             .filter(|length| offset / length == epoch);
@@ -154,18 +161,18 @@ impl NodeEpoch {
         Ok(view)
     }
     /// Blocks after the next one (the carrying block) still inside this epoch.
-    fn blocks_left(&self) -> u64 {
+    pub(crate) fn blocks_left(&self) -> u64 {
         self.close_height
             .saturating_sub(self.height.saturating_add(1))
     }
-    fn effective_epoch(&self) -> Result<u64> {
+    pub(crate) fn effective_epoch(&self) -> Result<u64> {
         self.epoch
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("epoch overflow"))
     }
 }
 
-fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
+pub(crate) fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
     ensure!(
         number(&registration["activation_height"])? == activation,
         "canonical activation height mismatch"
@@ -177,7 +184,7 @@ fn node_epoch(registration: &Value, activation: u64) -> Result<NodeEpoch> {
     )
 }
 
-fn normalized(tx: &Transaction) -> Result<Value> {
+pub(crate) fn normalized(tx: &Transaction) -> Result<Value> {
     let mut v = serde_json::to_value(tx)?;
     for field in ["id", "timestamp", "data"] {
         v.as_object_mut().unwrap().remove(field);
@@ -198,6 +205,13 @@ fn unsigned(args: &DepositArgs, nonce: u64, effective_epoch: u64) -> Result<Tran
         );
     }
     let governance_key = id(&args.governance_key)?;
+    if args.admission_cosign {
+        ensure!(
+            bond_admission_keys(&hex::encode(id(&args.genesis_hash)?))
+                .contains(&hex::encode(governance_key)),
+            "--governance-key is not a bond admission key pinned for this genesis"
+        );
+    }
     ensure!(
         governance_key != owner_key,
         "governance key must differ from hot bond owner"
@@ -277,6 +291,47 @@ fn unsigned(args: &DepositArgs, nonce: u64, effective_epoch: u64) -> Result<Tran
     Ok(tx)
 }
 
+/// Operator-token API client for a public node URL; no credentials in the URL.
+pub(crate) fn operator_api(api_url: &str, operator_token_file: &std::path::Path) -> Result<ApiClient> {
+    let url = url::Url::parse(api_url).map_err(|_| anyhow::anyhow!("public API URL refused"))?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "public API URL refused"
+    );
+    let secret = super::node_receipt::secret_file(operator_token_file, 16 * 1024)?;
+    let token = std::str::from_utf8(&secret)
+        .map_err(|_| anyhow::anyhow!("operator credential refused"))?
+        .trim();
+    let available = !token.is_empty();
+    ensure!(available, "operator credential unavailable"); // secret-leak-ok: boolean presence and fixed error only.
+    ApiClient::new_without_redirects(ApiConfig {
+        base_url: api_url.trim_end_matches('/').into(),
+        bearer_token: Some(token.to_owned()),
+        ..ApiConfig::default()
+    })
+}
+
+/// Refuse unless the node serves exactly the chain, network and genesis named.
+pub(crate) async fn check_network(
+    api: &ApiClient,
+    chain_id: &str,
+    network_id: &str,
+    genesis_hash: &str,
+) -> Result<()> {
+    let network = api.receipt_request("GET", "/network/info", None).await?;
+    ensure!(
+        network["chain_id"].as_str() == Some(chain_id)
+            && network["network_id"].as_str() == Some(network_id)
+            && network["genesis_hash"].as_str().and_then(api_hash) == Some(id(genesis_hash)?),
+        "API chain/genesis mismatch"
+    );
+    Ok(())
+}
+
 pub async fn handle(args: &DepositArgs) -> Result<Value> {
     // Cheap public input checks precede any key or credential/network operation.
     let _ = unsigned(args, 0, 1)?;
@@ -288,34 +343,8 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
             "packet already exists; inspect canonical inclusion before explicit retry"
         );
     }
-    let url =
-        url::Url::parse(&args.api_url).map_err(|_| anyhow::anyhow!("public API URL refused"))?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        "public API URL refused"
-    );
-    let secret = super::node_receipt::secret_file(&args.operator_token_file, 16 * 1024)?;
-    let token = std::str::from_utf8(&secret)
-        .map_err(|_| anyhow::anyhow!("operator credential refused"))?
-        .trim();
-    let available = !token.is_empty();
-    ensure!(available, "operator credential unavailable"); // secret-leak-ok: boolean presence and fixed error only.
-    let api = ApiClient::new_without_redirects(ApiConfig {
-        base_url: args.api_url.trim_end_matches('/').into(),
-        bearer_token: Some(token.to_owned()),
-        ..ApiConfig::default()
-    })?;
-    let network = api.receipt_request("GET", "/network/info", None).await?;
-    ensure!(
-        network["chain_id"].as_str() == Some(args.chain_id.as_str())
-            && network["network_id"].as_str() == Some(args.network_id.as_str())
-            && network["genesis_hash"].as_str().and_then(api_hash) == Some(id(&args.genesis_hash)?),
-        "API chain/genesis mismatch"
-    );
+    let api = operator_api(&args.api_url, &args.operator_token_file)?;
+    check_network(&api, &args.chain_id, &args.network_id, &args.genesis_hash).await?;
     let tip = api.receipt_request("GET", "/blockchain", None).await?;
     ensure!(
         number(&tip["height"])? >= args.activation_height,
@@ -408,10 +437,19 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
     );
     // Offline check as the chain will verify it; a passkey approval is only
     // accepted by nodes once passkey_bond_payout is active.
-    p.verify_with_passkey_payout(
+    // An admission co-sign is checked as the admission key it is, and only
+    // nodes with bond_admission_key active accept it.
+    let cosigner = [args.governance_key.to_ascii_lowercase()];
+    let (governance_keys, admission_keys): (&[String], &[String]) = if args.admission_cosign {
+        (&[], &cosigner)
+    } else {
+        (&cosigner, &[])
+    };
+    p.verify_with_gates(
         &identity,
         &id(&args.genesis_hash)?,
-        &[args.governance_key.to_ascii_lowercase()],
+        governance_keys,
+        admission_keys,
         p.payout_passkey.is_some(),
     )?;
     tx.data = Some(serde_json::to_string(&p)?);
@@ -584,6 +622,7 @@ mod tests {
             server_key: hexpk(13),
             consumer_key: hexpk(14),
             governance_key: hexpk(15),
+            admission_cosign: false,
             service_alias: "node-b".into(),
             genesis_hash: genesis,
             chain_id: "888".into(),
@@ -708,6 +747,7 @@ mod tests {
             server_key: hexpk(3),
             consumer_key: hexpk(4),
             governance_key: hexpk(5),
+            admission_cosign: false,
             service_alias: "node-a".into(),
             genesis_hash: genesis,
             chain_id: "777".into(),
@@ -753,6 +793,15 @@ mod tests {
         );
         args.payout_key = Some(hexpk(2));
         args.payout_address = ed_payout;
+        // An admission co-sign needs a key this binary pins for the genesis,
+        // refused before any key, credential or network use.
+        args.admission_cosign = true;
+        let error = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(handle(&args))
+            .unwrap_err();
+        assert!(error.to_string().contains("not a bond admission key"), "{error}");
+        args.admission_cosign = false;
         // An explicit 888 selection cannot silently sign against this 777 API.
         args.chain_id = "888".into();
         let error = tokio::runtime::Runtime::new()

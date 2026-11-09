@@ -8,6 +8,7 @@ use wrfcoin_native_chain::security::api_auth::ApiRole;
 use wrfcoin_shared_protocol::{
     blockchain::transaction::{Transaction, TransactionType},
     consensus::node_bond_registry::NodeBondLifecycle,
+    mempool::node_admission,
 };
 
 pub async fn submit(
@@ -76,6 +77,13 @@ pub async fn submit(
             "lifecycle authorization refused",
         );
     }
+    // Sending the same thing again is success, not a fault.
+    if let Some(pending) = crate::helpers::exact_pending_node_tx(&state, &tx).await {
+        return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+    }
+    if let Err(refusal) = node_admission::check(&chain.state, &tx, chain.height) {
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, refusal.code(), refusal.message());
+    }
     let height = chain.height;
     drop(chain);
     // Common mempool gate, fee policy and signatures remain authoritative.
@@ -84,19 +92,19 @@ pub async fn submit(
     // Serialize before the tx moves into the pool; gossip only after admission.
     #[cfg(feature = "p2p")]
     let serialized = bincode::serialize(&tx).map_err(|error| error.to_string());
-    if state
+    let admitted = state
         .mempool
         .write()
         .await
-        .add_transaction_with_signing_keys_at_height(tx, None, Some(height))
-        .is_err()
-    {
-        return envelope_error(
-            &req,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "NODE_BOND_REFUSED",
-            "lifecycle admission refused",
-        );
+        .add_transaction_with_signing_keys_at_height(tx.clone(), None, Some(height));
+    if let Err(reason) = admitted {
+        // A rewrapped copy of this same signed packet is pending, which is just as good.
+        if let Some(pending) = state.mempool.read().await.pending_node_copy(&tx) {
+            return crate::helpers::node_tx_already_pending(&state, &tx, &pending);
+        }
+        log::info!("Node bond submission {} refused: {reason}", id.as_deref().unwrap_or("?"));
+        // The pool's reasons are fixed text and limits. This route is operator-only.
+        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "NODE_BOND_REFUSED", reason.to_string());
     }
     // Without this the tx is mined only if this node produces the next block (#3588).
     #[cfg(feature = "p2p")]

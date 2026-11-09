@@ -367,6 +367,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         ApplyStationRegistration { .. }
         | ApplyStationRegistrationWithOwnerConsent { .. }
         | ApplyStationRegistrationV2 { .. }
+        | ApplyStationRegistrarRegistration { .. }
         | ApplyStationOwnerTransfer { .. }
         | ApplyStationOwnerAction { .. }
         | ApplyStationOwnerRecoveryFiling { .. }
@@ -481,6 +482,7 @@ fn transition_name(t: &StateTransition) -> &'static str {
         },
         StateTransition::ApplyStationRegistrationV2 { .. } => "ApplyStationRegistrationV2",
         StateTransition::BeginNodeServiceBlock { .. } => "BeginNodeServiceBlock",
+        StateTransition::ApplyStationRegistrarRegistration { .. } => "ApplyStationRegistrarRegistration",
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
