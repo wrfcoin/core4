@@ -387,8 +387,7 @@ def docker_preflight() -> DockerPreflight:
     `docker version` (not `docker ps`, which needs a running container list
     the daemon may reject for other reasons) is the minimal real check: it
     round-trips to the daemon over the socket this runner's OS user must be
-    able to read. A permission error here (the live #2893/#881 finding --
-    `gh-runner` is not in the `docker` group) exits non-zero exactly like a
+    able to read. A permission error here exits non-zero exactly like a
     genuinely absent daemon would, which is the correct behavior: this
     function answers "can the docker-gated targets actually assert
     anything," not "is a docker daemon running somewhere."

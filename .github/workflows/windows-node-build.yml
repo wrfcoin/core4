@@ -1,0 +1,401 @@
+name: Windows node build
+
+# Builds the node exactly as the release workflow does for x86_64-pc-windows-msvc
+# (launch_api, features full-mining,p2p) on a hosted Windows runner, so Windows-only
+# code paths fail a PR instead of rotting unnoticed. Two such breaks (an E0384 in
+# hardware detection and a Unix-only SIGTERM handler) went uncompiled from the
+# public release (2026-10-22) until a native build on the owner's laptop (2026-10-31).
+# The built .exe is uploaded as a run artifact for hands-on testing; it is not a release.
+#
+# The same binary is then packaged as a per-user Windows installer (Inno Setup,
+# packaging/windows/), installed silently on the runner, started through its own
+# Start-menu shortcut, and checked against chain 888 over the local API before
+# it is uploaded with its SHA256SUMS line. Unsigned: SmartScreen will warn.
+
+on:
+  pull_request:
+    paths:
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'zk-circuits/**'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'packaging/windows/**'
+      - '.github/workflows/windows-node-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'build-provenance/**'
+      - 'consensus-engines/**'
+      - 'da/**'
+      - 'dataset-manifest/**'
+      - 'evm/**'
+      - 'execution-engine/**'
+      - 'forecast-score/**'
+      - 'geo-grid/**'
+      - 'meteo-types/**'
+      - 'native-chain/**'
+      - 'p2p/**'
+      - 'primitives/**'
+      - 'privacy/**'
+      - 'reputation-engine/**'
+      - 'shared-protocol/**'
+      - 'zk-circuits/**'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'tools/cli/WrfcoinCLI/**'
+      - 'packaging/windows/**'
+      - '.github/workflows/windows-node-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-node-build-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: launch_api (x86_64-pc-windows-msvc, full-mining,p2p)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-node-build
+      - name: Build release binary
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # The node reports this short commit as node_build (/network/info, dashboard
+        # "v0.6.0 (68f6d291)"), matching the installer's <VERSION>-g<commit> name.
+        run: WRFCOIN_BUILD_COMMIT="${HEAD_SHA:0:8}" cargo build --release --locked --bin launch_api --features full-mining,p2p
+      # The operator CLI (bond, receipts, grant request), shipped as wrfcoin.exe.
+      # Plain build (no hsm feature): on Windows its key files are checked for an
+      # owner-only DACL instead of Unix mode 0600.
+      - name: Build the CLI (wrfcoin.exe)
+        shell: bash
+        run: cargo build --release --locked -p wrfcoin_cli --bin wrfcoin
+      # launch_api has no --help/--version flag (any run starts a node), so this only
+      # proves the binary was produced; the run test is a sync against chain 888.
+      - name: Binaries produced
+        shell: bash
+        run: |
+          ls -l target/release/launch_api.exe target/release/wrfcoin.exe
+          target/release/wrfcoin.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrfcoin-node-windows-x86_64
+          path: |
+            target/release/launch_api.exe
+            target/release/wrfcoin.exe
+          retention-days: 14
+
+      # ---- Windows package (packaging/windows) --------------------------------
+      - name: Package config and launcher tests
+        shell: bash
+        run: python -m unittest discover -s packaging/windows -p 'test_*.py' -v
+      - name: Build installer (Inno Setup 6)
+        shell: pwsh
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+          $version = "$((Get-Content VERSION -Raw).Trim())-g$($env:HEAD_SHA.Substring(0, 8))"
+          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" "/DSourceCli=$PWD\target\release\wrfcoin.exe" `
+            "/DOutputDir=$PWD\target\installer" packaging\windows\wrfcoin-node.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          Get-ChildItem target\installer
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: target/installer
+        run: |
+          sha256sum -- *-setup.exe > SHA256SUMS
+          cat SHA256SUMS
+      - name: Smoke test - install, Start-menu start (hidden), chain 888, Start-menu stop, dashboard Stop route, server key, reachable.conf, bonded mode, uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem target\installer\*-setup.exe).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/LOG=$PWD\target\installer\install.log" -Wait -PassThru
+          Write-Host '::group::install.log'; Get-Content target\installer\install.log; Write-Host '::endgroup::'
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
+          $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
+          $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
+          foreach ($f in 'launch_api.exe','wrfcoin.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+            if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
+          }
+          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
+            if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
+          }
+          if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
+
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          function Assert-UserOnly($path) {
+            $acl = Get-Acl -LiteralPath $path
+            $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+            $who = ($rules | ForEach-Object { $_.IdentityReference.Value }) -join ','
+            if ($rules.Count -ne 1 -or $who -ne $sid -or ((Get-Item -LiteralPath $path).PSIsContainer -and -not $acl.AreAccessRulesProtected)) {
+              & icacls.exe $path
+              Get-Content (Join-Path $root 'logs\launcher.log') -ErrorAction SilentlyContinue
+              throw "ACL on $path is [$who] (protected=$($acl.AreAccessRulesProtected)), expected only $sid"
+            }
+            Write-Host "ACL ok: $path -> $who"
+          }
+          # Set up by the installer's own [Run] entry, not by this test.
+          Assert-UserOnly $root
+          Assert-UserOnly (Join-Path $root 'operator.token')
+
+          $shell = New-Object -ComObject WScript.Shell
+          function Invoke-Shortcut($name, $extra) {
+            $lnk = $shell.CreateShortcut((Join-Path $menu $name))
+            Write-Host "$name -> $($lnk.TargetPath) $($lnk.Arguments) $extra"
+            if ($lnk.Arguments -notmatch '-WindowStyle Hidden') { throw "$name does not hide its window" }
+            $out = Join-Path $PWD "target\installer\$($name -replace '\W', '_')"
+            $r = Start-Process $lnk.TargetPath -ArgumentList "$($lnk.Arguments) $extra" -WorkingDirectory $lnk.WorkingDirectory `
+              -RedirectStandardOutput "$out.out.log" -RedirectStandardError "$out.err.log" -PassThru
+            # Not -Wait: that also waits for descendants, and the node keeps running.
+            $null = $r.Handle
+            if (-not $r.WaitForExit(180000)) { throw "$name did not return within 3 minutes" }
+            Get-Content "$out.out.log","$out.err.log" -ErrorAction SilentlyContinue
+            if ($r.ExitCode -ne 0) { throw "$name exited $($r.ExitCode)" }
+          }
+          $nodeLog = Join-Path $root 'logs\node.log'
+          function Show-NodeLog { Write-Host '::group::node.log (tail)'; Get-Content $nodeLog -Tail 80 -ErrorAction SilentlyContinue; Write-Host '::endgroup::' }
+
+          try {
+            # Start exactly as the Start-menu entry does (it returns once the API answers).
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            $node = @(Get-Process launch_api -ErrorAction SilentlyContinue)
+            if ($node.Count -ne 1) { throw "expected one launch_api process, found $($node.Count)" }
+            if ($node[0].MainWindowHandle -ne 0) { throw 'the node has a visible window' }
+
+            $cfg = @{}; Get-Content (Join-Path $app 'chain-888.conf') | ForEach-Object { $k, $v = $_ -split '=', 2; $cfg[$k] = $v }
+            # A fresh node reports genesis_hash "unknown" until its first blocks arrive from the seed. The launcher returns
+            # as soon as the API answers, so wait (up to 3 min) for the node to see the chain, then compare strictly.
+            $until = (Get-Date).AddMinutes(3)
+            do {
+              $info = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 10
+              if ("$($info.genesis_hash)" -ne 'unknown') { break }
+              Start-Sleep 5
+            } while ((Get-Date) -lt $until)
+            $info | ConvertTo-Json -Depth 4
+            if ("$($info.chain_id)" -ne '888') { throw "chain_id $($info.chain_id)" }
+            if (("$($info.genesis_hash)".ToLower() -replace '^0x', '') -ne $cfg['WRFCOIN_GENESIS_HASH']) { throw "genesis_hash $($info.genesis_hash)" }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            if ($dash.StatusCode -ne 200 -or $dash.Content -notmatch '<html') { throw 'dashboard' }
+            foreach ($text in 'id="stop-btn"', "What's next", "shutdown: '/node/shutdown'") {
+              if (-not $dash.Content.Contains($text)) { throw "dashboard is missing $text" }
+            }
+            # Syncing depends on the public seed being up, so it is reported, not gated.
+            $height = 0
+            $until = (Get-Date).AddMinutes(3)
+            while ((Get-Date) -lt $until -and $height -eq 0) {
+              Start-Sleep 10
+              $i = Invoke-RestMethod http://127.0.0.1:8556/network/info -TimeoutSec 5
+              $height = [int64]$i.chain_height
+              Write-Host "chain_height=$height peer_count=$($i.peer_count) sync_status=$($i.sync_status)"
+            }
+            if ($height -gt 0) { Write-Host "SYNCING: reached height $height from the public seed" }
+            else { Write-Host '::warning::node booted on chain 888 but did not sync a block within 3 minutes (seed reachable?)' }
+            $key = Join-Path $root 'data\peer_identity.key'
+            if (-not (Test-Path $key)) { throw 'peer_identity.key was not created under the data folder' }
+            Assert-UserOnly $key
+            if ((Get-Item $nodeLog).Length -eq 0) { throw 'node.log is empty' }
+
+            # Stop exactly as the Start-menu entry does: Ctrl+C on the node's hidden console.
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'initiating graceful shutdown' -Quiet)) { throw 'node.log shows no graceful shutdown' }
+            Write-Host 'Stop: graceful shutdown confirmed in node.log'
+
+            # The dashboard's Stop button: start again, then POST /node/shutdown the
+            # way the page does - refused without the operator token, accepted with
+            # the token the installer wrote, then the same graceful shutdown.
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start again' }
+            $stopUrl = 'http://127.0.0.1:8556/node/shutdown'
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck
+            if ($r.StatusCode -ne 401) { throw "POST /node/shutdown without a token answered $($r.StatusCode), expected 401" }
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck -Headers @{ Authorization = 'Bearer not-the-operator-token' }
+            if ($r.StatusCode -ne 403) { throw "POST /node/shutdown with a wrong token answered $($r.StatusCode), expected 403" }
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'a refused stop request stopped the node' }
+            $tok = (Get-Content (Join-Path $root 'operator.token') -Raw).Trim()
+            $r = Invoke-WebRequest -Method Post -Uri $stopUrl -UseBasicParsing -SkipHttpErrorCheck -Headers @{ Authorization = "Bearer $tok" }
+            if ($r.StatusCode -ne 202) { throw "POST /node/shutdown with the operator token answered $($r.StatusCode): $($r.Content)" }
+            $until = (Get-Date).AddSeconds(120)
+            while ((Get-Date) -lt $until -and @(Get-Process launch_api -ErrorAction SilentlyContinue).Count -gt 0) { Start-Sleep 1 }
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running 120 s after POST /node/shutdown' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'POST /node/shutdown\), initiating graceful shutdown' -Quiet)) { throw 'node.log shows no stop request from the route' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'Graceful shutdown complete' -Quiet)) { throw 'node.log shows no completed graceful shutdown after the route' }
+            Write-Host 'Dashboard Stop route: 401 without token, 403 wrong token, 202 + graceful shutdown with the operator token'
+
+            # Testnet software server key (a bonded node's snapshot signer):
+            # -Action ServerKey writes a user-only seed file, the next Start hands
+            # it to the node, which logs the public key it signs with. Key bytes
+            # are only pattern-checked here, never printed.
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action ServerKey -Quiet
+            if ($LASTEXITCODE -ne 0) { throw "-Action ServerKey exited $LASTEXITCODE" }
+            $serverKey = Join-Path $root 'server.key'
+            if ((Get-Content -LiteralPath $serverKey -Raw).Trim() -notmatch '^[0-9a-f]{64}$') { throw 'server.key is not one 64-hex seed' }
+            Assert-UserOnly $serverKey
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start with the server key' }
+            $loaded = Select-String -Path $nodeLog -Pattern 'TESTNET software server key active' | Select-Object -First 1
+            if (-not $loaded) { throw 'node.log does not show the testnet server key loading' }
+            Write-Host "server key: $($loaded.Line)"
+            # Signing depends on the synced state being exportable, so it is reported, not gated.
+            try {
+              $p = Invoke-RestMethod http://127.0.0.1:8556/state/snapshot/sync-payload -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 120
+              if ($p.signed_payload) { Write-Host "signed snapshot payload at height $($p.payload.height), signer $($p.signed_payload.signer_id)" }
+              else { Write-Host '::warning::snapshot payload came back unsigned' }
+            } catch { Write-Host "::warning::snapshot payload not available yet: $($_.Exception.Message)" }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (server key run)' }
+
+            # The installed CLI reads the same user-only key (Windows DACL check, not
+            # Unix 0600) and derives the public key the node logged.
+            $cli = Join-Path $app 'wrfcoin.exe'
+            $info = & $cli --output json node bond key-info --key-file $serverKey | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "wrfcoin node bond key-info exited $LASTEXITCODE" }
+            $cliPub = "$((ConvertFrom-Json $info).data.public_key)".ToLower()
+            if ($cliPub -notmatch '^[0-9a-f]{64}$' -or -not $loaded.Line.ToLower().Contains("public key $cliPub")) {
+              throw "CLI public key '$cliPub' does not match the node's server key line"
+            }
+            Write-Host "wrfcoin.exe reads server.key: public key $cliPub matches the node"
+
+            # The node's own ACL check (not the launcher's re-lock): a key copy that
+            # BUILTIN\Users can read must stop launch_api.exe at startup.
+            $loose = Join-Path $env:RUNNER_TEMP 'loose-server.key'
+            Copy-Item -LiteralPath $serverKey -Destination $loose
+            & icacls.exe $loose /grant '*S-1-5-32-545:(R)' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'icacls could not add the Users entry' }
+            foreach ($k in $cfg.Keys) { [Environment]::SetEnvironmentVariable($k, $cfg[$k], 'Process') }
+            $env:WRFCOIN_DATA_DIR = Join-Path $root 'data'
+            $env:WRFCOIN_OPERATOR_TOKEN = $tok
+            $env:WRFCOIN_SNAPSHOT_SERVER_KEY_FILE = $loose
+            $errLog = Join-Path $PWD 'target\installer\loose-key.err.log'
+            $r = Start-Process (Join-Path $app 'launch_api.exe') -WorkingDirectory $root -NoNewWindow -PassThru `
+              -RedirectStandardOutput (Join-Path $PWD 'target\installer\loose-key.out.log') -RedirectStandardError $errLog
+            $null = $r.Handle
+            if (-not $r.WaitForExit(180000)) { $r | Stop-Process -Force; throw 'launch_api kept running with a key file BUILTIN\Users can read' }
+            Remove-Item Env:WRFCOIN_SNAPSHOT_SERVER_KEY_FILE, Env:WRFCOIN_OPERATOR_TOKEN
+            # The CLI refuses the same loose copy, naming the SID that can read it.
+            $ErrorActionPreference = 'Continue'
+            $cliErr = & $cli --output json node bond key-info --key-file $loose 2>&1 | Out-String
+            $cliExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($cliExit -eq 0 -or $cliErr -notmatch 'S-1-5-32-545') { throw "wrfcoin.exe did not refuse a Users-readable key file: $cliErr" }
+            Write-Host 'wrfcoin.exe refuses a Users-readable key file'
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
+            Remove-Item -LiteralPath $loose -Force
+            $err = Get-Content -LiteralPath $errLog -Raw
+            Write-Host "loose key run: exit $($r.ExitCode); last lines:"
+            Get-Content -LiteralPath $errLog -Tail 5
+            if ($r.ExitCode -eq 0 -or $err -notmatch 'S-1-5-32-545') { throw 'launch_api did not refuse a key file BUILTIN\Users can read' }
+            Write-Host 'Server key: created user-only, loaded by the node, and a Users-readable copy refused'
+
+            # reachable.conf ("Open your port"): the two allowed keys reach the node
+            # and the dashboard shows the announced address; any other key stops
+            # the start. The external address uses the reserved .invalid TLD so the
+            # public seed is never handed a dialable fake address.
+            $reach = Join-Path $root 'reachable.conf'
+            $extAddr = '/dns4/reachable-check.invalid/tcp/9000'
+            [System.IO.File]::WriteAllText($reach, "# test`r`nWRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`n")
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            $peer = Invoke-RestMethod http://127.0.0.1:8556/network/peer_id -TimeoutSec 10
+            if ("$($peer.external_addr)" -notlike "$extAddr/p2p/*") { throw "external_addr is '$($peer.external_addr)', expected $extAddr/p2p/<id>" }
+            $listen = @(Get-NetTCPConnection -LocalPort 9000 -State Listen -ErrorAction SilentlyContinue | Where-Object LocalAddress -eq '0.0.0.0')
+            if ($listen.Count -eq 0) { throw 'P2P is not listening on 0.0.0.0:9000 with WRFCOIN_P2P_HOST=0.0.0.0' }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            if (-not $dash.Content.Contains('id="fact-reach"') -or -not $dash.Content.Contains("peer: '/network/peer_id'")) { throw 'dashboard has no "Reachable at" fact' }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (reachable run)' }
+
+            # Bonded mode: the same file plus the opt-in pair. The node stays
+            # sync-only, serves bonded fetches over P2P with the server key, and
+            # /network/peer_id (the dashboard's "Mode") reports it.
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`nWRFCOIN_SERVICE_ID=ci-bonded-1`r`n")
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start in bonded mode' }
+            $peer = Invoke-RestMethod http://127.0.0.1:8556/network/peer_id -TimeoutSec 10
+            $peer.bonded | ConvertTo-Json
+            if ($peer.bonded.serving -ne $true) { throw 'bonded mode: /network/peer_id does not report serving' }
+            if ("$($peer.bonded.service_id)" -ne 'ci-bonded-1') { throw "bonded mode: service_id is '$($peer.bonded.service_id)'" }
+            if ("$($peer.bonded.server_key)".ToLower() -ne $cliPub) { throw "bonded mode: server_key '$($peer.bonded.server_key)' is not the server.key public key" }
+            if (-not (Select-String -Path $nodeLog -Pattern 'Serving bonded snapshot fetches over P2P' -Quiet)) { throw 'node.log does not show bonded P2P serving' }
+            if (-not (Select-String -Path $nodeLog -Pattern 'non-producing: block production disabled' -Quiet)) { throw 'node.log does not show the non-producing (sync-only) role in bonded mode' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'Start: bonded mode, service id ci-bonded-1' -Quiet)) { throw 'launcher.log does not record bonded mode' }
+            $dash = Invoke-WebRequest http://127.0.0.1:8556/dashboard -UseBasicParsing
+            foreach ($text in 'id="fact-mode"', 'id="open-port"', 'Open your port (TCP 9000)') {
+              if (-not $dash.Content.Contains($text)) { throw "dashboard is missing $text" }
+            }
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (bonded run)' }
+            # Half-configured bonded mode never starts.
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=$extAddr`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`n")
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'the launcher started bonded mode without WRFCOIN_SERVICE_ID' }
+            $global:LASTEXITCODE = 0   # the refusal was expected
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused bonded reachable.conf still started the node' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'bonded mode needs WRFCOIN_SERVICE_ID' -Quiet)) { throw 'launcher.log does not explain the missing service id' }
+            Write-Host 'bonded mode: serving over P2P with the server key, reported on /network/peer_id and the dashboard; half-configured file refused'
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_API_HOST=0.0.0.0`r`n")
+            $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action Start -NoBrowser -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'the launcher started with WRFCOIN_API_HOST in reachable.conf' }
+            $global:LASTEXITCODE = 0   # the refusal was expected; the step's exit code must not inherit it
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused reachable.conf still started the node' }
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'WRFCOIN_API_HOST cannot be set there' -Quiet)) { throw 'launcher.log does not explain the refused key' }
+            Remove-Item -LiteralPath $reach
+            Write-Host 'reachable.conf: allowed keys applied (0.0.0.0 listener, announced address on /network/peer_id and the dashboard), other keys refused'
+          } finally {
+            Show-NodeLog
+            Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+          $un = Start-Process (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($un.ExitCode -ne 0) { throw "uninstaller exit $($un.ExitCode)" }
+          Start-Sleep 3
+          if (Test-Path (Join-Path $app 'launch_api.exe')) { throw 'uninstall left launch_api.exe' }
+          if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
+          if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
+          Write-Host 'install / hidden start / chain-888 check / clean stop / dashboard Stop route / uninstall: OK'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrfcoin-node-windows-x86_64-setup
+          path: |
+            target/installer/*-setup.exe
+            target/installer/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

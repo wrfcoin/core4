@@ -1,13 +1,9 @@
 name: Fuzz Nightly
 
 on:
-# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
-# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
-# untouched, so PR gating is unchanged and this can still be run on demand with
-# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
-# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
-  # schedule:
-  # - cron: "0 7 * * *" # Daily 07:00 UTC
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: 15 min per target. Last in the morning block, since its matrix takes the most runners.
+  schedule:
+    - cron: '7 7 * * *'
   workflow_dispatch:
     inputs:
       max_total_time:
@@ -93,6 +89,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      # Reclaim hosted disk before the toolchain and build, as sbom-generate does (#3621).
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
 
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly

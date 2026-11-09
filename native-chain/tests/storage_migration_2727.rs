@@ -28,9 +28,9 @@ const HEADER_LEN: usize = 12;
 #[test]
 fn owner_ledger_checkpoint_allocation_preserves_deployed_weather_format() {
     // Formats 10/11 retain weather/owner layout; bond owns12, receipts13,
-    // unminted settlement14, node fraud/forfeiture 15.
-    // Old deployed fixture headers remain pinned.
-    assert_eq!(CHECKPOINT_FORMAT_VERSION, 15);
+    // unminted settlement14, node fraud/forfeiture 15, send allowlists 16
+    // (written only when non-empty). Old deployed fixture headers remain pinned.
+    assert_eq!(CHECKPOINT_FORMAT_VERSION, 16);
     let bonded = fixture("checkpoint_state_v12_golden.bin");
     assert_eq!(u32::from_le_bytes(bonded[8..12].try_into().unwrap()), 12);
     assert!(migrations::has_path(12));

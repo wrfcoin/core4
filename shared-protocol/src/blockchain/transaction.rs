@@ -157,6 +157,24 @@ pub enum TransactionType {
     NodeServiceBatch,
     /// Attributable bonded-service evidence, append-only index 39.
     NodeFraudReport,
+    /// Register or revoke a session key (`accounts::session_keys`), signed by
+    /// the account's primary key; append-only index 40. Carries a
+    /// [`crate::accounts::session_keys::SessionKeyActionPayload`] as JSON in
+    /// `data`. Refused at admission, producer self-screen, block validation
+    /// and apply unless `ConsensusFeature::SessionKeys` is active.
+    SessionKeyAction,
+    /// Security-key wallet action (`security_key_spend`), append-only index 41.
+    /// Carries a [`crate::accounts::security_key::SecurityKeyActionPayload`] as
+    /// JSON in `data` and is applied through the governance sink
+    /// (`ProcessGovernanceTransaction`), so an invalid action is dropped at
+    /// block assembly rather than faulting a block. A block carrying one below
+    /// the feature's activation height is invalid.
+    SecurityKeyAction,
+    /// Owner-signed send-allowlist action
+    /// (`accounts::send_allowlist::SignedSendAllowlistAction` in `data`),
+    /// append-only index 42. Refused everywhere below the unscheduled
+    /// `ConsensusFeature::SendAllowlist` activation.
+    SendAllowlist,
 }
 
 impl fmt::Display for TransactionType {
@@ -201,7 +219,10 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeBondLifecycle => write!(f, "NodeBondLifecycle"),
             TransactionType::NodeServiceBatch => write!(f, "NodeServiceBatch"),
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
+            TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
+            TransactionType::SendAllowlist => write!(f, "SendAllowlist"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
+            TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }
     }
 }
@@ -589,6 +610,75 @@ pub struct StationRegistrationPayload {
     /// `ConsensusFeature::StationRegistrationNonce`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_nonce: Option<u64>,
+    /// #3336: latitude in units of 1e-7 degree. From
+    /// `ConsensusFeature::StationCoordinatesFixedPoint`'s activation these
+    /// integers, not the f64 fields, are what governance signs and what the
+    /// station record stores; integers round-trip through JSON exactly, so the
+    /// preimage no longer depends on serde_json's float parser. Ignored
+    /// entirely while the feature is inactive (the legacy path, byte for byte).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude_e7: Option<i64>,
+    /// #3336: longitude in units of 1e-7 degree. See [`Self::latitude_e7`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude_e7: Option<i64>,
+    /// #3336: elevation in millimetres. See [`Self::latitude_e7`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_mm: Option<i64>,
+}
+
+/// Which key admitted a station registration
+/// ([`Transaction::station_registration_authority_at_height`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationRegistrationAuthority {
+    /// An oracle-governance key: the pre-existing path, unchanged.
+    Governance,
+    /// A pinned `station_registrar_key` key, inside the registrar's limits.
+    Registrar,
+}
+
+/// #3336: largest |latitude| in 1e-7 degree units (90°).
+pub const LATITUDE_E7_MAX: i64 = 900_000_000;
+/// #3336: largest |longitude| in 1e-7 degree units (180°).
+pub const LONGITUDE_E7_MAX: i64 = 1_800_000_000;
+/// #3336: largest |elevation| accepted, in millimetres (100 km).
+pub const ELEVATION_MM_MAX: i64 = 100_000_000;
+
+/// #3336: parse a decimal degrees string (`-92.04194742607375`, `45`, `+0.5`)
+/// into 1e-7 degree units EXACTLY, with no float in between: digits past the
+/// seventh decimal round half away from zero. Rejects exponents, empty parts,
+/// and non-ASCII digits. This is the CLI's path from user text to the signed
+/// integer.
+pub fn parse_degrees_e7(text: &str) -> Result<i64, String> {
+    let t = text.trim();
+    let (negative, body) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let (int_part, frac_part) = body.split_once('.').unwrap_or((body, ""));
+    if int_part.is_empty() && frac_part.is_empty()
+        || !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+        || int_part.len() > 4
+    {
+        return Err(format!("'{text}' is not a decimal degree value"));
+    }
+    let whole: i64 = if int_part.is_empty() { 0 } else { int_part.parse().map_err(|_| format!("'{text}' is out of range"))? };
+    let mut frac: i64 = 0;
+    for (i, digit) in frac_part.bytes().take(7).enumerate() {
+        frac += i64::from(digit - b'0') * 10_i64.pow(6 - i as u32);
+    }
+    let round_up = frac_part.as_bytes().get(7).is_some_and(|d| *d >= b'5');
+    let magnitude = whole * 10_000_000 + frac + i64::from(round_up);
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
+/// #3336: the canonical decimal text of a 1e-7 degree value; the exact inverse
+/// of [`parse_degrees_e7`] on its own output.
+pub fn format_degrees_e7(value: i64) -> String {
+    let sign = if value < 0 { "-" } else { "" };
+    let magnitude = value.unsigned_abs();
+    format!("{sign}{}.{:07}", magnitude / 10_000_000, magnitude % 10_000_000)
 }
 
 impl StationRegistrationPayload {
@@ -642,7 +732,35 @@ impl StationRegistrationPayload {
             auth_pubkey: None,
             auth_signature: None,
             expected_nonce: None,
+            latitude_e7: None,
+            longitude_e7: None,
+            elevation_mm: None,
         }
+    }
+
+    /// #3336: attach the fixed-point coordinates. Call BEFORE signing: from the
+    /// feature's activation they are what governance signs.
+    pub fn with_fixed_coordinates(
+        mut self,
+        latitude_e7: i64,
+        longitude_e7: i64,
+        elevation_mm: Option<i64>,
+    ) -> Self {
+        self.latitude_e7 = Some(latitude_e7);
+        self.longitude_e7 = Some(longitude_e7);
+        self.elevation_mm = elevation_mm;
+        self
+    }
+
+    /// #3336: the fixed-point coordinates, if this payload carries a complete,
+    /// in-range set. Consulted only once `StationCoordinatesFixedPoint` is
+    /// active; a payload without them is then not a valid registration.
+    pub fn fixed_coordinates(&self) -> Option<(i64, i64, Option<i64>)> {
+        let (lat, lon) = (self.latitude_e7?, self.longitude_e7?);
+        let in_range = lat.abs() <= LATITUDE_E7_MAX
+            && lon.abs() <= LONGITUDE_E7_MAX
+            && self.elevation_mm.is_none_or(|mm| mm.abs() <= ELEVATION_MM_MAX);
+        in_range.then_some((lat, lon, self.elevation_mm))
     }
 
     /// Structural validity, checked **before** any signature is verified and
@@ -716,6 +834,28 @@ impl StationRegistrationPayload {
             station_registration_authorization_message_with_domain(chain_id, network_id, self);
         self.auth_signature = Some(governance_key.sign(&message).to_hex());
         self.auth_pubkey = Some(PublicKey::from_private_key(governance_key).to_hex());
+    }
+
+    /// #3336: sign the governance authorisation over the FIXED-POINT preimage
+    /// (the form required from `StationCoordinatesFixedPoint`'s activation).
+    /// Returns `false`, leaving the payload unsigned, unless it carries a
+    /// complete, in-range fixed-point coordinate set.
+    pub fn sign_fixed_with_domain(
+        &mut self,
+        chain_id: &str,
+        network_id: &str,
+        governance_key: &PrivateKey,
+    ) -> bool {
+        self.auth_pubkey = None;
+        self.auth_signature = None;
+        let Some(message) =
+            station_registration_fixed_authorization_message_with_domain(chain_id, network_id, self)
+        else {
+            return false;
+        };
+        self.auth_signature = Some(governance_key.sign(&message).to_hex());
+        self.auth_pubkey = Some(PublicKey::from_private_key(governance_key).to_hex());
+        true
     }
 
     /// Sign the governance authorisation, resolving the chain identity from
@@ -800,6 +940,16 @@ pub const STATION_REGISTRATION_AUTH_DOMAIN: &[u8] = b"wrfcoin_station_registrati
 /// A different tag, so a v1 signature can never verify as a v2 one or back.
 pub const STATION_REGISTRATION_AUTH_V2_DOMAIN: &[u8] = b"wrfcoin_station_registration_auth_v2";
 
+/// #3336: domain separator of the fixed-point-coordinate governance signature
+/// (v1 layout). Distinct from both f64-bit tags, so a signature over one
+/// coordinate encoding can never verify as the other.
+pub const STATION_REGISTRATION_AUTH_FIXED_DOMAIN: &[u8] =
+    b"wrfcoin_station_registration_auth_fixed_v1";
+
+/// #3336: the fixed-point form of the v2 (nonce-bound) registration signature.
+pub const STATION_REGISTRATION_AUTH_FIXED_V2_DOMAIN: &[u8] =
+    b"wrfcoin_station_registration_auth_fixed_v2";
+
 /// Domain separator for station-ownership possession signatures (#2537).
 pub const STATION_OWNERSHIP_DOMAIN: &[u8] = b"wrfcoin_station_ownership_v1";
 
@@ -821,6 +971,31 @@ pub fn station_registration_authorization_message_with_domain(
     chain_id: &str,
     network_id: &str,
     p: &StationRegistrationPayload,
+) -> Vec<u8> {
+    station_registration_preimage(chain_id, network_id, p, None)
+}
+
+/// #3336: the governance preimage with coordinates as fixed-point integers
+/// (1e-7 degree, millimetres) under the fixed-point domain tags, the form
+/// `StationCoordinatesFixedPoint` requires from its activation. `None` when
+/// the payload does not carry a complete, in-range fixed-point set. Every
+/// other field is encoded exactly as in the f64-bit preimage.
+pub fn station_registration_fixed_authorization_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    p: &StationRegistrationPayload,
+) -> Option<Vec<u8>> {
+    let fixed = p.fixed_coordinates()?;
+    Some(station_registration_preimage(chain_id, network_id, p, Some(fixed)))
+}
+
+/// Shared core. `fixed = None` is the f64-bit preimage, byte for byte as
+/// before #3336.
+fn station_registration_preimage(
+    chain_id: &str,
+    network_id: &str,
+    p: &StationRegistrationPayload,
+    fixed: Option<(i64, i64, Option<i64>)>,
 ) -> Vec<u8> {
     // -0.0 and +0.0 compare equal but have distinct bit patterns; normalise so
     // a signature cannot be invalidated by a sign-of-zero round trip.
@@ -846,22 +1021,38 @@ pub fn station_registration_authorization_message_with_domain(
     let mut buf = Vec::with_capacity(STATION_REGISTRATION_AUTH_DOMAIN.len() + 192);
     // v1 keeps its original tag and layout byte for byte; v2 uses its own tag
     // and appends the signed expected nonce.
-    buf.extend_from_slice(if p.is_v2() {
-        STATION_REGISTRATION_AUTH_V2_DOMAIN
-    } else {
-        STATION_REGISTRATION_AUTH_DOMAIN
+    buf.extend_from_slice(match (fixed.is_some(), p.is_v2()) {
+        (false, false) => STATION_REGISTRATION_AUTH_DOMAIN,
+        (false, true) => STATION_REGISTRATION_AUTH_V2_DOMAIN,
+        (true, false) => STATION_REGISTRATION_AUTH_FIXED_DOMAIN,
+        (true, true) => STATION_REGISTRATION_AUTH_FIXED_V2_DOMAIN,
     });
     push_chain_domain(&mut buf, chain_id, network_id);
     push_str(&mut buf, &p.station_id);
     push_str(&mut buf, &p.owner_address);
-    buf.extend_from_slice(&f64_bits(p.latitude).to_le_bytes());
-    buf.extend_from_slice(&f64_bits(p.longitude).to_le_bytes());
-    match p.elevation_meters {
-        Some(value) => {
-            buf.push(1);
-            buf.extend_from_slice(&f64_bits(value).to_le_bytes());
+    match fixed {
+        None => {
+            buf.extend_from_slice(&f64_bits(p.latitude).to_le_bytes());
+            buf.extend_from_slice(&f64_bits(p.longitude).to_le_bytes());
+            match p.elevation_meters {
+                Some(value) => {
+                    buf.push(1);
+                    buf.extend_from_slice(&f64_bits(value).to_le_bytes());
+                },
+                None => buf.push(0),
+            }
         },
-        None => buf.push(0),
+        Some((latitude_e7, longitude_e7, elevation_mm)) => {
+            buf.extend_from_slice(&latitude_e7.to_le_bytes());
+            buf.extend_from_slice(&longitude_e7.to_le_bytes());
+            match elevation_mm {
+                Some(mm) => {
+                    buf.push(1);
+                    buf.extend_from_slice(&mm.to_le_bytes());
+                },
+                None => buf.push(0),
+            }
+        },
     }
     push_str(&mut buf, &p.hardware_model);
     push_opt_str(&mut buf, p.calibration_date.as_deref());
@@ -2331,6 +2522,119 @@ pub struct TransparentTransferPayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub passkey_auth: Option<crate::accounts::passkey::PasskeyAuthorization>,
+    /// A sponsor's signed promise to pay this transfer's fee (sponsored first
+    /// sends, `accounts::paymaster::SponsorAuthorization`). Read only once
+    /// `ConsensusFeature::Paymaster` is active; before that it is ignored and
+    /// the transfer applies exactly as it does without it. Deserialised
+    /// leniently — a malformed member reads as `None` — so a payload an older
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "crate::accounts::paymaster::deserialize_lenient_sponsorship",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sponsorship: Option<crate::accounts::paymaster::SponsorAuthorization>,
+    /// Session-key authorization of the debit: a device key the `from`
+    /// account registered (`accounts::session_keys`) signs
+    /// [`session_key_transfer_authorization_message_with_domain`]. The third
+    /// alternative to ed25519 / passkey, consulted only once
+    /// `ConsensusFeature::SessionKeys` is active and only when the other two
+    /// fail; state apply then checks the key is registered to `from`, live,
+    /// and that this transfer fits its scope and limits. Deserialised
+    /// leniently exactly like `passkey_auth`, so a payload a pre-feature
+    /// binary parses is parsed identically here.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_session_key_auth",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub session_key_auth: Option<SessionKeyTransferAuth>,
+}
+
+/// A session key's signature over one transparent transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionKeyTransferAuth {
+    /// Hex ed25519 public key of the registered session key.
+    pub session_public_key: String,
+    /// Hex ed25519 signature over
+    /// [`session_key_transfer_authorization_message_with_domain`].
+    pub signature: String,
+}
+
+impl SessionKeyTransferAuth {
+    /// Address of the session key (the key under which `State::session_keys`
+    /// records its grant), or `None` if the key is not valid hex ed25519.
+    pub fn session_key_address(&self) -> Option<Address> {
+        PublicKey::from_hex(self.session_public_key.trim())
+            .ok()
+            .map(|pk| Address::from_public_key(&pk))
+    }
+}
+
+/// Same contract as `accounts::passkey::deserialize_lenient_passkey`: a
+/// member that is not a well-formed [`SessionKeyTransferAuth`] reads as
+/// `None`, so adding this field never makes a payload that an older binary
+/// parses (and, if ed25519-authorised, accepts) unparseable here.
+fn deserialize_lenient_session_key_auth<'de, D>(
+    deserializer: D,
+) -> Result<Option<SessionKeyTransferAuth>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value::<SessionKeyTransferAuth>(value).ok()))
+}
+
+/// Domain separator for a session key's transparent-transfer authorization.
+/// Distinct from the owner's [`TRANSPARENT_TRANSFER_AUTH_DOMAIN`] so a session
+/// signature is never an owner authorization, nor the reverse.
+pub const SESSION_KEY_TRANSFER_AUTH_DOMAIN: &[u8] = b"wrfcoin_session_key_transfer_auth_v1";
+
+/// The bytes a session key signs to authorize one transparent transfer:
+/// chain domain, `from`, `to`, `amount`, the `from` account nonce, and the
+/// session public key itself (so one key's signature can never be presented
+/// as another key's). Same framing as
+/// [`transparent_transfer_authorization_message_with_domain`].
+pub fn session_key_transfer_authorization_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(SESSION_KEY_TRANSFER_AUTH_DOMAIN.len() + 128);
+    buf.extend_from_slice(SESSION_KEY_TRANSFER_AUTH_DOMAIN);
+    push_chain_domain(&mut buf, chain_id, network_id);
+    buf.extend_from_slice(&(from.len() as u32).to_le_bytes());
+    buf.extend_from_slice(from.as_bytes());
+    buf.extend_from_slice(&(to.len() as u32).to_le_bytes());
+    buf.extend_from_slice(to.as_bytes());
+    buf.extend_from_slice(&amount.to_le_bytes());
+    buf.extend_from_slice(&nonce.to_le_bytes());
+    buf.extend_from_slice(session_public_key.as_bytes());
+    buf
+}
+
+/// [`session_key_transfer_authorization_message_with_domain`] under the
+/// node's signing identity.
+pub fn session_key_transfer_authorization_message(
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    session_public_key: &PublicKey,
+) -> Vec<u8> {
+    session_key_transfer_authorization_message_with_domain(
+        &signing_chain_id(),
+        &signing_network_id(),
+        from,
+        to,
+        amount,
+        nonce,
+        session_public_key,
+    )
 }
 
 /// Domain separator for transparent-transfer authorization signatures (#1727).
@@ -2445,17 +2749,37 @@ impl TransparentTransferPayload {
     pub fn verify_authorization_with_view<V: crate::accounts::authorization::AuthorizationView>(
         &self, view: &V, nonce: u64, height: u64, timestamp: Timestamp,
     ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, None)
+            .is_ok()
+    }
+
+    /// The from-bound debit check with the transaction's optional
+    /// `security_key_auth` assertion (`security_key_spend`). The assertion is
+    /// read only for an account whose State-backed rule requires it; for every
+    /// other account (and for every pre-block `EmptyAuthorizationView` caller)
+    /// this is exactly [`Self::verify_authorization_with_view`].
+    pub fn authorize_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> Result<(), crate::accounts::authorization::AuthorizationError> {
+        use crate::accounts::authorization::AuthorizationError;
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
-            return false;
+            return Err(AuthorizationError::MalformedSignature);
         };
         // Bind the signer to the account being debited. `from` must be a real
         // hex address; protocol transfers debit a keyed account, never a label.
         let Ok(from_address) = self.from.parse::<Address>() else {
-            return false;
+            return Err(AuthorizationError::SignerIsNotSender);
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &from_address,
             &self.authorization_message(nonce),
@@ -2463,10 +2787,10 @@ impl TransparentTransferPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
-        .is_ok()
     }
 
     /// Whether this payload carries a (well-formed) passkey authorization
@@ -2487,6 +2811,42 @@ impl TransparentTransferPayload {
                 .is_ok(),
             None => false,
         }
+    }
+
+    /// Sign this payload with a registered session key, populating
+    /// `session_key_auth`. Leaves `auth_pubkey`/`auth_signature` untouched.
+    pub fn sign_session_key_authorization(&mut self, session_key: &PrivateKey, nonce: u64) {
+        let public_key = PublicKey::from_private_key(session_key);
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        self.session_key_auth = Some(SessionKeyTransferAuth {
+            session_public_key: public_key.to_hex(),
+            signature: session_key.sign(&message).to_hex(),
+        });
+    }
+
+    /// **Ungated, stateless** check of `session_key_auth`: the session key's
+    /// signature verifies over this transfer at `nonce`. Says nothing about
+    /// whether the key is registered to `from` or within its limits — that is
+    /// state, checked by `State` at apply (`session_keys::consume_transfer`).
+    pub fn verify_session_key_signature(&self, nonce: u64) -> bool {
+        let Some(auth) = &self.session_key_auth else {
+            return false;
+        };
+        let (Ok(public_key), Ok(signature)) = (
+            PublicKey::from_hex(auth.session_public_key.trim()),
+            Signature::from_hex(auth.signature.trim()),
+        ) else {
+            return false;
+        };
+        if self.from.parse::<Address>().is_err() {
+            return false;
+        }
+        let message = session_key_transfer_authorization_message(
+            &self.from, &self.to, self.amount, nonce, &public_key,
+        );
+        public_key.verify(&message, &signature)
     }
 
     /// Authorization at a consensus height (#2169): the ed25519 rule
@@ -2517,7 +2877,44 @@ impl TransparentTransferPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
-        self.verify_authorization_with_view(view, nonce, height, timestamp)
+        self.verify_owner_authorization_at_height_with_view(view, nonce, height, timestamp)
+            || (crate::accounts::session_keys::session_keys_active(height)
+                && self.verify_session_key_signature(nonce))
+    }
+
+    /// The owner's own authorization at a consensus height: ed25519 or, once
+    /// active, passkey — exactly the pre-session-key rule. State apply uses
+    /// this to decide whether a transfer is owner-signed (no session use is
+    /// consumed) or must be charged to a session key.
+    pub fn verify_owner_authorization_at_height_with_view<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+    ) -> bool {
+        self.verify_owner_authorization_at_height_with_view_and_security_key(
+            view, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_owner_authorization_at_height_with_view`] with the
+    /// transaction's optional `security_key_auth` assertion
+    /// (`security_key_spend`). Used by state apply, which holds the State view.
+    pub fn verify_owner_authorization_at_height_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
+        self.authorize_with_view_and_security_key(view, nonce, height, timestamp, security_key)
+            .is_ok()
             || (crate::accounts::passkey::passkey_auth_active(height)
                 && self.verify_passkey_authorization(nonce))
     }
@@ -2530,9 +2927,26 @@ impl TransparentTransferPayload {
     /// block validation and state apply; on a chain that never schedules the
     /// feature this is exactly `verify_authorization`.
     pub fn verify_authorization_for_admission(&self, nonce: u64) -> bool {
-        self.verify_authorization(nonce)
+        (self.verify_authorization(nonce)
             || (crate::accounts::passkey::passkey_auth_scheduled()
                 && self.verify_passkey_authorization(nonce))
+            || (crate::accounts::session_keys::session_keys_scheduled()
+                && self.verify_session_key_signature(nonce)))
+            && self.sponsorship_admissible(nonce)
+    }
+
+    /// Mempool screen for a carried sponsorship: on a chain that schedules
+    /// `paymaster`, a sponsorship whose signature does not verify over this
+    /// transfer is refused. On every other chain the field is ignored, as it
+    /// is by state apply, so admission is unchanged. Height-dependent rules
+    /// (expiry, balance, rate limits) are enforced by state apply.
+    pub fn sponsorship_admissible(&self, nonce: u64) -> bool {
+        match &self.sponsorship {
+            Some(auth) if crate::accounts::paymaster::sponsorship_scheduled() => auth
+                .verify_signature(&self.from, &self.to, self.amount, nonce)
+                .is_ok(),
+            _ => true,
+        }
     }
 }
 
@@ -2668,6 +3082,24 @@ impl StakeAuthPayload {
         height: u64,
         timestamp: Timestamp,
     ) -> bool {
+        self.verify_authorization_with_view_and_security_key(
+            view, is_unstake, nonce, height, timestamp, None,
+        )
+    }
+
+    /// [`Self::verify_authorization_with_view`] with the transaction's
+    /// optional `security_key_auth` assertion (`security_key_spend`).
+    pub fn verify_authorization_with_view_and_security_key<
+        V: crate::accounts::authorization::AuthorizationView,
+    >(
+        &self,
+        view: &V,
+        is_unstake: bool,
+        nonce: u64,
+        height: u64,
+        timestamp: Timestamp,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
+    ) -> bool {
         let (Some(pk_hex), Some(sig_hex)) =
             (self.auth_pubkey.as_deref(), self.auth_signature.as_deref())
         else {
@@ -2678,7 +3110,7 @@ impl StakeAuthPayload {
         let Ok(account_address) = self.account.parse::<Address>() else {
             return false;
         };
-        authorize_debit(
+        crate::accounts::authorization::authorize_debit_with_security_key(
             view,
             &account_address,
             &self.authorization_message(is_unstake, nonce),
@@ -2686,6 +3118,7 @@ impl StakeAuthPayload {
                 signer_public_key: pk_hex,
                 signature: sig_hex,
             },
+            security_key,
             height,
             timestamp,
         )
@@ -3454,6 +3887,75 @@ impl Transaction {
         chain_id: &str,
         network_id: &str,
     ) -> bool {
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_authorized_oracle_governance,
+        )
+    }
+
+    /// #3336: verify against the fixed-point governance preimage
+    /// ([`station_registration_fixed_authorization_message_with_domain`]); a
+    /// payload without a complete, in-range fixed-point set fails.
+    pub fn verify_station_registration_fixed_authorization_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+    ) -> bool {
+        self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            true,
+            &is_authorized_oracle_governance,
+        )
+    }
+
+    /// Offline (CLI) form of the `station_registrar_key` path in
+    /// [`Self::station_registration_authority_at_height`]: is this tx signed
+    /// by a key pinned for `genesis_hash` (the f64 preimage, as before
+    /// `station_coordinates_fixed_point`), with a valid owner proof, and
+    /// inside the registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`])?
+    /// The same predicate and the same rule function consensus runs, minus the
+    /// height gate and the node's installed chain authority. No node calls it.
+    pub fn verify_station_registrar_authorization_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        genesis_hash: &str,
+    ) -> bool {
+        let registrar_keys =
+            crate::governance::schedule_extension::station_registrar_keys(genesis_hash);
+        if registrar_keys.is_empty() {
+            return false;
+        }
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.contains(&key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            chain_id,
+            network_id,
+            false,
+            &is_registrar,
+        ) {
+            return false;
+        }
+        self.parse_station_registration().is_some_and(|payload| {
+            crate::consensus::station_registrar::registrar_shape_refusal(&payload, false).is_none()
+        })
+    }
+
+    /// `authorized` decides which `auth_pubkey`s may sign: the oracle-governance
+    /// allowlist, or (`station_registrar_key`) the registrar keys in force.
+    fn verify_station_registration_authorization_for(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        fixed: bool,
+        authorized: &dyn Fn(&str) -> bool,
+    ) -> bool {
         let Some(payload) = self.parse_station_registration() else {
             return false;
         };
@@ -3469,7 +3971,7 @@ impl Transaction {
         ) else {
             return false;
         };
-        if !is_authorized_oracle_governance(auth_pk_hex) {
+        if !authorized(auth_pk_hex) {
             return false;
         }
         let (Ok(auth_pk), Ok(auth_sig)) = (
@@ -3501,8 +4003,16 @@ impl Transaction {
         let mut unsigned = payload.clone();
         unsigned.auth_pubkey = None;
         unsigned.auth_signature = None;
-        let authorization_message =
-            station_registration_authorization_message_with_domain(chain_id, network_id, &unsigned);
+        let authorization_message = if fixed {
+            match station_registration_fixed_authorization_message_with_domain(
+                chain_id, network_id, &unsigned,
+            ) {
+                Some(message) => message,
+                None => return false,
+            }
+        } else {
+            station_registration_authorization_message_with_domain(chain_id, network_id, &unsigned)
+        };
         auth_pk.verify(&authorization_message, &auth_sig)
     }
 
@@ -3523,16 +4033,69 @@ impl Transaction {
     ///
     /// [`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`]: crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
     pub fn verify_station_registration_authorization_at_height(&self, block_height: u64) -> bool {
-        if !self.verify_station_registration_authorization() {
-            return false;
+        self.station_registration_authority_at_height(block_height).is_some()
+    }
+
+    /// Which authority admits this registration at `block_height`, or `None`.
+    ///
+    /// The governance path is exactly what it was before
+    /// `station_registrar_key`. Only when it fails, and only while the
+    /// registrar feature is active on a chain with a pinned registrar key, is
+    /// the registrar path tried: a registrar-key signature, then the
+    /// registrar's stateless limits
+    /// ([`crate::consensus::station_registrar::registrar_shape_refusal`]),
+    /// which include the ownership binding at every height.
+    pub fn station_registration_authority_at_height(
+        &self,
+        block_height: u64,
+    ) -> Option<StationRegistrationAuthority> {
+        // #3336: from `StationCoordinatesFixedPoint`'s activation the
+        // governance signature covers the fixed-point preimage; below it, the
+        // f64-bit preimage exactly as before.
+        let fixed = crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::StationCoordinatesFixedPoint,
+            block_height,
+        );
+        let chain_id = signing_chain_id();
+        let network_id = signing_network_id();
+        if self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
+            fixed,
+            &is_authorized_oracle_governance,
+        ) {
+            if block_height
+                < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
+            {
+                return Some(StationRegistrationAuthority::Governance);
+            }
+            return self
+                .parse_station_registration()
+                .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+                .then_some(StationRegistrationAuthority::Governance);
         }
-        if block_height
-            < crate::consensus::proof_of_publishing::STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT
-        {
-            return true;
+        // `station_registrar_key`: empty below activation and on a chain with
+        // no pinned key, so this returns `None` exactly as before.
+        let registrar_keys = crate::consensus::station_registrar::registrar_keys_at(block_height);
+        if registrar_keys.is_empty() {
+            return None;
         }
-        self.parse_station_registration()
-            .is_some_and(|payload| payload.owner_address_is_bound_to_owner_pubkey())
+        let is_registrar = |key: &str| {
+            let key = key.trim().to_ascii_lowercase();
+            registrar_keys.iter().any(|pinned| *pinned == key)
+        };
+        if !self.verify_station_registration_authorization_for(
+            &chain_id,
+            &network_id,
+            fixed,
+            &is_registrar,
+        ) {
+            return None;
+        }
+        let payload = self.parse_station_registration()?;
+        crate::consensus::station_registrar::registrar_shape_refusal(&payload, fixed)
+            .is_none()
+            .then_some(StationRegistrationAuthority::Registrar)
     }
 
     /// The ONE entry point every extractor uses for a station-registration tx
@@ -3558,12 +4121,30 @@ impl Transaction {
         if payload.is_v2() != nonce_active {
             return None;
         }
-        if !self.verify_station_registration_authorization_at_height(block_height) {
+        // #3336: from activation a registration must carry fixed-point
+        // coordinates; one without them yields no transition.
+        if crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::StationCoordinatesFixedPoint,
+            block_height,
+        ) && payload.fixed_coordinates().is_none()
+        {
             return None;
+        }
+        let authority = self.station_registration_authority_at_height(block_height)?;
+        if authority == StationRegistrationAuthority::Registrar {
+            // `station_registrar_key`: its own transition, so the apply arm
+            // can enforce the stateful limits; the per-block slot is enforced
+            // by the extractors (`RegistrarBlockSlot`).
+            return Some(
+                crate::blockchain::state::StateTransition::ApplyStationRegistrarRegistration {
+                    station: Self::station_from_registration_at_height(&payload, block_height),
+                    block_height,
+                },
+            );
         }
         Some(if payload.is_v2() {
             crate::blockchain::state::StateTransition::ApplyStationRegistrationV2 {
-                station: Self::station_from_registration(&payload),
+                station: Self::station_from_registration_at_height(&payload, block_height),
                 expected_nonce: payload.expected_nonce.unwrap_or(0),
                 block_height,
             }
@@ -3584,7 +4165,7 @@ impl Transaction {
         payload: &StationRegistrationPayload,
         block_height: u64,
     ) -> crate::blockchain::state::StateTransition {
-        let station = Self::station_from_registration(payload);
+        let station = Self::station_from_registration_at_height(payload, block_height);
         if crate::crypto::chain_binding::feature_active(
             crate::crypto::chain_binding::ConsensusFeature::StationOwnerConsent,
             block_height,
@@ -3596,6 +4177,36 @@ impl Transaction {
         } else {
             crate::blockchain::state::StateTransition::ApplyStationRegistration { station }
         }
+    }
+
+    /// [`Self::station_from_registration`], except that from
+    /// `StationCoordinatesFixedPoint`'s activation the location comes from the
+    /// signed fixed-point integers: `latitude_e7 / 1e7`, `longitude_e7 / 1e7`,
+    /// `elevation_mm / 1e3`. Each is one IEEE-754 division of an exactly
+    /// representable integer (|x| < 2^53) by an exactly representable power of
+    /// ten, which is correctly rounded on every conforming platform, so every
+    /// node stores the same bits without re-parsing any JSON float. Below
+    /// activation (or without a fixed-point set) it is exactly
+    /// [`Self::station_from_registration`].
+    pub fn station_from_registration_at_height(
+        payload: &StationRegistrationPayload,
+        block_height: u64,
+    ) -> crate::station_registry::WeatherStation {
+        let mut station = Self::station_from_registration(payload);
+        if crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::StationCoordinatesFixedPoint,
+            block_height,
+        ) {
+            if let Some((latitude_e7, longitude_e7, elevation_mm)) = payload.fixed_coordinates() {
+                // determinism-ok: exact i64 -> f64 (|x| <= 1.8e9 < 2^53) then one correctly rounded IEEE division by an exact power of ten.
+                station.location.latitude = latitude_e7 as f64 / 1e7;
+                // determinism-ok: exact i64 -> f64 (|x| <= 1.8e9 < 2^53) then one correctly rounded IEEE division by an exact power of ten.
+                station.location.longitude = longitude_e7 as f64 / 1e7;
+                // determinism-ok: exact i64 -> f64 (|x| <= 1e8 < 2^53) then one correctly rounded IEEE division by an exact power of ten.
+                station.location.elevation_meters = elevation_mm.map(|mm| mm as f64 / 1e3);
+            }
+        }
+        station
     }
 
     /// Build the canonical [`WeatherStation`] a verified registration produces.
@@ -3653,6 +4264,53 @@ impl Transaction {
         }
     }
 
+    /// #3290: whether this `ForecastCommit` names the forecaster its
+    /// authorization key controls.
+    ///
+    /// The forecaster is the 20-byte address derived from `auth_pubkey`
+    /// (`Address::from_public_key`). The transaction's `sender_address` and
+    /// EVERY output address must parse to exactly those bytes: a display or
+    /// case variant parses to the same bytes, a label that is not an address
+    /// (or names someone else) does not. Signature validity is NOT checked
+    /// here; [`Self::verify_commit_authorization_at_height`] composes both.
+    /// Returns `false` for every other transaction type.
+    pub fn forecast_commit_key_bound(&self) -> bool {
+        if self.tx_type != TransactionType::ForecastCommit {
+            return false;
+        }
+        let Some(payload) = self.parse_commit_payload() else {
+            return false;
+        };
+        let Some(Ok(public_key)) = payload.auth_pubkey.as_deref().map(PublicKey::from_hex) else {
+            return false;
+        };
+        let forecaster = Address::from_public_key(&public_key);
+        self.sender_address == forecaster
+            && !self.outputs.is_empty()
+            && self
+                .outputs
+                .iter()
+                .all(|output| output.address.parse::<Address>().is_ok_and(|a| a == forecaster))
+    }
+
+    /// Height-aware commit authorization: [`Self::verify_commit_authorization`],
+    /// plus, for a `ForecastCommit` once
+    /// `ConsensusFeature::ForecasterKeyBinding` is active at `height`, the
+    /// #3290 key binding ([`Self::forecast_commit_key_bound`]).
+    ///
+    /// The ONE check mempool admission, the shared producer/sync block
+    /// classifier and transition extraction ask, so the three cannot disagree.
+    /// With the feature inactive this is `verify_commit_authorization` exactly.
+    pub fn verify_commit_authorization_at_height(&self, height: u64) -> bool {
+        self.verify_commit_authorization()
+            && (self.tx_type != TransactionType::ForecastCommit
+                || !crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::ForecasterKeyBinding,
+                    height,
+                )
+                || self.forecast_commit_key_bound())
+    }
+
     /// Verify the embedded `account`-bound authorization on a `Stake`/`Unstake`
     /// transaction (#1763). Returns `false` for non-stake types, transactions
     /// without a stake-authorization payload, or any payload whose authorization
@@ -3673,12 +4331,32 @@ impl Transaction {
             TransactionType::Unstake => true,
             _ => return false,
         };
+        let security_key = self.security_key_spend_proof();
         match self.parse_stake_auth_payload() {
-            Some(payload) => payload.verify_authorization_with_view(
-                view, is_unstake, self.nonce, height, timestamp,
+            Some(payload) => payload.verify_authorization_with_view_and_security_key(
+                view, is_unstake, self.nonce, height, timestamp, security_key.as_ref(),
             ),
             None => false,
         }
+    }
+
+    /// The optional `security_key_auth` member of this transaction's JSON
+    /// `data` (`security_key_spend`), read leniently: anything malformed reads
+    /// as absent and never makes the payload unparseable.
+    pub fn security_key_spend_proof(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyAssertionWire> {
+        crate::accounts::security_key::spend_proof_from_tx_data(self.data.as_deref())
+    }
+
+    /// Parse a `SecurityKeyAction` payload from tx data.
+    pub fn parse_security_key_action_payload(
+        &self,
+    ) -> Option<crate::accounts::security_key::SecurityKeyActionPayload> {
+        if self.tx_type != TransactionType::SecurityKeyAction {
+            return None;
+        }
+        serde_json::from_str(self.data.as_deref()?).ok()
     }
 
     /// Parse layer2 batch submit payload from tx data.
@@ -4093,8 +4771,17 @@ impl Transaction {
         if self.tx_type != TransactionType::Transfer {
             return false;
         }
+        let security_key = self.security_key_spend_proof();
         match self.parse_transparent_transfer_payload() {
-            Some(payload) => payload.verify_authorization_with_view(view, self.nonce, height, timestamp),
+            Some(payload) => payload
+                .authorize_with_view_and_security_key(
+                    view,
+                    self.nonce,
+                    height,
+                    timestamp,
+                    security_key.as_ref(),
+                )
+                .is_ok(),
             None => false,
         }
     }
@@ -5695,6 +6382,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         // Unsigned → not authorized.
         assert!(!payload.verify_authorization(0));
@@ -5724,6 +6413,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         forged.sign_authorization(&attacker, 0);
         assert!(
@@ -5784,6 +6475,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         }
     }
 
@@ -6263,5 +6956,157 @@ mod tests {
             ),
             "a coordinate change must remain visible in the signed preimage"
         );
+    }
+}
+
+#[cfg(test)]
+mod fixed_point_coordinates_3336 {
+    use super::*;
+    use crate::station_registry::{ContributionProvenanceClass, DataQualityTier};
+
+    /// Appended right after streak_replay_node_service; later features append
+    /// after it, so the wire ordinal stays fixed. Unscheduled.
+    #[test]
+    fn feature_follows_streak_replay_node_service_and_is_unscheduled() {
+        use crate::crypto::chain_binding::ConsensusFeature;
+        let f = ConsensusFeature::StationCoordinatesFixedPoint;
+        assert_eq!(ConsensusFeature::parse("station_coordinates_fixed_point"), Some(f));
+        let all = ConsensusFeature::ALL;
+        let at = all.iter().position(|x| *x == f).unwrap();
+        assert_eq!(all[at - 1], ConsensusFeature::StreakReplayNodeService);
+        let known = crate::crypto::protocol_support::KNOWN_FEATURES;
+        let k = known.iter().position(|x| *x == "station_coordinates_fixed_point").unwrap();
+        assert_eq!(known[k - 1], "streak_replay_node_service");
+        assert_eq!(bincode::serialize(&f).unwrap(), 25u32.to_le_bytes(), "ordinal after streak_replay_node_service");
+        assert!(!f.schedulable(None));
+        assert!(f.has_behaviour());
+    }
+
+    const EDGES: &[(&str, i64)] = &[
+        ("90", 900_000_000),
+        ("-90", -900_000_000),
+        ("180", 1_800_000_000),
+        ("-180", -1_800_000_000),
+        ("0", 0),
+        ("-0", 0),
+        ("0.0000001", 1),
+        ("-0.0000001", -1),
+        ("46.7867", 467_867_000),
+        ("-92.04194742607375", -920_419_474), // #3333: digits past 1e-7 round half away
+        ("-92.04194745", -920_419_475),
+        ("-92.04194744999", -920_419_474),
+        ("179.99999995", 1_800_000_000),
+        (".5", 5_000_000),
+        ("+12.3456789", 123_456_789),
+    ];
+
+    #[test]
+    fn decimal_text_parses_exactly_with_a_defined_rounding_rule() {
+        for (text, expected) in EDGES {
+            assert_eq!(parse_degrees_e7(text), Ok(*expected), "{text}");
+        }
+        for bad in ["", "-", ".", "1e5", "12,5", "١٢", "12.3.4", "nan", "inf", "12345"] {
+            assert!(parse_degrees_e7(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn integers_round_trip_through_text_and_json_without_loss() {
+        let mut values: Vec<i64> = EDGES.iter().map(|(_, v)| *v).collect();
+        values.extend([LATITUDE_E7_MAX - 1, -LONGITUDE_E7_MAX + 1, 123_456_789, -987_654_321]);
+        for v in values {
+            assert_eq!(parse_degrees_e7(&format_degrees_e7(v)), Ok(v), "text round trip of {v}");
+            let json = serde_json::to_string(&v).unwrap();
+            assert_eq!(serde_json::from_str::<i64>(&json).unwrap(), v, "JSON round trip of {v}");
+        }
+    }
+
+    fn payload(lat_e7: i64, lon_e7: i64) -> StationRegistrationPayload {
+        StationRegistrationPayload::new(
+            "ws-3336",
+            "0x0000000000000000000000000000000000000001",
+            // The f64 fields are deliberately constant: they must not matter.
+            1.0,
+            2.0,
+            "fixture",
+            DataQualityTier::Gold,
+            ContributionProvenanceClass::Real,
+        )
+        .with_fixed_coordinates(lat_e7, lon_e7, Some(1))
+    }
+
+    #[test]
+    fn distinct_coordinates_never_share_a_preimage() {
+        // Neighbouring 1e-7 steps at the edges and around the #3333 value, which
+        // the f64-bit encoding could only tell apart through a lossy re-parse.
+        let mut seen = std::collections::BTreeSet::new();
+        for lat in [-LATITUDE_E7_MAX, -1, 0, 1, LATITUDE_E7_MAX] {
+            for lon in [-LONGITUDE_E7_MAX, -920_419_475, -920_419_474, -920_419_473, 0, LONGITUDE_E7_MAX] {
+                let m = station_registration_fixed_authorization_message_with_domain("777", "testnet", &payload(lat, lon))
+                    .expect("in range");
+                assert!(seen.insert(m), "collision at ({lat}, {lon})");
+            }
+        }
+        assert!(station_registration_fixed_authorization_message_with_domain(
+            "777", "testnet", &payload(LATITUDE_E7_MAX + 1, 0)
+        )
+        .is_none(), "out of range is not signable");
+    }
+
+    #[test]
+    fn the_fixed_preimage_ignores_the_f64_fields_and_differs_from_the_legacy_one() {
+        let a = payload(467_867_000, -920_419_474);
+        let mut b = a.clone();
+        b.longitude = f64::from_bits(b.longitude.to_bits() + 1); // the #3333 one-ulp drift
+        b.latitude = -45.0;
+        let fixed = |p: &StationRegistrationPayload| {
+            station_registration_fixed_authorization_message_with_domain("777", "testnet", p).unwrap()
+        };
+        assert_eq!(fixed(&a), fixed(&b), "f64 fields are not signed in the fixed form");
+        assert_ne!(
+            fixed(&a),
+            station_registration_authorization_message_with_domain("777", "testnet", &a),
+            "fixed and f64-bit preimages are domain-separated"
+        );
+        assert_ne!(fixed(&a), fixed(&a.clone().with_expected_nonce(0)), "v2 has its own fixed tag and tail");
+    }
+
+    #[test]
+    fn the_3333_pair_verifies_under_the_fixed_preimage_whatever_json_does_to_the_float() {
+        let gov = PrivateKey::from_bytes(&[0x60; 32]).unwrap();
+        let owner = PrivateKey::from_bytes(&[0xA1; 32]).unwrap();
+        let mut p = StationRegistrationPayload::new(
+            "ws-3333",
+            PublicKey::from_private_key(&owner).to_address(),
+            46.7867,
+            -92.04194742607375,
+            "fixture",
+            DataQualityTier::Gold,
+            ContributionProvenanceClass::Real,
+        )
+        .with_fixed_coordinates(467_867_000, parse_degrees_e7("-92.04194742607375").unwrap(), None);
+        p.sign_ownership_with_domain("777", "testnet", &owner);
+        assert!(p.sign_fixed_with_domain("777", "testnet", &gov));
+        // Whatever a JSON parser makes of the float, the integers carry the signature.
+        let mut json: serde_json::Value = serde_json::to_value(&p).unwrap();
+        json["longitude"] = serde_json::json!(-92.04194742607374);
+        let mut tx = Transaction::new(Vec::new(), Vec::new());
+        tx.tx_type = TransactionType::StationRegistration;
+        tx.data = Some(json.to_string());
+        // The node's verifier also requires an allowlisted governance key (an
+        // environment setting the parallel lib tests must not share), so check
+        // the signature itself against what a node re-parses from the JSON.
+        let mut reparsed = tx.parse_station_registration().expect("still a valid registration");
+        assert_ne!(reparsed.longitude.to_bits(), p.longitude.to_bits(), "the float did change");
+        let sig = Signature::from_hex(reparsed.auth_signature.as_deref().unwrap()).unwrap();
+        reparsed.auth_pubkey = None;
+        reparsed.auth_signature = None;
+        let gov_pk = PublicKey::from_private_key(&gov);
+        let fixed_msg =
+            station_registration_fixed_authorization_message_with_domain("777", "testnet", &reparsed).unwrap();
+        assert!(gov_pk.verify(&fixed_msg, &sig), "the integers carry the signature");
+        let legacy_msg = station_registration_authorization_message_with_domain("777", "testnet", &reparsed);
+        assert!(!gov_pk.verify(&legacy_msg, &sig),
+            "a fixed-point signature never verifies under the f64-bit preimage");
     }
 }

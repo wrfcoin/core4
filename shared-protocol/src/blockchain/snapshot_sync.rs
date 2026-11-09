@@ -150,6 +150,62 @@ pub fn build_state_snapshot(
     }
 }
 
+/// #3551: the snapshot root [`build_state_snapshot`] would compute, built one
+/// entry at a time without holding the entries.
+///
+/// [`SnapshotRootBuilder::push`] hashes a value and keeps only its key and leaf
+/// hash, so a caller can encode, push and drop each entry in turn; no
+/// per-entry `SnapshotEntry` (three heap strings) is allocated and the Merkle
+/// layers are reduced in place instead of cloned. Leaves are ordered by key
+/// bytes, which is the order `build_state_snapshot` reaches by sorting the
+/// lowercase hex keys (hex encoding preserves byte order, prefixes included;
+/// both sorts are stable, so duplicate keys keep push order). Equal to
+/// `build_state_snapshot` by test (`snapshot_root_builder_matches_the_full_build`).
+#[derive(Debug, Default)]
+pub struct SnapshotRootBuilder {
+    leaves: Vec<(Vec<u8>, String)>,
+}
+
+impl SnapshotRootBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, key: Vec<u8>, value: &[u8]) {
+        let leaf = snapshot_leaf_hash(&key, &hash_bytes(value).to_string());
+        self.leaves.push((key, leaf));
+    }
+
+    /// `(snapshot_root_hex, entry_count)`.
+    pub fn finish(mut self) -> (String, usize) {
+        self.leaves.sort_by(|a, b| a.0.cmp(&b.0));
+        let count = self.leaves.len();
+        let mut layer: Vec<String> = self.leaves.into_iter().map(|(_, leaf)| leaf).collect();
+        if layer.is_empty() {
+            return (hash_bytes(EMPTY_SNAPSHOT_DOMAIN.as_bytes()).to_string(), 0);
+        }
+        while layer.len() > 1 {
+            let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+            for pair in layer.chunks(2) {
+                next.push(snapshot_node_hash(&pair[0], pair.get(1).unwrap_or(&pair[0])));
+            }
+            layer = next;
+        }
+        (layer.swap_remove(0), count)
+    }
+}
+
+/// #3551: `(snapshot_root_hex, entry_count)` of the snapshot
+/// [`build_state_snapshot`] would build from `entries`, dropping each value as
+/// it is hashed. See [`SnapshotRootBuilder`].
+pub fn snapshot_summary_from_entries(entries: Vec<(Vec<u8>, Vec<u8>)>) -> (String, usize) {
+    let mut builder = SnapshotRootBuilder::new();
+    for (key, value) in entries {
+        builder.push(key, &value);
+    }
+    builder.finish()
+}
+
 /// The payload to sign for `snapshot`, taken at chain tip `tip_hash_hex`
 /// (the hash of block `snapshot.height`) with the source's
 /// `finalized_height`.
@@ -343,6 +399,31 @@ mod tests {
             (b"station/b/humidity".to_vec(), b"0.41".to_vec()),
             (b"station/a/wind".to_vec(), b"3.2".to_vec()),
         ]
+    }
+
+    /// #3551: the streaming root equals the full build, over shuffled order,
+    /// prefix keys, a duplicate key, odd/even/one/zero leaf counts.
+    #[test]
+    fn snapshot_root_builder_matches_the_full_build() {
+        for n in [0usize, 1, 2, 3, 7, 64, 257] {
+            let mut entries: Vec<(Vec<u8>, Vec<u8>)> = (0..n)
+                .map(|i| {
+                    let mut key = format!("k/{}", i % 50).into_bytes();
+                    key.extend(std::iter::repeat_n(0xffu8, i % 3)); // prefixes + high bytes
+                    let value: Vec<u8> = (0..(i % 40)).map(|j| (i * 31 + j * 7) as u8).collect();
+                    (key, value)
+                })
+                .collect();
+            if n > 3 {
+                let dup = entries[1].clone();
+                entries.push((dup.0, b"other value".to_vec())); // duplicate key
+            }
+            entries.reverse();
+            let full = build_state_snapshot(9, "root", &entries);
+            let (root, count) = snapshot_summary_from_entries(entries.clone());
+            assert_eq!(root, full.snapshot_root_hex, "n={n}");
+            assert_eq!(count, full.entries.len(), "n={n}");
+        }
     }
 
     #[test]

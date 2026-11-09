@@ -520,6 +520,12 @@ pub enum P2pCommand {
         request_id: request_response::InboundRequestId,
         response: BlockResponse,
     },
+    /// Answer a bonded snapshot fetch the node handed to the application
+    /// ([`crate::bonded_fetch_serve::InboundBondedFetch`]).
+    RespondToBondedFetch {
+        request_id: request_response::InboundRequestId,
+        response: crate::bonded_fetch::BondedFetchResponse,
+    },
     BroadcastWeatherData {
         station_id: String,
         data: Vec<u8>,
@@ -615,6 +621,11 @@ pub enum P2pCommand {
         peer_id: PeerId,
         reason: String,
     },
+    /// Test-only: drop this node's own blocks-topic subscription while every
+    /// connection stays up, so `ChainStatus` and `NewBlock` gossip silently
+    /// stop arriving. Models the 2026-11-08 ws stall.
+    #[cfg(test)]
+    TestDropChainGossipSubscription,
     Shutdown,
 }
 
@@ -625,9 +636,21 @@ pub struct P2pHandle {
     pub local_peer_id: PeerId,
     pub discovered_peers: DiscoveredPeers,
     pub sync_peers: SyncPeersSurface,
+    /// Admitted bonded snapshot fetches; `Some` only when the node serves them
+    /// (`P2pConfig::serve_bonded_snapshots`).
+    bonded_fetch_rx: Option<mpsc::Receiver<crate::bonded_fetch_serve::InboundBondedFetch>>,
 }
 
 impl P2pHandle {
+    /// Take the queue of admitted bonded snapshot fetches. The taker answers
+    /// each with [`P2pCommand::RespondToBondedFetch`]. If nobody takes it, the
+    /// node answers every fetch `UNAVAILABLE`.
+    pub fn take_bonded_fetch_requests(
+        &mut self,
+    ) -> Option<mpsc::Receiver<crate::bonded_fetch_serve::InboundBondedFetch>> {
+        self.bonded_fetch_rx.take()
+    }
+
     #[cfg(test)]
     pub(crate) async fn quic_blocks_ready_for_test(&self, peer_id: PeerId) -> bool {
         let (reply, response) = tokio::sync::oneshot::channel();
@@ -1216,6 +1239,10 @@ impl P2pNode {
             .with_quic_config(|quic_config| {
                 configure_quic_transport(quic_config, idle_connection_timeout)
             })
+            // Resolve /dns4/ and /dns/ peer addresses (the public seed is /dns4/seed.wrfcoin.com/...),
+            // using the operating system's resolver settings on Linux, macOS and Windows.
+            .with_dns()
+            .map_err(|e| P2pError::Transport(format!("dns: {e}")))?
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(|e| P2pError::Transport(format!("relay client: {e}")))?
             .with_behaviour(|key, relay_behaviour| {
@@ -1325,6 +1352,12 @@ impl P2pNode {
             config.genesis_hash.clone(),
             advertised_version.as_u32(),
         );
+        let (bonded_fetch_tx, bonded_fetch_rx) = if config.serve_bonded_snapshots {
+            let (tx, rx) = mpsc::channel(crate::bonded_fetch_serve::BONDED_FETCH_QUEUE);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let bootstrap_peers_for_redial = config.bootstrap_peers.clone();
         let bootstrap_redial_interval = config.bootstrap_redial_interval;
         let bootstrap_redial_max_backoff = config.bootstrap_redial_max_backoff;
@@ -1348,10 +1381,13 @@ impl P2pNode {
             bootstrap_peers_for_redial,
             bootstrap_redial_interval,
             bootstrap_redial_max_backoff,
+            (config.gossip_silence_timeout, config.gossip_probe_timeout),
             config.outbound_diversity,
             config.preauth_limits,
             config.handshake_limits,
             initial_chain_state,
+            crate::announce::AnnouncePolicy::from_config(&config),
+            bonded_fetch_tx,
         ));
 
         Ok(P2pHandle {
@@ -1361,6 +1397,7 @@ impl P2pNode {
             local_peer_id,
             discovered_peers: handle_discovered,
             sync_peers: handle_sync_peers,
+            bonded_fetch_rx,
         })
     }
 }
@@ -1422,12 +1459,16 @@ async fn event_loop(
     bootstrap_peers: Vec<Multiaddr>,
     bootstrap_redial_interval: Duration,
     bootstrap_redial_max_backoff: Duration,
+    (gossip_silence_timeout, gossip_probe_timeout): (Duration, Duration),
     outbound_diversity: crate::slots::OutboundDiversityPolicy,
     preauth_limits: crate::preauth_budget::PreAuthLimits,
     handshake_limits: crate::handshake_guard::HandshakeLimits,
     initial_chain_state: InitialChainState,
+    announce_policy: crate::announce::AnnouncePolicy,
+    bonded_fetch_tx: Option<mpsc::Sender<crate::bonded_fetch_serve::InboundBondedFetch>>,
 ) {
     let tm = TopicManager::new();
+    let mut bonded_fetch = crate::bonded_fetch_serve::BondedFetchServe::new(bonded_fetch_tx);
     // #2114: the self-chosen outbound peer set, and its diversity. Addresses
     // reachable at a configured bootstrap address are attributed to the
     // operator; everything else arrived via Kademlia routing, which is the
@@ -1443,6 +1484,10 @@ async fn event_loop(
     // #2116: peers connected but not yet proven to be on our chain.
     let mut unproven_peers = crate::handshake_guard::UnprovenPeers::new(handshake_limits);
     let mut unproven_sweep_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut handshake_redelivery = crate::handshake_redelivery::HandshakeRedelivery::default();
+    let mut handshake_redelivery_tick =
+        tokio::time::interval(std::time::Duration::from_secs(1));
+    handshake_redelivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut sync_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     sync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pending_broadcasts = PendingBroadcasts::default();
@@ -1523,11 +1568,58 @@ async fn event_loop(
         .filter_map(|s| s.peer_id)
         .collect();
 
+    // Silent-gossip watchdog (see gossip_watchdog.rs). Its probes are plain
+    // block-sync requests tracked here, apart from the sync manager's own.
+    let mut gossip_watchdog = crate::gossip_watchdog::GossipWatchdog::new(
+        gossip_silence_timeout,
+        gossip_probe_timeout,
+        Instant::now(),
+    );
+    let mut watchdog_probes: FxHashMap<request_response::OutboundRequestId, PeerId> =
+        FxHashMap::default();
+    let mut gossip_watchdog_tick = tokio::time::interval(Duration::from_secs(1));
+    gossip_watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
                 use libp2p::swarm::SwarmEvent;
                 match event {
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BondedFetch(event)) => {
+                        bonded_fetch.on_event(event, &mut swarm.behaviour_mut().bonded_fetch, Instant::now());
+                    }
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BlockSync(
+                        request_response::Event::Message {
+                            message: request_response::Message::Response { request_id, response },
+                            ..
+                        },
+                    )) if watchdog_probes.contains_key(&request_id) => {
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                probe_answer(&response),
+                            );
+                        }
+                    }
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BlockSync(
+                        request_response::Event::OutboundFailure { request_id, error, .. },
+                    )) if watchdog_probes.contains_key(&request_id) => {
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            debug!("Gossip-silence probe to {peer} failed: {error}");
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                crate::gossip_watchdog::ProbeAnswer::Failed,
+                            );
+                        }
+                    }
                     SwarmEvent::Behaviour(behaviour_event) => {
                         handle_behaviour_event(
                             behaviour_event,
@@ -1560,6 +1652,7 @@ async fn event_loop(
                             &mut pending_broadcasts,
                             &mut status_announced_peers,
                             &mut pre_proof_statuses,
+                            &announce_policy,
                         )
                         .await;
                     }
@@ -1677,6 +1770,7 @@ async fn event_loop(
                             if is_first_connection {
                                 metrics.set_connected_peers(peer_manager.connected_count());
                                 let _ = event_tx.send(P2pEvent::PeerConnected(peer_id)).await;
+                                handshake_redelivery.peer_connected(peer_id, Instant::now());
                                 publish_message(
                                     &mut swarm,
                                     &tm,
@@ -1712,6 +1806,7 @@ async fn event_loop(
                             // #2116: stop tracking a peer that is gone.
                             unproven_peers.remove(&peer_id);
                             metrics.set_unproven_peers(unproven_peers.len());
+                            handshake_redelivery.peer_disconnected(&peer_id);
                             sync_manager.remove_peer(&peer_id);
                             status_announced_peers.remove(&peer_id);
                             pre_proof_statuses.remove(&peer_id);
@@ -1787,10 +1882,66 @@ async fn event_loop(
                     }
                     SwarmEvent::NewListenAddr { address, .. } => {
                         info!("Listening on {address}");
+                        on_new_listen_addr(&mut swarm, &announce_policy, &address);
                         let _ = event_tx.send(P2pEvent::ListeningAddress(address)).await;
+                    }
+                    SwarmEvent::ExpiredListenAddr { address, .. } => {
+                        on_expired_listen_addr(&mut swarm, &announce_policy, &address);
+                    }
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        on_external_addr_confirmed(&mut swarm, &announce_policy, &address);
                     }
                     _ => {}
                 }
+            }
+
+            _ = gossip_watchdog_tick.tick(), if gossip_watchdog.enabled() => {
+                let now = Instant::now();
+                gossip_watchdog.observe_gossip_count(
+                    metrics.chain_gossip_received.load(std::sync::atomic::Ordering::Relaxed),
+                    now,
+                );
+                let proven: Vec<PeerId> = status_announced_peers
+                    .iter()
+                    .filter(|peer| peer_manager.contains(peer))
+                    .copied()
+                    .collect();
+                match gossip_watchdog.tick(now, &proven) {
+                    crate::gossip_watchdog::WatchdogAction::None => {}
+                    crate::gossip_watchdog::WatchdogAction::Probe(peers) => {
+                        ensure_gossip_subscriptions(&mut swarm, &tm);
+                        let request = crate::sync::BlockRequest {
+                            start_height: sync_manager.local_height().saturating_add(1),
+                            count: 1,
+                        };
+                        warn!(
+                            "No ChainStatus or NewBlock gossip for {}s from {} connected peer(s); \
+                             probing them for height {} over block sync",
+                            gossip_silence_timeout.as_secs(),
+                            peers.len(),
+                            request.start_height,
+                        );
+                        metrics.record_gossip_silence_probe();
+                        for peer in peers {
+                            let request_id =
+                                swarm.behaviour_mut().block_sync.send_request(&peer, request.clone());
+                            watchdog_probes.insert(request_id, peer);
+                        }
+                    }
+                    crate::gossip_watchdog::WatchdogAction::Reconnect(peers) => {
+                        for peer in peers {
+                            warn!(
+                                "Gossip-silence probe to {peer} got no answer within {}s; \
+                                 reconnecting",
+                                gossip_probe_timeout.as_secs(),
+                            );
+                            reconnect_silent_peer(&mut swarm, &tm, &metrics, peer);
+                        }
+                    }
+                }
+                // Probe entries whose peer has gone are answered by an
+                // OutboundFailure; this only bounds the map if one never comes.
+                watchdog_probes.retain(|_, peer| peer_manager.contains(peer));
             }
 
             _ = sync_tick.tick() => {
@@ -1841,6 +1992,20 @@ async fn event_loop(
                 // that OOM'd the node in #2077. Evicting expired windows makes
                 // the bound hold without depending on a disconnect event.
                 verify_budget.evict_expired(Instant::now());
+            }
+
+            _ = handshake_redelivery_tick.tick() => {
+                redeliver_genesis_handshake(
+                    &mut handshake_redelivery,
+                    &mut swarm,
+                    &tm,
+                    &metrics,
+                    &mut pending_broadcasts,
+                    &local_handshake,
+                    advertised_status,
+                    inline_data_max,
+                    Instant::now(),
+                );
             }
 
             _ = unproven_sweep_tick.tick() => {
@@ -2016,6 +2181,9 @@ async fn event_loop(
                             &mut outbound_sync_requests,
                             Instant::now(),
                         );
+                    }
+                    Some(P2pCommand::RespondToBondedFetch { request_id, response }) => {
+                        bonded_fetch.respond(request_id, response, &mut swarm.behaviour_mut().bonded_fetch);
                     }
                     Some(P2pCommand::RespondToBlockSyncRequest { request_id, response }) => {
                         match inbound_sync_requests.remove(&request_id) {
@@ -2266,6 +2434,10 @@ async fn event_loop(
                         swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
                         let _ = swarm.disconnect_peer_id(peer_id);
                     }
+                    #[cfg(test)]
+                    Some(P2pCommand::TestDropChainGossipSubscription) => {
+                        let _ = swarm.behaviour_mut().gossipsub.unsubscribe(tm.blocks());
+                    }
                     Some(P2pCommand::Shutdown) => {
                         info!("Shutdown command received, exiting event loop");
                         break;
@@ -2445,6 +2617,8 @@ mod tests {
         local_handshake: crate::genesis_handshake::GenesisHandshakeMessage,
         discovered: DiscoveredPeers,
         did_bootstrap: bool,
+        /// Production default: filter non-global addresses (crate::announce).
+        announce_policy: crate::announce::AnnouncePolicy,
     }
 
     impl BehaviourHarness {
@@ -2491,6 +2665,7 @@ mod tests {
                 ),
                 discovered: DiscoveredPeers::new(),
                 did_bootstrap: false,
+                announce_policy: crate::announce::AnnouncePolicy::filtering(Vec::new()),
             };
             (h, rx)
         }
@@ -2528,6 +2703,7 @@ mod tests {
                 &mut self.pending_broadcasts,
                 &mut self.status_announced_peers,
                 &mut self.pre_proof_statuses,
+                &self.announce_policy,
             )
             .await;
         }
@@ -3573,6 +3749,10 @@ mod tests {
     #[tokio::test]
     async fn identify_advertised_junk_addresses_are_not_ingested() {
         let (mut h, _rx) = BehaviourHarness::new();
+        // The tailnet address below is relayed only under the
+        // WRFCOIN_P2P_ANNOUNCE_PRIVATE_ADDRS opt-in; the default is covered by
+        // identify_private_addresses_are_not_relayed_via_kademlia_by_default.
+        h.announce_policy = crate::announce::AnnouncePolicy::announce_all();
         let peer_keypair = libp2p::identity::Keypair::generate_ed25519();
         let peer_id = peer_keypair.public().to_peer_id();
 
@@ -3624,6 +3804,99 @@ mod tests {
                 "undialable advertised address {addr} must be filtered; got {ingested:?}"
             );
         }
+    }
+
+    /// Default announce policy: a tailnet (100.64/10) or LAN address a peer
+    /// advertised must not enter Kademlia, which re-serves it to every peer
+    /// that asks; a /dns4 and a global address must. Mutation control: drop
+    /// the `may_relay_peer_addr` check in the Identify::Received arm and the
+    /// private assertions go red.
+    #[tokio::test]
+    async fn identify_private_addresses_are_not_relayed_via_kademlia_by_default() {
+        let (mut h, _rx) = BehaviourHarness::new();
+        let peer_keypair = libp2p::identity::Keypair::generate_ed25519();
+        let peer_id = peer_keypair.public().to_peer_id();
+
+        let private: Vec<libp2p::Multiaddr> = vec![
+            "/ip4/100.64.0.1/tcp/9000".parse().unwrap(), // secret-leak-ok: CGNAT range constant, not a key
+            "/ip4/192.168.0.10/tcp/9000".parse().unwrap(),
+            "/ip6/fd7a:115c:a1e0::1/tcp/9000".parse().unwrap(),
+        ];
+        let public: Vec<libp2p::Multiaddr> = vec![
+            "/dns4/seed.example.org/tcp/9000".parse().unwrap(),
+            "/ip4/8.8.4.4/tcp/9000".parse().unwrap(),
+        ];
+        let info = libp2p::identify::Info {
+            public_key: peer_keypair.public(),
+            protocol_version: "/wrfcoin/id/1.0.0".to_string(),
+            agent_version: "test".to_string(),
+            listen_addrs: private.iter().chain(public.iter()).cloned().collect(),
+            protocols: Vec::new(),
+            observed_addr: "/ip4/100.64.0.2/tcp/4001".parse().unwrap(), // secret-leak-ok: CGNAT range constant, not a key
+            signed_peer_record: None,
+        };
+        h.dispatch(WrfcoinBehaviourEvent::Identify(libp2p::identify::Event::Received {
+            connection_id: ConnectionId::new_unchecked(3),
+            peer_id,
+            info,
+        }))
+        .await;
+
+        let kad = &mut h.swarm.behaviour_mut().kademlia;
+        let ingested: Vec<String> = kad
+            .kbuckets()
+            .flat_map(|bucket| {
+                bucket
+                    .iter()
+                    .flat_map(|entry| entry.node.value.iter().map(|a| a.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for addr in &public {
+            assert!(
+                ingested.iter().any(|a| a.starts_with(&addr.to_string())),
+                "global address {addr} must be relayed; got {ingested:?}"
+            );
+        }
+        for addr in &private {
+            assert!(
+                !ingested.iter().any(|a| a.starts_with(&addr.to_string())),
+                "non-global address {addr} must not be relayed; got {ingested:?}"
+            );
+        }
+    }
+
+    /// Own-address announcements: with filtering on, a private listen address
+    /// is never promoted to an external address (identify's announce list), a
+    /// global one is, and a private address an AutoNAT peer confirms is
+    /// withdrawn — but the operator's own private WRFCOIN_P2P_EXTERNAL_ADDR is
+    /// kept.
+    #[tokio::test]
+    async fn own_private_addresses_are_not_announced_but_operator_choice_is() {
+        let (mut h, _rx) = BehaviourHarness::new();
+        let operator: libp2p::Multiaddr = "/ip4/100.64.0.7/tcp/9000".parse().unwrap(); // secret-leak-ok: CGNAT range constant, not a key
+        let policy = crate::announce::AnnouncePolicy::filtering(vec![operator.clone()]);
+        let tailnet: libp2p::Multiaddr = "/ip4/100.101.102.103/tcp/9000".parse().unwrap(); // secret-leak-ok: CGNAT range constant, not a key
+        let global: libp2p::Multiaddr = "/ip4/8.8.4.4/tcp/9000".parse().unwrap();
+
+        super::on_new_listen_addr(&mut h.swarm, &policy, &tailnet);
+        super::on_new_listen_addr(&mut h.swarm, &policy, &global);
+        h.swarm.add_external_address(operator.clone());
+        // A tailnet peer's AutoNAT confirmed our tailnet address.
+        h.swarm.add_external_address(tailnet.clone());
+        super::on_external_addr_confirmed(&mut h.swarm, &policy, &tailnet);
+        super::on_external_addr_confirmed(&mut h.swarm, &policy, &operator);
+
+        let announced: Vec<libp2p::Multiaddr> = h.swarm.external_addresses().cloned().collect();
+        assert!(announced.contains(&global), "global listen addr must be announced: {announced:?}");
+        assert!(announced.contains(&operator), "operator addr must be announced: {announced:?}");
+        assert!(!announced.contains(&tailnet), "tailnet addr must not be announced: {announced:?}");
+
+        super::on_expired_listen_addr(&mut h.swarm, &policy, &global);
+        super::on_expired_listen_addr(&mut h.swarm, &policy, &operator);
+        let announced: Vec<libp2p::Multiaddr> = h.swarm.external_addresses().cloned().collect();
+        assert!(!announced.contains(&global), "expired listener must be withdrawn: {announced:?}");
+        assert!(announced.contains(&operator), "operator addr must survive: {announced:?}");
     }
 
     /// #2819 same-scope exception: a peer that observes US at loopback shares
@@ -3932,6 +4205,7 @@ mod tests {
             local_peer_id: PeerId::random(),
             discovered_peers: DiscoveredPeers::new(),
             sync_peers: crate::sync_surface::SyncPeersSurface::new(),
+            bonded_fetch_rx: None,
         };
 
         let stats = handle.stats();
@@ -4699,6 +4973,96 @@ mod tests {
             .expect_err("V2 after V1 within 250ms should be rate-limited");
         assert_eq!(err, WeatherDataAdmissionError::RateLimited);
     }
+
+    /// `contains_disabled_transaction_admission` is the
+    /// relay/publish gate that maps to gossipsub `Ignore`. It must match a
+    /// transaction whose scoring factor is out of range (so the node stops
+    /// forwarding it) and must NOT match real traffic (so honest readings keep
+    /// flowing). A batch is refused whole if any member matches. This is the
+    /// classification only; relay behaviour is exercised at the integration level.
+    #[test]
+    fn disabled_admission_matches_only_out_of_range_scoring_txs() {
+        use bincode::Options as _;
+        use wrfcoin_shared_protocol::blockchain::transaction::{
+            Transaction, TransactionInput, TransactionOutput, TransactionType,
+        };
+
+        fn tx(ty: TransactionType, data: &str) -> Transaction {
+            let mut t = Transaction::new(
+                vec![TransactionInput {
+                    txid: wrfcoin_shared_protocol::crypto::hash::hash_string(data),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 0,
+                    address: "0x".to_string() + &"5a".repeat(20),
+                    script: "OP_TRUE".to_string(),
+                    nft_data: None,
+                }],
+            );
+            t.tx_type = ty;
+            t.fee = 1;
+            t.data = Some(data.to_string());
+            t.set_id();
+            t
+        }
+        // ContributionReveal/ForecastReveal scoring keys are read from the parsed
+        // reveal PAYLOAD's `data` object, so wrap the data in a valid RevealPayload
+        // (exactly as the scorer parses it via parse_reveal_payload).
+        fn reveal(data_obj: &str) -> Transaction {
+            let payload = format!(
+                r#"{{"commit_id":"c1","station_id":"KXYZ","timestamp":1700000000,"contribution_type":"contribution","data":{data_obj},"nonce":"n1"}}"#
+            );
+            tx(TransactionType::ContributionReveal, &payload)
+        }
+        // Mirror the deserialize options the gate uses (fixint).
+        fn enc(t: &Transaction) -> Vec<u8> {
+            bincode::DefaultOptions::new().with_fixint_encoding().serialize(t).unwrap()
+        }
+        fn msg(txs: &[Transaction]) -> WrfcoinMessage {
+            WrfcoinMessage::NewTransactions { tx_bytes: txs.iter().map(enc).collect() }
+        }
+        let matches = |m: &WrfcoinMessage| super::contains_disabled_transaction_admission(m);
+
+        // Real, in-range traffic → NOT matched (keeps flowing).
+        let real_reveal = reveal(r#"{"temperature_c":21.5,"humidity":44.0}"#);
+        let in_range_reveal = reveal(r#"{"quality":0.9,"volume":0.5,"uniqueness":0.25}"#);
+        let in_range_offset = tx(
+            TransactionType::EnvironmentalOffset,
+            r#"{"amount":0.5,"verification":1.0,"impact":1.0}"#,
+        );
+        let unparseable = WrfcoinMessage::NewTransactions { tx_bytes: vec![vec![0xff, 0x00, 0x13]] };
+        let transfer_with_qualityish = tx(TransactionType::Transfer, r#"{"quality":1e300}"#);
+        for m in [
+            msg(&[real_reveal.clone()]),
+            msg(&[in_range_reveal.clone()]),
+            msg(&[in_range_offset]),
+            unparseable,
+            msg(&[transfer_with_qualityish]),
+        ] {
+            assert!(!matches(&m), "real/in-range/unparseable traffic must not be ignored: {m:?}");
+        }
+
+        // Out-of-range scoring factors → matched (the node stops relaying them).
+        let oversized_reveal = reveal(r#"{"quality":1e300,"volume":0.5,"uniqueness":0.5}"#);
+        let oversized_offset = tx(TransactionType::EnvironmentalOffset, r#"{"amount":100000000000000.0,"verification":1.0,"impact":1.0}"#);
+        let integer_quality = reveal(r#"{"quality":85,"volume":0.5,"uniqueness":0.5}"#);
+        for m in [msg(&[oversized_reveal.clone()]), msg(&[oversized_offset]), msg(&[integer_quality])] {
+            assert!(matches(&m), "out-of-range scoring tx must be matched (ignored): {m:?}");
+        }
+
+        // A batch with any out-of-range member is refused whole.
+        assert!(
+            matches(&msg(&[real_reveal, in_range_reveal, oversized_reveal])),
+            "a mixed batch containing an out-of-range tx must be matched"
+        );
+
+        // Non-transaction messages are never matched.
+        assert!(!matches(&WrfcoinMessage::NewTransactions { tx_bytes: vec![] }), "empty batch is not matched");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4982,6 +5346,47 @@ pub(crate) fn claim_verify_budget(
     false
 }
 
+/// A listener came up. When announcement filtering is on (the default),
+/// identify's raw listen-address list is hidden (see `build_behaviour`), so
+/// each listen address that may be announced is promoted to an external
+/// address here — that is the list identify sends. Private interface addresses
+/// a `0.0.0.0` listener expands to are simply never promoted.
+fn on_new_listen_addr(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if policy.is_filtering() && policy.may_announce_own(address) {
+        swarm.add_external_address(address.clone());
+    }
+}
+
+/// Undo [`on_new_listen_addr`] when the listener goes away, without touching
+/// an operator-configured external address that happens to be equal.
+fn on_expired_listen_addr(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if policy.is_filtering() && !policy.is_operator_addr(address) {
+        swarm.remove_external_address(address);
+    }
+}
+
+/// AutoNAT (or any behaviour) confirmed an external address. A peer on the
+/// same tailnet/LAN can confirm a private address; withdraw it immediately so
+/// it is not announced (crate::announce).
+fn on_external_addr_confirmed(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    policy: &crate::announce::AnnouncePolicy,
+    address: &Multiaddr,
+) {
+    if !policy.may_announce_own(address) {
+        info!("External address {address} is not globally routable; withdrawing it from announcements");
+        swarm.remove_external_address(address);
+    }
+}
+
 async fn handle_behaviour_event(
     event: WrfcoinBehaviourEvent,
     // #2117: claimed before any signature verification.
@@ -5023,6 +5428,8 @@ async fn handle_behaviour_event(
     pending_broadcasts: &mut PendingBroadcasts,
     status_announced_peers: &mut FxHashSet<PeerId>,
     pre_proof_statuses: &mut FxHashMap<PeerId, (u64, [u8; 32], [u8; 32])>,
+    // Which addresses may be passed on to other peers (`crate::announce`).
+    announce_policy: &crate::announce::AnnouncePolicy,
 ) {
     match event {
         WrfcoinBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -5144,6 +5551,7 @@ async fn handle_behaviour_event(
 
             match message {
                 WrfcoinMessage::NewBlock { block_bytes } => {
+                    metrics.record_chain_gossip_received();
                     metrics
                         .blocks_received
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5266,6 +5674,7 @@ async fn handle_behaviour_event(
                     tip_hash,
                     state_root,
                 } => {
+                    metrics.record_chain_gossip_received();
                     let status_peer = match message_source {
                         Some(author) if peer_manager.contains(&author) => author,
                         Some(author) => {
@@ -5785,10 +6194,19 @@ async fn handle_behaviour_event(
                     debug!("Identify: ignoring undialable advertised addr {addr} from {peer_id}");
                     continue;
                 }
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, addr.clone());
+                // Kademlia re-serves its routing table to every peer that asks,
+                // so a private/tailnet address a peer told US must not go in
+                // there unless the operator opted in (crate::announce). The
+                // peer manager still keeps it for this node's own dials (QUIC
+                // upgrade), which never leave the node.
+                if announce_policy.may_relay_peer_addr(addr) {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
+                } else {
+                    debug!("Identify: not relaying non-global advertised addr {addr} from {peer_id} via Kademlia");
+                }
                 if let Some(peer_info) = peer_manager.get_mut(&peer_id) {
                     peer_info.add_address(addr.clone());
                 }
@@ -6028,8 +6446,15 @@ async fn handle_behaviour_event(
         },
 
         WrfcoinBehaviourEvent::Upnp(upnp::Event::NewExternalAddr(addr)) => {
-            info!("UPnP: new external address mapped: {addr}");
-            swarm.add_external_address(addr);
+            // A router behind carrier-grade NAT maps to a 100.64/10 address,
+            // which is not reachable from the internet and must not be
+            // announced (crate::announce).
+            if announce_policy.may_announce_own(&addr) {
+                info!("UPnP: new external address mapped: {addr}");
+                swarm.add_external_address(addr);
+            } else {
+                info!("UPnP: mapped external address {addr} is not globally routable; not announcing it");
+            }
         },
         WrfcoinBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr(addr)) => {
             info!("UPnP: external address mapping expired: {addr}");
@@ -6041,6 +6466,76 @@ async fn handle_behaviour_event(
         WrfcoinBehaviourEvent::Upnp(upnp::Event::NonRoutableGateway) => {
             debug!("UPnP: gateway found but it is not routable");
         },
+        // The event loop routes these to `BondedFetchServe` before calling here.
+        WrfcoinBehaviourEvent::BondedFetch(_) => {},
+    }
+}
+
+/// Classify a gossip-silence probe answer (a one-block request for
+/// `local_height + 1`).
+fn probe_answer(response: &crate::sync::BlockResponse) -> crate::gossip_watchdog::ProbeAnswer {
+    use crate::gossip_watchdog::ProbeAnswer;
+    if response.retry_after_ms.is_some() {
+        ProbeAnswer::Refused
+    } else if response.blocks.is_empty() {
+        ProbeAnswer::Level
+    } else {
+        ProbeAnswer::Ahead
+    }
+}
+
+fn on_watchdog_probe_answer(
+    watchdog: &mut crate::gossip_watchdog::GossipWatchdog,
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &MetricsCollector,
+    peer: PeerId,
+    answer: crate::gossip_watchdog::ProbeAnswer,
+) {
+    if !watchdog.on_probe_answer(peer, answer, Instant::now()) {
+        debug!("Gossip-silence probe to {peer}: {answer:?}; keeping the connection");
+        return;
+    }
+    warn!(
+        "Gossip-silence probe to {peer}: {answer:?} while its chain gossip is silent; \
+         reconnecting so gossip and ChainStatus are rebuilt"
+    );
+    reconnect_silent_peer(swarm, tm, metrics, peer);
+}
+
+/// Drop a connection whose chain gossip went silent. Bootstrap redial (or
+/// Kademlia) dials it again; the new connection carries our subscriptions and
+/// the peer's eager `ChainStatus`.
+fn reconnect_silent_peer(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &MetricsCollector,
+    peer: PeerId,
+) {
+    ensure_gossip_subscriptions(swarm, tm);
+    metrics.record_gossip_silence_reconnect();
+    if let Err(error) = swarm.disconnect_peer_id(peer) {
+        warn!("Gossip-silence reconnect of {peer} could not be scheduled: {error:?}");
+    }
+}
+
+/// Re-subscribe any WRFCoin topic this node is no longer subscribed to.
+/// gossipsub announces a new subscription to every connected peer, and every
+/// later connection learns all current ones on its own.
+fn ensure_gossip_subscriptions(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+) {
+    let gossipsub = &mut swarm.behaviour_mut().gossipsub;
+    let subscribed: Vec<gossipsub::TopicHash> = gossipsub.topics().cloned().collect();
+    for topic in tm.all_topics() {
+        if subscribed.contains(&topic.hash()) {
+            continue;
+        }
+        match gossipsub.subscribe(topic) {
+            Ok(_) => warn!("Re-subscribed to gossip topic {topic} that this node had dropped"),
+            Err(error) => warn!("Re-subscribing to gossip topic {topic} failed: {error}"),
+        }
     }
 }
 
@@ -6239,6 +6734,46 @@ pub async fn handle_sync_response_for_test(
     Ok(event_rx)
 }
 
+/// Like [`handle_sync_response_for_test`] but drives a caller-owned
+/// [`SyncManager`], so multi-round exchanges (fork backtrack) keep their state.
+/// The manager plans its own next request; `respond` builds the reply for it.
+#[cfg(any(test, feature = "test-harness"))]
+#[doc(hidden)]
+pub async fn handle_planned_sync_response_for_test(
+    manager: &mut SyncManager,
+    respond: impl FnOnce(&BlockRequest) -> Vec<wrfcoin_shared_protocol::blockchain::block::Block>,
+    chain: &mut Blockchain,
+) -> Result<(BlockRequest, mpsc::Receiver<P2pEvent>), SyncError> {
+    let now = Instant::now();
+    let planned = manager
+        .plan_requests(now)
+        .into_iter()
+        .next()
+        // panic-ok: test-harness-only helper; a manager with a queued range always plans one request
+        .expect("the manager must plan a request");
+    let mut behaviour = request_response::Behaviour::with_codec(
+        crate::sync::BlockSyncCodec,
+        std::iter::once((
+            libp2p::StreamProtocol::new(crate::sync::BLOCK_SYNC_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )),
+        request_response::Config::default(),
+    );
+    let request_id = behaviour.send_request(&planned.peer_id, planned.request.clone());
+    manager.register_request(request_id, planned.peer_id, &planned.request, now);
+    let blocks = respond(&planned.request);
+    let imported = manager.handle_response(
+        request_id,
+        BlockResponse { blocks, retry_after_ms: None },
+        now,
+        chain,
+    )?;
+    let (event_tx, event_rx) = mpsc::channel(imported.len().saturating_add(1).max(1));
+    emit_sync_result(&event_tx, planned.peer_id, &imported, None).await;
+    drop(event_tx);
+    Ok((planned.request, event_rx))
+}
+
 // ---------------------------------------------------------------------------
 // Publish helper
 // ---------------------------------------------------------------------------
@@ -6328,7 +6863,9 @@ fn retain_unpublishable(
 fn contains_disabled_transaction_admission(message: &WrfcoinMessage) -> bool {
     use bincode::Options as _;
     use wrfcoin_shared_protocol::{
-        blockchain::transaction::Transaction, mempool::local_admission_disabled,
+        blockchain::transaction::Transaction,
+        consensus::proof_of_publishing::scoring_value_out_of_range,
+        mempool::local_admission_disabled,
     };
     let WrfcoinMessage::NewTransactions { tx_bytes } = message else {
         return false;
@@ -6341,7 +6878,14 @@ fn contains_disabled_transaction_admission(message: &WrfcoinMessage) -> bool {
             .allow_trailing_bytes()
             .with_limit(bytes.len() as u64)
             .deserialize::<Transaction>(bytes)
-            .is_ok_and(|tx| local_admission_disabled(tx.tx_type))
+            // Also stop relaying a transaction whose scoring factor is out of
+            // range: the mempool refuses it, so this node does not forward it
+            // either. The inbound caller maps this to gossipsub `Ignore` (NOT
+            // `Reject`), so a peer that forwarded it is not penalised. It only
+            // reduces relay and does not touch block gossip.
+            .is_ok_and(|tx| {
+                local_admission_disabled(tx.tx_type) || scoring_value_out_of_range(&tx).is_some()
+            })
     })
 }
 
@@ -6432,6 +6976,61 @@ fn publish_message(
             error!("Failed to serialize {kind:?} message: {err}");
         },
     }
+}
+
+/// Publish our handshake and chain status again if a recently connected peer is
+/// due a retry. See [`crate::handshake_redelivery`] for why the first sends can
+/// miss it.
+#[allow(clippy::too_many_arguments)]
+fn redeliver_genesis_handshake(
+    redelivery: &mut crate::handshake_redelivery::HandshakeRedelivery,
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &Arc<MetricsCollector>,
+    pending: &mut PendingBroadcasts,
+    local_handshake: &crate::genesis_handshake::GenesisHandshakeMessage,
+    advertised_status: AdvertisedChainStatus,
+    inline_data_max: usize,
+    now: Instant,
+) {
+    if !redelivery.should_publish(now) {
+        return;
+    }
+    // Read before publishing: this is the membership the publish goes out to.
+    let topic = tm.genesis_handshake_hash();
+    let mesh: FxHashSet<PeerId> = swarm
+        .behaviour()
+        .gossipsub
+        .mesh_peers(&topic)
+        .copied()
+        .collect();
+    metrics
+        .genesis_handshake_republished
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    publish_message(
+        swarm,
+        tm,
+        metrics,
+        pending,
+        WrfcoinMessage::GenesisHandshake {
+            network_id: local_handshake.network_id.clone(),
+            chain_id: local_handshake.chain_id.clone(),
+            genesis_hash: local_handshake.genesis_hash.clone(),
+            protocol_version: local_handshake.protocol_version,
+        },
+        inline_data_max,
+        now,
+    );
+    publish_message(
+        swarm,
+        tm,
+        metrics,
+        pending,
+        advertised_status.message(),
+        inline_data_max,
+        now,
+    );
+    redelivery.record_publish(now, |peer| mesh.contains(peer));
 }
 
 fn retry_pending_broadcasts(

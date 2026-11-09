@@ -207,6 +207,42 @@ impl DomainSeparated for NodeBondPossession {
     }
 }
 
+/// The challenge subject a passkey payout account's WebAuthn assertion
+/// commits to (`passkey_bond_payout`). It wraps the V2 digest of the exact
+/// owner authorization (genesis, deployment, every role account and key,
+/// alias, action, amount, nonce and effective epoch), under its own domain,
+/// so the assertion cannot authorize any other bond, nonce, epoch or chain,
+/// and no passkey transfer challenge (raw `wrfcoin_passkey_transfer_auth_v1`
+/// framing) can collide with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeBondPayoutPasskeyApproval {
+    pub authorization_preimage_hash: [u8; 32],
+}
+
+impl DomainSeparated for NodeBondPayoutPasskeyApproval {
+    const DOMAIN_TAG: &'static [u8] = b"wrfcoin.node_bond_payout_passkey.v1";
+    fn canonical_body(&self) -> Vec<u8> {
+        BodyBuilder::new()
+            .bytes_field(&self.authorization_preimage_hash)
+            .finish()
+    }
+}
+
+/// The 32-byte WebAuthn challenge for a passkey payout approval of `a`:
+/// `sha3_256(V2 preimage of NodeBondPayoutPasskeyApproval {
+/// authorization_preimage_hash: node_contract_digest(a) })`.
+pub fn node_bond_payout_passkey_challenge(
+    a: &NodeBondAuthorization,
+    identity: &ChainIdentity,
+) -> [u8; 32] {
+    node_contract_digest(
+        &NodeBondPayoutPasskeyApproval {
+            authorization_preimage_hash: node_contract_digest(a, identity),
+        },
+        identity,
+    )
+}
+
 /// Signature container; subjects above have distinct domains. The inner
 /// receipt and snapshot export retain their existing signing and wire formats.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

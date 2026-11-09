@@ -19,6 +19,11 @@ pub enum NodeCommands {
         #[clap(subcommand)]
         action: super::node_bond::BondCommands,
     },
+    /// Report provable Node-service fraud (operator route default OFF).
+    Fraud {
+        #[clap(subcommand)]
+        action: super::node_fraud::FraudCommands,
+    },
     /// Show node information
     Info,
 
@@ -59,6 +64,7 @@ pub async fn handle_node_command(command: &NodeCommands, ctx: &ExecutionContext)
     match command {
         NodeCommands::Receipt { action } => super::node_receipt::handle(action).await,
         NodeCommands::Bond { action } => super::node_bond::handle(action).await,
+        NodeCommands::Fraud { action } => super::node_fraud::handle(action).await,
         NodeCommands::Info => {
             let network: Value = client.get("/network/info", None).await?;
             Ok(json!({

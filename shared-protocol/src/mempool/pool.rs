@@ -4,6 +4,7 @@ use crate::config::settings::Config;
 use crate::consensus::partition_policy::PartitionMode;
 use crate::crypto::hash::Hash;
 use crate::crypto::signature::Signature;
+use crate::mempool::node_admission::{self, NodeKey};
 use crate::monitoring::{OrderingMempoolEntry, OrderingMempoolSnapshot};
 use crate::security::key_registry::{SigningKeyRegistry, SigningRole};
 use anyhow::{Result, anyhow};
@@ -100,6 +101,10 @@ pub struct Mempool {
 
     /// Replay keys for launch-critical protocol payloads.
     protocol_replay_keys: FxHashSet<String>,
+
+    /// Pending node-service transactions by kind, sender and nonce: their conflict key, in place
+    /// of the constant unsigned input they carry. See [`node_admission`].
+    node_pending: BTreeMap<NodeKey, Hash>,
 
     /// Per-sender unconfirmed-transaction count (#2039 anti-spam), keyed on the
     /// sender address hex. Maintained in lock-step with `transactions`:
@@ -247,6 +252,7 @@ impl Mempool {
             current_size: 0,
             config: config.clone(),
             protocol_replay_keys: FxHashSet::default(),
+            node_pending: BTreeMap::new(),
             per_sender_count: FxHashMap::default(),
             partition_mode: PartitionMode::default(),
         }
@@ -398,6 +404,11 @@ impl Mempool {
         if !tx.validate_structure() {
             return Err(anyhow!("Invalid transaction structure"));
         }
+        let node_key = node_admission::key(&tx);
+        if node_key.is_some() {
+            // determinism-ok: local admission policy; block validity applies its own window to the block's time.
+            node_admission::check_wrapper(&tx, chrono::Utc::now().timestamp()).map_err(|e| anyhow!(e))?;
+        }
 
         // #1762: shielded deposit/withdrawal are disabled at the consensus
         // layer. The shielded pool verifies no value-backing / ownership proof
@@ -422,6 +433,24 @@ impl Mempool {
                 "{} is disabled for local admission pending safe authorization \
                  and verifier readiness (#3407, #3408, #3430)",
                 tx.tx_type
+            ));
+        }
+
+        // NON-CONSENSUS node policy: refuse a transaction
+        // whose consensus scoring factor is outside the [0,1] range real clients
+        // send, so this node's producer never mines one. This does NOT change block validity — a block received
+        // from elsewhere carrying such a transaction is still accepted and scored
+        // with the saturating arithmetic. Covers both the HTTP submit route and
+        // P2P gossip, which both funnel through here. The key name is logged,
+        // never the value.
+        if let Some(field) =
+            crate::consensus::proof_of_publishing::scoring_value_out_of_range(&tx)
+        {
+            return Err(anyhow!(
+                "SP_SCORE_FACTOR_OUT_OF_RANGE: {} scoring factor '{}' is outside [0,1]; \
+                 not admitted (scoring range check, node policy — block validity unchanged)",
+                tx.tx_type,
+                field
             ));
         }
 
@@ -452,9 +481,38 @@ impl Mempool {
             ));
         }
 
+        // #3565: NO per-station admission rule. The mempool cannot tell an
+        // owner's reveal from anyone else's (a reveal carries no signature and
+        // the mempool has no station registry), so refusing "a second pending
+        // reveal for station S" let any party block S's real reveal by
+        // submitting a junk one first. One-per-block is enforced where the
+        // owner binding can be checked: `classify_block_transaction` refuses a
+        // block with two, `State` refuses a commit the owner did not sign, and
+        // the producer defers extra reveals to later blocks instead of evicting
+        // them. Junk reveals with no valid commit are evicted at assembly, as
+        // on main.
+
+        // Security-key wallets: admit a `SecurityKeyAction` only on a chain
+        // that schedules `security_key_spend` (block validation and the
+        // governance sink enforce the exact height and the State checks), and
+        // only when it is well formed and signed by the account's own key — a
+        // cheap stateless spam filter before it can be relayed.
+        if tx.tx_type == TransactionType::SecurityKeyAction {
+            if !crate::accounts::security_key::security_key_scheduled() {
+                return Err(anyhow!("SP_SECURITY_KEY_INACTIVE: security_key_spend is not scheduled on this chain"));
+            }
+            let payload = tx
+                .parse_security_key_action_payload()
+                .ok_or_else(|| anyhow!("SP_SECURITY_KEY_ACTION_PAYLOAD_INVALID"))?;
+            if !crate::accounts::security_key::owner_signature_valid(&payload) {
+                return Err(anyhow!("SP_SECURITY_KEY_ACTION_AUTHORIZATION"));
+            }
+        }
+
         let tx_size = self.check_transaction_admission_cost(&tx)?;
 
-        // This type-only slice cannot stage or apply evidence reports yet.
+        // Admission checks authorization only. Provability (`responsible()`), the challenge deadline and duplicates
+        // are enforced by `node_fraud::apply`; the operator route runs them as an advisory dry-run at the edge.
         if tx.tx_type == TransactionType::NodeFraudReport {
             let height = current_height.ok_or_else(|| anyhow!("SP_NODE_FRAUD_HEIGHT_REQUIRED"))?;
             if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, height) { return Err(anyhow!("SP_NODE_FRAUD_INACTIVE")); }
@@ -474,16 +532,50 @@ impl Mempool {
         }
         if tx.tx_type == TransactionType::NodeBondLifecycle {
             use crate::consensus::node_bond_registry::NodeBondLifecycle;
-            if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, current_height.ok_or_else(|| anyhow!("SP_NODE_BOND_HEIGHT_REQUIRED"))?) {
+            let height = current_height.ok_or_else(|| anyhow!("SP_NODE_BOND_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::feature_active(crate::crypto::chain_binding::ConsensusFeature::NodeShareSettlement, height) {
                 return Err(anyhow!("SP_NODE_BOND_INACTIVE"));
             }
             let p = NodeBondLifecycle::parse(&tx).ok_or_else(|| anyhow!("SP_NODE_BOND_PAYLOAD"))?;
             let c = crate::governance::schedule_extension::schedule_extension_authority().ok_or_else(|| anyhow!("SP_NODE_BOND_AUTHORITY"))?.context();
             let genesis: [u8; 32] = hex::decode(c.genesis_hash)?.try_into().map_err(|_| anyhow!("SP_NODE_BOND_GENESIS"))?;
-            p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist).map_err(|_| anyhow!("SP_NODE_BOND_AUTHORIZATION"))?;
+            // Admitted for the block it would be mined in (tip + 1).
+            p.verify(&crate::crypto::chain_binding::ChainIdentity::new(c.chain_id, c.network_id), &genesis, c.allowlist, height.saturating_add(1)).map_err(|_| anyhow!("SP_NODE_BOND_AUTHORIZATION"))?;
+        }
+        if tx.tx_type == TransactionType::SessionKeyAction {
+            use crate::accounts::session_keys::{
+                SessionKeyActionPayload, session_keys_active, verify_stateless,
+            };
+            let height = current_height.ok_or_else(|| anyhow!("SP_SESSION_KEYS_HEIGHT_REQUIRED"))?;
+            // Admitted for the block it would be mined in (tip + 1).
+            if !session_keys_active(height.saturating_add(1)) {
+                return Err(anyhow!("SP_SESSION_KEYS_INACTIVE"));
+            }
+            let action = SessionKeyActionPayload::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_SESSION_KEYS_PAYLOAD"))?;
+            let chain_id = &crate::crypto::chain_binding::ChainIdentity::active().chain_id;
+            verify_stateless(&action, chain_id)
+                .map_err(|e| anyhow!("SP_SESSION_KEYS_AUTHORIZATION: {e}"))?;
         }
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Err(anyhow!("SP_SLASH_EVIDENCE_NOT_SUPPORTED"));
+        }
+        // Send allowlist: refused until the feature is active at the next
+        // height; then only a well-formed, owner-signed action is admitted.
+        // Nonce and time-lock rules are state's (apply refuses, assembly drops).
+        if tx.tx_type == TransactionType::SendAllowlist {
+            let height = current_height.ok_or_else(|| anyhow!("SP_SEND_ALLOWLIST_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::feature_active(
+                crate::crypto::chain_binding::ConsensusFeature::SendAllowlist,
+                height.saturating_add(1),
+            ) {
+                return Err(anyhow!("SP_SEND_ALLOWLIST_INACTIVE"));
+            }
+            let signed = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_SEND_ALLOWLIST_PAYLOAD"))?;
+            signed
+                .verify(&crate::crypto::chain_binding::ChainIdentity::active().chain_id)
+                .map_err(|e| anyhow!("SP_SEND_ALLOWLIST_AUTHORIZATION: {e}"))?;
         }
 
         // #3277 S4: live feature-schedule extensions. ADMISSION POLICY, not
@@ -591,6 +683,21 @@ impl Mempool {
             ));
         }
 
+        // Burned transfer fee: once `transfer_fee_burn` is active at the block
+        // this transfer would be mined in (tip+1), a transfer that declares
+        // less than the fee in force is refused here, with the same error
+        // state apply gives, so this node never relays or packs a transfer
+        // every peer refuses. Callers without a height (tests, legacy pool
+        // paths) are screened by producer pruning and state apply. On a chain
+        // that schedules nothing, `check_declared_fee` is `Ok(None)` at every
+        // height, so admission is unchanged.
+        if let Some(height) = current_height {
+            if tx.has_transparent_transfer_payload() {
+                crate::consensus::transfer_fee::check_declared_fee(tx.fee, height.saturating_add(1))
+                    .map_err(|e| anyhow!("transparent transfer rejected: {e}"))?;
+            }
+        }
+
         // #2024: a non-transparent `Transfer` is authorized by its per-input
         // ed25519 signatures. Block validation verifies these
         // (`classify_block_transaction` in proof_of_publishing.rs, gated on
@@ -627,6 +734,29 @@ impl Mempool {
         }
 
         let protocol_replay_key = self.validate_launch_payload_and_replay_key(&tx, signing_keys)?;
+        // #3290: once the forecaster key binding is in force at the candidate
+        // inclusion height (the block after the canonical tip), refuse a
+        // forecast commit whose sender is not the address of its
+        // authorization key, whether it came from the route or from gossip.
+        // With no height, require the binding whenever the feature is
+        // scheduled at all: a bound commit is valid under both rules, so this
+        // only ever refuses commits that would be invalid from activation.
+        // Block validity is `verify_commit_authorization_at_height` in the
+        // shared block classifier; this is the admission mirror of it.
+        if tx.tx_type == TransactionType::ForecastCommit {
+            use crate::crypto::chain_binding::{ConsensusFeature, feature_active, feature_scheduled};
+            let binding_required = match current_height {
+                Some(height) => {
+                    feature_active(ConsensusFeature::ForecasterKeyBinding, height.saturating_add(1))
+                },
+                None => feature_scheduled(ConsensusFeature::ForecasterKeyBinding),
+            };
+            if binding_required && !tx.forecast_commit_key_bound() {
+                return Err(anyhow!(
+                    "SP_FORECASTER_KEY_UNBOUND: forecast commit sender must be the address of its auth_pubkey (#3290)"
+                ));
+            }
+        }
         if let Some(key) = &protocol_replay_key {
             if self.protocol_replay_keys.contains(key) {
                 return Err(anyhow!("Launch protocol replay detected"));
@@ -647,11 +777,16 @@ impl Mempool {
         // function is read-only against the live pool, so a rejected
         // submission — the attacker-controlled case — costs no eviction and
         // mutates nothing.
+        let replaced_node_copy = node_key.as_ref().map(|key| self.check_node_slot(key, &tx)).transpose()?.flatten();
         let mut intra_tx_outpoints: FxHashSet<(Hash, u32)> = FxHashSet::default();
         for input in &tx.inputs {
             let outpoint = (input.txid, input.vout);
             if !intra_tx_outpoints.insert(outpoint) {
                 return Err(anyhow!("Transaction has duplicate inputs"));
+            }
+            // A node-service input spends nothing and is keyed by sender and nonce instead.
+            if node_key.is_some() {
+                continue;
             }
             if let Some(spending_txs) = self.double_spends.get(&outpoint) {
                 if !spending_txs.is_empty() {
@@ -670,6 +805,9 @@ impl Mempool {
                 self.remove_transaction(victim);
             }
         }
+        if let Some(copy) = replaced_node_copy {
+            self.remove_transaction(&copy);
+        }
 
         // Dependencies are computed AFTER the capacity decision, from the
         // post-eviction map — and `plan_capacity_evictions` additionally
@@ -677,18 +815,23 @@ impl Mempool {
         // so an admitted child can never hold a dependency edge to a
         // transaction the same admission just removed.
         let mut depends_on = FxHashSet::default();
-        for input in &tx.inputs {
-            if self.transactions.contains_key(&input.txid) {
-                depends_on.insert(input.txid);
+        if node_key.is_none() {
+            for input in &tx.inputs {
+                if self.transactions.contains_key(&input.txid) {
+                    depends_on.insert(input.txid);
+                }
+            }
+
+            // All checks passed; record outpoints as spent.
+            for input in &tx.inputs {
+                self.double_spends
+                    .entry((input.txid, input.vout))
+                    .or_default()
+                    .push(tx_id);
             }
         }
-
-        // All checks passed; record outpoints as spent.
-        for input in &tx.inputs {
-            self.double_spends
-                .entry((input.txid, input.vout))
-                .or_default()
-                .push(tx_id);
+        if let Some(key) = node_key {
+            self.node_pending.insert(key, tx_id);
         }
 
         // Fee rate = milli-units of fee per byte (#2026), via the shared
@@ -729,6 +872,54 @@ impl Mempool {
         Ok(())
     }
 
+    /// The pending copy of `tx` with the same signed payload, if any.
+    pub fn pending_node_copy(&self, tx: &Transaction) -> Option<Arc<Transaction>> {
+        let id = self.node_pending.get(&node_admission::key(tx)?)?;
+        self.transactions.get(id).filter(|pending| pending.data == tx.data).cloned()
+    }
+
+    /// Every pending node-service transaction.
+    pub fn pending_node_txs(&self) -> Vec<Arc<Transaction>> {
+        self.node_pending.values().filter_map(|id| self.transactions.get(id).cloned()).collect()
+    }
+
+    /// Whether `tx` may take its node-service slot. `Some(id)` names a pending copy of the same
+    /// signed payload that pays less, which it replaces: the payload is all the chain applies and
+    /// these fees are not charged, so this cannot hurt the owner, and a cheap rewrapped copy
+    /// cannot keep the owner's own copy out of a full block.
+    fn check_node_slot(&self, key: &NodeKey, tx: &Transaction) -> Result<Option<Hash>> {
+        if let Some(pending) = self.node_pending.get(key) {
+            let cheaper_copy = self
+                .transactions
+                .get(pending)
+                .is_some_and(|copy| copy.data == tx.data && copy.fee < tx.fee);
+            if cheaper_copy {
+                return Ok(Some(*pending));
+            }
+            return Err(anyhow!("SP_NODE_NONCE_PENDING: this sender already has a transaction of this kind pending at this nonce"));
+        }
+        let (kind, sender, _) = *key;
+        if self.node_pending.range((kind, sender, 0)..=(kind, sender, u64::MAX)).count()
+            >= node_admission::MAX_PENDING_NODE_TXS_PER_SENDER
+        {
+            return Err(anyhow!("SP_NODE_SENDER_CAP: this sender has the most transactions of this kind pending"));
+        }
+        let all = (kind, crate::common::types::Address([0; 20]), 0)
+            ..=(kind, crate::common::types::Address([0xff; 20]), u64::MAX);
+        if self.node_pending.range(all).count() >= node_admission::MAX_PENDING_NODE_TXS_PER_KIND {
+            return Err(anyhow!("SP_NODE_KIND_CAP: too many transactions of this kind are pending"));
+        }
+        Ok(None)
+    }
+
+    fn forget_node_key(&mut self, tx: &Transaction) {
+        if let Some(key) = node_admission::key(tx) {
+            if self.node_pending.get(&key) == tx.id.as_ref() {
+                self.node_pending.remove(&key);
+            }
+        }
+    }
+
     /// Removes a transaction from the mempool
     #[allow(clippy::excessive_nesting)]
     pub fn remove_transaction(&mut self, tx_id: &Hash) -> bool {
@@ -737,6 +928,7 @@ impl Mempool {
             self.current_size = self.current_size.saturating_sub(tx.size());
             // #2039: keep the per-sender count exact on removal.
             self.decr_sender(&Self::sender_key(&tx));
+            self.forget_node_key(&tx);
 
             // Remove from fee-rate ordered index (O(log n))
             if let Some((fee_rate, abs_fee)) = self.tx_fee_rates.remove(tx_id) {
@@ -811,6 +1003,13 @@ impl Mempool {
     /// Gets a transaction from the mempool by ID
     pub fn get_transaction(&self, tx_id: &Hash) -> Option<Arc<Transaction>> {
         self.transactions.get(tx_id).cloned()
+    }
+
+    /// Whether a pending transaction already holds this protocol replay key
+    /// (for example `commit:<id>` or `reveal:<id>`). Read-only; lets an HTTP
+    /// route refuse a duplicate before spending a request budget on it.
+    pub fn has_protocol_replay_key(&self, key: &str) -> bool {
+        self.protocol_replay_keys.contains(key)
     }
 
     /// Gets all transactions in the mempool
@@ -1004,6 +1203,7 @@ impl Mempool {
                 self.current_size = self.current_size.saturating_sub(tx.size());
                 // #2039: keep the per-sender count exact on removal.
                 self.decr_sender(&Self::sender_key(&tx));
+                self.forget_node_key(&tx);
 
                 // Remove from fee-rate index.
                 if let Some((fee_rate, abs_fee)) = self.tx_fee_rates.remove(tx_id) {
@@ -1068,6 +1268,7 @@ impl Mempool {
                 self.current_size = self.current_size.saturating_sub(tx.size());
                 // #2039: keep the per-sender count exact on removal.
                 self.decr_sender(&Self::sender_key(&tx));
+                self.forget_node_key(&tx);
                 if let Some((fee_rate, abs_fee)) = self.tx_fee_rates.remove(tx_id) {
                     self.fee_order.remove(&(Reverse(fee_rate), Reverse(abs_fee), *tx_id));
                 }
@@ -1119,6 +1320,7 @@ impl Mempool {
         self.dependencies.clear();
         self.dependents.clear();
         self.protocol_replay_keys.clear();
+        self.node_pending.clear();
         // #2061: clear the per-sender admission counters too. Every per-tx
         // removal path decrements these via `decr_sender`, but a bulk
         // `clear_all` bypasses those paths — so without this a sender that was
@@ -3588,6 +3790,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         payload.sign_authorization(from_key, nonce);
         let mut tx = Transaction::new(
