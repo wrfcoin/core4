@@ -621,6 +621,11 @@ pub enum P2pCommand {
         peer_id: PeerId,
         reason: String,
     },
+    /// Test-only: drop this node's own blocks-topic subscription while every
+    /// connection stays up, so `ChainStatus` and `NewBlock` gossip silently
+    /// stop arriving. Models the 2026-11-08 ws stall.
+    #[cfg(test)]
+    TestDropChainGossipSubscription,
     Shutdown,
 }
 
@@ -1376,6 +1381,7 @@ impl P2pNode {
             bootstrap_peers_for_redial,
             bootstrap_redial_interval,
             bootstrap_redial_max_backoff,
+            (config.gossip_silence_timeout, config.gossip_probe_timeout),
             config.outbound_diversity,
             config.preauth_limits,
             config.handshake_limits,
@@ -1453,6 +1459,7 @@ async fn event_loop(
     bootstrap_peers: Vec<Multiaddr>,
     bootstrap_redial_interval: Duration,
     bootstrap_redial_max_backoff: Duration,
+    (gossip_silence_timeout, gossip_probe_timeout): (Duration, Duration),
     outbound_diversity: crate::slots::OutboundDiversityPolicy,
     preauth_limits: crate::preauth_budget::PreAuthLimits,
     handshake_limits: crate::handshake_guard::HandshakeLimits,
@@ -1561,6 +1568,18 @@ async fn event_loop(
         .filter_map(|s| s.peer_id)
         .collect();
 
+    // Silent-gossip watchdog (see gossip_watchdog.rs). Its probes are plain
+    // block-sync requests tracked here, apart from the sync manager's own.
+    let mut gossip_watchdog = crate::gossip_watchdog::GossipWatchdog::new(
+        gossip_silence_timeout,
+        gossip_probe_timeout,
+        Instant::now(),
+    );
+    let mut watchdog_probes: FxHashMap<request_response::OutboundRequestId, PeerId> =
+        FxHashMap::default();
+    let mut gossip_watchdog_tick = tokio::time::interval(Duration::from_secs(1));
+    gossip_watchdog_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
@@ -1568,6 +1587,38 @@ async fn event_loop(
                 match event {
                     SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BondedFetch(event)) => {
                         bonded_fetch.on_event(event, &mut swarm.behaviour_mut().bonded_fetch, Instant::now());
+                    }
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BlockSync(
+                        request_response::Event::Message {
+                            message: request_response::Message::Response { request_id, response },
+                            ..
+                        },
+                    )) if watchdog_probes.contains_key(&request_id) => {
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                probe_answer(&response),
+                            );
+                        }
+                    }
+                    SwarmEvent::Behaviour(crate::behaviour::WrfcoinBehaviourEvent::BlockSync(
+                        request_response::Event::OutboundFailure { request_id, error, .. },
+                    )) if watchdog_probes.contains_key(&request_id) => {
+                        if let Some(peer) = watchdog_probes.remove(&request_id) {
+                            debug!("Gossip-silence probe to {peer} failed: {error}");
+                            on_watchdog_probe_answer(
+                                &mut gossip_watchdog,
+                                &mut swarm,
+                                &tm,
+                                &metrics,
+                                peer,
+                                crate::gossip_watchdog::ProbeAnswer::Failed,
+                            );
+                        }
                     }
                     SwarmEvent::Behaviour(behaviour_event) => {
                         handle_behaviour_event(
@@ -1842,6 +1893,55 @@ async fn event_loop(
                     }
                     _ => {}
                 }
+            }
+
+            _ = gossip_watchdog_tick.tick(), if gossip_watchdog.enabled() => {
+                let now = Instant::now();
+                gossip_watchdog.observe_gossip_count(
+                    metrics.chain_gossip_received.load(std::sync::atomic::Ordering::Relaxed),
+                    now,
+                );
+                let proven: Vec<PeerId> = status_announced_peers
+                    .iter()
+                    .filter(|peer| peer_manager.contains(peer))
+                    .copied()
+                    .collect();
+                match gossip_watchdog.tick(now, &proven) {
+                    crate::gossip_watchdog::WatchdogAction::None => {}
+                    crate::gossip_watchdog::WatchdogAction::Probe(peers) => {
+                        ensure_gossip_subscriptions(&mut swarm, &tm);
+                        let request = crate::sync::BlockRequest {
+                            start_height: sync_manager.local_height().saturating_add(1),
+                            count: 1,
+                        };
+                        warn!(
+                            "No ChainStatus or NewBlock gossip for {}s from {} connected peer(s); \
+                             probing them for height {} over block sync",
+                            gossip_silence_timeout.as_secs(),
+                            peers.len(),
+                            request.start_height,
+                        );
+                        metrics.record_gossip_silence_probe();
+                        for peer in peers {
+                            let request_id =
+                                swarm.behaviour_mut().block_sync.send_request(&peer, request.clone());
+                            watchdog_probes.insert(request_id, peer);
+                        }
+                    }
+                    crate::gossip_watchdog::WatchdogAction::Reconnect(peers) => {
+                        for peer in peers {
+                            warn!(
+                                "Gossip-silence probe to {peer} got no answer within {}s; \
+                                 reconnecting",
+                                gossip_probe_timeout.as_secs(),
+                            );
+                            reconnect_silent_peer(&mut swarm, &tm, &metrics, peer);
+                        }
+                    }
+                }
+                // Probe entries whose peer has gone are answered by an
+                // OutboundFailure; this only bounds the map if one never comes.
+                watchdog_probes.retain(|_, peer| peer_manager.contains(peer));
             }
 
             _ = sync_tick.tick() => {
@@ -2333,6 +2433,10 @@ async fn event_loop(
                         info!("P2P evicting graylisted peer {peer_id}: reason={reason}");
                         swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
                         let _ = swarm.disconnect_peer_id(peer_id);
+                    }
+                    #[cfg(test)]
+                    Some(P2pCommand::TestDropChainGossipSubscription) => {
+                        let _ = swarm.behaviour_mut().gossipsub.unsubscribe(tm.blocks());
                     }
                     Some(P2pCommand::Shutdown) => {
                         info!("Shutdown command received, exiting event loop");
@@ -5447,6 +5551,7 @@ async fn handle_behaviour_event(
 
             match message {
                 WrfcoinMessage::NewBlock { block_bytes } => {
+                    metrics.record_chain_gossip_received();
                     metrics
                         .blocks_received
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5569,6 +5674,7 @@ async fn handle_behaviour_event(
                     tip_hash,
                     state_root,
                 } => {
+                    metrics.record_chain_gossip_received();
                     let status_peer = match message_source {
                         Some(author) if peer_manager.contains(&author) => author,
                         Some(author) => {
@@ -6362,6 +6468,74 @@ async fn handle_behaviour_event(
         },
         // The event loop routes these to `BondedFetchServe` before calling here.
         WrfcoinBehaviourEvent::BondedFetch(_) => {},
+    }
+}
+
+/// Classify a gossip-silence probe answer (a one-block request for
+/// `local_height + 1`).
+fn probe_answer(response: &crate::sync::BlockResponse) -> crate::gossip_watchdog::ProbeAnswer {
+    use crate::gossip_watchdog::ProbeAnswer;
+    if response.retry_after_ms.is_some() {
+        ProbeAnswer::Refused
+    } else if response.blocks.is_empty() {
+        ProbeAnswer::Level
+    } else {
+        ProbeAnswer::Ahead
+    }
+}
+
+fn on_watchdog_probe_answer(
+    watchdog: &mut crate::gossip_watchdog::GossipWatchdog,
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &MetricsCollector,
+    peer: PeerId,
+    answer: crate::gossip_watchdog::ProbeAnswer,
+) {
+    if !watchdog.on_probe_answer(peer, answer, Instant::now()) {
+        debug!("Gossip-silence probe to {peer}: {answer:?}; keeping the connection");
+        return;
+    }
+    warn!(
+        "Gossip-silence probe to {peer}: {answer:?} while its chain gossip is silent; \
+         reconnecting so gossip and ChainStatus are rebuilt"
+    );
+    reconnect_silent_peer(swarm, tm, metrics, peer);
+}
+
+/// Drop a connection whose chain gossip went silent. Bootstrap redial (or
+/// Kademlia) dials it again; the new connection carries our subscriptions and
+/// the peer's eager `ChainStatus`.
+fn reconnect_silent_peer(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+    metrics: &MetricsCollector,
+    peer: PeerId,
+) {
+    ensure_gossip_subscriptions(swarm, tm);
+    metrics.record_gossip_silence_reconnect();
+    if let Err(error) = swarm.disconnect_peer_id(peer) {
+        warn!("Gossip-silence reconnect of {peer} could not be scheduled: {error:?}");
+    }
+}
+
+/// Re-subscribe any WRFCoin topic this node is no longer subscribed to.
+/// gossipsub announces a new subscription to every connected peer, and every
+/// later connection learns all current ones on its own.
+fn ensure_gossip_subscriptions(
+    swarm: &mut Swarm<crate::behaviour::WrfcoinBehaviour>,
+    tm: &TopicManager,
+) {
+    let gossipsub = &mut swarm.behaviour_mut().gossipsub;
+    let subscribed: Vec<gossipsub::TopicHash> = gossipsub.topics().cloned().collect();
+    for topic in tm.all_topics() {
+        if subscribed.contains(&topic.hash()) {
+            continue;
+        }
+        match gossipsub.subscribe(topic) {
+            Ok(_) => warn!("Re-subscribed to gossip topic {topic} that this node had dropped"),
+            Err(error) => warn!("Re-subscribing to gossip topic {topic} failed: {error}"),
+        }
     }
 }
 
