@@ -202,7 +202,9 @@ def _cycle(cfg, site, model, store, wallet, dry_run, now, report, clock) -> None
         model.max_requests = max(0, limit - FORECAST_REQUEST_RESERVE)
     try:
         order = sorted(stations)
-        start = (now // 3600) % len(order) if order else 0
+        turn = getattr(store, "learn_turn", 0)
+        start = turn % len(order) if order else 0
+        store.learn_turn = turn + 1     # saved with the state, so the start station moves on every cycle
         for index, alias in enumerate(order[start:] + order[:start]):
             if not learn(store, model, alias, stations[alias], cfg, now, report):
                 waiting = len(order) - index

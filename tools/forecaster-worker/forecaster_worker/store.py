@@ -20,6 +20,8 @@ class Store:
         self.obs = {}        # alias -> {str(observed_at): {"temperature_c": centi-degC, "pressure_hpa": Pa}}
         self.samples = []    # {"station", "variable", "lead", "valid", "model", "obs"}
         self.sent = []       # {"station", "lead", "day", "variable", "commit_id", "value", "issued_at"}
+        self.cycle_started = None    # unix seconds: when the long-running loop last began a cycle
+        self.learn_turn = 0          # counts cycles, so learning starts at a different station each time
         self.recovered_from = None   # set when a damaged state file was moved aside
         if self.path.exists():
             try:
@@ -47,7 +49,18 @@ class Store:
             if not (isinstance(s["station"], str) and isinstance(s["day"], str)
                     and isinstance(s["lead"], int) and isinstance(s["issued_at"], int)):
                 raise ValueError("wrong shape")
+        meta = data.get("meta", {})
+        started, turn = meta.get("cycle_started"), meta.get("learn_turn", 0)
+        if (started is not None and (not isinstance(started, int) or isinstance(started, bool))) \
+                or not isinstance(turn, int) or isinstance(turn, bool) or turn < 0:
+            raise ValueError("wrong shape")
         self.obs, self.samples, self.sent = obs, samples, sent
+        self.cycle_started, self.learn_turn = started, turn
+
+    def mark_cycle_start(self, now: int) -> None:
+        """Written before a cycle does anything, so a restart for any reason can see how long to wait."""
+        self.cycle_started = now
+        self.save(now)
 
     def save(self, now: int) -> None:
         for alias in list(self.obs):
@@ -56,7 +69,8 @@ class Store:
         self.sent = [s for s in self.sent if s["issued_at"] >= now - KEEP_SENT_SECONDS]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"obs": self.obs, "samples": self.samples, "sent": self.sent}, separators=(",", ":")),
+        meta = {"cycle_started": self.cycle_started, "learn_turn": self.learn_turn}
+        tmp.write_text(json.dumps({"obs": self.obs, "samples": self.samples, "sent": self.sent, "meta": meta}, separators=(",", ":")),
                        encoding="utf-8")
         os.replace(tmp, self.path)
 

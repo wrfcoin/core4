@@ -16,6 +16,8 @@ services:
       WORKER_VARIABLE: "temperature_c"
       WORKER_LEADS: "1,6,12,24"
       WORKER_CYCLE_SECONDS: "3600"
+      # "true" = keep running but never log in, sign or send (same as --dry-run).
+      WORKER_DRY_RUN: "${WORKER_DRY_RUN:-false}"
       WRFCOIN_API: "https://wrfcoin.com/api"
     volumes:
       - ./worker-data:/data

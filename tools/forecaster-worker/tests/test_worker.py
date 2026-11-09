@@ -545,6 +545,44 @@ class GribHardeningTest(unittest.TestCase):
         tracemalloc.stop()
         self.assertLess(peak, 5_000_000)
 
+    def big_message(self, points_side=100):
+        """The fixture's first message, re-labelled as a side x side grid with bit width 0 (no data needed)."""
+        blob = bytearray(FIXTURE.read_bytes()[:214])
+        s3 = bytes(blob).index(b"\x00\x00\x00\x48\x03")
+        s5 = bytes(blob).index(b"\x00\x00\x00\x15\x05")
+        blob[s3 + 6:s3 + 10] = struct.pack(">I", points_side * points_side)
+        blob[s3 + 30:s3 + 38] = struct.pack(">II", points_side, points_side)
+        blob[s3 + 55:s3 + 59] = struct.pack(">I", int((39.5 + 0.25 * (points_side - 1)) * 1e6))   # last latitude
+        blob[s5 + 5:s5 + 9] = struct.pack(">I", points_side * points_side)
+        blob[s5 + 19] = 0
+        return bytes(blob)
+
+    def test_a_file_of_a_thousand_big_messages_is_refused_cheaply(self):
+        one = self.big_message()
+        self.assertEqual(grib2.read_fields(one)[0].ni, 100)          # one such message alone is readable
+        blob = one * 1117
+        self.assertLess(len(blob), grib2.MAX_FILE_BYTES + 50_000)
+        import tracemalloc
+        for data in (blob[:grib2.MAX_FILE_BYTES - grib2.MAX_FILE_BYTES % len(one)], one * 9, one * 3):
+            tracemalloc.start()
+            with self.assertRaisesRegex(grib2.GribError, "far more (messages|points)"):
+                grib2.read_fields(data)
+            peak = tracemalloc.get_traced_memory()[1]
+            tracemalloc.stop()
+            self.assertLess(peak, 3_000_000)
+        with self.assertRaises(grib2.GribError):
+            gfs.point_from_grib(blob, 40.0, -100.0)
+
+    def test_message_and_point_caps_and_lazy_unpacking(self):
+        whole = FIXTURE.read_bytes()
+        with self.assertRaisesRegex(grib2.GribError, "far more messages"):
+            grib2.read_fields(whole * 3)                                 # 9 small messages
+        fields = grib2.read_fields(whole)
+        self.assertTrue(all(f._values is None for f in fields))          # nothing unpacked until it is used
+        t2m = grib2.pick(fields, category=0, number=0, level_type=103, level_value=2.0)
+        t2m.at(40.0, -100.0)
+        self.assertEqual([f._values is None for f in fields].count(False), 1)
+
     def test_client_turns_any_bad_file_into_unavailable(self):
         cycle = datetime(2026, 11, 9, 6, tzinfo=timezone.utc)
         for blob in (b"", b"GRIB", FIXTURE.read_bytes()[:100], b"<html>busy</html>"):
@@ -737,6 +775,21 @@ class ResilienceTest(unittest.TestCase):
         self.assertEqual(len(site.submitted), 4)
         self.assertEqual(sorted(json.loads(b["data"])["horizon_hours"] for b in site.submitted), [1, 6, 12, 24])
 
+    def test_learning_start_station_rotates_every_cycle_whatever_the_interval(self):
+        ids = {chain.station_alias(f"PWS-{n}"): f"PWS-{n}" for n in range(3)}     # 3 divides 24
+        order = sorted(ids)
+        firsts = []
+        for day in range(4):                                                      # one cycle a day, same hour
+            now = self.NOW + day * 86400
+            site = FakeSite(now, [], ids)
+            site.stations = lambda: [{"alias": a, "latitude": 40.0 + n, "longitude": -100.0} for n, a in enumerate(order)]
+            site.forecast_status = lambda: {"stations": order}
+            model = FakeModel()
+            self.cfg.stations = ",".join(order)
+            run_cycle(self.cfg, site, model, Store(self.folder.name), self.wallet, dry_run=True, now=now)
+            firsts.append(model.calls[0][2])                                      # latitude tells which station was first
+        self.assertEqual(firsts, [40.0, 41.0, 42.0, 40.0])
+
     def test_busy_site_stops_the_cycle_at_once(self):
         ids = {chain.station_alias(f"PWS-{n}"): f"PWS-{n}" for n in range(3)}
         for failing in ("observations", "draft"):
@@ -788,6 +841,86 @@ class RunLoopTest(unittest.TestCase):
             finally:
                 cli.run_cycle, cli.time.sleep = real
         return sleeps, err.getvalue()
+
+    def test_a_restart_waits_out_the_rest_of_the_interval(self):
+        """Killed mid-cycle (as an out-of-memory kill would do) and restarted: no second cycle at once."""
+        events = []
+        import os
+        with tempfile.TemporaryDirectory() as folder:
+            old = dict(os.environ)
+            os.environ.update({"WORKER_DATA_DIR": folder, "WORKER_CYCLE_SECONDS": "3600"})
+            real = (cli.run_cycle, cli.time.sleep)
+
+            def killed_cycle(*args, **kwargs):
+                events.append("cycle")
+                raise SystemExit(137)          # the process dies inside the cycle; nothing below the cycle runs
+
+            def sleep(seconds):
+                events.append(("sleep", seconds))
+                raise KeyboardInterrupt
+
+            cli.run_cycle, cli.time.sleep = killed_cycle, sleep
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        cli.main(["run"])                       # first start: cycle at once, then killed
+                    self.assertEqual(events, ["cycle"])
+                    self.assertIsInstance(Store(folder).cycle_started, int)
+                    for _ in range(3):                          # three quick restarts
+                        with self.assertRaises(KeyboardInterrupt):
+                            cli.main(["run"])
+                self.assertEqual(events[0], "cycle")
+                self.assertEqual(len(events), 4)
+                for event in events[1:]:
+                    self.assertEqual(event[0], "sleep")
+                    self.assertGreater(event[1], 3590)          # the rest of the hour, not a new cycle
+                self.assertIn("Waiting 60 minutes", out.getvalue())
+                # `once` is a manual command: it runs at once and leaves the mark alone.
+                mark = Store(folder).cycle_started
+                cli.run_cycle = lambda *a, **k: (_ for _ in ()).throw(IndexError("boom"))
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cli.main(["once", "--dry-run"]), 1)
+                self.assertEqual(Store(folder).cycle_started, mark)
+            finally:
+                cli.run_cycle, cli.time.sleep = real
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_dry_run_can_be_switched_on_by_the_environment(self):
+        seen = []
+        def cycle(*args, **kwargs):
+            seen.append(kwargs["dry_run"])
+            raise KeyboardInterrupt
+        import os
+        with tempfile.TemporaryDirectory() as folder:
+            old = dict(os.environ)
+            real = cli.run_cycle
+            cli.run_cycle = cycle
+            try:
+                for value, want in (("true", True), ("false", False), ("", False)):
+                    os.environ.update({"WORKER_DATA_DIR": folder, "WORKER_DRY_RUN": value})
+                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+                        cli.main(["once"])
+                    self.assertEqual(seen[-1], want)
+            finally:
+                cli.run_cycle = real
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_wait_arithmetic(self):
+        self.assertEqual(cli.seconds_until_next_cycle(None, 3600, 1000.0), 0)
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 600), 3000)
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 3600), 0)
+        self.assertEqual(cli.seconds_until_next_cycle(1000, 3600, 1000.0 + 99999), 0)
+        self.assertEqual(cli.seconds_until_next_cycle(5000, 3600, 1000.0), 3600)      # clock went back
+        self.assertEqual(cli.seconds_until_next_cycle("soon", 3600, 1000.0), 0)
+
+    def test_cycle_errors_show_their_message(self):
+        def cycle(*args, **kwargs):
+            raise RuntimeError("disk is full\nsecond line " + "x" * 500)
+        sleeps, err = self.run_loop(cycle, cycles=1)
+        self.assertIn("Cycle failed (RuntimeError: disk is full second line xxx", err)
+        self.assertLess(max(len(line) for line in err.splitlines()), 320)
 
     def test_unexpected_errors_wait_a_full_interval(self):
         for error in (IndexError("x"), struct.error("x"), ZeroDivisionError(), AttributeError("x"), TypeError("x"), MemoryError()):

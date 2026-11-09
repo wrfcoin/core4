@@ -51,6 +51,9 @@ days of running, because the worker needs past readings to learn from.
 
 To stop it: `docker compose down`. Your wallet and history stay in the `worker-data` folder.
 
+The worker runs one cycle an hour, never more. If it is restarted, it first waits until an hour
+has passed since its last cycle began, and the log says how long that is.
+
 ## Your wallet, your address, your score
 
 - The first run makes a new wallet. The worker prints its **address** (it starts with `0x`).
@@ -77,6 +80,7 @@ Change them in `compose.yml` under `environment:`. The defaults are fine to star
 | `WORKER_LEADS` | `1,6,12,24` | Hours ahead to forecast. |
 | `WORKER_CYCLE_SECONDS` | `3600` | How often the worker wakes up. Not less than 900. |
 | `WRFCOIN_API` | `https://wrfcoin.com/api` | The site to talk to. |
+| `WORKER_DRY_RUN` | `false` | `true` = keep running but never log in, sign or send. |
 
 ## What works today
 

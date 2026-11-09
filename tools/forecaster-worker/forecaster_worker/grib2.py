@@ -27,13 +27,24 @@ class Field:
     lon0: float      # longitude of column 0, degrees east in [0, 360)
     dlat: float      # signed step between rows
     dlon: float      # step between columns (east)
-    values: list     # row-major, row 0 first
+    packed: tuple    # (data bytes, bit width, reference, binary scale, decimal scale); unpacked on first use
+    _values: list | None = None
+
+    @property
+    def values(self) -> list:
+        """Row-major, row 0 first. Unpacked only when a field is actually used."""
+        if self._values is None:
+            data, nbits, reference, scale_b, scale_d = self.packed
+            self._values = [(reference + x * scale_b) / scale_d for x in _unpack_bits(data, nbits, self.ni * self.nj)]
+        return self._values
 
     def at(self, lat: float, lon: float) -> float:
         """Bilinear value at a point inside the grid."""
         try:
             return self._at(lat, lon)
-        except (IndexError, ZeroDivisionError, OverflowError, ValueError) as error:
+        except GribError:
+            raise
+        except (IndexError, ZeroDivisionError, OverflowError, ValueError, ArithmeticError, MemoryError) as error:
             raise GribError(f"damaged GRIB grid ({type(error).__name__})") from None
 
     def _at(self, lat: float, lon: float) -> float:
@@ -71,6 +82,8 @@ def _unpack_bits(data: bytes, nbits: int, count: int) -> list:
 
 
 MAX_GRID_POINTS = 10_000     # a point box is 25 points; anything huge is not what the worker asked for
+MAX_MESSAGES = 8             # the worker asks for two variables on two levels: three or four messages
+MAX_TOTAL_POINTS = 20_000    # across all messages of one file
 MAX_FILE_BYTES = 200_000
 
 
@@ -88,6 +101,7 @@ def _read_fields(blob: bytes) -> list:
     if len(blob) > MAX_FILE_BYTES:
         raise GribError("the file is far larger than a point box")
     fields = []
+    points = 0
     pos = 0
     while pos < len(blob):
         if blob[pos:pos + 4] != b"GRIB":
@@ -109,7 +123,12 @@ def _read_fields(blob: bytes) -> list:
                 raise GribError("messages with repeated sections are not supported")
             sections[number] = blob[cursor:cursor + length]
             cursor += length
+        if len(fields) >= MAX_MESSAGES:
+            raise GribError("the file holds far more messages than a point box")
         fields.append(_decode(discipline, sections))
+        points += fields[-1].ni * fields[-1].nj
+        if points > MAX_TOTAL_POINTS:
+            raise GribError("the file holds far more points than a point box")
         pos = end
     if not fields:
         raise GribError("empty GRIB file")
@@ -167,11 +186,12 @@ def _decode(discipline: int, sections: dict) -> Field:
     binary, decimal, nbits = _signed(s5[15:17]), _signed(s5[17:19]), s5[19]
     if nbits > 32:
         raise GribError("unsupported bit width")
-    raw = _unpack_bits(s7[5:], nbits, count)
-    scale_b, scale_d = 2.0 ** binary, 10.0 ** decimal
-    values = [(reference_value + x * scale_b) / scale_d for x in raw]
+    data = bytes(s7[5:])
+    if len(data) * 8 < nbits * count:
+        raise GribError("data section is shorter than the grid")
+    packed = (data, nbits, reference_value, 2.0 ** binary, 10.0 ** decimal)
     return Field(discipline, category, number, level_type, level_value, forecast_time, reference, ni, nj,
-                 la1, lo1 % 360.0, dlat, dlon, values)
+                 la1, lo1 % 360.0, dlat, dlon, packed)
 
 
 def pick(fields: list, *, category: int, number: int, level_type: int, level_value: float | None = None) -> Field:
