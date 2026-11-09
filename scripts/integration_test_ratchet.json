@@ -1062,6 +1062,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "advisory_governance_passkey"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "passkey_bond_payout"
     },
     {

@@ -456,6 +456,17 @@ impl VerifyCost for Transaction {
         {
             work.ecdsa = work.ecdsa.saturating_add(1);
         }
+        // Advisory governance by a passkey account: one P-256 verification
+        // (the WebAuthn assertion). The type's flat ed25519 charge is kept
+        // (fail-expensive, as above). The type is refused below the
+        // unscheduled `advisory_governance` activation, so no existing price
+        // moves.
+        if self.tx_type == TransactionType::AdvisoryGovernance
+            && crate::governance::advisory::SignedAdvisoryAction::parse(self)
+                .is_some_and(|signed| signed.is_passkey())
+        {
+            work.ecdsa = work.ecdsa.saturating_add(1);
+        }
         work
     }
 }
