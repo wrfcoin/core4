@@ -30,12 +30,8 @@ name: Integration Target Ratchet
 #
 # WHY A NEW FILE, NOT A RESTORED `ci-readiness.yml` TRIGGER
 # -----------------------------------------------------------
-# `ci-readiness.yml`'s `rust-tests` job is `runs-on: ${{ inputs.rust_runner || 'ubuntu-latest' }}`
-# — `inputs.rust_runner` only exists on `workflow_dispatch`; every other event has no `inputs`,
-# so restoring this workflow's trigger would default the ratchet (and 8 other jobs, several
-# already hosted) onto BILLED `ubuntu-latest`. That is a repo-wide, multi-job change resurrecting
-# the exact billing/scope problem this sprint has spent all night getting off hosted runners.
-# This file does one thing: the ratchet step alone, self-hosted from the first line, unconditionally.
+# `ci-readiness.yml` is a dispatch-only, multi-job workflow. Restoring its trigger would run
+# all of those jobs on every push. This file does one thing: the ratchet step alone.
 #
 # WHY NOT #2720
 # --------------
@@ -60,23 +56,12 @@ name: Integration Target Ratchet
 # red/green polarity handling (one target is RED BY DESIGN) has no equivalent in the ratchet
 # script yet. That fold is future work, named explicitly rather than silently left undone.
 #
-# COST — disclosed basis, not a fresh re-measurement
-# -----------------------------------------------------
-# I did not re-time a full cold 104-target run tonight: CT102 was already running three other
-# lanes' cargo invocations against a stated two-concurrent-build limit when this file was
-# written, and my own first attempt at a fresh measurement was itself the thing that triggered
-# a disk-throttle stop (root hit 23G free with four lanes live) — aborted, 24G target/ reclaimed,
-# not repeated. The honest cost citation is therefore the existing, methodology-disclosed
-# measurement already in `ci-readiness.yml`'s own comment on this exact script invocation
-# (measured at commit `af4b30a49`, cold worktree, `CARGO_BUILD_JOBS=4`, `RUSTC_WRAPPER=""`):
-# **93 targets, 11m13s, exit 0**, locally — i.e. on hardware, not a hosted VM, which is the
-# relevant comparison for `n5pro-ct102`. That same comment separately estimates ~64
-# runner-minutes at a 5.7x GitHub-hosted-runner ratio; that ratio does not apply here since this
-# job never runs on a hosted runner. Self-hosted execution costs the owner $0 regardless of
-# duration — the real constraint is CT102 wall-clock/concurrency with other lanes, which this
-# PR's own first scheduled run will measure directly and for real, the same way every other
-# gate tonight got its evidence from an actual CI run rather than a local approximation. Cite
-# that run's actual duration once it lands; do not treat this paragraph as a substitute for it.
+# RUNNER AND COST
+# ------------------
+# GitHub-hosted, and free because this repo is public. Both jobs free preinstalled toolchains
+# first (scripts/test_hosted_heavy_build_disk.py), because a hosted image has too little free
+# disk for this build otherwise. Triggers are push to main and dispatch only, so fork code
+# never reaches this job, and it uses no secrets.
 #
 # TRIGGER SHAPE, REVISED (#2898 Blocker 2)
 # ------------------------------------------
@@ -94,18 +79,7 @@ name: Integration Target Ratchet
 # could alter whether a target even compiles was equally invisible pre-merge.
 #
 # The fix is not a bigger allowlist; the narrow allowlist was the mistake. `pull_request` and
-# `push` now share the same path list. That was previously avoided as a cost-saving narrowing —
-# it is not one: this runner is self-hosted and never billed, so there was no real saving being
-# protected, only a coverage gap being accepted for nothing. `named-test-targets.yml` narrows its
-# own `pull_request` trigger too, on the same now-invalid premise; not fixed here (out of scope
-# for this PR), but the same audit applies there.
-#
-# QUEUED-FOREVER, NOT SKIPPED
-# -----------------------------
-# `n5pro-ct102` is confirmed online via `gh api repos/wrfcoin/core4/actions/runners`. If it were
-# ever offline, this job would sit `status=queued/conclusion=null` — visible as pending, not a
-# false pass — rather than being silently skipped: there is no `needs:` edge for a fan-out to
-# collapse, and no `continue-on-error`.
+# `push` now share the same path list.
 #
 # #2898 REMEDIATION — two more instances of the exact defect class this file exists to fix
 # -----------------------------------------------------------------------------------------
@@ -137,25 +111,15 @@ name: Integration Target Ratchet
 # she mutated `shared-protocol/tests/slash_unstake.rs`, a SELECTED TARGET, and it matched push's
 # `**/*.rs` but not the narrower pull_request allowlist below (see that block's own comment) — so
 # a PR that broke a selected target's own assertions would not run this gate until AFTER merge.
-# Fixed by making pull_request and push share the same trigger surface; there was never a real
-# cost reason to keep them different, since this runner is never billed.
+# Fixed by making pull_request and push share the same trigger surface.
 #
-# BLOCKER 1 — the shipped runner cannot execute Docker-dependent targets, and this gate's first
-# run reported that as a confusing low-level failure inside the same 100-target invocation as
-# everything else, rather than as what it actually is: an undeclared, missing host capability.
-# `basic_docker` (core4#2893) and the three `docker-tests` targets above all need bollard to open
-# a real connection to the Docker daemon; `n5pro-ct102`'s `gh-runner` account is not in the
-# `docker` group and cannot read `/var/run/docker.sock` — the same finding already made on
-# infra#881, now blocking core4's ratchet too. Fixing that group membership is a system-level
-# change to a shared, live runner and is explicitly the owner's action, not this PR's. What IS
-# this PR's: the `docker-gated` job below runs ONLY these four targets, behind a fail-closed
-# capability preflight (`--docker-gated` mode in the script: `docker version` must succeed before
-# any docker-tests-gated cargo invocation runs at all). Right now that preflight refuses loudly —
-# `DOCKER_PREFLIGHT_REFUSED`, exit 2, naming the exact known cause and the exact issue tracking
-# the owner-side fix — instead of a bollard connection error the observation step would otherwise
-# bury among 100 other targets' output, or worse, a silent pass that never proved anything. The
-# main job (100 targets, `--features hsm,zk`) is fully independent of this one and does not
-# depend on Docker being available to go green.
+# BLOCKER 1 — Docker-dependent targets used to fail inside the same 100-target invocation as
+# everything else when the runner had no Docker access. `basic_docker` (core4#2893) and the three
+# `docker-tests` targets need bollard to reach a real Docker daemon, so the `docker-gated` job below
+# runs ONLY these four, behind a fail-closed capability preflight (`--docker-gated` mode in the
+# script: `docker version` must succeed before any docker-tests-gated cargo invocation runs at all).
+# Without a daemon it refuses loudly (`DOCKER_PREFLIGHT_REFUSED`, exit 2) instead of a silent pass.
+# The main job is fully independent of this one and does not need Docker to go green.
 
 # Public launch ruling: full integration execution is post-merge/manual evidence.
 on:
@@ -210,16 +174,41 @@ jobs:
     # move freely without ever touching this name again.
     name: integration ratchet — nothing else executes
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, n5pro]
-    # See the COST comment above for the measured basis. The script's own --timeout-seconds
-    # 3600 (below) caps the observation step at 60 minutes; 90 gives headroom for
-    # checkout/toolchain/cache plus a cold-cache first run without silently absorbing a
-    # genuinely hung invocation into an anonymous cancellation.
-    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    # A cold build compiles the workspace twice (hsm, then hsm,zk). The script's own
+    # --timeout-seconds (below) caps the observation step; the job limit leaves headroom for
+    # the compile gate without silently absorbing a genuinely hung invocation.
+    timeout-minutes: 300
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTC_WRAPPER: ''
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
 
       # DISK PREFLIGHT — same idiom as named-test-targets.yml: an ENOSPC mid-compile reads as
       # a compile failure and is indistinguishable from a real finding without this. Exits 2,
@@ -228,11 +217,8 @@ jobs:
         run: |
           set -euo pipefail
           FLOOR_GB=25
-          # Measure the filesystem the BUILD lands on, not the runner's checkout disk:
-          # the self-hosted runners export CARGO_TARGET_DIR onto the 36T build pool while
-          # _work sits on the 236G root disk, so probing `.` voided every run once the
-          # root disk crossed the floor even though target/ had terabytes free. Walk up
-          # to the nearest existing ancestor so a first run (no target dir yet) still probes.
+          # Measure the filesystem the BUILD lands on. Walk up to the nearest existing
+          # ancestor so a first run (no target dir yet) still probes.
           DISK_PROBE="${CARGO_TARGET_DIR:-.}"
           while [ ! -e "${DISK_PROBE}" ]; do DISK_PROBE=$(dirname "${DISK_PROBE}"); done
           echo "disk probe path=${DISK_PROBE} (CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>})"
@@ -243,10 +229,13 @@ jobs:
             exit 2
           fi
 
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libclang-dev protobuf-compiler libudev-dev libpcsclite-dev softhsm2 opensc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
 
       # CONTROL — must pass, invokes no cargo, so a broken toolchain cannot make it
       # vacuously green. Same shape as named-test-targets.yml's step 1.
@@ -268,23 +257,16 @@ jobs:
       # only fails here, where zk is OFF. That is the #2841 rot class (five targets
       # uncompilable on main for up to four weeks) and it is caught here or nowhere.
       #
-      # Why here rather than its own workflow: same runner label, same disk preflight, same
-      # `**/*.rs` trigger, so as a separate workflow it was one more concurrent job per push
-      # on a three-runner pool whose build cache is SHARED across runners (Henry, 2026-09-01:
-      # one PR's artifacts can surface as another PR's compile errors). Sequential in one job,
-      # it is one fewer run in the queue and one fewer job racing the cache. Cost moves, it
-      # does not vanish: this job gets longer by a workspace compile under `hsm` (warm cache:
-      # minutes, not tens of minutes) and shares the 90-minute timeout.
+      # Why here rather than its own workflow: same disk preflight and same `**/*.rs` trigger,
+      # so a separate workflow would only add one more concurrent job per push.
       #
       # The executable counter is the anti-vacuity claim: a `--no-run` that produced fewer
       # test binaries than the floor is a compile gate that compiled less than it says.
-      # RUSTC_WRAPPER is cleared because sccache is not installed on CT 102 and an inherited
-      # wrapper aborts the build before a single test compiles.
       - name: Compile every workspace test target (--no-run, --features hsm)
         run: |
           set -o pipefail
           python3 scripts/count_test_executables.py --self-test
-          RUSTC_WRAPPER="" cargo test --locked --workspace --features hsm \
+          cargo test --locked --workspace --features hsm \
             --no-run --message-format=json 2>build-stderr.log \
             | tee compile-messages.json \
             | python3 scripts/count_test_executables.py --floor 122
@@ -300,7 +282,7 @@ jobs:
       - name: Observe — run every ratchet-covered integration target
         run: |
           set -euo pipefail
-          python3 scripts/integration_test_ratchet.py --timeout-seconds 3600 | tee /tmp/integration-ratchet-observe.log
+          python3 scripts/integration_test_ratchet.py --timeout-seconds 12000 | tee /tmp/integration-ratchet-observe.log
           # #2896/#2888: the target count lives here, in output that can move
           # freely, never in the job's required-check context name (see the
           # name: comment above). Surfaced in BOTH the log (already true) and
@@ -316,28 +298,49 @@ jobs:
   # #2898 Blocker 1: Docker-dependent targets, isolated into their own job so this file's main
   # job never depends on Docker being available to go green. Fails closed at a named preflight
   # (DOCKER_PREFLIGHT_REFUSED, exit 2) rather than a confusing low-level bollard error, or worse,
-  # a silent pass. See the #2898 REMEDIATION note above for the full reasoning and why the
-  # underlying capability gap (gh-runner's docker group membership) is owner-only and not fixed
-  # here.
+  # a silent pass. See the #2898 REMEDIATION note above.
   docker-gated-ratchet:
     name: integration ratchet — docker-gated targets (fail-closed if Docker unavailable)
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, n5pro]
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTC_WRAPPER: ''
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Refs #3621: reclaim hosted disk before cache restore or compilation.
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
+          echo "WRFCOIN_HEAVY_BUILD_MIN_FREE_GIB=10" >> "$GITHUB_ENV"
+          python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
+
       - name: Preflight — enough disk for the build
         run: |
           set -euo pipefail
           FLOOR_GB=25
-          # Measure the filesystem the BUILD lands on, not the runner's checkout disk:
-          # the self-hosted runners export CARGO_TARGET_DIR onto the 36T build pool while
-          # _work sits on the 236G root disk, so probing `.` voided every run once the
-          # root disk crossed the floor even though target/ had terabytes free. Walk up
-          # to the nearest existing ancestor so a first run (no target dir yet) still probes.
+          # Measure the filesystem the BUILD lands on. Walk up to the nearest existing
+          # ancestor so a first run (no target dir yet) still probes.
           DISK_PROBE="${CARGO_TARGET_DIR:-.}"
           while [ ! -e "${DISK_PROBE}" ]; do DISK_PROBE=$(dirname "${DISK_PROBE}"); done
           echo "disk probe path=${DISK_PROBE} (CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>})"
@@ -348,15 +351,17 @@ jobs:
             exit 2
           fi
 
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libclang-dev protobuf-compiler libudev-dev libpcsclite-dev softhsm2 opensc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@v2
 
       # OBSERVATION + PREFLIGHT, combined in the script itself (--docker-gated): `docker version`
       # must succeed before any of these targets' cargo invocation runs at all. If it fails, this
-      # step exits 2 with an explicit DOCKER_PREFLIGHT_REFUSED message naming the exact cause
-      # (gh-runner not in the docker group) and the tracking issues (core4#2893, infra#881) —
-      # never a silent pass, never a bare bollard connection error several minutes into a build.
+      # step exits 2 with an explicit DOCKER_PREFLIGHT_REFUSED message — never a silent pass,
+      # never a bare bollard connection error several minutes into a build.
       - name: Observe — Docker-gated integration targets (fail-closed preflight)
-        run: python3 scripts/integration_test_ratchet.py --docker-gated --timeout-seconds 1200
+        run: python3 scripts/integration_test_ratchet.py --docker-gated --timeout-seconds 5400

@@ -117,10 +117,18 @@ const MIN_PRODUCTION_RUST_SOURCE_FILES: usize = 400;
 ///   the issue named in the reason rather than silently dropped.
 const UNREGISTERED: &[(&str, &str)] = &[
     (
+        "SecurityKeyAssertionWire",
+        "WebAuthn P-256 assertion, not an ed25519 signed object: the authenticator signs \
+         authenticatorData || SHA-256(clientDataJSON) whose challenge is SHA3 of a preimage \
+         under wrfcoin.security_key_action.v1 (golden case security_key_action_v1) or \
+         wrfcoin.security_key_spend.v1 over the pinned debit preimages",
+    ),
+    (
         "NodeBondLifecycle",
         "transport signature container (Node S2): owner, governance and payout keys sign \
          the registered NodeBondAuthorization; dedicated online keys sign the registered \
-         role-bound NodeBondPossession. The container is never a signing preimage",
+         role-bound NodeBondPossession; a passkey payout (payout_passkey) asserts over the \
+         registered NodeBondPayoutPasskeyApproval. The container is never a signing preimage",
     ),
     (
         "NodeReceiptSubmission",
@@ -187,6 +195,15 @@ const UNREGISTERED: &[(&str, &str)] = &[
          preimage (#3094); it signs nothing itself — UpgradeNotice is the signed object",
     ),
     (
+        "BondedFetchAuth",
+        "off-chain request authorization for the P2P bonded snapshot fetch protocol \
+         (p2p/src/bonded_fetch.rs, owner decision 2026-10-31): a registered bond consumer \
+         key signs (server peer id, client peer id, time, nonce) framed by \
+         domain_preimage_bound under its own tag wrfcoin.p2p_bonded_fetch_auth.v1 at V2. \
+         Verified only by the serving node before answering a fetch; never a chain object, \
+         never gossiped, so it carries no registry DOMAIN_TAG by design",
+    ),
+    (
         "ProducerPossessionProof",
         "ceremony-only proof of possession (#3096): a producer key signs the \
          producer_key_pop challenge domain over the ceremony id, the bundle's registration \
@@ -202,6 +219,14 @@ const UNREGISTERED: &[(&str, &str)] = &[
          tests/passkey_webauthn_2169.rs (Wycheproof P-256 vectors + a deterministic \
          software authenticator) and the tag is asserted distinct from the ed25519 \
          transfer tag there",
+    ),
+    (
+        "SessionKeyTransferAuth",
+        "session-key signature carried in TransparentTransferPayload.session_key_auth; \
+         signs `wrfcoin_session_key_transfer_auth_v1` (session_key_transfer_authorization_message_with_domain), \
+         distinct from the owner's ed25519 transfer tag. Its preimage bytes are pinned by \
+         session_keys::tests::wallet_client_golden_vectors and its gating by \
+         tests/session_key_transfers.rs",
     ),
     (
         "PasskeyAuthorization",
@@ -272,6 +297,14 @@ const UNREGISTERED: &[(&str, &str)] = &[
          the CommitPayload the route builds and signs nothing itself - CommitPayload is \
          the signed object and carries the canonical commit-authorization domain tag, \
          which the route re-checks via verify_authorization() before submission",
+    ),
+    (
+        "ForecastRevealRequest",
+        "API DTO for the forecast reveal route; its optional auth_pubkey/auth_signature \
+         are the forecaster's commit authorization, relayed only so a key-bound relay can \
+         prove the forecaster signed this commit. The route verifies them against the \
+         canonical commit-authorization message (CommitPayload's domain tag) and never \
+         copies them into the RevealPayload it submits; it signs nothing itself",
     ),
     (
         "WrfcoinMessage",
@@ -367,6 +400,10 @@ const UNREGISTERED: &[(&str, &str)] = &[
     (
         "SignedNodeServiceReceipt",
         "signature envelope over the registered NodeServiceReceipt domain-separated body",
+    ),
+    (
+        "SignedRetrievalAuditReceipt",
+        "signature envelope over the registered RetrievalAuditReceipt domain-separated body (keeper-proof, feature retrieval-audit)",
     ),
     (
         "SignedSnapshotSyncPayload",
@@ -695,9 +732,19 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         golden_kind: "session_key_use_v2",
     },
     AuthSurface {
+        rust_type: "SecurityKeyActionPayload",
+        domain_tag: "wrfcoin.security_key_action.v1",
+        golden_kind: "security_key_action_v1",
+    },
+    AuthSurface {
         rust_type: "DeclareAuthorization",
         domain_tag: "wrfcoin.declare_authorization.v1",
         golden_kind: "declare_authorization_v2",
+    },
+    AuthSurface {
+        rust_type: "SignedSendAllowlistAction",
+        domain_tag: "wrfcoin.send_allowlist_action.v1",
+        golden_kind: "send_allowlist_action_v2",
     },
     // #3345 / #3347 owner ledger: extracted by the ONE shared constructor
     // `Transaction::station_owner_ledger_transition` (unscheduled features).
@@ -730,6 +777,13 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         rust_type: "StationOwnerActionPayload",
         domain_tag: "wrfcoin_station_owner_action_v1",
         golden_kind: "station_owner_action_v1",
+    },
+    // Sponsored first sends: carried in TransparentTransferPayload.sponsorship,
+    // read by state apply only once `paymaster` is active.
+    AuthSurface {
+        rust_type: "SponsorAuthorization",
+        domain_tag: "wrfcoin_sponsored_send_auth_v1",
+        golden_kind: "sponsored_send_authorization_v1",
     },
 ];
 
@@ -1103,6 +1157,10 @@ const SIGNED_VIA_ENVELOPE: &[(&str, &str)] = &[
         "signed by SignedNodeServiceReceipt.signature over the registered domain-separated body",
     ),
     (
+        "RetrievalAuditReceipt",
+        "signed by SignedRetrievalAuditReceipt.signature over the registered domain-separated body",
+    ),
+    (
         "NodeServiceTicket",
         "signed by its detached S1 signature container under the registered V2 domain",
     ),
@@ -1121,6 +1179,12 @@ const SIGNED_VIA_ENVELOPE: &[(&str, &str)] = &[
     (
         "NodeBondPossession",
         "signed by its detached S1 signature container under the registered V2 domain",
+    ),
+    (
+        "NodeBondPayoutPasskeyApproval",
+        "WebAuthn challenge subject (passkey_bond_payout): the payout wallet's P-256 \
+         assertion in NodeBondLifecycle.payout_passkey signs authenticatorData || \
+         SHA-256(clientDataJSON) whose challenge is SHA3 of this subject's V2 preimage",
     ),
     (
         "SnapshotSyncPayload",

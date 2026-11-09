@@ -99,6 +99,7 @@ fn test_state(snapshot_signing_key: Option<PrivateKey>) -> actix_web::web::Data<
         failed_transactions_total: Arc::new(AtomicU64::new(0)),
         zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
         block_production_lock: Arc::new(tokio::sync::Mutex::new(())),

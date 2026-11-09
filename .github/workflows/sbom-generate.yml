@@ -14,13 +14,9 @@ on:
       - 'v*.*.*'
   release:
     types: [published]
-# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
-# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
-# untouched, so PR gating is unchanged and this can still be run on demand with
-# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
-# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
-  # schedule:
-  # - cron: "0 5 * * 3"
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: under 30 min, and the scan picks up new advisories without a commit.
+  schedule:
+    - cron: '23 5 * * *'
   workflow_dispatch:
     inputs:
       scan_vulnerabilities:
@@ -171,20 +167,6 @@ jobs:
 
           echo "Combined SBOM metadata:"
           cat sbom/combined-sbom-metadata.json
-
-  terminal-skip-guard:
-    name: Terminal skip guard
-    needs: [generate-sbom, verify-sbom]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Reject skipped required gates
-        env:
-          GATE_NEEDS: ${{ toJSON(needs) }}
-          GATE_REQUIRED: generate-sbom verify-sbom
-          GATE_CONDITIONAL: ''
-        run: python3 scripts/assert_gate_results.py
 
       # Fail-closed inventory validation (#2317). The pinned `cyclonedx validate`
       # CLI returns 0 on a malformed document unless `--fail-on-errors` is passed,
@@ -359,3 +341,17 @@ jobs:
           echo "Rust Components: $(jq '.components | length' sbom/rust-sbom.cdx.json)"
           echo ""
           cat sbom/combined-sbom-metadata.json
+
+  terminal-skip-guard:
+    name: Terminal skip guard
+    needs: [generate-sbom, verify-sbom]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reject skipped required gates
+        env:
+          GATE_NEEDS: ${{ toJSON(needs) }}
+          GATE_REQUIRED: generate-sbom verify-sbom
+          GATE_CONDITIONAL: ''
+        run: python3 scripts/assert_gate_results.py

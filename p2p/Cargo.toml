@@ -17,6 +17,7 @@ wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["test-suppo
 # libp2p -- viral-scale P2P networking
 libp2p = { version = "0.56", default-features = false, features = [
     "tcp",
+    "dns",
     "quic",
     "noise",
     "yamux",

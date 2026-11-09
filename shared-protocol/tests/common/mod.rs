@@ -397,6 +397,7 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                         .collect(),
                     max_value_per_use: s("max_value_per_use").parse().expect("max per use"),
                     max_total_value: s("max_total_value").parse().expect("max total"),
+                    window: None,
                 },
                 valid_from: input["valid_from"].as_u64().expect("valid_from"),
                 valid_until: input["valid_until"].as_u64().expect("valid_until"),
@@ -440,6 +441,20 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["use_index"].as_u64().expect("use_index") as u32,
             )
         },
+        "send_allowlist_action_v2" => {
+            use wrfcoin_shared_protocol::accounts::send_allowlist::{
+                SendAllowlistAction, send_allowlist_action_message,
+            };
+            let account: Address = s("account").parse().expect("account address");
+            let action: SendAllowlistAction =
+                serde_json::from_value(input["action"].clone()).expect("send allowlist action");
+            send_allowlist_action_message(
+                s("chain_id"),
+                &account,
+                &action,
+                input["nonce"].as_u64().expect("nonce"),
+            )
+        },
         "declare_authorization_v2" | "declare_authorization_signer_is_sender_v2" => {
             let account: Address = s("account").parse().expect("account address");
             let authorization = match s("authorization") {
@@ -454,6 +469,19 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["nonce"].as_u64().expect("nonce"),
                 input["generation"].as_u64().expect("generation"),
             )
+        },
+        "security_key_action_v1" => {
+            use wrfcoin_shared_protocol::accounts::security_key::{SecurityKeyActionBody, action_message};
+            let account: Address = s("account").parse().expect("account address");
+            assert_eq!(s("action"), "begin_escape", "golden action body");
+            action_message(
+                s("chain_id"),
+                s("network_id"),
+                &account,
+                input["nonce"].as_u64().expect("nonce"),
+                &SecurityKeyActionBody::BeginEscape,
+            )
+            .expect("begin_escape encodes")
         },
         // #3345 / #3347 owner ledger (owner rulings 2026-09-27): one kind per
         // domain tag; the sender/acceptor pairs share a body and differ only
@@ -519,6 +547,22 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 serde_json::from_value(input["action"].clone()).expect("action"),
                 input["action_nonce"].as_u64().expect("action_nonce"),
                 input["expires_at_height"].as_u64().expect("expires_at_height"),
+            )
+        },
+        "sponsored_send_authorization_v1" => {
+            let n = |k: &str| input[k].as_u64().unwrap_or_else(|| panic!("{input_key}.{k}"));
+            wrfcoin_shared_protocol::accounts::paymaster::sponsored_send_authorization_message_with_domain(
+                s("chain_id"),
+                s("network_id"),
+                s("sponsor"),
+                s("from"),
+                s("to"),
+                n("amount"),
+                n("nonce"),
+                n("fee"),
+                n("expires_at_height"),
+                n("balance_floor"),
+                input["first_send_only"].as_bool().expect("first_send_only"),
             )
         },
         other => panic!("unknown money-path kind {other:?}"),

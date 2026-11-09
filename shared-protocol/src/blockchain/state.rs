@@ -42,6 +42,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use wrfcoin_geo_grid::GeoCell;
 use wrfcoin_reputation_engine::{ContributorRole, ReputationEvent, ReputationSignal};
 
+/// A sponsorship that passed every check and is waiting for its transfer to
+/// apply (sponsored first sends). Private to the transfer apply path.
+struct SponsorshipCharge {
+    sponsor: Address,
+    fee: u64,
+    floor: u64,
+    record: crate::accounts::paymaster::PaymasterAccount,
+}
+
 /// Height at which ring signature cryptographic verification activates.
 const RING_SIG_VERIFICATION_ACTIVATION_HEIGHT: u64 = 0;
 
@@ -1084,6 +1093,7 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "node_receipt_registry",
     "node_settlement",
     "node_fraud",
+    "send_allowlists",
 ];
 
 /// Global state of the blockchain.
@@ -1500,6 +1510,18 @@ pub struct State {
     pub node_settlement: Option<crate::consensus::node_settlement::NodeSettlement>,
     #[serde(default)]
     pub node_fraud: Option<crate::consensus::node_fraud::NodeFraudState>,
+    /// Per-account send allowlists (`accounts::send_allowlist`). Written only
+    /// by the `TransactionType::SendAllowlist` arm of
+    /// `apply_protocol_transaction`, which is refused below the UNSCHEDULED
+    /// `ConsensusFeature::SendAllowlist` activation, so it is empty on every
+    /// chain that has not scheduled it. While empty it is absent from
+    /// `state_root_material`, from checkpoints (written at the previous
+    /// format) and from snapshots, and every value guard is a no-op. Appended
+    /// at checkpoint format 16; `#[serde(default)]` so older JSON snapshots
+    /// deserialize.
+    #[serde(default)]
+    pub send_allowlists:
+        BTreeMap<Address, crate::accounts::send_allowlist::AccountSendAllowlist>,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1611,6 +1633,7 @@ impl State {
             node_receipt_registry: None,
             node_settlement: None,
             node_fraud: None,
+            send_allowlists: BTreeMap::new(),
         }
     }
 
@@ -1797,6 +1820,21 @@ impl State {
 
     fn apply_node_bond_lifecycle(&mut self, payload: &crate::consensus::node_bond_registry::NodeBondLifecycle, height: u64) -> Result<(), StateError> {
         if !self.node_share_activation_height().is_some_and(|activation| height >= activation) { return Err(StateError::InvalidTransition); }
+        // Send allowlist: Deposit/Update bind a payout account that receives
+        // the bond's rewards, so it must be a permitted destination of the
+        // owner. Exit/Withdraw return principal to the owner and are allowed.
+        // A no-op while no account has a policy (always, pre-activation).
+        if !self.send_allowlists.is_empty() {
+            let a = &payload.signed.authorization;
+            if matches!(a.action, crate::consensus::node_share_contracts::NodeBondAction::Deposit
+                | crate::consensus::node_share_contracts::NodeBondAction::Update)
+                && !crate::accounts::send_allowlist::permits(&self.send_allowlists, &a.owner_account, &a.payout_account, height)
+            {
+                return Err(StateError::Governance(crate::accounts::send_allowlist::destination_refusal(
+                    &a.owner_account, &a.payout_account, height,
+                )));
+            }
+        }
         let authority = crate::governance::schedule_extension::schedule_extension_authority().ok_or(StateError::InvalidTransition)?;
         let context = authority.context();
         let genesis: [u8; 32] = hex::decode(context.genesis_hash).map_err(|_| StateError::InvalidTransition)?
@@ -2528,7 +2566,11 @@ impl State {
                 | TransactionType::ConfidentialTransfer
                 | TransactionType::ShieldedDeposit
                 | TransactionType::ShieldedWithdrawal
-                | TransactionType::RewardClaim => {
+                | TransactionType::RewardClaim
+                | TransactionType::SecurityKeyAction
+                // Applied through the same shared sink as Transfer, so producer
+                // == applier == WAL replay. Its arm refuses it pre-activation.
+                | TransactionType::SendAllowlist => {
                     let transition = StateTransition::ProcessGovernanceTransaction {
                         tx: tx.clone(),
                         current_block,
@@ -3553,8 +3595,13 @@ impl State {
         // refuses every `ApplySessionKeyAction` transition, so this map is
         // provably empty and every historical `expected_roots.json` entry is
         // byte-identical whether this section exists in the code or not.
+        //
+        // v2 (session-key transfers): each record also folds the optional
+        // spend window and its counters. The section has never been emitted
+        // on any chain (the map is empty while the feature is unscheduled),
+        // so the tag bump changes no historical root.
         if !self.session_keys.is_empty() {
-            material.extend_from_slice(b"wrfcoin_session_keys_v1");
+            material.extend_from_slice(b"wrfcoin_session_keys_v2");
             push_u64(&mut material, self.session_keys.len() as u64);
             for (owner, owner_state) in &self.session_keys {
                 push_bytes(&mut material, &owner.0);
@@ -3580,6 +3627,16 @@ impl State {
                     push_u32(&mut material, record.uses_so_far);
                     push_u128(&mut material, record.cumulative_value_used);
                     push_bool(&mut material, record.revoked);
+                    match record.grant.scope.window {
+                        Some(window) => {
+                            push_bool(&mut material, true);
+                            push_u64(&mut material, window.blocks);
+                            push_u128(&mut material, window.max_value);
+                        },
+                        None => push_bool(&mut material, false),
+                    }
+                    push_u64(&mut material, record.window_index);
+                    push_u128(&mut material, record.window_value_used);
                 }
             }
         }
@@ -3599,6 +3656,24 @@ impl State {
                             crate::accounts::authorization::AuthorizationRule::SignerIsSender => push_u64(&mut material, 0),
                             crate::accounts::authorization::AuthorizationRule::SmartAccount { program } => { push_u64(&mut material, 1); push_bytes(&mut material, program); },
                             crate::accounts::authorization::AuthorizationRule::Delegated { program, valid_until } => { push_u64(&mut material, 2); push_bytes(&mut material, program); push_optional_u64(&mut material, valid_until.map(|v| v.into_inner())); },
+                            // `security_key_spend`: storable only once the
+                            // feature is active, so absent from every
+                            // pre-activation root.
+                            crate::accounts::authorization::AuthorizationRule::SignerPlusSecurityKey { policy } => {
+                                push_u64(&mut material, 3);
+                                push_u64(&mut material, policy.keys.len() as u64);
+                                for key in &policy.keys {
+                                    push_bytes(&mut material, &key.public_key_p256);
+                                    push_bytes(&mut material, &key.rp_id_hash);
+                                    push_bytes(&mut material, &key.credential_id);
+                                }
+                                push_u64(&mut material, policy.escape_delay_blocks);
+                                push_bool(&mut material, policy.pending_escape.is_some());
+                                if let Some(escape) = &policy.pending_escape {
+                                    push_u64(&mut material, escape.initiated_at_height);
+                                    push_u64(&mut material, escape.executable_at_height);
+                                }
+                            },
                         }
                     }
                 }
@@ -3745,6 +3820,49 @@ impl State {
             material.extend_from_slice(b"wrfcoin_node_bond_registry_v1");
             push_bytes(&mut material, &registry.canonical_body());
         }
+
+        // --- send_allowlists (ConsensusFeature::SendAllowlist) ---
+        //
+        // CONDITIONAL, like `station_owner_ledger`: absent from the pre-image
+        // (not even a tag) while empty, and empty until the unscheduled
+        // feature activates and an owner acts, so every root is byte-identical
+        // to a binary without this field until then. Explicit length-prefixed
+        // encoding in BTreeMap/BTreeSet order.
+        if !self.send_allowlists.is_empty() {
+            material.extend_from_slice(b"wrfcoin_send_allowlists_v1");
+            push_u64(&mut material, self.send_allowlists.len() as u64);
+            for (account, entry) in &self.send_allowlists {
+                push_bytes(&mut material, &account.0);
+                push_u64(&mut material, entry.action_nonce);
+                match &entry.policy {
+                    None => push_u8(&mut material, 0),
+                    Some(policy) => {
+                        push_u8(&mut material, 1);
+                        push_u64(&mut material, policy.enabled_at_height);
+                        push_u64(&mut material, policy.add_delay_blocks);
+                        push_u64(&mut material, policy.allowed.len() as u64);
+                        for address in &policy.allowed {
+                            push_bytes(&mut material, &address.0);
+                        }
+                        push_u64(&mut material, policy.pending_additions.len() as u64);
+                        for (address, pending) in &policy.pending_additions {
+                            push_bytes(&mut material, &address.0);
+                            push_u64(&mut material, pending.requested_at_height);
+                            push_u64(&mut material, pending.effective_at_height);
+                        }
+                        match &policy.pending_disable {
+                            None => push_u8(&mut material, 0),
+                            Some(pending) => {
+                                push_u8(&mut material, 1);
+                                push_u64(&mut material, pending.requested_at_height);
+                                push_u64(&mut material, pending.effective_at_height);
+                            },
+                        }
+                        push_optional_u64(&mut material, policy.requests_blocked_until_height);
+                    },
+                }
+            }
+        }
         material
     }
 
@@ -3883,6 +4001,17 @@ impl State {
                 nonce,
                 current_block,
             } => {
+                // Send allowlist: the one debit-to-destination seam. Every
+                // transparent transfer (ed25519, passkey or authority signed)
+                // and any future emitter reaches it. Checked before any
+                // mutation; a no-op while no account has a policy.
+                if !self.send_allowlists.is_empty()
+                    && !crate::accounts::send_allowlist::permits(&self.send_allowlists, &from, &to, current_block)
+                {
+                    return Err(StateError::Governance(
+                        crate::accounts::send_allowlist::destination_refusal(&from, &to, current_block),
+                    ));
+                }
                 {
                     let sender = self
                         .get_account_mut(&from)
@@ -4590,6 +4719,40 @@ impl State {
                 payload,
                 block_height,
             } => {
+                // #3565 (a), gated: from `device_submission_limit`'s activation a
+                // contribution commit for a REGISTERED station must be authorized
+                // by that station's registered owner key, so only the owner can
+                // occupy the station's one-per-block reveal slot. The commit's
+                // `auth_pubkey` already signs (station_id, commit_id, type); this
+                // binds that key to `owner_address` with the #2742 rule. An
+                // unregistered station has no owner to bind and is unchanged.
+                // Forecast commits are #3290's surface and are untouched here. The
+                // exemption keys on the payload string, so it is sound only
+                // because, from the same activation, the shared classifier refuses
+                // a `ContributionCommit` that declares `"forecast"` (and a
+                // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
+                if payload.contribution_type != "forecast"
+                    && crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
+                        block_height,
+                    )
+                {
+                    if let Some(station) = self.station_registry.get(&payload.station_id) {
+                        let owner_signed = payload.auth_pubkey.as_deref().is_some_and(|pk| {
+                            crate::blockchain::transaction::owner_address_bound_to_pubkey(
+                                &station.owner_address,
+                                pk,
+                            )
+                        });
+                        if !owner_signed {
+                            return Err(StateError::CommitReveal(format!(
+                                "{}: commit for station {} is not authorized by its registered owner key",
+                                crate::consensus::proof_of_publishing::SP_DEVICE_COMMIT_NOT_OWNER,
+                                payload.station_id
+                            )));
+                        }
+                    }
+                }
                 let provenance_class = self
                     .station_registry
                     .get(&payload.station_id)
@@ -4848,6 +5011,12 @@ impl State {
                 self.apply_confidential_transfer(payload, current_block)?;
             },
             StateTransition::ApplyShieldedDeposit { from, payload, current_block } => {
+                // Send allowlist: a pool deposit has no listable destination.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &from, current_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &from, "a shielded deposit", current_block,
+                    )));
+                }
                 self.apply_shielded_deposit(from, payload, current_block)?;
             },
             StateTransition::ApplyShieldedWithdrawal {
@@ -5096,6 +5265,12 @@ impl State {
                 }
                 if deposit < Balance::new(GOVERNANCE_DEFAULT_DEPOSIT) {
                     return Err(StateError::Governance("Deposit below minimum".to_string()));
+                }
+                // Send allowlist: the deposit is held, never refunded.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &proposer, created_at_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &proposer, "a governance proposal deposit", created_at_block,
+                    )));
                 }
                 let (eligible_voting_power, eligible_voting_power_by_voter) =
                     self.governance_electorate_snapshot()?;
@@ -5621,12 +5796,54 @@ impl State {
                     self.move_recovered_account(account, public_key)?;
                 }
             },
-            StateTransition::ApplySessionKeyAction { action, block_height } => {
+            StateTransition::ApplySessionKeyAction { action, block_height, security_key_auth } => {
                 if !crate::crypto::chain_binding::feature_active(
                     crate::crypto::chain_binding::ConsensusFeature::SessionKeys,
                     block_height,
                 ) {
                     return Err(StateError::InvalidTransition);
+                }
+                // `security_key_spend`: a session key is a delegated spender,
+                // so on an account whose security-key rule is in force it can
+                // only be registered with the key co-signing (otherwise a
+                // phrase-only thief could register one and spend around the
+                // key). Revocation stays phrase-only: it only removes power.
+                if let crate::accounts::session_keys::SessionKeyAction::Register {
+                    owner,
+                    registration_nonce,
+                    grant,
+                    ..
+                } = &action
+                {
+                    let message = crate::accounts::session_keys::session_key_register_message(
+                        &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                        owner,
+                        *registration_nonce,
+                        grant,
+                    );
+                    crate::accounts::security_key::delegation_gate(
+                        &self.authorization_declarations,
+                        owner,
+                        &message,
+                        security_key_auth.as_ref(),
+                        block_height,
+                    )
+                    .map_err(|e| {
+                        StateError::Governance(format!(
+                            "SP_SECURITY_KEY_REQUIRED: session key registration on a security-key account: {e}"
+                        ))
+                    })?;
+                }
+                // Send allowlist: a session key spends the owner's value to
+                // `target`; the owner's list binds it like any other signer.
+                if let crate::accounts::session_keys::SessionKeyAction::Use { owner, target, value, .. } = &action {
+                    if *value > 0
+                        && !crate::accounts::send_allowlist::permits(&self.send_allowlists, owner, target, block_height)
+                    {
+                        return Err(StateError::Governance(
+                            crate::accounts::send_allowlist::destination_refusal(owner, target, block_height),
+                        ));
+                    }
                 }
                 crate::accounts::session_keys::apply(
                     &mut self.session_keys,
@@ -5704,6 +5921,40 @@ impl State {
                             block_height,
                             ?refusal,
                             "station registration v2 refused (inert no-op)"
+                        );
+                    },
+                }
+            }
+            StateTransition::ApplyStationRegistrarRegistration {
+                station,
+                block_height,
+            } => {
+                // Never emitted below activation; refusing it there keeps a
+                // forged or mis-built transition from changing state.
+                if !crate::consensus::station_registrar::station_registrar_key_active(block_height)
+                    || !crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationRegistrationNonce,
+                        block_height,
+                    )
+                {
+                    return Err(StateError::InvalidTransition);
+                }
+                let station_id = station.station_id.clone();
+                let refusal =
+                    crate::consensus::station_registrar::registrar_state_refusal(self, &station);
+                match (refusal, self.precheck_station_registration_v2(&station, 0, block_height)) {
+                    (None, Ok(mut entry)) => {
+                        self.apply_station_registration(station)?;
+                        let _ = entry.advance_nonce_for_registration();
+                        self.station_owner_ledger.insert(station_id, entry);
+                    },
+                    (refusal, precheck) => {
+                        tracing::warn!(
+                            station_id = %station_id,
+                            block_height,
+                            ?refusal,
+                            precheck = ?precheck.err(),
+                            "station registrar registration refused (inert no-op)"
                         );
                     },
                 }
@@ -5843,6 +6094,13 @@ impl State {
                 if let crate::accounts::paymaster::PaymasterAction::Stake {
                     paymaster, amount, unstake_delay_blocks,
                 } = &action {
+                    // Send allowlist: a sponsorship deposit pays other
+                    // accounts' costs, so it has no listable destination.
+                    if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, paymaster, block_height).is_some() {
+                        return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                            paymaster, "a paymaster stake", block_height,
+                        )));
+                    }
                     if let Some(existing) = self.paymasters.get(paymaster) {
                         if existing.unstake_delay_blocks != *unstake_delay_blocks {
                             return Err(StateError::Governance(format!(
@@ -5910,6 +6168,19 @@ impl State {
         }
         self.accounts.insert(new_owner, recovered_account);
         self.account_recovery.insert(new_owner, recovery_state);
+        // Send allowlist: the policy protects the funds, so it moves with
+        // them. If the destination key had its own entry, the recovered
+        // account's policy wins (it is the one guarding this balance) and the
+        // larger nonce is kept so no signed action can be replayed.
+        if let Some(mut moved) = self.send_allowlists.remove(&account) {
+            if let Some(existing) = self.send_allowlists.remove(&new_owner) {
+                moved.action_nonce = moved.action_nonce.max(existing.action_nonce);
+                if moved.policy.is_none() {
+                    moved.policy = existing.policy;
+                }
+            }
+            self.send_allowlists.insert(new_owner, moved);
+        }
         Ok(())
     }
 
@@ -7666,6 +7937,30 @@ impl State {
             // Node effects derive only from actual carrying transactions in
             // launch extraction; governance metadata cannot add another intent.
             TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => Err(StateError::InvalidTransition),
+            // Session-key register/revoke derive only from launch extraction
+            // (`StateTransition::ApplySessionKeyAction`), never from this sink.
+            TransactionType::SessionKeyAction => Err(StateError::InvalidTransition),
+            // Owner-signed send-allowlist action. Refused below the
+            // unscheduled activation, so `send_allowlists` stays empty there.
+            TransactionType::SendAllowlist => {
+                if !crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::SendAllowlist,
+                    current_block,
+                ) {
+                    return Err(StateError::InvalidTransition);
+                }
+                let signed = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(tx)
+                    .ok_or_else(|| StateError::Governance(
+                        "SP_SEND_ALLOWLIST_PAYLOAD_INVALID: invalid send allowlist payload".to_string(),
+                    ))?;
+                crate::accounts::send_allowlist::apply(
+                    &mut self.send_allowlists,
+                    &signed,
+                    current_block,
+                    &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                )
+                .map_err(|e| StateError::Governance(format!("SP_SEND_ALLOWLIST_ACTION_REFUSED: {e}")))
+            },
             TransactionType::Transfer => {
                 let payload = tx.parse_transparent_transfer_payload().ok_or_else(|| {
                     StateError::Privacy(
@@ -7673,7 +7968,42 @@ impl State {
                             .to_string(),
                     )
                 })?;
-                self.apply_transparent_transfer(payload, tx.nonce, current_block)
+                let security_key = tx.security_key_spend_proof();
+                self.apply_transparent_transfer(payload, tx.nonce, tx.fee, current_block, security_key.as_ref())
+            },
+            // Security-key wallets: one signed action against the account's
+            // declaration (`accounts::security_key::apply_action`). Refused
+            // below `security_key_spend`, so pre-activation state is untouched.
+            TransactionType::SecurityKeyAction => {
+                if !crate::accounts::security_key::security_key_active(current_block) {
+                    return Err(StateError::InvalidTransition);
+                }
+                let payload = tx.parse_security_key_action_payload().ok_or_else(|| {
+                    StateError::Governance(
+                        "SP_SECURITY_KEY_ACTION_PAYLOAD_INVALID: invalid security key action payload"
+                            .to_string(),
+                    )
+                })?;
+                let identity = crate::crypto::chain_binding::ChainIdentity::active();
+                crate::accounts::security_key::apply_action(
+                    &mut self.authorization_declarations,
+                    &payload,
+                    current_block,
+                    &identity.chain_id,
+                    &identity.network_id,
+                )
+                .map_err(|e| {
+                    StateError::Governance(format!("SP_SECURITY_KEY_ACTION_REJECTED: {e}"))
+                })?;
+                // Turning the rule on revokes every session key the account
+                // registered while it was off: none of them was co-signed by
+                // the security key, and any of them could be a thief's.
+                if matches!(payload.action, crate::accounts::security_key::SecurityKeyActionBody::Enable { .. }) {
+                    if let Ok(account) = payload.account.trim().parse::<Address>() {
+                        crate::accounts::session_keys::revoke_all(&mut self.session_keys, &account);
+                    }
+                }
+                Ok(())
             },
             TransactionType::GovernanceProposal => {
                 let payload = tx.parse_governance_proposal_payload().ok_or_else(|| {
@@ -8036,7 +8366,9 @@ impl State {
         &mut self,
         payload: TransparentTransferPayload,
         tx_nonce: u64,
+        declared_fee: u64,
         current_block: u64,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
     ) -> Result<(), StateError> {
         if !payload.transparent_opt_out {
             return Err(StateError::Privacy(
@@ -8060,12 +8392,31 @@ impl State {
         // `current_block`, a WebAuthn P-256 passkey assertion bound to `from`
         // is an equally valid authorization; below activation this is the
         // ed25519 rule exactly as before.
-        if !payload.verify_authorization_at_height_with_view(
+        //
+        // `security_key_spend`: an account whose declared rule requires a
+        // security key also needs the transaction's `security_key_auth`
+        // assertion for the OWNER path; for every other account it is ignored.
+        //
+        // Session keys: once `ConsensusFeature::SessionKeys` is active, and
+        // ONLY when neither owner authorization above verifies, a signature
+        // by a session key registered to `from` authorizes the debit within
+        // that key's scope and limits. Inactive (every chain today) this
+        // branch is never taken, so the arm is the pre-session-key rule
+        // byte for byte; an owner-signed transfer never consumes a session use.
+        // A protected account's session keys were all co-signed by its
+        // security key (registration gate + revoke-on-enable in the
+        // `ApplySessionKeyAction` and `SecurityKeyAction` arms).
+        let owner_authorized = payload.verify_owner_authorization_at_height_with_view_and_security_key(
             self,
             tx_nonce,
             current_block,
             crate::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
-        ) {
+            security_key,
+        );
+        let session_authorized = !owner_authorized
+            && crate::accounts::session_keys::session_keys_active(current_block)
+            && payload.verify_session_key_signature(tx_nonce);
+        if !owner_authorized && !session_authorized {
             return Err(StateError::Privacy(
                 "SP_PRIVACY_TRANSPARENT_TRANSFER_UNAUTHORIZED: transparent transfer requires a valid from-account authorization signature"
                     .to_string(),
@@ -8083,13 +8434,224 @@ impl State {
                     .to_string(),
             )
         })?;
-        self.apply_transition(StateTransition::BalanceTransfer {
-            from,
-            to,
-            amount: Balance::new(payload.amount as u128),
-            nonce: Some(tx_nonce),
+        // Burned transfer fee: `None` (and `declared_fee` never read) until
+        // `ConsensusFeature::TransferFeeBurn` is active at this block, so
+        // below activation this path is byte for byte the pre-fee one.
+        let transfer_fee = crate::consensus::transfer_fee::check_declared_fee(
+            declared_fee,
             current_block,
-        })
+        )
+        .map_err(|e| StateError::Governance(e.to_string()))?;
+        // Sponsored first sends: read ONLY once `ConsensusFeature::Paymaster`
+        // is active. Before that the field is ignored, so this path is byte
+        // for byte the unsponsored one and `paymasters` stays empty.
+        let sponsorship = match payload.sponsorship.as_ref() {
+            Some(auth) if crate::accounts::paymaster::sponsorship_active(current_block) => {
+                Some(self.check_sponsorship(auth, &payload, from, tx_nonce, current_block)?)
+            },
+            _ => None,
+        };
+        let amount = Balance::new(payload.amount as u128);
+        // Who burns the fee: a sponsor whose signed fee covers it, else the
+        // sender. Every check runs before the transfer mutates anything.
+        let sender_fee = match (transfer_fee, sponsorship.as_ref()) {
+            (None, _) => None,
+            (Some(required), Some(charge)) => {
+                if charge.fee < required {
+                    return Err(StateError::Governance(
+                        crate::consensus::transfer_fee::TransferFeeError::SponsorBelowMinimum {
+                            signed: charge.fee,
+                            required,
+                        }
+                        .to_string(),
+                    ));
+                }
+                None
+            },
+            (Some(required), None) => {
+                let fee = Balance::new(u128::from(required));
+                self.check_sender_covers_amount_and_fee(&from, amount, fee)?;
+                Some(fee)
+            },
+        };
+        // Session keys: charge the key first (all-or-nothing: a key over its
+        // limit or out of scope writes nothing and moves no value), then move
+        // the value. The key's limits count the transfer AMOUNT only, never
+        // the burned fee: the fee is a protocol charge the chain sets, so a
+        // fee change can never push a key over a limit its owner chose. The
+        // fee itself is still debited from the sender's balance (or paid by a
+        // sponsor), and the fee pre-check above already ran, so a sender who
+        // cannot cover amount + fee spends no session use. If the move (bad
+        // nonce, insufficient balance), the sponsorship commit or the fee burn
+        // fails, the owner's grants are restored exactly, so a failed
+        // transfer never spends a use or allowance.
+        let original_grants = if session_authorized {
+            let session_key = payload
+                .session_key_auth
+                .as_ref()
+                .and_then(|auth| auth.session_key_address())
+                .ok_or(StateError::InvalidTransition)?;
+            let original = self.session_keys.get(&from).cloned();
+            crate::accounts::session_keys::consume_transfer(
+                &mut self.session_keys,
+                &from,
+                &session_key,
+                &to,
+                payload.amount as u128,
+                current_block,
+            )
+            .map_err(|e| {
+                StateError::Privacy(format!(
+                    "SP_SESSION_KEY_TRANSFER_REFUSED: session key cannot authorize this transfer: {e}"
+                ))
+            })?;
+            Some(original)
+        } else {
+            None
+        };
+        let result = self
+            .apply_transition(StateTransition::BalanceTransfer {
+                from,
+                to,
+                amount,
+                nonce: Some(tx_nonce),
+                current_block,
+            })
+            .and_then(|()| match sponsorship {
+                Some(charge) => self.commit_sponsorship(charge),
+                None => Ok(()),
+            })
+            .and_then(|()| match sender_fee {
+                Some(fee) => self.burn_transfer_fee(&from, fee),
+                None => Ok(()),
+            });
+        if result.is_err() {
+            // `consume_transfer` succeeded, so the owner had an entry.
+            if let Some(Some(original)) = original_grants {
+                self.session_keys.insert(from, original);
+            }
+        }
+        result
+    }
+
+    /// Transfer fee pre-check: the sender's spendable balance and balance
+    /// each cover `amount + fee`, so the transfer and the fee debit either
+    /// both apply or neither does. An absent sender is left to the transfer
+    /// itself (`AccountNotFound`), exactly as without a fee.
+    fn check_sender_covers_amount_and_fee(
+        &self,
+        from: &Address,
+        amount: Balance,
+        fee: Balance,
+    ) -> Result<(), StateError> {
+        let Some(account) = self.accounts.get(from) else {
+            return Ok(());
+        };
+        let needed = amount.0.checked_add(fee.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance.0 < needed {
+            return Err(StateError::InsufficientBalance);
+        }
+        Ok(())
+    }
+
+    /// Debit the transfer fee from the sender and burn it: the value is
+    /// credited to nobody and journalled in `supply_authorized_burning`, so
+    /// INV-SUPPLY-1 reads it as an authorized burn and the circulating supply
+    /// (`issuance_committed_supply`) drops by exactly the fee.
+    fn burn_transfer_fee(&mut self, from: &Address, fee: Balance) -> Result<(), StateError> {
+        let account = self.get_account_mut(from).ok_or(StateError::AccountNotFound)?;
+        if account.spendable_balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance < fee {
+            return Err(StateError::InsufficientBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        Ok(())
+    }
+
+    /// Every check a sponsorship must pass before its transfer applies,
+    /// without mutating state: the sponsor's signature and stateless rules
+    /// (`SponsorAuthorization::check`), the sponsor's balance against its
+    /// fee and floor, and the protocol rate limits on its record.
+    fn check_sponsorship(
+        &self,
+        auth: &crate::accounts::paymaster::SponsorAuthorization,
+        payload: &TransparentTransferPayload,
+        from: Address,
+        tx_nonce: u64,
+        current_block: u64,
+    ) -> Result<SponsorshipCharge, StateError> {
+        let refuse = |reason: String| {
+            StateError::Governance(format!("SP_SPONSORED_SEND_REFUSED: {reason}"))
+        };
+        let sponsor = auth
+            .check(&payload.from, &payload.to, payload.amount, tx_nonce, current_block)
+            .map_err(|e| refuse(e.to_string()))?;
+        // Send allowlist: a sponsorship fee is debited and burned, so it has
+        // no listable destination. A no-op while no account has a policy.
+        if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &sponsor, current_block).is_some() {
+            return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                &sponsor, "a sponsored-send fee", current_block,
+            )));
+        }
+        let fee = u128::from(auth.fee);
+        let available = self
+            .accounts
+            .get(&sponsor)
+            .map(|account| account.spendable_balance.0)
+            .unwrap_or(0);
+        if available < fee.saturating_add(u128::from(auth.balance_floor)) {
+            return Err(refuse(
+                crate::accounts::paymaster::SponsorshipError::SponsorBalanceBelowFloor {
+                    available,
+                    fee: auth.fee,
+                    floor: auth.balance_floor,
+                }
+                .to_string(),
+            ));
+        }
+        let record = crate::accounts::paymaster::charge_balance_sponsorship(
+            &self.paymasters,
+            sponsor,
+            from,
+            fee,
+            current_block,
+        )
+        .map_err(|e| refuse(e.to_string()))?;
+        Ok(SponsorshipCharge { sponsor, fee: auth.fee, floor: auth.balance_floor, record })
+    }
+
+    /// Debit the sponsor's fee, burn it and store its updated record. Runs
+    /// after the transfer applied. The transfer can only have RAISED the
+    /// sponsor's balance (the sponsor is never `from`), but the floor is
+    /// re-checked here so the rule holds on the post-transfer balance too.
+    fn commit_sponsorship(&mut self, charge: SponsorshipCharge) -> Result<(), StateError> {
+        let fee = Balance::new(u128::from(charge.fee));
+        let floor = Balance::new(u128::from(charge.floor));
+        let account = self.get_account_mut(&charge.sponsor).ok_or(StateError::AccountNotFound)?;
+        let needed = fee.0.checked_add(floor.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed || account.balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        self.paymasters.insert(charge.sponsor, charge.record);
+        Ok(())
     }
 
     fn apply_confidential_transfer(
@@ -10313,6 +10875,12 @@ pub enum StateTransition {
     ApplySessionKeyAction {
         action: crate::accounts::session_keys::SessionKeyAction,
         block_height: u64,
+        /// `security_key_spend`: the owner's security-key assertion over the
+        /// registration, read from the carrying transaction's
+        /// `security_key_auth` member. Required to REGISTER a session key on an
+        /// account whose security-key rule is in force; ignored otherwise.
+        #[serde(default)]
+        security_key_auth: Option<crate::accounts::security_key::SecurityKeyAssertionWire>,
     },
     /// Signed AA declaration state transition (#2168); not extracted from
     /// transactions until the feature's explicit scheduling work.
@@ -10420,6 +10988,17 @@ pub enum StateTransition {
     ApplyNodeBondLifecycle { payload: crate::consensus::node_bond_registry::NodeBondLifecycle, block_height: u64 },
     ApplyNodeServiceBatch { payload: crate::consensus::node_receipt_registry::NodeReceiptSubmission, block_height: u64 },
     ApplyNodeFraudReport { payload: crate::consensus::node_fraud::NodeFraudReport, block_height: u64 },
+    /// `station_registrar_key`: a NEW phone-class station registered by a
+    /// pinned registrar key (`consensus::station_registrar`). Applies like a
+    /// v2 registration with nonce 0 only when the station is not registered
+    /// and the phone-station ceiling has room; otherwise an inert no-op.
+    /// Refused below `station_registrar_key` or `station_registration_nonce`.
+    /// APPENDED LAST (bincode is positional) and never emitted while the
+    /// feature is inactive.
+    ApplyStationRegistrarRegistration {
+        station: WeatherStation,
+        block_height: u64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
@@ -10579,7 +11158,7 @@ mod tests {
     /// state-mutating variant back into silent default-allow behavior.
     fn protocol_dispatch_intent(tx_type: TransactionType) -> ProtocolDispatchIntent {
         match tx_type {
-            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => ProtocolDispatchIntent::Refused,
+            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction => ProtocolDispatchIntent::Refused,
             TransactionType::Transfer
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -10588,7 +11167,9 @@ mod tests {
             | TransactionType::ShieldedWithdrawal
             | TransactionType::Layer2BatchSubmit
             | TransactionType::RewardClaim
-            | TransactionType::SlashingReport => ProtocolDispatchIntent::AppliesState,
+            | TransactionType::SlashingReport
+            | TransactionType::SecurityKeyAction
+            | TransactionType::SendAllowlist => ProtocolDispatchIntent::AppliesState,
             TransactionType::Regular
             | TransactionType::Coinbase
             | TransactionType::Stake
@@ -10663,8 +11244,9 @@ mod tests {
             TransactionType::SlashEvidenceReport,
             TransactionType::NodeBondLifecycle,
             TransactionType::NodeServiceBatch,
+            TransactionType::SessionKeyAction,
         ];
-        assert_eq!(inventory.len(), 39, "update the named dispatch inventory");
+        assert_eq!(inventory.len(), 40, "update the named dispatch inventory");
         assert_eq!(
             protocol_dispatch_intent(TransactionType::SlashEvidenceReport),
             ProtocolDispatchIntent::Refused
@@ -10784,6 +11366,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             };
             payload.sign_authorization(&from_key, 0);
             let mut tx = Transaction::new(
@@ -12735,6 +13319,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
@@ -12790,6 +13376,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
@@ -20896,6 +21484,7 @@ mod tests {
     "node_receipt_registry",
     "node_settlement",
     "node_fraud",
+    "send_allowlists",
         ];
 
         let actual = State::state_root_material_field_names();

@@ -1449,6 +1449,31 @@
     {
       "frame": "money_path_v2",
       "input": {
+        "account": "0x9ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d",
+        "action": "begin_escape",
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 3
+      },
+      "kind": "security_key_action_v1",
+      "preimage_hex": "1e00000000000000777266636f696e2e73656375726974795f6b65795f616374696f6e2e76310f00000000000000777266636f696e2d746573746e65740700000000000000746573746e657414000000000000009ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d080000000000000003000000000000000900000000000000010000000000000005",
+      "signature_hex": "c633082769437adf0a3924ef944a4d9db3185862137bacd68850766f4f15c4a09bdf4c9201a9c18cdd4f97a8c513c17cbde465e787bf6862cbdda9f7b7acbe0b",
+      "signer_public_key_hex": "c76a6d59f549c3eefac827531b7ad827ce75060a776e8b803b374494a66e5aee",
+      "signer_secret_hex": "9891d71b6d92d1ff3ffbc52bb783d1e7717aa847f35a4be25cc6914c113e6df1",
+      "signer_seed": 900140,
+      "tag": "wrfcoin.security_key_action.v1",
+      "tamper_note": "nonce 3 -> 4",
+      "tampered_input": {
+        "account": "0x9ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d",
+        "action": "begin_escape",
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet",
+        "nonce": 4
+      }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
         "chain_id": "wrfcoin-testnet",
         "expires_at_height": 21000,
         "from_owner_address": "wrfa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -1744,6 +1769,166 @@
         "owner_pubkey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "provenance_class": "synthetic",
         "station_id": "station-golden-1"
+      }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "amount": 10000000,
+        "balance_floor": 100000000,
+        "chain_id": "wrfcoin-testnet",
+        "expires_at_height": 21000,
+        "fee": 5000,
+        "first_send_only": true,
+        "from": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "network_id": "testnet",
+        "nonce": 0,
+        "sponsor": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "to": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "kind": "sponsored_send_authorization_v1",
+      "preimage_hex": "777266636f696e5f73706f6e736f7265645f73656e645f617574685f76310f000000777266636f696e2d746573746e657407000000746573746e65742a0000003078356135613561356135613561356135613561356135613561356135613561356135613561356135612a0000003078613161316131613161316131613161316131613161316131613161316131613161316131613161312a000000307862326232623262326232623262326232623262326232623262326232623262326232623262326232809698000000000000000000000000008813000000000000085200000000000000e1f5050000000001",
+      "signature_hex": "5e10917ab7cd2de2dc5e3026264d37c98aa213d16a9297b237da3a25badcbfda426a48816fc8cb065e2ff03f0b595b005343183ae52bf40f6c28c9e60bf74d07",
+      "signer_public_key_hex": "094f2af81ea7e0a39f03d30b81c8fb178707d640ad36763cecae1378e31ce15d",
+      "signer_secret_hex": "22dc700eedc45aff2bca437029ab6b4df1187f64248ebace9ab5447d3a96d46f",
+      "signer_seed": 900150,
+      "tag": "wrfcoin_sponsored_send_auth_v1",
+      "tamper_note": "first_send_only true -> false (a sponsor's rule cannot be widened after signing)",
+      "tampered_input": {
+        "amount": 10000000,
+        "balance_floor": 100000000,
+        "chain_id": "wrfcoin-testnet",
+        "expires_at_height": 21000,
+        "fee": 5000,
+        "first_send_only": false,
+        "from": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "network_id": "testnet",
+        "nonce": 0,
+        "sponsor": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "to": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "account": "0x9ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d",
+        "action": {
+          "Enable": {
+            "add_delay_blocks": 2244,
+            "allowed": [
+              [
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170
+              ],
+              [
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187
+              ]
+            ]
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "nonce": 7
+      },
+      "kind": "send_allowlist_action_v2",
+      "preimage_hex": "2000000000000000777266636f696e2e73656e645f616c6c6f776c6973745f616374696f6e2e76310f00000000000000777266636f696e2d746573746e657414000000000000009ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d61000000000000000100000000000000000800000000000000c408000000000000080000000000000002000000000000001400000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1400000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb08000000000000000700000000000000",
+      "signature_hex": "329230611f55405519a7e3bf52457c32a6db46f391b466bb5bed1fee2c462dc9fd6a330014d7a7aa1d0f59bd5b0693b2c6951e461e93efdb33f3c62e50b6ed04",
+      "signer_public_key_hex": "c76a6d59f549c3eefac827531b7ad827ce75060a776e8b803b374494a66e5aee",
+      "signer_secret_hex": "9891d71b6d92d1ff3ffbc52bb783d1e7717aa847f35a4be25cc6914c113e6df1",
+      "signer_seed": 900140,
+      "tag": "wrfcoin.send_allowlist_action.v1",
+      "tamper_note": "action nonce 7 -> 8",
+      "tampered_input": {
+        "account": "0x9ba5f5c9a320b4e83e3406b7cf9c5a8a2aac797d",
+        "action": {
+          "Enable": {
+            "add_delay_blocks": 2244,
+            "allowed": [
+              [
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170,
+                170
+              ],
+              [
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187,
+                187
+              ]
+            ]
+          }
+        },
+        "chain_id": "wrfcoin-testnet",
+        "nonce": 8
       }
     }
   ],

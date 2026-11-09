@@ -244,6 +244,19 @@ pub struct AddressInfo {
     pub nonce: Option<String>,
 }
 
+/// The fee in force at the next block, from a `/network/info` body (bare or
+/// wrapped in `data`). `None` when absent, inactive or zero.
+pub fn parse_transfer_fee(info: &Value) -> Option<u64> {
+    let fee = info.get("transfer_fee").or_else(|| info.get("data")?.get("transfer_fee"))?;
+    if fee.get("active").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    fee.get("base_units")
+        .and_then(Value::as_str)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|units| *units > 0)
+}
+
 /// Acceptance receipt returned by `POST /transactions/submit`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmitAccepted {
@@ -472,6 +485,53 @@ pub fn honest_gap_reason(body: &str) -> Option<String> {
     })
 }
 
+/// The refusal's error code and message, if the body has the node's error shape. Only a plain
+/// code and a short line of printable ASCII pass, so a body can't reach the terminal unfiltered.
+fn receipt_refusal_detail(body: &[u8]) -> String {
+    const MAX_MESSAGE_CHARS: usize = 200;
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return String::new();
+    };
+    let code = value["error"]["code"].as_str().unwrap_or_default();
+    let plain_code = !code.is_empty()
+        && code.len() <= 64
+        && code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    if !plain_code {
+        return String::new();
+    }
+    let message = value["error"]["message"].as_str().unwrap_or_default();
+    if message.is_empty()
+        || message.len() > MAX_MESSAGE_CHARS
+        || !message.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+    {
+        return format!(" {code}");
+    }
+    format!(" {code}: {message}")
+}
+
+#[cfg(test)]
+mod receipt_refusal_tests {
+    use super::receipt_refusal_detail;
+
+    #[test]
+    fn the_refusal_reason_survives_and_nothing_else_does() {
+        let refusal = br#"{"ok":false,"error":{"code":"NODE_TX_NONCE_USED","message":"this nonce is already used on chain"}}"#;
+        assert_eq!(receipt_refusal_detail(refusal), " NODE_TX_NONCE_USED: this nonce is already used on chain");
+        for hostile in [
+            &br#"not json"#[..],
+            br#"{"token":"abc"}"#,
+            br#"{"error":{"code":"lower case"}}"#,
+            br#"{"error":{"code":"\u001b[31mRED","message":"x"}}"#,
+        ] {
+            assert_eq!(receipt_refusal_detail(hostile), "", "{}", String::from_utf8_lossy(hostile));
+        }
+        let long = format!(r#"{{"error":{{"code":"A","message":"{}"}}}}"#, "x".repeat(500));
+        assert_eq!(receipt_refusal_detail(long.as_bytes()), " A");
+        let escape = br#"{"error":{"code":"A","message":"\u001b[2Jwiped"}}"#;
+        assert_eq!(receipt_refusal_detail(escape), " A");
+    }
+}
+
 impl ApiClient {
     /// Authenticated receipt submission must never forward credentials through redirects.
     pub fn new_without_redirects(config: ApiConfig) -> Result<Self> {
@@ -526,7 +586,8 @@ impl ApiClient {
     }
 
     /// Credential-bearing receipt requests never retry or expose untrusted bodies,
-    /// URLs, transport details, or deserialization diagnostics.
+    /// URLs, transport details, or deserialization diagnostics. A refusal's code and
+    /// message are the one exception, filtered by [`receipt_refusal_detail`].
     pub async fn receipt_request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
         let url = format!("{}{}", self.config.base_url, path);
         let mut request = match method {
@@ -537,10 +598,18 @@ impl ApiClient {
         if let Some(body) = body { request = request.json(&body); }
         if let Some(token) = &self.config.bearer_token { request = request.bearer_auth(token); }
         let mut response = request.send().await.map_err(|_| anyhow!("RECEIPT_TRANSPORT"))?;
-        if !response.status().is_success() {
-            return Err(anyhow!("RECEIPT_HTTP_{}", response.status().as_u16()));
-        }
         const CAP: usize = 40 * 1024;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let mut body = Vec::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if chunk.len() > CAP.saturating_sub(body.len()) {
+                    break;
+                }
+                body.extend_from_slice(&chunk);
+            }
+            return Err(anyhow!("RECEIPT_HTTP_{status}{}", receipt_refusal_detail(&body)));
+        }
         if response.content_length().is_some_and(|size| size > CAP as u64) {
             return Err(anyhow!("RECEIPT_RESPONSE_BOUND"));
         }
@@ -888,6 +957,11 @@ impl ApiClient {
     }
 
     /// Submit one client-authorized transparent transfer to the node.
+    ///
+    /// `fee` is the burned network fee the user was shown (base units). It is
+    /// sent only when known, so a node that charges none receives exactly the
+    /// body it always did; the node refuses a value below the chain's fee
+    /// (`FEE_BELOW_MINIMUM`) and debits exactly the chain's fee otherwise.
     pub async fn submit_transparent_transfer(
         &self,
         from: &str,
@@ -896,22 +970,79 @@ impl ApiClient {
         nonce: u64,
         auth_pubkey: &str,
         auth_signature: &str,
+        fee: Option<u64>,
     ) -> Result<SubmitAccepted> {
-        self.request_once(
-            "POST",
-            "/transactions/submit",
-            Some(json!({
-                "from": from,
-                "to": to,
-                "amount": amount,
-                "nonce": nonce.to_string(),
-                "transparent_opt_out": true,
-                "transparent_opt_out_reason": "cli",
-                "auth_pubkey": auth_pubkey,
-                "auth_signature": auth_signature,
-            })),
+        self.submit_transparent_transfer_with_security_key(
+            from,
+            to,
+            amount,
+            nonce,
+            auth_pubkey,
+            auth_signature,
+            fee,
+            None,
         )
         .await
+    }
+
+    /// The burned transfer fee a send would pay in the next block, from the
+    /// node's `/network/info` `transfer_fee` object. One attempt, no retry:
+    /// this only feeds the preview.
+    ///
+    /// - `Ok(None)`: the node charges no fee (or predates the fee and does
+    ///   not report one, which also means it charges none).
+    /// - `Ok(Some(units))`: the fee is in force at the next block.
+    /// - `Err`: the node could not be asked; the caller must not claim "no fee".
+    pub async fn get_transfer_fee(&self) -> Result<Option<u64>> {
+        let info: Value = self.request_once("GET", "/network/info", None).await?;
+        Ok(parse_transfer_fee(&info))
+    }
+
+    /// [`Self::submit_transparent_transfer`] carrying the account's
+    /// security-key assertion (`security_key_spend`) when it has one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn submit_transparent_transfer_with_security_key(
+        &self,
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+        auth_pubkey: &str,
+        auth_signature: &str,
+        fee: Option<u64>,
+        security_key_auth: Option<
+            &wrfcoin_shared_protocol::accounts::security_key::SecurityKeyAssertionWire,
+        >,
+    ) -> Result<SubmitAccepted> {
+        let mut body = json!({
+            "from": from,
+            "to": to,
+            "amount": amount,
+            "nonce": nonce.to_string(),
+            "transparent_opt_out": true,
+            "transparent_opt_out_reason": "cli",
+            "auth_pubkey": auth_pubkey,
+            "auth_signature": auth_signature,
+        });
+        if let Some(fee) = fee {
+            body["fee"] = json!(fee);
+        }
+        if let Some(proof) = security_key_auth {
+            body["security_key_auth"] = serde_json::to_value(proof)?;
+        }
+        self.request_once("POST", "/transactions/submit", Some(body)).await
+    }
+
+    /// `GET /accounts/{address}/security-key` (`security_key_spend`).
+    pub async fn get_security_key_status(&self, address: &str) -> Result<Value> {
+        self.request_once("GET", &format!("/accounts/{address}/security-key"), None)
+            .await
+    }
+
+    /// `POST /accounts/security-key/actions` (`security_key_spend`).
+    pub async fn submit_security_key_action(&self, payload: Value) -> Result<Value> {
+        self.request_once("POST", "/accounts/security-key/actions", Some(payload))
+            .await
     }
 
     /// Address history is intentionally node-backed. Until the node serves
@@ -1481,6 +1612,23 @@ mod bearer_token_redaction_tests {
 #[cfg(test)]
 mod service_target_tests {
     use super::*;
+
+    #[test]
+    fn parse_transfer_fee_reads_only_an_active_positive_fee() {
+        let active = json!({"transfer_fee": {"active": true, "base_units": "5000"}});
+        assert_eq!(parse_transfer_fee(&active), Some(5_000));
+        let wrapped = json!({"data": {"transfer_fee": {"active": true, "base_units": "5000"}}});
+        assert_eq!(parse_transfer_fee(&wrapped), Some(5_000));
+        for none in [
+            json!({}),
+            json!({"transfer_fee": {"active": false, "base_units": "5000"}}),
+            json!({"transfer_fee": {"active": true, "base_units": "0"}}),
+            json!({"transfer_fee": {"active": true, "base_units": 5000}}),
+            json!({"transfer_fee": {"active": true, "base_units": "-1"}}),
+        ] {
+            assert_eq!(parse_transfer_fee(&none), None, "{none}");
+        }
+    }
     use std::sync::Mutex;
 
     // Env-var tests mutate process state; serialize them.
