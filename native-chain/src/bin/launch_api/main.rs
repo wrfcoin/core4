@@ -6652,6 +6652,40 @@ mod tests {
         );
     }
 
+    /// Advisory governance routes are reachable even though a `/governance`
+    /// scope is registered (a matched scope never falls through), read with
+    /// no token, and refuse a submit while the feature is unscheduled.
+    #[actix_web::test]
+    async fn advisory_governance_routes_are_reachable_and_gated() {
+        let state = test_state(None);
+        let app = test::init_service(App::new().app_data(state.clone()).configure(configure_launch_routes)).await;
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        let data = body.get("data").unwrap_or(&body);
+        assert_eq!(data["total"], 0);
+        assert_eq!(data["feature_active_next_height"], false);
+        assert_eq!(data["limits"]["quorum_min_votes"], 3);
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals/adv-0123456789abcdef").to_request()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals/LAW-001").to_request()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // The legacy scope still answers.
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/proposals").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut tx = wrfcoin_shared_protocol::blockchain::transaction::Transaction::new(Vec::new(), Vec::new());
+        tx.tx_type = wrfcoin_shared_protocol::blockchain::transaction::TransactionType::AdvisoryGovernance;
+        let response = test::call_service(&app, test::TestRequest::post()
+            .uri("/governance/advisory/submit")
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: test-only synthetic bearer fixture, never a deployed credential.
+            .set_json(&tx).to_request()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "unscheduled: FEATURE_NOT_ACTIVE");
+    }
+
     /// Lane C (#3126): the serve/fetch/receipt loop over the real routes —
     /// the export pages carry values that reproduce the signed root, an
     /// ingest naming the server yields a consumer-signed receipt, the server

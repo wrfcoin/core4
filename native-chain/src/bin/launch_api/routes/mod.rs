@@ -4,6 +4,7 @@ pub mod node_fraud;
 pub mod security_key;
 pub mod node_shutdown;
 pub mod send_allowlist;
+pub mod advisory_governance;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -131,6 +132,27 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         // Explicit fallback handlers used when feature families are disabled.
         .route("/cross_chain", web::get().to(chain::cross_chain_feature_disabled))
         .route("/cross_chain/status", web::get().to(chain::cross_chain_feature_disabled))
+        // Advisory governance (`advisory_governance`): signed text proposals
+        // and votes. Separate from the legacy /governance/proposals routes.
+        // Registered BEFORE the /governance scope: a matched scope prefix
+        // never falls through to later top-level routes.
+        .service(
+            web::resource("/governance/advisory/submit")
+                .app_data(web::JsonConfig::default().limit(advisory_governance::MAX_ADVISORY_JSON_BYTES))
+                .route(web::post().to(advisory_governance::submit)),
+        )
+        .route(
+            "/governance/advisory/proposals",
+            web::get().to(advisory_governance::list),
+        )
+        .route(
+            "/governance/advisory/proposals/{id}",
+            web::get().to(advisory_governance::show),
+        )
+        .route(
+            "/governance/advisory/proposals/{id}/eligibility",
+            web::get().to(advisory_governance::eligibility),
+        )
         .service(
             web::scope("/governance")
                 .route("/proposals", web::get().to(governance::list_governance_proposals))

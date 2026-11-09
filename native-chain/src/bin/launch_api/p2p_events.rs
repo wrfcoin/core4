@@ -7626,6 +7626,10 @@ mod tests {
             field!("send_allowlists", |s| field_json(
                 &s.send_allowlists.iter().collect::<Vec<_>>()
             )),
+            // Id-keyed: compared as an ordered entry list.
+            field!("advisory_proposals", |s| field_json(
+                &s.advisory_proposals.iter().collect::<Vec<_>>()
+            )),
         ]
     }
 
@@ -11404,6 +11408,9 @@ mod tests {
             // Producer/applier/WAL parity with a populated policy:
             // native-chain/tests/send_allowlist_parity.rs.
             "send_allowlists",
+            // Producer/applier/WAL parity with populated proposals:
+            // native-chain/tests/advisory_governance_parity.rs.
+            "advisory_proposals",
         ]
         .into_iter()
         .collect();

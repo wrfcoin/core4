@@ -91,6 +91,11 @@ pub enum GovernanceCommands {
     #[clap(hide = true)]
     VotingHistory,
 
+    /// Advisory governance: sign a text-only proposal or a vote (offline),
+    /// submit it, and read proposals. Nothing a proposal says is executed.
+    #[command(subcommand)]
+    Advisory(super::advisory::AdvisoryCommands),
+
     /// Governance-signed upgrade notices (#3094): sign or verify, fully offline
     #[command(subcommand)]
     UpgradeNotice(UpgradeNoticeCommands),
@@ -259,6 +264,9 @@ pub async fn handle_governance_command(command: &GovernanceCommands) -> Result<V
         .into());
     }
     // Offline commands first: they must never need (or touch) the launch API.
+    if let GovernanceCommands::Advisory(action) = command {
+        return super::advisory::handle_advisory_command(action).await;
+    }
     if let GovernanceCommands::UpgradeNotice(action) = command {
         return handle_upgrade_notice(action);
     }
@@ -337,6 +345,7 @@ pub async fn handle_governance_command(command: &GovernanceCommands) -> Result<V
             Ok(json!({ "summary": "Voting history retrieved", "history": result }))
         },
         GovernanceCommands::UpgradeNotice(_)
+        | GovernanceCommands::Advisory(_)
         | GovernanceCommands::ScheduleExtension(_)
         | GovernanceCommands::FaucetPop(_) => {
             unreachable!("handled before the API client")

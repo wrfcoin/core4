@@ -615,6 +615,11 @@ pub const fn value_movement(tx_type: TransactionType) -> ValueMovement {
         // Withdraw return principal to the owner. Guarded in
         // `ApplyNodeBondLifecycle`.
         T::NodeBondLifecycle => V::PerAction,
+        // A proposal debits a 1 WRF deposit that is held and returned only to
+        // the proposer (and kept for good after a failed quorum); a vote moves
+        // nothing. The proposal is refused while a policy is in force, in
+        // `State::apply_advisory_governance`.
+        T::AdvisoryGovernance => V::PerAction,
         // Stake/unstake move spendable <-> locked inside the same account.
         T::Stake | T::Unstake => V::WithinAccount,
         // Spend shielded notes, not the transparent account balance; a note is

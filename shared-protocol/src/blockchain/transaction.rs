@@ -175,6 +175,12 @@ pub enum TransactionType {
     /// append-only index 42. Refused everywhere below the unscheduled
     /// `ConsensusFeature::SendAllowlist` activation.
     SendAllowlist,
+    /// Signed, text-only advisory governance action
+    /// (`governance::advisory::SignedAdvisoryAction` in `data`): propose a
+    /// title + summary, or vote on one. No execution path of any kind.
+    /// Append-only index 43. Refused everywhere below the unscheduled
+    /// `ConsensusFeature::AdvisoryGovernance` activation.
+    AdvisoryGovernance,
 }
 
 impl fmt::Display for TransactionType {
@@ -221,6 +227,7 @@ impl fmt::Display for TransactionType {
             TransactionType::NodeFraudReport => write!(f, "NodeFraudReport"),
             TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
             TransactionType::SendAllowlist => write!(f, "SendAllowlist"),
+            TransactionType::AdvisoryGovernance => write!(f, "AdvisoryGovernance"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
             TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }

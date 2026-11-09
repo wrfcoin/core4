@@ -1234,6 +1234,33 @@ fn build_send_allowlist_action_case() -> Value {
     })
 }
 
+/// Advisory governance (`governance::advisory`): one proposal (the "Welcome to
+/// governance" text, with a newline and a non-ASCII byte so the text encoding
+/// is pinned) and one vote. Shared with the phone signer.
+fn build_advisory_governance_case(seed: u64, action: wrfcoin_shared_protocol::governance::advisory::AdvisoryAction, nonce: u64, tampered: wrfcoin_shared_protocol::governance::advisory::AdvisoryAction, note: &str) -> Value {
+    use wrfcoin_shared_protocol::governance::advisory::advisory_action_message;
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let id = identity();
+    let preimage = advisory_action_message(&id.chain_id, &id.network_id, &account, &action, nonce);
+    let signature = sk.sign(&preimage);
+    let action_json = serde_json::to_value(&action).expect("action serializes");
+    let tampered_json = serde_json::to_value(&tampered).expect("action serializes");
+    json!({
+        "kind": "advisory_governance_action_v2",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.advisory_governance_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": id.chain_id, "network_id": id.network_id, "account": account.to_hex(), "action": action_json, "nonce": nonce },
+        "tampered_input": { "chain_id": id.chain_id, "network_id": id.network_id, "account": account.to_hex(), "action": tampered_json, "nonce": nonce },
+        "tamper_note": note,
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // #3345 / #3347 station owner ledger (owner rulings 2026-09-27). One case per
 // domain tag. Each tampered twin flips a field that decides WHOSE station or
@@ -1576,6 +1603,28 @@ fn build_all_cases() -> Vec<Value> {
     cases.push(build_station_registration_authorization_v2_case());
     cases.push(build_sponsored_send_authorization_case());
     cases.push(build_send_allowlist_action_case());
+    {
+        use wrfcoin_shared_protocol::governance::advisory::{AdvisoryAction, proposal_id};
+        let welcome = |summary: &str| AdvisoryAction::Propose {
+            title: "Welcome to governance".into(),
+            summary: summary.into(),
+        };
+        cases.push(build_advisory_governance_case(
+            900_150,
+            welcome("The first advisory proposal on chain 888.\nIt changes nothing \u{2014} a passed proposal is only recorded."),
+            3,
+            welcome("The first advisory proposal on chain 888.\nIt changes everything."),
+            "summary text changed",
+        ));
+        let id = proposal_id(&Address([0x5A; 20]), 3);
+        cases.push(build_advisory_governance_case(
+            900_151,
+            AdvisoryAction::Vote { proposal_id: id.clone(), approve: true },
+            9,
+            AdvisoryAction::Vote { proposal_id: id, approve: false },
+            "vote for -> against",
+        ));
+    }
     cases
 }
 

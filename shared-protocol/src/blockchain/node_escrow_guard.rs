@@ -79,6 +79,11 @@ impl State {
                 .proposals
                 .get(proposal_id)
                 .is_some_and(|p| self.node_protected_update(&p.update)),
+            // Credits only the proposer's held deposit back.
+            FinalizeAdvisoryProposal { proposal_id, .. } => self
+                .advisory_proposals
+                .get(proposal_id)
+                .is_some_and(|p| protected(&p.proposer)),
             ProcessGovernanceTransaction { tx, .. } | ProcessSlashingReport { tx, .. } => {
                 // Nested typed effects also pass through this guard. Fence the
                 // outer nonce and every parsed account target before dispatch.

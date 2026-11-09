@@ -1094,6 +1094,7 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "node_settlement",
     "node_fraud",
     "send_allowlists",
+    "advisory_proposals",
 ];
 
 /// Global state of the blockchain.
@@ -1522,6 +1523,19 @@ pub struct State {
     #[serde(default)]
     pub send_allowlists:
         BTreeMap<Address, crate::accounts::send_allowlist::AccountSendAllowlist>,
+    /// Advisory proposals (`governance::advisory`), by chain-derived id.
+    /// Written only by the `TransactionType::AdvisoryGovernance` arm of
+    /// `apply_protocol_transaction` (refused below the UNSCHEDULED
+    /// `ConsensusFeature::AdvisoryGovernance` activation) and by
+    /// `FinalizeAdvisoryProposal`, so it is empty on every chain that has not
+    /// scheduled it. While empty it is absent from `state_root_material`, from
+    /// checkpoints (written at the previous format) and from snapshots.
+    /// Separate from `governance.proposals` on purpose: no legacy vote,
+    /// finalize or parameter path reads it. Appended at checkpoint format 17;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub advisory_proposals:
+        BTreeMap<String, crate::governance::advisory::AdvisoryProposal>,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1634,6 +1648,7 @@ impl State {
             node_settlement: None,
             node_fraud: None,
             send_allowlists: BTreeMap::new(),
+            advisory_proposals: BTreeMap::new(),
         }
     }
 
@@ -2570,7 +2585,9 @@ impl State {
                 | TransactionType::SecurityKeyAction
                 // Applied through the same shared sink as Transfer, so producer
                 // == applier == WAL replay. Its arm refuses it pre-activation.
-                | TransactionType::SendAllowlist => {
+                | TransactionType::SendAllowlist
+                // Advisory governance: same shared sink; refused pre-activation.
+                | TransactionType::AdvisoryGovernance => {
                     let transition = StateTransition::ProcessGovernanceTransaction {
                         tx: tx.clone(),
                         current_block,
@@ -2611,6 +2628,15 @@ impl State {
                 current_block,
                 current_timestamp,
             });
+        }
+
+        // Advisory proposals due at this height, in id order. Always empty
+        // before `advisory_governance` activates (the map is empty), so no
+        // transition is added and pre-activation blocks are unchanged.
+        for proposal_id in
+            crate::governance::advisory::due_proposal_ids(&simulated.advisory_proposals, current_block)
+        {
+            transitions.push(StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block });
         }
 
         transitions
@@ -3862,6 +3888,16 @@ impl State {
                     },
                 }
             }
+        }
+
+        // --- advisory_proposals (ConsensusFeature::AdvisoryGovernance) ---
+        //
+        // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
+        // even a tag) while empty, and empty until the unscheduled feature
+        // activates and someone proposes, so every root is byte-identical to
+        // a binary without this field until then.
+        if !self.advisory_proposals.is_empty() {
+            crate::governance::advisory::root_material(&self.advisory_proposals, &mut material);
         }
         material
     }
@@ -5925,6 +5961,9 @@ impl State {
                     },
                 }
             }
+            StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block } => {
+                self.finalize_advisory_proposal(&proposal_id, current_block)?;
+            },
             StateTransition::ApplyStationRegistrarRegistration {
                 station,
                 block_height,
@@ -6652,6 +6691,13 @@ impl State {
         // proposal submission, exactly as the shielded pool did (#2250 review).
         let mut proposal_deposits: u128 = 0;
         for record in self.governance.proposals.values() {
+            proposal_deposits = proposal_deposits
+                .checked_add(record.deposit.into_inner())
+                .ok_or(StateError::ArithmeticOverflow)?;
+        }
+        // Advisory deposits (`advisory_governance`) are the same shape: held
+        // in the record until returned (or for good after a failed quorum).
+        for record in self.advisory_proposals.values() {
             proposal_deposits = proposal_deposits
                 .checked_add(record.deposit.into_inner())
                 .ok_or(StateError::ArithmeticOverflow)?;
@@ -7928,6 +7974,192 @@ impl State {
         }
     }
 
+    /// `TransactionType::AdvisoryGovernance` (`governance::advisory`).
+    ///
+    /// [`Self::advisory_governance_check`] runs every check read-only, then
+    /// this writes its result, so a refused action leaves state untouched
+    /// (assembly drops it; a block carrying it fails apply). The only balance
+    /// this touches is the signer's own: the deposit is debited from
+    /// `tx.sender_address`, which `parse` binds to the payload account, which
+    /// `verify` binds to the signing key.
+    fn apply_advisory_governance(&mut self, tx: &Transaction, current_block: u64) -> Result<(), StateError> {
+        let effect = self.advisory_governance_check(tx, current_block)?;
+        let signer = effect.signer;
+        let next_nonce = effect.next_nonce;
+        let account = self.get_account_mut(&signer).ok_or(StateError::AccountNotFound)?;
+        if let Some(deposit) = effect.deposit {
+            account.spendable_balance =
+                account.spendable_balance.checked_sub(deposit).ok_or(StateError::ArithmeticOverflow)?;
+            account.balance = account.balance.checked_sub(deposit).ok_or(StateError::ArithmeticOverflow)?;
+        }
+        account.nonce = next_nonce;
+        self.advisory_proposals.insert(effect.proposal.id.clone(), effect.proposal);
+        Ok(())
+    }
+
+    /// Every consensus check of an advisory action at `current_block`,
+    /// read-only, returning what applying it would write. The node's submit
+    /// route calls this for an advisory dry run at tip + 1; consensus calls
+    /// it from the apply arm, so both always agree.
+    pub fn advisory_governance_check(
+        &self,
+        tx: &Transaction,
+        current_block: u64,
+    ) -> Result<crate::governance::advisory::AdvisoryEffect, StateError> {
+        use crate::governance::advisory::{
+            self as advisory, AdvisoryAction, AdvisoryEffect, AdvisoryProposal, AdvisoryStatus,
+            SignedAdvisoryAction,
+        };
+        fn refuse(message: impl std::fmt::Display) -> StateError {
+            StateError::Governance(format!("SP_ADVISORY_GOVERNANCE_REFUSED: {message}"))
+        }
+        if !crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::AdvisoryGovernance,
+            current_block,
+        ) {
+            return Err(StateError::InvalidTransition);
+        }
+        let signed = SignedAdvisoryAction::parse(tx).ok_or_else(|| {
+            StateError::Governance("SP_ADVISORY_GOVERNANCE_PAYLOAD_INVALID: invalid advisory payload".to_string())
+        })?;
+        let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        signed.verify(&identity.chain_id, &identity.network_id).map_err(refuse)?;
+        let signer = signed.account;
+
+        // Strict nonce: the account must exist and the signed nonce (equal to
+        // `tx.nonce` by `parse`) must be its current nonce. Not the
+        // height-gated `check_and_reserve_nonce`, which skips absent accounts.
+        let account = self.accounts.get(&signer).ok_or_else(|| refuse("unknown account"))?;
+        if signed.nonce != account.nonce {
+            return Err(StateError::InvalidNonce);
+        }
+        let next_nonce = account.nonce.checked_add(1).ok_or(StateError::NonceOverflow)?;
+
+        match signed.action {
+            AdvisoryAction::Propose { title, summary } => {
+                let id = advisory::proposal_id(&signer, signed.nonce);
+                if self.advisory_proposals.contains_key(&id) {
+                    return Err(refuse("proposal id already used"));
+                }
+                let (active, mine) = advisory::active_counts(&self.advisory_proposals, &signer);
+                if mine >= advisory::MAX_ACTIVE_PER_PROPOSER {
+                    return Err(refuse("this wallet already has an active proposal"));
+                }
+                if active >= advisory::MAX_ACTIVE_PROPOSALS {
+                    return Err(refuse("the chain already has the maximum number of active proposals"));
+                }
+                // The deposit is a debit: an account whose spends are guarded
+                // (send allowlist in force, security-key rule in force) cannot
+                // pay it from this path.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &signer, current_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &signer, "an advisory proposal deposit", current_block,
+                    )));
+                }
+                if self
+                    .authorization_declarations
+                    .get(&signer)
+                    .and_then(crate::accounts::security_key::stored_policy)
+                    .is_some_and(|policy| policy.enforced_at(current_block))
+                {
+                    return Err(refuse("accounts with a security key cannot pay a proposal deposit yet"));
+                }
+                let deposit = Balance::new(u128::from(advisory::ADVISORY_DEPOSIT));
+                if account.spendable_balance < deposit || account.balance < deposit {
+                    return Err(StateError::InsufficientSpendableBalance);
+                }
+                let voting_deadline = current_block
+                    .checked_add(advisory::ADVISORY_VOTING_PERIOD_BLOCKS)
+                    .ok_or(StateError::ArithmeticOverflow)?;
+                // Electorate snapshot: the state immediately before this
+                // transaction applies. Bond escrows and the faucet sink hold
+                // no key and are excluded.
+                let eligible_voters = self.advisory_electorate_snapshot(current_block);
+                let eligible_count = eligible_voters.len() as u64;
+                Ok(AdvisoryEffect {
+                    signer,
+                    next_nonce,
+                    deposit: Some(deposit),
+                    proposal: AdvisoryProposal {
+                        id,
+                        proposer: signer,
+                        title,
+                        summary,
+                        created_at_block: current_block,
+                        voting_deadline,
+                        deposit,
+                        eligible_voters,
+                        eligible_count,
+                        votes: BTreeMap::new(),
+                        yes_votes: 0,
+                        no_votes: 0,
+                        status: AdvisoryStatus::Active,
+                        finalized_at_block: None,
+                    },
+                })
+            },
+            AdvisoryAction::Vote { proposal_id, approve } => {
+                let mut proposal =
+                    self.advisory_proposals.get(&proposal_id).cloned().ok_or_else(|| refuse("unknown proposal"))?;
+                advisory::record_vote(&mut proposal, &signer, approve, current_block).map_err(refuse)?;
+                Ok(AdvisoryEffect { signer, next_nonce, deposit: None, proposal })
+            },
+        }
+    }
+
+    /// Wallets whose spendable balance is at least 1 WRF now, minus bond
+    /// escrows and the faucet sink. Deterministic: a pure function of state
+    /// and height, collected into a sorted set.
+    fn advisory_electorate_snapshot(&self, height: u64) -> BTreeSet<Address> {
+        let minimum = Balance::new(u128::from(crate::governance::advisory::MIN_VOTER_SPENDABLE));
+        let faucet = crate::crypto::chain_binding::resolve_faucet_sink(
+            self.genesis_emission_config.as_ref(),
+            height,
+            crate::crypto::chain_binding::LEGACY_FAUCET_BINDINGS,
+            crate::crypto::chain_binding::feature_active,
+        );
+        let escrows: BTreeSet<Address> = self
+            .node_bond_registry
+            .as_ref()
+            .map(|registry| registry.registrations.values().map(|r| r.binding.escrow_account).collect())
+            .unwrap_or_default();
+        self.accounts
+            .iter()
+            .filter(|(address, account)| {
+                account.spendable_balance >= minimum && Some(**address) != faucet && !escrows.contains(*address)
+            })
+            .map(|(address, _)| *address)
+            .collect()
+    }
+
+    /// `StateTransition::FinalizeAdvisoryProposal`. Records the outcome and,
+    /// for a decided proposal, credits exactly the held deposit back to the
+    /// proposer. Nothing else: no parameter, no law, no other account.
+    fn finalize_advisory_proposal(&mut self, proposal_id: &str, current_block: u64) -> Result<(), StateError> {
+        let mut proposal = self
+            .advisory_proposals
+            .get(proposal_id)
+            .cloned()
+            .ok_or_else(|| StateError::Governance("advisory proposal not found".to_string()))?;
+        let refund = crate::governance::advisory::finalize(&mut proposal, current_block)
+            .map_err(StateError::Governance)?;
+        if refund > Balance::new(0) {
+            // A proposer account that no longer exists (moved by recovery)
+            // keeps the deposit held rather than minting a new account.
+            if let Some(account) = self.accounts.get_mut(&proposal.proposer) {
+                let balance = account.balance.checked_add(refund);
+                let spendable = account.spendable_balance.checked_add(refund);
+                if let (Some(balance), Some(spendable)) = (balance, spendable) {
+                    account.balance = balance;
+                    account.spendable_balance = spendable;
+                    proposal.deposit = Balance::new(0);
+                }
+            }
+        }
+        self.advisory_proposals.insert(proposal_id.to_string(), proposal);
+        Ok(())
+    }
+
     fn apply_protocol_transaction(
         &mut self,
         tx: &Transaction,
@@ -7961,6 +8193,9 @@ impl State {
                 )
                 .map_err(|e| StateError::Governance(format!("SP_SEND_ALLOWLIST_ACTION_REFUSED: {e}")))
             },
+            // Signed advisory proposal or vote. Refused below the unscheduled
+            // activation, so `advisory_proposals` stays empty there.
+            TransactionType::AdvisoryGovernance => self.apply_advisory_governance(tx, current_block),
             TransactionType::Transfer => {
                 let payload = tx.parse_transparent_transfer_payload().ok_or_else(|| {
                     StateError::Privacy(
@@ -10999,6 +11234,15 @@ pub enum StateTransition {
         station: WeatherStation,
         block_height: u64,
     },
+    /// `advisory_governance`: record the outcome of an advisory proposal whose
+    /// voting period has ended, and return its deposit unless it failed
+    /// quorum. Emitted by `governance_transitions_for_block` only; never
+    /// executes anything. APPENDED LAST (bincode is positional) and never
+    /// emitted while the feature is inactive (the map is empty).
+    FinalizeAdvisoryProposal {
+        proposal_id: String,
+        current_block: u64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
@@ -11169,7 +11413,8 @@ mod tests {
             | TransactionType::RewardClaim
             | TransactionType::SlashingReport
             | TransactionType::SecurityKeyAction
-            | TransactionType::SendAllowlist => ProtocolDispatchIntent::AppliesState,
+            | TransactionType::SendAllowlist
+            | TransactionType::AdvisoryGovernance => ProtocolDispatchIntent::AppliesState,
             TransactionType::Regular
             | TransactionType::Coinbase
             | TransactionType::Stake
@@ -21485,6 +21730,7 @@ mod tests {
     "node_settlement",
     "node_fraud",
     "send_allowlists",
+    "advisory_proposals",
         ];
 
         let actual = State::state_root_material_field_names();
