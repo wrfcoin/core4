@@ -1,5 +1,23 @@
 # GitHub Actions Workflow Justification
 
+## Nightly checks restored — 2026-11-05 (Refs #125)
+
+The August budget parking no longer applies to these six: the repo is public, and they run on
+`ubuntu-latest`, so hosted minutes are free. No self-hosted runner is involved. This section supersedes
+the older trigger descriptions below for them. PR triggers are unchanged.
+
+| Workflow | Schedule (UTC) | Why |
+|---|---|---|
+| `supply-chain-security.yml` | daily 05:07 | jobs capped at 15 min; advisories appear without a commit |
+| `sbom-generate.yml` | daily 05:23 | under 30 min; the scan picks up new advisories |
+| `loom.yml` | daily 05:41 | under 30 min; only CI home for the loom models |
+| `kani.yml` | daily 06:13 | proofs take about a minute; setup is most of the job |
+| `fuzz-nightly.yml` | daily 07:07 | 15 min per target; largest matrix, so last |
+| `miri.yml` | daily 08:17 | both legs together measured 12 min; after fuzz |
+
+They start after the 02:00-04:45 block of existing nightlies and off the hour, when GitHub delays
+scheduled runs least. Each cargo-heavy job frees unused preinstalled toolchains first.
+
 ## Owner relevance and nightly ruling — 2026-10-07 (Refs #2498)
 
 This section supersedes the historical trigger rows below for the 16 workflows listed here.
