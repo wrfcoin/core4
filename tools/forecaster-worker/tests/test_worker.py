@@ -18,7 +18,7 @@ from forecaster_worker.worker import Config, run_cycle  # noqa: E402
 
 # The shared cross-wallet vector (frontend contract-fixtures/wallet-key-scheme-vector.json).
 PHRASE = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-PUBKEY = "e96b1c6b8769fdb0b34fbecfdf85c33b053cecad9517e1ab88cba614335775c1"
+PUBKEY = "e96b1c6b8769fdb0b34fbecfdf85c33b053cecad9517e1ab88cba614335775c1"  # pragma: allowlist secret -- public key of the published wallet test vector
 ADDRESS = "0x3f995ceb27e8177077dbed8b1e4f696af74da492"
 STATION = "PWS-TEST-0001"
 T = 1_794_000_000
@@ -28,14 +28,14 @@ FIXTURE = ROOT / "tests" / "fixtures" / "gfs_point_box.grib2"
 class Ed25519Test(unittest.TestCase):
     def test_rfc8032_vectors(self):
         vectors = [
-            ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
-             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
-             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46b"
-             "d25bf5f0595bbe24655141438e7a100b"),
-            ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
-             "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
-             "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c"
-             "387b2eaeb4302aeeb00d291612bb0c00"),
+            ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",  # pragma: allowlist secret -- published RFC 8032 test vector
+             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",  # pragma: allowlist secret -- published RFC 8032 test vector
+             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46b"  # pragma: allowlist secret -- published RFC 8032 test vector
+             "d25bf5f0595bbe24655141438e7a100b"),  # pragma: allowlist secret -- published RFC 8032 test vector
+            ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",  # pragma: allowlist secret -- published RFC 8032 test vector
+             "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",  # pragma: allowlist secret -- published RFC 8032 test vector
+             "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c"  # pragma: allowlist secret -- published RFC 8032 test vector
+             "387b2eaeb4302aeeb00d291612bb0c00"),  # pragma: allowlist secret -- published RFC 8032 test vector
         ]
         for seed, pub, message, signature in vectors:
             seed, message = bytes.fromhex(seed), bytes.fromhex(message)

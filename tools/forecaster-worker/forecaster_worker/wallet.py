@@ -18,7 +18,7 @@ from . import ed25519
 
 PHRASE_FILE = "wallet-phrase.txt"
 _WORDS_PATH = Path(__file__).with_name("bip39_english.txt")
-WORDLIST_SHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"
+WORDLIST_SHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"  # pragma: allowlist secret -- public checksum of the BIP-39 word list
 
 
 def wordlist() -> list[str]:
