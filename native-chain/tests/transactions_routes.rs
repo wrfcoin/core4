@@ -712,6 +712,14 @@ async fn forecast_routes_bind_the_forecaster_to_the_bearer_wallet() {
             Some(code) => {
                 let error: serde_json::Value = test::read_body_json(resp).await;
                 assert!(error.to_string().contains(code), "{label}: {error}");
+                if code == "FORECASTER_BEARER_UNBOUND" {
+                    // The hint must point at the key-signed relay and warn that a wallet
+                    // claim on a shared Contributor token merges every contributor into
+                    // one Sybil identity (8-station cap), never just say "bind it".
+                    let text = error.to_string();
+                    assert!(text.contains("auth_signature"), "{label}: {error}");
+                    assert!(text.contains("one identity") && text.contains("8 stations"), "{label}: {error}");
+                }
                 assert_eq!(enqueued, 0, "{label} must not enqueue");
             },
         }

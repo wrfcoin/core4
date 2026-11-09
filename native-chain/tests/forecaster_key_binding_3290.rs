@@ -265,7 +265,7 @@ fn binding_predicate_matches_the_issue_probe() {
 }
 
 #[test]
-fn feature_is_registered_but_unscheduled_and_not_live_schedulable() {
+fn feature_is_registered_unscheduled_and_live_schedulable() {
     let feature = ConsensusFeature::ForecasterKeyBinding;
     assert_eq!(ConsensusFeature::parse(FEATURE), Some(feature));
     // Appended right after node_share_settlement; #3565's DeviceSubmissionLimit was
@@ -278,13 +278,15 @@ fn feature_is_registered_but_unscheduled_and_not_live_schedulable() {
     assert!(
         wrfcoin_shared_protocol::crypto::protocol_support::KNOWN_FEATURES.contains(&FEATURE)
     );
-    assert!(!feature.schedulable(None));
-    assert!(!feature.schedulable(Some("synthetic-genesis")));
+    // The binary accepts a live schedule naming it on any chain
+    // instance; it is still in no genesis or default schedule, and
+    // scheduling is the owner's signature only.
+    assert!(feature.schedulable(None));
+    assert!(feature.schedulable(Some("synthetic-genesis")));
     assert!(feature.has_behaviour());
-    // Wire ordinal 31 is reserved (no feature), so entries after it sit one
-    // ordinal past their index.
+    // Every feature's wire ordinal is its index in `ALL`.
     for (index, f) in ConsensusFeature::ALL.iter().enumerate() {
-        let ordinal = if index < 31 { index } else { index + 1 } as u32;
+        let ordinal = index as u32;
         assert_eq!(bincode::serialize(f).unwrap(), ordinal.to_le_bytes());
     }
 }

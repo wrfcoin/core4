@@ -115,6 +115,19 @@ pub enum BondCommands {
         #[clap(long)]
         out: PathBuf,
     },
+    /// Admission service: check a Deposit/Update that names a pinned bond
+    /// admission key as co-signer (`bond_admission_key`), and with --key-file
+    /// co-sign it. A software key file is accepted on testnet only. Offline.
+    Admit(super::node_bond_admit::AdmitArgs),
+    /// Node side: bind this node's peer id and public P2P address to a packet
+    /// for the admission service (peer-identity signature). Offline.
+    AdmissionRequest(super::node_bond_admit::AdmissionRequestArgs),
+    /// Dial a P2P address ending in /p2p/<peer id> and ask the keyless
+    /// bonded-fetch Info: proves the node answers there. Sends no key or token.
+    Probe {
+        #[clap(long)]
+        addr: String,
+    },
     /// Submit a fully signed registration and 250 WRF bond deposit.
     RegisterBond {
         #[clap(long)]
@@ -152,7 +165,7 @@ pub enum BondCommands {
     },
 }
 
-fn read_transaction(path: &Path) -> Result<Transaction> {
+pub(crate) fn read_transaction(path: &Path) -> Result<Transaction> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(40 * 1024 + 1)
@@ -402,6 +415,15 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
     if let BondCommands::Update(args) = command {
         return super::node_bond_update::handle(args).await;
     }
+    if let BondCommands::Admit(args) = command {
+        return super::node_bond_admit::handle_admit(args).await;
+    }
+    if let BondCommands::AdmissionRequest(args) = command {
+        return super::node_bond_admit::handle_request(args).await;
+    }
+    if let BondCommands::Probe { addr } = command {
+        return super::snapshot::probe_info(addr).await;
+    }
     if let BondCommands::PayoutChallenge { transaction_file, chain_id, network_id } = command {
         let tx = read_transaction(transaction_file)?;
         let p = NodeBondLifecycle::parse(&tx)
@@ -526,6 +548,9 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         BondCommands::Sign { .. }
         | BondCommands::Deposit(_)
         | BondCommands::Update(_)
+        | BondCommands::Admit(_)
+        | BondCommands::AdmissionRequest(_)
+        | BondCommands::Probe { .. }
         | BondCommands::KeyInfo { .. }
         | BondCommands::GrantRequest { .. }
         | BondCommands::PayoutChallenge { .. }

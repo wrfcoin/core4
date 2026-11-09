@@ -57,7 +57,7 @@ zeroize = { version = "1", features = ["serde"] }
 hsm = ["wrfcoin-shared-protocol/hsm"]
 
 [dev-dependencies]
-wrfcoin-shared-protocol = { path = "../../../shared-protocol", features = ["integration-guard", "test-support"] }
+wrfcoin-shared-protocol = { path = "../../../shared-protocol", features = ["integration-guard", "test-support", "consensus-test-hooks"] }
 mockito = "0.32"
 
 [[bin]]

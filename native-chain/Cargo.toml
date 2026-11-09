@@ -125,7 +125,7 @@ panic-drill = ["p2p"]
 light-node = ["dep:reqwest"]
 
 [dev-dependencies]
-wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard", "test-support"] }
+wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["integration-guard", "test-support", "node-service-guard-test-switch", "consensus-test-hooks"] }
 wrfcoin_cli = { path = "../tools/cli/WrfcoinCLI" }
 tempfile = "3"
 fastrand = "2.0"

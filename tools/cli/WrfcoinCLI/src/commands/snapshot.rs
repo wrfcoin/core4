@@ -137,6 +137,32 @@ fn p2p_from(from: &str) -> Result<Option<libp2p::Multiaddr>> {
     Ok(Some(addr))
 }
 
+/// Dial a node's P2P address (it must end in `/p2p/<peer id>`) and ask the
+/// keyless bonded-fetch `Info`. The Noise handshake proves that the holder of
+/// that peer id answers at that address. Sends no key, token or authorization.
+pub(crate) async fn probe_info(addr: &str) -> Result<Value> {
+    let addr = p2p_from(addr)?.ok_or_else(|| user_error("expected a P2P multiaddr ending in /p2p/<peer id>"))?;
+    let mut client = bonded_fetch::client::BondedFetchClient::connect(addr.clone(), P2P_CONNECT_TIMEOUT)
+        .await
+        .map_err(user_error)?;
+    let peer_id = client.server_peer_id().to_string();
+    match client.call(BondedFetchRequest::Info).await.map_err(user_error)? {
+        BondedFetchResponse::Info { chain_id, network_id, genesis_hash, service_id } => Ok(json!({
+            "reachable": true,
+            "address": addr.to_string(),
+            "peer_id": peer_id,
+            "chain_id": chain_id,
+            "network_id": network_id,
+            "genesis_hash": genesis_hash,
+            "service_id": service_id,
+        })),
+        BondedFetchResponse::Error { code, message, .. } => {
+            Err(user_error(format!("P2P server refused info: {code}: {message}")))
+        },
+        _ => Err(unexpected("info")),
+    }
+}
+
 /// How long to wait for the P2P server's Noise handshake.
 const P2P_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Busy / rate-limited answers are retried this many times, honoring the

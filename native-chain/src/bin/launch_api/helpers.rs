@@ -441,8 +441,12 @@ pub fn require_forecaster_bound_to_bearer(
             req,
             StatusCode::FORBIDDEN,
             "FORECASTER_BEARER_UNBOUND",
-            "forecast submissions are wallet-scoped: this bearer carries no wallet claim \
-             (bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS to the token, or use an operator bearer)",
+            "forecast submissions are wallet-scoped: this bearer carries no wallet claim. \
+             Sign the forecast with the forecaster's own key (auth_pubkey and auth_signature), \
+             or use an operator bearer. Bind WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS only on a \
+             Contributor token that serves that one wallet: on a token shared by many \
+             contributors (a backend relaying phones) it makes them all one identity, \
+             capped at 8 stations by default",
         )),
     }
 }
@@ -1333,6 +1337,43 @@ impl GossipPropagation {
             error: None,
         }
     }
+}
+
+/// The answer to a node-service re-post whose payload is already pending: success, and the pending
+/// copy goes out again, so a gossip that was dropped the first time recovers. The transport skips a
+/// repeat of the same bytes inside its 60 s duplicate window, so this is for re-posts after that.
+pub(crate) fn node_tx_already_pending(
+    state: &web::Data<AppState>,
+    submitted: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+    pending: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+) -> HttpResponse {
+    #[cfg(feature = "p2p")]
+    if let Some(ref p2p) = state.p2p {
+        queue_transaction_gossip(
+            &p2p.command_tx,
+            bincode::serialize(pending).map_err(|error| error.to_string()),
+            &state.tx_gossip_backpressure_streak,
+        );
+    }
+    #[cfg(not(feature = "p2p"))]
+    let _ = state;
+    HttpResponse::Accepted().json(serde_json::json!({
+        "tx_id": submitted.id.map(|id| id.to_hex()),
+        "pending_tx_id": pending.id.map(|id| id.to_hex()),
+        "admitted": true,
+        "included": false,
+        "duplicate": true,
+    }))
+}
+
+/// The pending copy with exactly this transaction's bytes, if any.
+pub(crate) async fn exact_pending_node_tx(
+    state: &web::Data<AppState>,
+    tx: &wrfcoin_native_chain::blockchain::transaction::Transaction,
+) -> Option<std::sync::Arc<wrfcoin_native_chain::blockchain::transaction::Transaction>> {
+    let id = tx.id?;
+    let pending = state.mempool.read().await.get_transaction(&id)?;
+    (pending.calculate_hash() == tx.calculate_hash()).then_some(pending)
 }
 
 #[cfg(feature = "p2p")]
