@@ -14,7 +14,9 @@
 //!   Every listed forecast must be recorded, unscored and of the attested
 //!   commit block (`check_admissible_score`, read-only). The transaction's one
 //!   input must be the outpoint derived from the signed payload, so the pool
-//!   holds one transaction per signed payload (mempool admission).
+//!   holds one transaction per signed payload (mempool admission); a score
+//!   with more valid signatures replaces a pending one with fewer, and an
+//!   equal or smaller signer set is answered 409 before any signature work.
 //!   Apply is the only authority (quorum, timing, bucket and cited readings);
 //!   a score that does not apply is dropped at assembly and removed from that
 //!   producer's mempool. Each token may submit at most
@@ -153,6 +155,14 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
         if pool.check_transaction_admission_cost(&tx).is_err() {
             return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", "admission cost refused");
         }
+        // The same signed payload already pending: only a strict superset of
+        // its signers may replace it (mempool policy), so an equal or weaker
+        // carrier is answered here, before any signature work.
+        let identity = ChainIdentity::active();
+        let outpoint = late::score_outpoint(&identity.chain_id, &identity.network_id, &payload);
+        if let Err(error) = pool.forecast_score_replaces(&payload, &outpoint) {
+            return envelope_error(&req, StatusCode::CONFLICT, "ALREADY_PENDING", error.to_string());
+        }
     }
     // Read-only signer checks at the tip, before the pool is touched: every
     // signer in the oracle set, every signature verifying through the
@@ -167,6 +177,12 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                 late::ForecastLateScoreError::UnauthorizedOracle.to_string(),
             );
         }
+        // Every listed forecast recorded, unscored and of the attested commit
+        // block: read-only, not a consensus rule (apply skips unknown and
+        // scored ones so racing relays do not fail each other).
+        if let Err(error) = chain.state.forecast_late_score.check_admissible_score(&payload) {
+            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
+        }
         let identity = ChainIdentity::active();
         if let Err(error) = payload.verify_registered_signers(
             &identity.chain_id,
@@ -174,12 +190,6 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             &chain.state.signing_keys,
             tx.timestamp.timestamp(),
         ) {
-            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
-        }
-        // Every listed forecast recorded, unscored and of the attested commit
-        // block: read-only, not a consensus rule (apply skips unknown and
-        // scored ones so racing relays do not fail each other).
-        if let Err(error) = chain.state.forecast_late_score.check_admissible_score(&payload) {
             return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
         }
         (chain.state.signing_keys.clone(), payload.signatures.len() < chain.state.oracle_quorum.max(1))

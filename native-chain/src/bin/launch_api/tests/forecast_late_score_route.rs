@@ -260,8 +260,17 @@ mod tests {
         rewrapped.timestamp += chrono::Duration::seconds(7);
         rewrapped.set_id();
         let (status, body) = post!(&app, &rewrapped);
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert!(body.to_string().contains("SP_FORECAST_LATE_SCORE_DUPLICATE"), "{body}");
+        // The below-quorum score for "g" is replaced by one with more valid
+        // signatures over the same payload.
+        let weak_g = relay_tx(&payload_for(&[&oracle(0x21)], false, "g"));
+        let strong_g = relay_tx(&payload_for(&[&oracle(0x21), &oracle(0x22)], false, "g"));
+        let (status, body) = post!(&app, &strong_g);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let pending = server.mempool.read().await;
+        assert!(!pending.contains(&weak_g.id.unwrap()) && pending.contains(&strong_g.id.unwrap()));
+        drop(pending);
         // A forecast that is not recorded, or already scored, is refused.
         let (status, body) = post!(&app, &relay_tx(&payload_for(&[&oracle(0x21), &oracle(0x22)], false, "zz")));
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
