@@ -1061,6 +1061,10 @@
       "target": "advisory_governance_parity"
     },
     {
+      "package": "wrfcoin-native-chain",
+      "target": "forecast_late_score_parity"
+    },
+    {
       "package": "wrfcoin-shared-protocol",
       "target": "advisory_governance"
     },
