@@ -2060,4 +2060,126 @@ mod tests {
         let distinct: std::collections::BTreeSet<&Vec<u8>> = seen.iter().collect();
         assert_eq!(distinct.len(), seen.len());
     }
+
+    // ---- track record (pay eligibility over the last scored forecasts) ----
+
+    const OWNER: u8 = 0xEE;
+    /// Window values of every round: `last` and the mean, far apart so a
+    /// forecast near `last` is never a mean copy.
+    const LAST: i64 = 2_000;
+    const MEAN: i64 = 1_500;
+    const REFERENCE: u64 = 100;
+
+    /// One full bucket round for each `(forecaster, value)`: commit, stamp,
+    /// reveal, score against `truth`, close. Returns what the close paid,
+    /// by forecaster byte. Round `round` uses its own commit block and hour.
+    fn play_round(
+        state: &mut ForecastLateScoreState,
+        round: u64,
+        forecasts: &[(u8, i64)],
+        truth: i64,
+    ) -> Vec<(u8, u128)> {
+        let height = 10 + round * 10;
+        let commit_time = 1_000_000 + i64::try_from(round).unwrap() * 200_000;
+        let ids: Vec<String> = forecasts
+            .iter()
+            .map(|(f, _)| format!("r{round:04}-f{f:02x}"))
+            .collect();
+        for ((f, _), id) in forecasts.iter().zip(&ids) {
+            state.note_commit(id, addr(*f), height, height + 5);
+        }
+        state.close_due(height, commit_time, |_| Some(addr(OWNER)));
+        for ((_, value), id) in forecasts.iter().zip(&ids) {
+            let payload: RevealPayload = serde_json::from_value(serde_json::json!({
+                "commit_id": id,
+                "station_id": "st-1",
+                "timestamp": commit_time,
+                "contribution_type": "forecast",
+                "data": { "temp_c_centi": value },
+                "nonce": "n",
+                "manifest": {
+                    "schema_version": 1,
+                    "model_id": "m",
+                    "input_hash": "11".repeat(32),
+                    "output_hash": "22".repeat(32),
+                    "produced_at": commit_time,
+                    "region": "st-1",
+                    "horizon_hours": 6,
+                    "input_variables": ["temp_c"],
+                    "output_variables": ["temp_c"],
+                },
+            }))
+            .expect("reveal payload");
+            assert!(state.note_reveal(&payload, height + 1, commit_time + 77, Some(addr(OWNER))));
+        }
+        let target = commit_time + 6 * SECS_PER_HOUR;
+        let mut sorted = ids.clone();
+        sorted.sort();
+        let payload = ForecastScorePayload {
+            attestation: ObservationAttestation {
+                station_id: "st-1".into(),
+                variable: LateScoreVariable::TemperatureC,
+                lead_hours: 6,
+                commit_height: height,
+                commit_time,
+                target,
+                truth,
+                truth_commit_id: "truth".into(),
+                reference: REFERENCE,
+                mean24: MEAN,
+                last: LAST,
+                window_hash: "5a".repeat(32),
+                window_commit_ids: vec!["w1".into()],
+            },
+            signatures: Vec::new(),
+            forecast_commit_ids: sorted,
+        };
+        state
+            .apply_score(&payload, "digest", target + SECS_PER_HOUR)
+            .expect("scored");
+        let hour = bucket_hour(target).unwrap();
+        state
+            .close_due(height + 3, bucket_closes_at(hour), |_| Some(addr(OWNER)))
+            .into_iter()
+            .map(|award| (award.forecaster.0[0], award.amount))
+            .collect()
+    }
+
+    /// A forecaster at `last + 10` (one step above the last reading) whose
+    /// errors give, per three rounds, skills +400_000, +400_000 and a loss
+    /// of three references (signed −1_000_000 after the floor): a positive
+    /// skill in two buckets of three, but a negative sum over any 20.
+    fn step_truth(round: u64) -> i64 {
+        let forecast = LAST + 10;
+        if round % 3 == 2 { forecast + 300 } else { forecast + 60 }
+    }
+
+    #[test]
+    fn a_positive_bucket_skill_with_a_non_positive_record_is_not_paid() {
+        let mut state = ForecastLateScoreState::default();
+        let mut paid_rounds = Vec::new();
+        for round in 0..40 {
+            let paid = play_round(&mut state, round, &[(1, LAST + 10)], step_truth(round));
+            if !paid.is_empty() {
+                paid_rounds.push(round);
+            }
+        }
+        assert_eq!(
+            paid_rounds,
+            Vec::<u64>::new(),
+            "each winning bucket has a positive skill, but no window of 20 has a positive sum"
+        );
+    }
+
+    #[test]
+    fn fewer_than_twenty_scored_forecasts_are_not_paid() {
+        let mut state = ForecastLateScoreState::default();
+        for round in 0..19 {
+            // Error 20: skill 800_000 every time.
+            let paid = play_round(&mut state, round, &[(2, LAST + 10)], LAST + 30);
+            assert!(paid.is_empty(), "round {round}: only {} scored forecasts", round + 1);
+        }
+        let paid = play_round(&mut state, 19, &[(2, LAST + 10)], LAST + 30);
+        assert_eq!(paid.len(), 1, "the 20th scored forecast completes the record");
+    }
 }
