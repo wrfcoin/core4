@@ -546,9 +546,9 @@ fn forecast_late_score_end_to_end() {
     )
     .unwrap_err();
     assert!(err.contains("not an authorized oracle"), "{err}");
-    let mut junk = relay_tx(&admission_probe);
-    junk.data = Some("{\"attestation\":1}".to_string());
-    let err = admit(junk, ACTIVE).unwrap_err();
+    let mut malformed = relay_tx(&admission_probe);
+    malformed.data = Some("{\"attestation\":1}".to_string());
+    let err = admit(malformed, ACTIVE).unwrap_err();
     assert!(err.contains("SP_FORECAST_LATE_SCORE_PAYLOAD"), "{err}");
 
     let owner = key(0x01);

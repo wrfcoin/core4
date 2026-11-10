@@ -16148,7 +16148,7 @@ mod station_registration_admission_tests {
         const HEIGHT: u64 = 3_000;
         let key = |seed: u8| PrivateKey::from_bytes(&[seed; 32]).unwrap();
         let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
-        let (o1, o2, retired) = (key(0x31), key(0x32), key(0x39));
+        let (o1, o2, outsider) = (key(0x31), key(0x32), key(0x39));
         let attestation = ObservationAttestation {
             station_id: "st-gossip".into(),
             variable: LateScoreVariable::TemperatureC,
@@ -16195,9 +16195,9 @@ mod station_registration_admission_tests {
             tx.set_id();
             tx
         };
-        // The retired identity still holds an Oracle key in the registry.
+        // All three keys are registered; only o1 and o2 are in the oracle set.
         let mut keys = SigningKeyRegistry::default();
-        for k in [&o1, &o2, &retired] {
+        for k in [&o1, &o2, &outsider] {
             keys.ensure_legacy_identity_key(&id(k), SigningRole::Oracle, 0).unwrap();
         }
         let mut state = wrfcoin_native_chain::blockchain::state::State::new();
@@ -16218,7 +16218,7 @@ mod station_registration_admission_tests {
             },
         );
         let pending = score(&[&o1, &o2]);
-        let superset = score(&[&o1, &o2, &retired]);
+        let superset = score(&[&o1, &o2, &outsider]);
         let mut pool = Mempool::new(&Config::default());
         if let Err(e) = Mempool::new(&Config::default())
             .add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT))
@@ -16238,18 +16238,18 @@ mod station_registration_admission_tests {
         assert!(pool.contains(&pending.id.unwrap()), "the pending score stays");
         assert!(!pool.contains(&superset.id.unwrap()));
         assert_eq!(pool.size(), 1);
-        // Without the set check the pool alone would take it (its registry
-        // check passes for the retired identity): the filter is what stops it.
+        // The pool checks signatures against the registry only; the oracle-set
+        // requirement is enforced by the gossip filter.
         let mut bare = Mempool::new(&Config::default());
         bare.add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT)).unwrap();
         bare.add_transaction_with_signing_keys_at_height(superset.clone(), Some(&keys), Some(HEIGHT))
-            .expect("the registry alone authorizes the retired identity");
+            .expect("the pool checks signatures against the registry only");
     }
 
-    /// What an oracle-set change does to the signing-key registry: an
-    /// identity removed from the set KEEPS its Oracle role and key.
+    /// Gossip ingest admits a score only from signers in the current oracle set,
+    /// so membership is read from the set after every SetOracleConfig.
     #[test]
-    fn an_identity_removed_from_the_oracle_set_keeps_its_registry_role() {
+    fn forecast_score_gossip_requires_current_oracle_set_membership() {
         use wrfcoin_native_chain::blockchain::state::StateTransition;
         use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
         use wrfcoin_shared_protocol::security::key_registry::SigningRole;
@@ -16271,9 +16271,11 @@ mod station_registration_admission_tests {
                 oracle_quorum: 2,
             })
             .unwrap();
-        assert!(!state.oracle_set.contains(&c), "c left the set");
-        let keeps_role = state.signing_keys.has_identity_role(&c, SigningRole::Oracle);
-        assert!(keeps_role, "c still holds its Oracle role in the registry");
+        assert!(state.oracle_set.contains(&a) && state.oracle_set.contains(&b));
+        assert!(
+            !state.oracle_set.contains(&c),
+            "gossip ingest refuses a signer outside the current oracle set"
+        );
     }
 
     /// Every non-test caller of the registry-checked admission path in this
