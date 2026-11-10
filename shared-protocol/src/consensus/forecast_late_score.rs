@@ -23,7 +23,10 @@
 //!    of the last [`TRACK_RECORD_LEN`] scored forecasts. A forecaster is paid
 //!    in a bucket only when that record is full and its sum is above
 //!    [`TRACK_RECORD_MIN_SUM`], so payment requires a positive signed average
-//!    skill over the last 20 scored forecasts, not one good bucket.
+//!    skill over the last 20 scored forecasts, not one good bucket. A
+//!    forecast that could have been scored (its commit block has an
+//!    observation in the bucket) but was not enters the record at the
+//!    minimum when its bucket closes.
 //!
 //! What the chain checks of an observation, and what it leaves to the oracles
 //! that sign it:
@@ -116,9 +119,10 @@ pub const TRACK_RECORD_MIN_SUM: i64 = 0;
 /// Lowest signed skill a forecast adds to a track record: one forecast can
 /// take away at most as much as a perfect one adds.
 pub const SIGNED_SKILL_FLOOR: i64 = -(SKILL_PRECISION as i64);
-/// A track record with no new score for this long is dropped at a bucket
-/// close. Dropping only ever empties a record (an empty record is not paid),
-/// so it bounds the state without opening a way around the rule.
+/// A track record with no new entry for this long is dropped at the next
+/// pool-epoch boundary. Dropping only ever empties a record (an empty record
+/// is not paid), so it bounds the state without opening a way around the
+/// rule.
 pub const TRACK_RECORD_IDLE_SECS: i64 = 30 * 24 * 60 * 60;
 /// Most buckets closed in one block; the rest close in the following blocks.
 pub const MAX_BUCKET_CLOSES_PER_BLOCK: usize = 256;
@@ -656,7 +660,8 @@ pub struct TrackRecord {
     /// Signed skills in millionths ([`signed_skill`]), oldest first, at most
     /// [`TRACK_RECORD_LEN`].
     pub skills: Vec<i64>,
-    /// Block time of the latest score that entered the record.
+    /// Block time of the latest entry: a score, or a bucket close that
+    /// counted an unscored forecast.
     pub last_scored_at: i64,
 }
 
@@ -1151,9 +1156,13 @@ impl ForecastLateScoreState {
             .retain(|_, pending| pending.expires_at_height >= block_height);
         self.pool
             .retain(|epoch, _| !pool_epoch_expired(*epoch, block_height));
-        self.track_records.retain(|_, record| {
-            record.last_scored_at.saturating_add(TRACK_RECORD_IDLE_SECS) > block_timestamp
-        });
+        // Idle records are dropped once per pool epoch (heights are
+        // contiguous while the feature is in force), not scanned every block.
+        if block_height % POOL_EPOCH_BLOCKS == 0 {
+            self.track_records.retain(|_, record| {
+                record.last_scored_at.saturating_add(TRACK_RECORD_IDLE_SECS) > block_timestamp
+            });
+        }
 
         // Ids sort by hour, so the due buckets are a prefix.
         let due: Vec<String> = self
@@ -1177,6 +1186,23 @@ impl ForecastLateScoreState {
                         .map(|record| (commit_id.clone(), record))
                 })
                 .collect();
+            // A forecast that could have been scored (its commit block has an
+            // observation in this bucket) but was not counts at the minimum,
+            // in reveal order. With no observation (an outage) it adds nothing.
+            for (_, record) in &entries {
+                if record.skill.is_none() && bucket.observations.contains_key(&record.commit_height)
+                {
+                    self.track_records
+                        .entry(track_record_key(
+                            &record.forecaster,
+                            &bucket.station_id,
+                            bucket.variable,
+                            bucket.lead_hours,
+                        ))
+                        .or_default()
+                        .push(SIGNED_SKILL_FLOOR, block_timestamp);
+                }
+            }
             let owner = station_owner(&bucket.station_id);
             // Arithmetic that cannot be completed pays nothing for the bucket;
             // it never stops the block (fail closed).
@@ -2512,7 +2538,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_track_records_are_dropped_at_a_close() {
+    fn idle_track_records_are_dropped_at_an_epoch_boundary() {
         let mut state = ForecastLateScoreState::default();
         state.track_records.insert(
             "old".into(),
@@ -2528,11 +2554,14 @@ mod tests {
                 last_scored_at: 200,
             },
         );
-        state.close_due(1, 100 + TRACK_RECORD_IDLE_SECS - 1, |_| None);
+        state.close_due(POOL_EPOCH_BLOCKS, 100 + TRACK_RECORD_IDLE_SECS - 1, |_| None);
         assert_eq!(state.track_records.len(), 2);
-        state.close_due(2, 100 + TRACK_RECORD_IDLE_SECS, |_| None);
+        // Only at an epoch boundary.
+        state.close_due(POOL_EPOCH_BLOCKS + 1, 100 + TRACK_RECORD_IDLE_SECS, |_| None);
+        assert_eq!(state.track_records.len(), 2);
+        state.close_due(2 * POOL_EPOCH_BLOCKS, 100 + TRACK_RECORD_IDLE_SECS, |_| None);
         assert_eq!(state.track_records.keys().collect::<Vec<_>>(), vec!["new"]);
-        state.close_due(3, i64::MAX, |_| None);
+        state.close_due(3 * POOL_EPOCH_BLOCKS, i64::MAX, |_| None);
         assert!(state.is_empty());
     }
 

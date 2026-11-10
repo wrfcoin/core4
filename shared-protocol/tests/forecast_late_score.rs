@@ -1479,11 +1479,11 @@ fn forecast_late_score_end_to_end() {
     assert!(state.forecast_late_score.records.is_empty());
     assert_eq!(state.total_minted_supply(), after_close);
 
-    // Old pool epochs are dropped; then the lane is empty again and leaves
-    // the root material.
+    // Old pool epochs and idle track records (at an epoch boundary) are
+    // dropped; then the lane is empty again and leaves the root material.
     close_at(
         &mut state,
-        close_height + 10 * POOL_EPOCH_BLOCKS,
+        (close_height / POOL_EPOCH_BLOCKS + 10) * POOL_EPOCH_BLOCKS,
         T0 + 1_000 * HOUR,
     )
     .expect("late close");
