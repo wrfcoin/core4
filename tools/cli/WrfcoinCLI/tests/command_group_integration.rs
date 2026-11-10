@@ -1455,6 +1455,40 @@ fn setup_genesis_refuses_a_held_feature_before_writing_3299() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `wrfcoin oracle public-key --key-file` prints the public key of an
+/// owner-only seed file and nothing else; a file other accounts can read is
+/// refused. The seed never appears in stdout or stderr.
+#[cfg(unix)]
+#[test]
+fn oracle_public_key_prints_only_the_public_half() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp_home("oracle-public-key");
+    let seed = [0x55u8; 32];
+    let seed_hex: String = seed.iter().map(|b| format!("{b:02x}")).collect(); // secret-leak-ok: fixed all-0x55 test fixture
+    let pair = Ed25519KeyPair::from_seed_unchecked(&seed).expect("test seed");
+    let public_hex: String = pair.public_key().as_ref().iter().map(|b| format!("{b:02x}")).collect();
+
+    let key = home.join("oracle.key");
+    fs::write(&key, format!("{seed_hex}\n")).expect("write key");
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).expect("chmod");
+    let key_arg = key.to_str().expect("utf-8 path");
+
+    let (code, stdout, stderr) =
+        run_wrfcoin_exit(&["--json", "oracle", "public-key", "--key-file", key_arg], &home, None);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+    assert_eq!(parsed["data"]["publicKey"], Value::String(public_hex.clone()));
+    assert_eq!(parsed["data"]["oracleId"], Value::String(public_hex));
+    assert!(!stdout.contains(&seed_hex) && !stderr.contains(&seed_hex), "seed leaked");
+
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).expect("chmod");
+    let (code, stdout, stderr) =
+        run_wrfcoin_exit(&["--json", "oracle", "public-key", "--key-file", key_arg], &home, None);
+    assert_ne!(code, 0, "a group/world-readable key file must be refused: {stdout}\n{stderr}");
+    assert!(!stdout.contains(&seed_hex) && !stderr.contains(&seed_hex), "seed leaked");
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn unsupported_dex_commands_are_hidden_from_wallet_help() {
     let output = Command::new(env!("CARGO_BIN_EXE_wrfcoin"))

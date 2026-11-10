@@ -25,6 +25,7 @@ use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey, Signatur
 use wrfcoin_shared_protocol::oracle::ceremony::{
     CEREMONY_ARTIFACT_VERSION, GenesisOracleCeremony, GenesisOracleCeremonyArtifact,
 };
+use wrfcoin_shared_protocol::security::key_file::open_owner_only_key_file;
 
 /// Genesis oracle ceremony commands.
 #[derive(Subcommand)]
@@ -110,6 +111,18 @@ pub enum OracleCommands {
         #[clap(long)]
         artifact: PathBuf,
     },
+
+    /// Print the public key (the oracle id) of a software oracle key file.
+    ///
+    /// Reads a file holding one ed25519 seed as 64 hex characters, the format
+    /// the oracle attester's key file uses. The file must be readable only by
+    /// its owner (mode 0600 on Unix, an owner-only ACL on Windows). Only the
+    /// public half is printed; the seed never reaches the output or an error.
+    PublicKey {
+        /// Oracle key file (64 hex characters).
+        #[clap(long)]
+        key_file: PathBuf,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,6 +147,14 @@ struct RegistrationSubmitBody<'a> {
 
 pub async fn handle_oracle_command(command: &OracleCommands) -> Result<Value> {
     match command {
+        OracleCommands::PublicKey { key_file } => {
+            let public_key = oracle_public_key_from_file(key_file)?.to_hex();
+            Ok(json!({
+                "summary": format!("Oracle public key: {public_key}"),
+                "publicKey": public_key,
+                "oracleId": public_key,
+            }))
+        },
         OracleCommands::BuildRegistrations {
             genesis,
             chain_id,
@@ -498,6 +519,39 @@ fn read_artifact(path: &Path) -> Result<GenesisOracleCeremonyArtifact> {
         .with_context(|| format!("failed to parse artifact {}", path.display()))
 }
 
+/// Upper bound on an oracle key file: 64 hex characters plus generous whitespace.
+const MAX_ORACLE_KEY_FILE_BYTES: u64 = 4096;
+
+/// Derive the public key of a software oracle key file.
+///
+/// Opened only through `open_owner_only_key_file`, so a file another account
+/// can read is refused before a byte is read. Errors name the path, never the
+/// file's contents.
+fn oracle_public_key_from_file(path: &Path) -> Result<PublicKey> {
+    use std::io::Read;
+    let file = open_owner_only_key_file(path).map_err(|e| anyhow!("oracle key file: {e}"))?;
+    let mut raw = zeroize::Zeroizing::new(Vec::new());
+    file.take(MAX_ORACLE_KEY_FILE_BYTES + 1)
+        .read_to_end(&mut raw)
+        .with_context(|| format!("cannot read oracle key file {}", path.display()))?;
+    let malformed = || {
+        anyhow!(
+            "oracle key file {} must hold one ed25519 seed as 64 hex characters",
+            path.display()
+        )
+    };
+    if raw.len() as u64 > MAX_ORACLE_KEY_FILE_BYTES {
+        return Err(malformed());
+    }
+    let text = std::str::from_utf8(&raw).map_err(|_| malformed())?.trim();
+    if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(malformed());
+    }
+    let seed = zeroize::Zeroizing::new(hex::decode(text).map_err(|_| malformed())?);
+    let key = PrivateKey::from_bytes(&seed).map_err(|_| malformed())?;
+    Ok(PublicKey::from_private_key(&key))
+}
+
 fn read_private_key(path: &Path) -> Result<PrivateKey> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read governance key {}", path.display()))?;
@@ -552,6 +606,52 @@ mod tests {
         .expect("ceremony inputs valid"); // panic-ok: test helper, literal inputs
         let built = ceremony.build_artifact(&gov_sk);
         (built, gov_sk)
+    }
+
+    #[cfg(unix)]
+    fn key_file(dir: &Path, name: &str, contents: &str, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    /// `oracle public-key` derives the id from a known seed, refuses loose,
+    /// empty and malformed files, and never echoes the seed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_key_prints_only_the_public_half() {
+        let dir = std::env::temp_dir().join(format!("wrfcoin-cli-oracle-pk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (sk, expected) = keypair(0x44);
+        let seed_hex = sk.to_hex(); // secret-leak-ok: fixed all-0x44 test fixture
+        assert_eq!(seed_hex.len(), 64);
+
+        let good = key_file(&dir, "oracle.key", &format!("{seed_hex}\r\n"), 0o600);
+        let out = handle_oracle_command(&OracleCommands::PublicKey { key_file: good })
+            .await
+            .unwrap();
+        assert_eq!(out["publicKey"], expected);
+        assert_eq!(out["oracleId"], expected);
+        assert!(!out.to_string().contains(&seed_hex), "output must not contain the seed");
+
+        let loose = key_file(&dir, "loose.key", &seed_hex, 0o644);
+        assert!(oracle_public_key_from_file(&loose).is_err());
+        for (name, body) in [
+            ("empty.key", String::new()),
+            ("short.key", "abcd".to_string()),
+            ("nothex.key", "zz".repeat(32)),
+            ("long.key", format!("{seed_hex}00")),
+        ] {
+            let path = key_file(&dir, name, &body, 0o600);
+            let err = format!("{:#}", oracle_public_key_from_file(&path).unwrap_err());
+            assert!(err.contains("64 hex characters"), "{name}: {err}");
+            assert!(!err.contains(&seed_hex), "{name}: error must not echo key material");
+        }
+        assert!(oracle_public_key_from_file(&dir.join("missing.key")).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A well-formed artifact verifies.
