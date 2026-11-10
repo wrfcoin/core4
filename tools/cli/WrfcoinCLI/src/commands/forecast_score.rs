@@ -157,6 +157,20 @@ fn parse_variable(text: &str) -> Result<LateScoreVariable> {
         .map_err(|_| anyhow!("variable must be temperature_c or pressure_hpa, not {text}"))
 }
 
+/// Percent-encode one URL path segment: everything but RFC 3986 unreserved
+/// characters, so an id can never add a path segment or a query.
+fn path_segment(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 fn sig_path(out: &Path) -> PathBuf {
     let mut name = out.as_os_str().to_owned();
     name.push(".sig.json");
@@ -296,12 +310,12 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
         },
         C::Bucket { id } => {
             ApiClient::new(ApiConfig::default())?
-                .receipt_request("GET", &format!("/forecast/late-score/buckets/{}", id.trim()), None)
+                .receipt_request("GET", &format!("/forecast/late-score/buckets/{}", path_segment(id.trim())), None)
                 .await
         },
         C::Record { commit_id } => {
             ApiClient::new(ApiConfig::default())?
-                .receipt_request("GET", &format!("/forecast/late-score/records/{}", commit_id.trim()), None)
+                .receipt_request("GET", &format!("/forecast/late-score/records/{}", path_segment(commit_id.trim())), None)
                 .await
         },
     }
@@ -316,6 +330,12 @@ mod tests {
         assert_eq!(parse_variable("temperature_c").unwrap(), LateScoreVariable::TemperatureC);
         assert_eq!(parse_variable(" pressure_hpa ").unwrap(), LateScoreVariable::PressureHpa);
         assert!(parse_variable("temp").is_err());
+    }
+
+    #[test]
+    fn ids_are_percent_encoded_as_one_path_segment() {
+        assert_eq!(path_segment("0000000069f1-ab12"), "0000000069f1-ab12");
+        assert_eq!(path_segment("../x?y=1 z"), "..%2Fx%3Fy%3D1%20z");
     }
 
     #[test]

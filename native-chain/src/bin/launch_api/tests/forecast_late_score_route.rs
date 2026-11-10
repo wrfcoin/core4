@@ -195,6 +195,33 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].tx_type, TransactionType::ForecastScore);
 
+        // A resend is refused before any signature work, and nothing is added.
+        let (status, body) = post!(&app, &tx);
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body.to_string().contains("ALREADY_PENDING"), "{body}");
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
+        // A reader token may not relay.
+        let reader = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri(SUBMIT)
+                .insert_header(("Authorization", format!("Bearer {TEST_READER_TOKEN}"))) // secret-leak-ok: synthetic test bearer only.
+                .set_json(&tx)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(reader.status(), StatusCode::FORBIDDEN);
+        // A body over the route's JSON limit is refused before parsing.
+        let mut huge = relay_tx(&payload(&[&oracle(0x21), &oracle(0x22)], false));
+        huge.data = Some("x".repeat(crate::routes::forecast_late_score::MAX_FORECAST_SCORE_JSON_BYTES + 1));
+        let oversized = test::call_service(
+            &app,
+            test::TestRequest::post().uri(SUBMIT).insert_header(bearer()).set_json(&huge).to_request(),
+        )
+        .await;
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
+
         // Reads: nothing is recorded in this fixture.
         let missing = test::call_service(
             &app,

@@ -456,6 +456,18 @@ per-token limit 30 requests/minute (429). It is **not mounted** (404) unless
 `WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1` (default off) and `NodeShareSettlement` is active. A non-forking
 change: it admits a transaction type the mempool and `apply` already handle.
 
+## Forecast late-score relay route (`forecast_late_score`)
+
+`POST /forecast/late-score/submit` (`routes/forecast_late_score.rs:forecast_late_score::submit`) is registered
+through a `web::resource(..)` (256 KiB JSON limit), which the table scanner (`.route(` only) does not see.
+Classification: `authenticated` (Contributor token), mutates state (mempool admission and gossip of a
+`ForecastScore`), bounded work: a duplicate (409 `ALREADY_PENDING`), a full pool (503 `MEMPOOL_FULL`) and the
+admission-cost check are refused before any signature work; then at most 16 ed25519 verifications in a read-only
+quorum dry run at the tip, and the same again in mempool admission. It answers 503 `FEATURE_NOT_ACTIVE` until
+`forecast_late_score` is in force at the next block. Non-forking: it only admits a transaction the mempool and apply
+already handle, and consensus re-checks it at the inclusion height. The reads `GET /forecast/late-score`,
+`/forecast/late-score/buckets/{id}` and `/forecast/late-score/records/{commit_id}` are in the table above.
+
 ## Security-key wallet action route (`security_key_spend`)
 
 `POST /accounts/security-key/actions` (`routes/security_key.rs:security_key::submit_security_key_action`) is

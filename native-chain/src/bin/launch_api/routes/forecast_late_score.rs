@@ -78,8 +78,23 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
     if let Err(error) = payload.validate() {
         return envelope_error(&req, StatusCode::BAD_REQUEST, "FORECAST_SCORE_PAYLOAD", error.to_string());
     }
-    if state.mempool.read().await.check_transaction_admission_cost(&tx).is_err() {
-        return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", "admission cost refused");
+    // Cheap refusals before any signature work, the same order as mempool
+    // admission (occupancy caps first): a resent score or a full pool costs
+    // no signature check here.
+    {
+        let pool = state.mempool.read().await;
+        let Some(tx_id) = tx.id.as_ref() else {
+            return envelope_error(&req, StatusCode::BAD_REQUEST, "FORECAST_SCORE_PAYLOAD", "transaction has no id");
+        };
+        if pool.contains(tx_id) {
+            return envelope_error(&req, StatusCode::CONFLICT, "ALREADY_PENDING", "this score is already in the mempool");
+        }
+        if pool.size() >= wrfcoin_shared_protocol::common::constants::MEMPOOL_CAPACITY {
+            return envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "MEMPOOL_FULL", "the mempool is at capacity");
+        }
+        if pool.check_transaction_admission_cost(&tx).is_err() {
+            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", "admission cost refused");
+        }
     }
     // Advisory dry run of the consensus quorum check at the tip, read-only.
     let signing_keys = {
