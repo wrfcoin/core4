@@ -120,6 +120,10 @@ jobs:
             echo 'oracle_attester.exe started with no configuration'; exit 1
           fi
           cat target/release/oracle_attester-noenv.txt
+          # An unrecognised argument is refused, never ignored.
+          if target/release/oracle_attester.exe foo --help > /dev/null 2>&1; then
+            echo 'oracle_attester.exe accepted an unrecognised argument'; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: wrfcoin-node-windows-x86_64

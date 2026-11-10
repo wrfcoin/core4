@@ -2149,6 +2149,30 @@ fn run_sea_level_preview(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// What the command line asks for (after `--sea-level-preview`, handled first).
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// No arguments: run from the environment.
+    Run,
+    /// Exactly one of `--help`, `-h`, `--version`, `-V`.
+    Usage,
+    /// Anything else: refuse, naming the first offending argument.
+    Refuse(String),
+}
+
+fn parse_args(args: &[String]) -> CliAction {
+    let is_usage = |a: &String| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V");
+    if args.is_empty() {
+        return CliAction::Run;
+    }
+    if args.len() == 1 && is_usage(&args[0]) {
+        return CliAction::Usage;
+    }
+    // The first argument that is not a usage flag, or the second one if both are.
+    let offending = args.iter().find(|a| !is_usage(a)).unwrap_or_else(|| &args[1]);
+    CliAction::Refuse(offending.clone())
+}
+
 /// `--help` / `--version` text. Configuration is environment-only, so this
 /// names the required variables rather than flags.
 fn usage() -> String {
@@ -2180,9 +2204,17 @@ async fn main() -> Result<()> {
         return run_sea_level_preview(&args[1..]);
     }
     // Offline: prints usage and exits; touches no config, key or network.
-    if matches!(args.first().map(String::as_str), Some("--help" | "-h" | "--version" | "-V")) {
-        print!("{}", usage());
-        return Ok(());
+    // Anything else on the command line is refused, never ignored: a typo
+    // must not start a live attester.
+    match parse_args(&args) {
+        CliAction::Run => {},
+        CliAction::Usage => {
+            print!("{}", usage());
+            return Ok(());
+        },
+        CliAction::Refuse(arg) => {
+            bail!("unrecognised argument '{arg}'. Configuration is environment-only; see --help")
+        },
     }
 
     let config = Config::from_env()?;
@@ -2326,6 +2358,19 @@ fn build_attester_http_client() -> Result<reqwest::Client> {
 mod tests {
     use super::*;
     use wrfcoin_shared_protocol::crypto::signature::PrivateKey;
+
+    #[test]
+    fn only_no_arguments_runs_and_anything_unrecognised_is_refused() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&a(&[])), CliAction::Run);
+        for flag in ["--help", "-h", "--version", "-V"] {
+            assert_eq!(parse_args(&a(&[flag])), CliAction::Usage);
+        }
+        assert_eq!(parse_args(&a(&["foo", "--help"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--help", "foo"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--once"])), CliAction::Refuse("--once".into()));
+        assert_eq!(parse_args(&a(&[""])), CliAction::Refuse(String::new()));
+    }
 
     #[test]
     fn usage_names_the_required_environment_and_no_secret_values() {
