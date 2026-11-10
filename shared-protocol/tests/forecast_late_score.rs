@@ -495,6 +495,35 @@ fn forecast_late_score_end_to_end() {
         let err = add(wrap(&admission_probe, 0x79, 9, Some("another-outpoint"))).unwrap_err();
         assert!(err.contains("SP_FORECAST_LATE_SCORE_OUTPOINT"), "{err}");
     }
+    // A score with more valid signatures replaces a pending one with fewer
+    // (same signed payload); a forged, equal or smaller signer set does not.
+    {
+        let mut pool = Mempool::new(&Config::default());
+        let add = |pool: &mut Mempool, tx: Transaction| {
+            pool.add_transaction_with_signing_keys_at_height(tx, Some(&admission_keys), Some(ACTIVE))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        let mut weak = admission_probe.clone();
+        weak.signatures.truncate(1);
+        let weak_tx = wrap(&weak, 0x71, 0, None);
+        add(&mut pool, weak_tx.clone()).expect("a one-signature score is admitted");
+        let mut forged = admission_probe.clone();
+        forged.signatures[1].ed25519 = "00".repeat(64);
+        let err = add(&mut pool, wrap(&forged, 0x72, 1, None)).unwrap_err();
+        assert!(err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"), "{err}");
+        assert!(pool.contains(&weak_tx.id.unwrap()), "a forged superset leaves the pending score");
+        let strong_tx = wrap(&admission_probe, 0x73, 2, None);
+        add(&mut pool, strong_tx.clone()).expect("two valid signatures replace one");
+        assert_eq!(pool.size(), 1);
+        assert!(!pool.contains(&weak_tx.id.unwrap()), "the weaker score is gone");
+        assert!(pool.contains(&strong_tx.id.unwrap()));
+        let err = add(&mut pool, wrap(&admission_probe, 0x74, 3, None)).unwrap_err();
+        assert!(err.contains("SP_FORECAST_LATE_SCORE_DUPLICATE"), "equal set: {err}");
+        let err = add(&mut pool, wrap(&weak, 0x75, 4, None)).unwrap_err();
+        assert!(err.contains("SP_FORECAST_LATE_SCORE_DUPLICATE"), "smaller set: {err}");
+        assert_eq!(pool.size(), 1);
+    }
     // Fail closed without a registry, and for a signer that is not a
     // registered oracle identity, however valid its own signature: a key
     // anyone can mint must not buy pool space.

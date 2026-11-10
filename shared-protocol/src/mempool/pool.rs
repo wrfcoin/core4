@@ -670,6 +670,9 @@ impl Mempool {
         // against a key the registry holds for that identity. The oracle set
         // and quorum, timing and bucket rules are state's (apply refuses,
         // assembly drops).
+        // A pending score this one replaces (more valid signatures over the
+        // same signed payload). Removed only once every fallible step passed.
+        let mut replaced_score: Option<Hash> = None;
         if tx.tx_type == TransactionType::ForecastScore {
             let height =
                 current_height.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_HEIGHT_REQUIRED"))?;
@@ -691,9 +694,9 @@ impl Mempool {
             if tx.inputs.len() != 1 || tx.inputs[0].txid != outpoint || tx.inputs[0].vout != 0 {
                 return Err(anyhow!("SP_FORECAST_LATE_SCORE_OUTPOINT: the input must be the score's own outpoint"));
             }
-            if self.double_spends.get(&(outpoint, 0)).is_some_and(|spenders| !spenders.is_empty()) {
-                return Err(anyhow!("SP_FORECAST_LATE_SCORE_DUPLICATE: this signed score is already pending"));
-            }
+            // A score with more valid signatures replaces a pending one with
+            // fewer; any other second carrier of the same payload is refused.
+            replaced_score = self.forecast_score_replaces(&payload, &outpoint)?;
             let registry =
                 signing_keys.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: no key registry"))?;
             payload
@@ -850,7 +853,9 @@ impl Mempool {
                 continue;
             }
             if let Some(spending_txs) = self.double_spends.get(&outpoint) {
-                if !spending_txs.is_empty() {
+                // The score being replaced is the one spender allowed here.
+                let replaced = replaced_score.is_some_and(|old| spending_txs.iter().all(|id| *id == old));
+                if !spending_txs.is_empty() && !replaced {
                     return Err(anyhow!("Double spend detected in mempool"));
                 }
             }
@@ -868,6 +873,9 @@ impl Mempool {
         }
         if let Some(copy) = replaced_node_copy {
             self.remove_transaction(&copy);
+        }
+        if let Some(old) = replaced_score {
+            self.remove_transaction(&old);
         }
 
         // Dependencies are computed AFTER the capacity decision, from the
@@ -1218,6 +1226,38 @@ impl Mempool {
     }
 
     /// Returns true when `tx_id` is currently held.
+    /// `forecast_late_score` admission policy (no consensus effect) for a
+    /// score whose signed payload spends `outpoint`: `Ok(None)` when no score
+    /// with that payload is pending; `Ok(Some(id))` when the pending one has a
+    /// STRICT SUBSET of `payload`'s signers (the caller verifies the incoming
+    /// signatures, then replaces it); otherwise refused as a duplicate.
+    pub fn forecast_score_replaces(
+        &self,
+        payload: &crate::consensus::forecast_late_score::ForecastScorePayload,
+        outpoint: &Hash,
+    ) -> Result<Option<Hash>> {
+        let Some(pending) = self.double_spends.get(&(*outpoint, 0)).and_then(|spenders| spenders.first().copied())
+        else {
+            return Ok(None);
+        };
+        let strict_superset = self
+            .transactions
+            .get(&pending)
+            .and_then(|old| crate::consensus::forecast_late_score::ForecastScorePayload::parse(old))
+            .is_some_and(|old| {
+                old.signatures.len() < payload.signatures.len()
+                    && old
+                        .signatures
+                        .iter()
+                        .all(|o| payload.signatures.iter().any(|n| n.oracle == o.oracle))
+            });
+        if strict_superset {
+            Ok(Some(pending))
+        } else {
+            Err(anyhow!("SP_FORECAST_LATE_SCORE_DUPLICATE: this signed score is already pending"))
+        }
+    }
+
     pub fn contains(&self, tx_id: &Hash) -> bool {
         self.transactions.contains_key(tx_id)
     }
