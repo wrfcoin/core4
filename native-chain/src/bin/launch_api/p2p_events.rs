@@ -3268,7 +3268,7 @@ pub(crate) fn admissible_gossip_txs(
         .collect()
 }
 
-/// An oracle attestation is relayed only while its signer is in the current oracle set.
+/// An oracle attestation is offered to this node's pool only while its signer is in the current oracle set.
 /// The mempool checks the signing-key registry; the oracle set is chain state,
 /// so membership is checked here.
 pub(crate) fn oracle_attestation_admissible(
