@@ -9,8 +9,12 @@ from urllib.parse import urlsplit
 from . import bias, chain, gfs
 from .site import SiteError
 
-# The site writes this label into every draft today; a local dry-run draft uses the same text.
-RELAY_MODEL_ID = "website-manual/v1"
+# Worker forecasts carry their own model name (owner, 2026-11-10): the worker asks the site to write
+# bias.MODEL_ID into the draft. A site from before that change ignores the request and writes its own
+# label, so a draft with either name is accepted; any other name is never signed.
+RELAY_MODEL_ID = bias.MODEL_ID
+SITE_DEFAULT_MODEL_ID = "website-manual/v1"
+ACCEPTED_DRAFT_MODEL_IDS = (RELAY_MODEL_ID, SITE_DEFAULT_MODEL_ID)
 MAX_FORECASTS_PER_CYCLE = 4          # the site allows 10 draft/submit calls per wallet per 10 minutes
 FRESH_READING_SECONDS = 3 * 3600     # a station silent for longer cannot score a forecast
 BACKFILL_HOURS = 3
@@ -247,10 +251,10 @@ def _send_forecasts(cfg, site, model, store, wallet, dry_run, now, report, stati
             try:
                 if not site.logged_in:
                     site.login(wallet, cfg.chain_id, cfg.network_id)
-                draft = site.draft(alias, cfg.variable, lead, forecast["value"])
+                draft = site.draft(alias, cfg.variable, lead, forecast["value"], model_id=RELAY_MODEL_ID)
                 station_id = chain.verify_draft(draft, wallet=wallet.address, alias=alias, variable=cfg.variable,
                                                 lead_hours=lead, value=forecast["value"], now=int(clock()),
-                                                model_id=RELAY_MODEL_ID)
+                                                model_id=ACCEPTED_DRAFT_MODEL_IDS)
                 answer = site.submit(chain.sign_commit(draft, station_id, cfg.chain_id, cfg.network_id, wallet))
             except SiteError as error:
                 if error.code == "ALREADY_FORECAST":
