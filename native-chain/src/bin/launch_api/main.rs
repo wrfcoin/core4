@@ -4120,7 +4120,7 @@ mod tests {
         let old = entry("age-out-old");
         mempool.write().await.add_transaction(old.clone()).expect("old entry admitted");
         assert_eq!(age_out_mempool(&mempool).await, 0, "nothing is older than the max age yet");
-        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
         let young = entry("age-out-young");
         mempool.write().await.add_transaction(young.clone()).expect("young entry admitted");
         assert_eq!(age_out_mempool(&mempool).await, 1);
