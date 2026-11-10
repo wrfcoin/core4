@@ -5,6 +5,7 @@ pub mod security_key;
 pub mod node_shutdown;
 pub mod send_allowlist;
 pub mod advisory_governance;
+pub mod forecast_late_score;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -191,6 +192,16 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             "/transactions/contribution/reveal",
             web::post().to(transactions::submit_contribution_reveal),
         )
+        // Forecast late score (`forecast_late_score`): relay a quorum-signed
+        // score; read the lane's state. Refused until the feature is in force.
+        .service(
+            web::resource("/forecast/late-score/submit")
+                .app_data(web::JsonConfig::default().limit(forecast_late_score::MAX_FORECAST_SCORE_JSON_BYTES))
+                .route(web::post().to(forecast_late_score::submit)),
+        )
+        .route("/forecast/late-score", web::get().to(forecast_late_score::status))
+        .route("/forecast/late-score/buckets/{id}", web::get().to(forecast_late_score::bucket))
+        .route("/forecast/late-score/records/{commit_id}", web::get().to(forecast_late_score::record))
         .route(
             "/transactions/forecast/commit",
             web::post().to(transactions::submit_forecast_commit),

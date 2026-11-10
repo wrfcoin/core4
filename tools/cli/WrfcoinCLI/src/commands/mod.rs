@@ -33,6 +33,7 @@ pub mod snapshot;
 pub mod station;
 pub mod send_allowlist;
 pub mod advisory;
+pub mod forecast_score;
 pub mod station_owner;
 pub mod station_registrar;
 pub mod station_owner_exchange;
