@@ -269,6 +269,17 @@ function writeStationDashboardFiles(station, fetchResult, nwsObs) {
 // ---------------------------------------------------------------------------
 function backendGetJson(host, port, urlPath, token, timeoutMs = 8000, maxBytes = Infinity) {
     return new Promise((resolve) => {
+        // Settles exactly once. Every way the exchange can end without a complete
+        // answer (request error, timeout, a reset or abort after the headers, a
+        // close without an end, an oversize body) is { status: null }: a network
+        // error, never a hang.
+        let settled = false;
+        const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const networkError = (message) => settle({ status: null, error: message });
         const req = http.request({
             hostname: host,
             port,
@@ -284,22 +295,28 @@ function backendGetJson(host, port, urlPath, token, timeoutMs = 8000, maxBytes =
                 if (raw.length + c.length > maxBytes) {
                     tooLarge = true;
                     raw = '';
+                    networkError('response too large');
                     req.destroy(new Error('response too large'));
                     return;
                 }
                 raw += c;
             });
+            res.on('error', (err) => networkError(err && err.message ? err.message : 'response error'));
+            res.on('aborted', () => networkError('response aborted'));
+            res.on('close', () => {
+                if (!res.complete) networkError('response closed before its end');
+            });
             res.on('end', () => {
-                if (tooLarge) return;
+                if (tooLarge || !res.complete) return;
                 try {
-                    resolve({ status: res.statusCode, data: JSON.parse(raw) });
+                    settle({ status: res.statusCode, data: JSON.parse(raw) });
                 } catch (_) {
-                    resolve({ status: res.statusCode, data: raw });
+                    settle({ status: res.statusCode, data: raw });
                 }
             });
         });
         req.on('timeout', () => { req.destroy(new Error('timeout')); });
-        req.on('error', (err) => resolve({ status: null, error: err.message }));
+        req.on('error', (err) => networkError(err.message));
         req.end();
     });
 }

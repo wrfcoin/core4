@@ -2828,6 +2828,35 @@ async function run() {
         assert.ok(src.includes("return { entries: [], source: 'none', unreadable: true };"));
     });
 
+    await test('a connection reset after the headers is a network error, not a hang (and keeps last-good allowed)', async () => {
+        const http = require('http');
+        // Answers 200 with a partial body, then destroys the socket before the end.
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+            res.write('{"version":"collector_roster_v1","stations":[');
+            setTimeout(() => req.socket.destroy(), 20);
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address();
+        try {
+            const outcome = await Promise.race([
+                multi.backendGetJson('127.0.0.1', port, '/api/weather/stations/collector-roster', 'TOKEN', 5000),
+                new Promise((resolve) => setTimeout(() => resolve('HUNG'), 3000)),
+            ]);
+            assert.notStrictEqual(outcome, 'HUNG', 'backendGetJson must settle when the answer is cut off');
+            assert.strictEqual(outcome.status, null);
+            // A network error: the last good roster may still be used.
+            const memory = { entries: null, atMs: 0 };
+            let answer = backendAnswer([backendEntry(11)]);
+            const deps = { getJson: async () => answer, nowMs: () => 1000, memory };
+            await capturing(() => multi.loadBackendRoster(deps));
+            answer = outcome;
+            assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'last_good');
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
     await test('a station that left the backend roster is gone on the next good read', async () => {
         const memory = { entries: null, atMs: 0 };
         let answer = backendAnswer([backendEntry(11), backendEntry(12)]);
