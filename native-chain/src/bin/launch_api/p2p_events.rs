@@ -3265,6 +3265,7 @@ pub(crate) fn admissible_gossip_txs(
             },
         })
         .filter(|tx| oracle_attestation_admissible(state, tx))
+        .filter(|tx| forecast_score_admissible(state, tx))
         .collect()
 }
 
@@ -3286,6 +3287,33 @@ pub(crate) fn oracle_attestation_admissible(
         },
         // Malformed payloads are left to the mempool, which refuses them.
         None => true,
+    }
+}
+
+/// `forecast_late_score` (node policy, no consensus effect): a gossiped
+/// score is offered to the pool only if every forecast it lists is recorded,
+/// unscored and of the attested commit block in this node's state, the same
+/// read-only pre-check the submit route runs. Apply stays the authority (it
+/// skips unknown and scored forecasts so racing relays do not fail each
+/// other). Other transaction types pass through.
+pub(crate) fn forecast_score_admissible(
+    state: &wrfcoin_native_chain::blockchain::state::State,
+    tx: &Transaction,
+) -> bool {
+    use wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload;
+    if tx.tx_type != TransactionType::ForecastScore {
+        return true;
+    }
+    // A malformed payload is the mempool's to refuse, with its own code.
+    let Some(payload) = ForecastScorePayload::parse(tx) else {
+        return true;
+    };
+    match state.forecast_late_score.check_admissible_score(&payload) {
+        Ok(()) => true,
+        Err(error) => {
+            log::debug!("P2P forecast score not admitted: {error}");
+            false
+        },
     }
 }
 
@@ -16017,6 +16045,77 @@ mod station_registration_admission_tests {
             ingest_gossiped_transaction(&mut pool, registration_tx("r"), &keys),
             GossipIngest::RefusedByPolicy("station_registration_gossip")
         );
+    }
+
+    /// `forecast_late_score`: a gossiped score naming an unknown or an
+    /// already-scored forecast is not offered to the pool; one naming a
+    /// recorded, unscored forecast of the attested block is. Other types pass.
+    #[test]
+    fn gossiped_scores_must_name_recorded_unscored_forecasts() {
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+        };
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        for (commit_id, skill) in [("f", None), ("s", Some(10))] {
+            state.forecast_late_score.records.insert(
+                commit_id.to_string(),
+                ForecastRecord {
+                    forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                    station_id: attestation.station_id.clone(),
+                    variable: attestation.variable,
+                    value: 1_950,
+                    lead_hours: attestation.lead_hours,
+                    commit_height: attestation.commit_height,
+                    commit_time: attestation.commit_time,
+                    target: attestation.target,
+                    reveal_height: attestation.commit_height + 1,
+                    skill,
+                },
+            );
+        }
+        let score = |ids: &[&str]| {
+            let payload = ForecastScorePayload {
+                attestation: attestation.clone(),
+                signatures: Vec::new(),
+                forecast_commit_ids: ids.iter().map(|id| id.to_string()).collect(),
+            };
+            let mut tx = Transaction::new(Vec::new(), Vec::new());
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &score(&["f"])), "recorded and unscored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["unknown"])), "never recorded");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["s"])), "already scored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["f", "unknown"])), "one bad id refuses the score");
+        // Through the live ingress filter: only the admissible score survives.
+        let survivors = crate::p2p_events::admissible_gossip_txs(
+            &state,
+            10,
+            vec![score(&["unknown"]), score(&["s"]), score(&["f"])],
+        );
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].id, score(&["f"]).id);
+        // Another type is not affected.
+        let mut other = Transaction::new(Vec::new(), Vec::new());
+        other.tx_type = TransactionType::Transfer;
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &other));
     }
 
     /// The decision does not depend on the node's role: the ingress has no
