@@ -965,6 +965,15 @@ fn relayed_forecast_fixture(seed: u64) -> (serde_json::Value, serde_json::Value,
     relayed_forecast_fixture_n(seed, 0)
 }
 
+/// One timestamp for every relayed fixture in this test binary. The commit id
+/// hashes the timestamp, so reading the wall clock per call would give the same
+/// `(seed, n)` a different commit id whenever a second boundary passed between
+/// calls, and a test resending "the same" commit would really send a new one.
+fn relayed_fixture_timestamp() -> i64 {
+    static TIMESTAMP: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *TIMESTAMP.get_or_init(|| chrono::Utc::now().timestamp())
+}
+
 /// [`relayed_forecast_fixture`] for the `n`th distinct forecast by the same key.
 fn relayed_forecast_fixture_n(seed: u64, n: u64) -> (serde_json::Value, serde_json::Value, String) {
     use wrfcoin_native_chain::blockchain::transaction::{CommitPayload, Transaction};
@@ -972,7 +981,7 @@ fn relayed_forecast_fixture_n(seed: u64, n: u64) -> (serde_json::Value, serde_js
     let (_, base_reveal, _) = forecast_route_fixture();
     let sk = PrivateKey::generate(&mut StdRng::seed_from_u64(seed));
     let forecaster = Address::from_public_key(&PublicKey::from_private_key(&sk)).to_hex();
-    let timestamp = chrono::Utc::now().timestamp();
+    let timestamp = relayed_fixture_timestamp();
     let data = serde_json::json!({"temperature": 21.5, "seed": seed, "n": n});
     let nonce = format!("relay-nonce-{seed}-{n}");
     let commit_id = Transaction::compute_commit_id(&data, &nonce, "station-forecast", timestamp, "forecast");
@@ -1150,6 +1159,17 @@ async fn relay_quota_state(limit: usize) -> (web::Data<state::AppState>, String)
     let state = test_state_with_tokens(None, Arc::new(store));
     state.forecast_quotas.write().await.config.limit = limit;
     (state, forecaster)
+}
+
+/// The relayed fixture is a pure function of `(seed, n)`: rebuilding it after
+/// the wall clock has moved to the next second yields the same commit id.
+#[actix_web::test]
+async fn relayed_forecast_fixture_is_stable_across_a_second_boundary() {
+    let (first, _, _) = relayed_forecast_fixture_n(84_500, 0);
+    let to_next_second = 1_000 - chrono::Utc::now().timestamp_subsec_millis().min(999) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(to_next_second + 20)).await;
+    let (again, _, _) = relayed_forecast_fixture_n(84_500, 0);
+    assert_eq!(first["commit_hash"], again["commit_hash"]);
 }
 
 /// Relayed submissions spend the submitting bearer's budget, never the
