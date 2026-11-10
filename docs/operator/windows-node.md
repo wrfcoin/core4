@@ -405,11 +405,21 @@ votes are refused.
    `TESTNET software oracle key active` and `oracle id <public key>`.
    **Stop WRFCoin Node** stops the attester too.
 
-The attester's settings come from `attester-888.conf` next to the node: the
-public keys of the other signing roles (the attester refuses to run if its key
-is one of them; your own `server.key`, if any, is added automatically) and the
-reference-station settings. A value that still reads `REPLACE_ME...` stops the
-start with a message naming it.
+The attester's settings come from `attester-888.conf` next to the node (the
+public keys of the other signing roles: the attester refuses to run if its key
+is one of them, and your own `server.key`, if any, is added automatically; the
+reference station; poll and freshness windows), with your own
+`%LOCALAPPDATA%\WRFCoin\attester.conf` on top. Upgrades replace the first and
+never touch the second. The reference mode is a setting you must choose, so the
+attester does not start until `attester.conf` has it, for example:
+
+```
+WRFCOIN_ATTESTER_REFERENCE_MODE=fixed
+```
+
+(`shadow` and `per_station` also need `WRFCOIN_ATTESTER_MAX_REFERENCE_KM=<km>`.)
+Only the reference and timing settings may be set there; the refused keys, the
+node address and the token always come from the package.
 
 Rules the attester enforces (it refuses to start otherwise): testnet only
 (`WRFCOIN_NETWORK_ID=testnet`, a non-mainnet chain id), only your account can

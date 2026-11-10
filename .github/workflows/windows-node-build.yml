@@ -349,10 +349,10 @@ jobs:
             Write-Host 'Server key: created user-only, loaded by the node, and a Users-readable copy refused'
 
             # Oracle attester (testnet): 'Create Attester Key' writes a user-only
-            # seed and token and shows only the public key; the shipped config's
-            # placeholders stop StartAttester; with them filled in (CI only) the
-            # attester runs on the key file against the local node and stops on
-            # Ctrl+C. Seed and token are only pattern-checked, never printed.
+            # seed and token and shows only the public key; StartAttester stops
+            # until the operator's attester.conf chooses a reference mode; with
+            # one set, the attester runs on the key file against the local node
+            # and stops on Ctrl+C. Seed and token are only pattern-checked.
             $oracleKey = Join-Path $root 'oracle.key'
             $oracleToken = Join-Path $root 'oracle.token'
             Invoke-Shortcut 'Create Attester Key.lnk' '-Quiet'
@@ -371,13 +371,13 @@ jobs:
             if ((Get-Content -LiteralPath $oracleKey -Raw).Trim() -ne $seed) { throw 'a second Create Attester Key replaced the key' }
             Write-Host "attester key: user-only, public key $oraclePub, not replaced on a second run"
 
+            if (Test-Path -LiteralPath (Join-Path $root 'oracle.key.tmp')) { throw 'oracle.key.tmp was left behind' }
             & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action StartAttester -Quiet
-            if ($LASTEXITCODE -eq 0) { throw 'StartAttester ran with placeholder values in attester-888.conf' }
+            if ($LASTEXITCODE -eq 0) { throw 'StartAttester ran without a chosen reference mode' }
             $global:LASTEXITCODE = 0   # the refusal was expected
-            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'still has placeholder values for: WRFCOIN_ATTESTER_REFERENCE_MODE' -Quiet)) { throw 'launcher.log does not name the placeholder settings' }
-            $attConf = Join-Path $app 'attester-888.conf'
-            $filled = (Get-Content -LiteralPath $attConf | Where-Object { $_ -notlike 'WRFCOIN_ATTESTER_MAX_REFERENCE_KM=*' }) -replace '^WRFCOIN_ATTESTER_REFERENCE_MODE=.*$', 'WRFCOIN_ATTESTER_REFERENCE_MODE=fixed'
-            [System.IO.File]::WriteAllText($attConf, (($filled -join "`r`n") + "`r`n"))
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'set WRFCOIN_ATTESTER_REFERENCE_MODE (fixed, shadow or per_station) in' -SimpleMatch -Quiet)) { throw 'launcher.log does not say which setting and file to edit' }
+            # The operator's own file, in the user-only data folder; upgrades never replace it.
+            [System.IO.File]::WriteAllText((Join-Path $root 'attester.conf'), "# CI`r`nWRFCOIN_ATTESTER_REFERENCE_MODE=fixed`r`n")
 
             Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
             $attLog = Join-Path $root 'logs\attester.log'
@@ -399,7 +399,7 @@ jobs:
               Write-Host '::group::attester.log (tail)'; Get-Content $attLog -Tail 40 -ErrorAction SilentlyContinue; Write-Host '::endgroup::'
               Get-Process oracle_attester -ErrorAction SilentlyContinue | Stop-Process -Force
             }
-            Write-Host 'attester: placeholders refused; runs on the user-only key file with its own token; Stop Attester and Stop (node) stop it'
+            Write-Host 'attester: unset reference mode refused; runs on the user-only key file with its own token; Stop Attester and Stop (node) stop it'
 
             # reachable.conf ("Open your port"): the two allowed keys reach the node
             # and the dashboard shows the announced address; any other key stops

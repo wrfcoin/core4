@@ -52,18 +52,33 @@ class OracleKey(unittest.TestCase):
     def test_testnet_only_and_never_overwritten(self) -> None:
         body = function_body("New-OracleKey")
         self.assertIn("$cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet'", body)
-        exists = body.index("if (Test-Path -LiteralPath $OracleKeyFile)")
-        write = body.index("WriteAllText($OracleKeyFile, (New-RandomHex))")
+        exists = body.index("if (Test-OracleKey)")
+        write = body.index("WriteAllText($OracleKeyTmp, (New-RandomHex))")
         self.assertLess(exists, write)
         self.assertIn("return", body[exists:write])
 
-    def test_file_is_locked_before_the_seed_is_written(self) -> None:
+    def test_seed_goes_to_a_locked_temp_file_then_is_renamed(self) -> None:
         body = function_body("New-OracleKey")
-        empty = body.index("WriteAllText($OracleKeyFile, '')")
-        lock = body.index("Protect-UserOnly $OracleKeyFile", empty)
-        seed = body.index("WriteAllText($OracleKeyFile, (New-RandomHex))")
+        empty = body.index("WriteAllText($OracleKeyTmp, '')")
+        lock = body.index("Protect-UserOnly $OracleKeyTmp", empty)
+        seed = body.index("WriteAllText($OracleKeyTmp, (New-RandomHex))")
+        move = body.index("[System.IO.File]::Move($OracleKeyTmp, $OracleKeyFile)")
         self.assertLess(empty, lock)
         self.assertLess(lock, seed)
+        self.assertLess(seed, move)
+        self.assertNotIn("WriteAllText($OracleKeyFile", body)
+
+    def test_zero_length_key_counts_as_absent(self) -> None:
+        body = function_body("Test-OracleKey")
+        self.assertIn("$item.Length -gt 0", body)
+        self.assertNotIn("Test-Path -LiteralPath $OracleKeyFile", LAUNCHER)
+        # The only removal of oracle.key is in the create path, after the
+        # "exists" check returned (a real key is never deleted).
+        create = function_body("New-OracleKey")
+        exists = create.index("if (Test-OracleKey)")
+        remove = create.index("Remove-Item -LiteralPath $stale -Force")
+        self.assertLess(exists, remove)
+        self.assertEqual(LAUNCHER.count("Remove-Item -LiteralPath $stale"), 1)
 
     def test_seed_is_never_read_back_or_shown(self) -> None:
         # The launcher never reads oracle.key itself: only wrfcoin.exe (public
@@ -88,7 +103,7 @@ class OracleKey(unittest.TestCase):
 class OracleToken(unittest.TestCase):
     def test_token_created_locked_and_only_with_the_key(self) -> None:
         body = function_body("Initialize-UserState")
-        guard = body.index("if (Test-Path -LiteralPath $OracleKeyFile) {")
+        guard = body.index("if (Test-OracleKey) {")
         rest = body[guard:]
         empty = rest.index("WriteAllText($OracleTokenFile, '')")
         lock = rest.index("Protect-UserOnly $OracleTokenFile", empty)
@@ -99,7 +114,7 @@ class OracleToken(unittest.TestCase):
 
     def test_node_gets_the_token_only_when_the_key_exists(self) -> None:
         body = function_body("Start-Node")
-        guard = body.index("if ((Test-Path -LiteralPath $OracleKeyFile) -and (Test-Path -LiteralPath $OracleTokenFile)) {")
+        guard = body.index("if ((Test-OracleKey) -and (Test-Path -LiteralPath $OracleTokenFile)) {")
         self.assertIn("SetEnvironmentVariable('WRFCOIN_ORACLE_TOKEN'", body[guard:])
         self.assertEqual(body.count("WRFCOIN_ORACLE_TOKEN"), 1)
 
@@ -113,8 +128,8 @@ class OracleToken(unittest.TestCase):
 class StartStopAttester(unittest.TestCase):
     def test_start_requires_key_running_node_and_filled_config(self) -> None:
         body = function_body("Start-Attester")
-        key = body.index("if (-not (Test-Path -LiteralPath $OracleKeyFile))")
-        conf = body.index("Read-AttesterConfig $AttesterConfig")
+        key = body.index("if (-not (Test-OracleKey))")
+        conf = body.index("$att = Read-AttesterConfig")
         node = body.index("if (@(Get-NodeProcess).Count -eq 0)")
         launch = body.index("[System.Diagnostics.Process]::Start($psi)")
         self.assertLess(key, launch)
@@ -140,17 +155,38 @@ class StartStopAttester(unittest.TestCase):
         self.assertIn(">> `\"$AttesterLog`\" 2>&1", body)
         self.assertIn("$psi.CreateNoWindow = $true", body)
 
-    def test_placeholders_and_foreign_keys_refuse(self) -> None:
+    def test_operator_settings_layer_and_refusals(self) -> None:
         body = function_body("Read-AttesterConfig")
-        self.assertIn("$value.StartsWith('REPLACE_ME')", body)
-        self.assertIn("still has placeholder values for", body)
         self.assertIn("'^WRFCOIN_ATTESTER_[A-Z0-9_]+$'", body)
+        # The operator's file is read after the shipped one and overrides it.
+        self.assertLess(body.index("ReadAllLines($AttesterConfig)"), body.index("ReadAllLines($AttesterUserConfig)"))
+        self.assertIn("$AttesterUserKeys -cnotcontains $key", body)
+        # The reference mode must be chosen; the message names the file to edit.
+        self.assertIn('Fail "set WRFCOIN_ATTESTER_REFERENCE_MODE (fixed, shadow or per_station) in ${AttesterUserConfig}"', body)
+        self.assertIn("needs WRFCOIN_ATTESTER_MAX_REFERENCE_KM", body)
+        self.assertIn("$AttesterUserConfig = Join-Path $Root 'attester.conf'", LAUNCHER)
+        self.assertNotIn("REPLACE_ME", LAUNCHER)
+
+    def test_operator_cannot_override_refused_keys_or_credentials(self) -> None:
+        start = LAUNCHER.index("$AttesterUserKeys = @(")
+        allowed = LAUNCHER[start : LAUNCHER.index("\n\n", start)]
+        for forbidden in ("FORBID", "NODE_URL", "API_TOKEN", "ONCE"):
+            self.assertNotIn(forbidden, allowed)
 
     def test_stop_uses_ctrl_c_and_node_stop_stops_the_attester_first(self) -> None:
         body = function_body("Stop-Attester")
         self.assertIn("[WrfcoinConsoleCtrl]::SendCtrlC([uint32]$proc.Id)", body)
         node = function_body("Stop-Node")
         self.assertLess(node.index("Stop-Attester $false"), node.index("SendCtrlC"))
+
+    def test_node_stop_path_never_blocks_on_the_attester(self) -> None:
+        body = function_body("Stop-Attester")
+        timeout = body.index("$left = @(Get-AttesterProcess)")
+        rest = body[timeout:]
+        self.assertIn('if ($Report) { Fail "the attester is still running after 30 s', rest)
+        self.assertIn("force-stopping it", rest)
+        self.assertIn("$left | Stop-Process -Force", rest)
+        self.assertIn("if ($err -ne 0 -and $Report) { Fail", body)
 
 
 class AttesterConfig(unittest.TestCase):
@@ -161,6 +197,13 @@ class AttesterConfig(unittest.TestCase):
     def test_only_attester_keys(self) -> None:
         for key in self.att:
             self.assertRegex(key, r"^WRFCOIN_ATTESTER_[A-Z0-9_]+$")
+
+    def test_operator_choices_are_not_shipped(self) -> None:
+        self.assertNotIn("WRFCOIN_ATTESTER_REFERENCE_MODE", self.att)
+        self.assertNotIn("WRFCOIN_ATTESTER_MAX_REFERENCE_KM", self.att)
+        for value in self.att.values():
+            self.assertNotIn("REPLACE_ME", value)
+        self.assertEqual(self.att["WRFCOIN_ATTESTER_NWS_STATION"], "KDLH")
 
     def test_refused_keys_match_chain_888(self) -> None:
         self.assertEqual(
