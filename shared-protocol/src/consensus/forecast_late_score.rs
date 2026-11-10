@@ -6,29 +6,47 @@
 //!
 //! 1. **Record.** When a forecast reveal applies, the chain stores a
 //!    [`ForecastRecord`]: the forecaster (the key that signed the commit), the
-//!    station, one integer value, the lead and the chain-derived valid time.
+//!    station, one integer value, the lead, and the commit block's height and
+//!    time. The target time is `commit time + lead`; it comes from the chain.
 //! 2. **Score.** A `TransactionType::ForecastScore` transaction carries an
 //!    [`ObservationAttestation`] signed by an oracle quorum, plus the commit
 //!    ids to score. Anyone may relay it. The chain computes the skill with
-//!    the integer rule in `wrfcoin_forecast_score::late_score`; nothing is
-//!    taken from the transaction except the oracle-signed observation.
-//! 3. **Close and pay.** A bucket (station, variable, lead, valid hour) closes
-//!    24 h after its valid time. Its top forecasters by skill are paid from a
-//!    capped share of the Contribution slice. Whatever is not paid is not
-//!    minted. Unscored forecasts are dropped unpaid.
+//!    the integer rule in `wrfcoin_forecast_score::late_score` (rule 7 of the
+//!    shared skill vectors); nothing is taken from the transaction except the
+//!    oracle-signed observation.
+//! 3. **Close and pay.** A bucket (station, variable, lead, target hour)
+//!    closes 24 h after the end of its hour. Its top forecasters by skill are
+//!    paid from a capped share of the Contribution slice. Whatever is not paid
+//!    is not minted. Unscored forecasts are dropped unpaid.
+//!
+//! What the chain checks of an observation, and what it leaves to the oracles
+//! that sign it:
+//!
+//! - On chain: the quorum of authorized oracle signatures; the range rule; the
+//!   timing (not before target + 35 min); that the truth reading and every
+//!   window reading cited is an on-chain reading of the station at oracle
+//!   quorum; and that every window reading LANDED below the forecast's commit
+//!   height, so a reading back-dated after the forecast was revealed can never
+//!   enter the window or become `last`.
+//! - Oracle side: which readings fall in the 24 h window and the 15-minute
+//!   truth window by block time and observation time, quorum as of the closing
+//!   block, the provenance class, the hourly samples, minimum sample counts,
+//!   and the reference arithmetic. The chain never parses or rounds a decimal
+//!   or a float: readings reach it only as the integers oracles sign.
 //!
 //! Everything is integer arithmetic over `BTreeMap`s, with checked operations;
 //! a failed check refuses the step (fail closed). Before the feature is in
 //! force nothing here is written, so [`ForecastLateScoreState`] is empty and
 //! absent from the state root, checkpoints and snapshots.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use thiserror::Error;
+pub use wrfcoin_forecast_score::late_score::ScoredVariable as LateScoreVariable;
 use wrfcoin_forecast_score::late_score::{
-    DEFAULT_COPY_TOLERANCE_UNITS, LateScoreInput, MAX_REFERENCE, SKILL_PRECISION, is_valid_value,
+    DEFAULT_COPY_TOLERANCE_UNITS, LateScoreInput, MAX_REFERENCE, SCORE_DELAY_SECS, SKILL_PRECISION,
     late_skill,
 };
 
@@ -46,13 +64,14 @@ const BUCKET_ID_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_late_score.bucket.v1";
 const ROOT_MATERIAL_TAG: &[u8] = b"wrfcoin_forecast_late_score_v1";
 
 /// Largest `Transaction::data` of a score transaction.
-pub const MAX_FORECAST_SCORE_PAYLOAD_BYTES: usize = 16 * 1024;
+pub const MAX_FORECAST_SCORE_PAYLOAD_BYTES: usize = 64 * 1024;
 /// Most forecast commit ids one score transaction may list.
 pub const MAX_FORECASTS_PER_SCORE_TX: usize = 64;
 /// Most score transactions one block may carry.
 pub const MAX_FORECAST_SCORE_TXS_PER_BLOCK: usize = 8;
-/// Most station-reading commit ids one attestation may cite.
-pub const MAX_READING_COMMIT_IDS: usize = 8;
+/// Most window-reading commit ids one attestation may cite. A station with
+/// more quorum readings than this in 24 h cannot be attested (unscored).
+pub const MAX_WINDOW_READINGS: usize = 512;
 /// Most oracle signatures one score transaction may carry.
 pub const MAX_OBSERVATION_SIGNATURES: usize = 16;
 /// Longest station id or commit id accepted in a score transaction.
@@ -60,10 +79,10 @@ pub const MAX_ID_BYTES: usize = 128;
 
 /// The leads a forecast may be scored at, in hours.
 pub const LEAD_HOURS: [u32; 4] = [1, 6, 12, 24];
-/// A bucket may be scored from `valid_at` plus this many seconds (the reading
-/// window plus its attestation quorum).
-pub const SCORE_OPENS_AFTER_SECS: i64 = 20 * 60;
-/// A bucket closes, and pays, `valid_at` plus this many seconds.
+/// A forecast may be scored from its target time plus this many seconds:
+/// 15 minutes of readings plus 20 minutes for them to land and reach quorum.
+pub const SCORE_OPENS_AFTER_SECS: i64 = SCORE_DELAY_SECS;
+/// A bucket closes, and pays, this many seconds after the end of its hour.
 pub const SCORE_WINDOW_SECS: i64 = 24 * 60 * 60;
 const SECS_PER_HOUR: i64 = 3_600;
 
@@ -91,66 +110,67 @@ pub const FORECASTER_EPOCH_SHARE_BPS: u128 = 1_000;
 pub const POOL_EPOCHS_RETAINED: u64 = 4;
 const BPS: u128 = 10_000;
 
-/// A variable this lane scores. The forecast puts the value in the reveal's
-/// `data` object as a JSON integer under [`Self::data_key`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LateScoreVariable {
-    /// Air temperature in 0.01 °C.
-    TempCCenti,
-    /// Station pressure in Pa.
-    PressurePa,
+/// The copy tolerance, in the variable's fixed-point unit (0.05 °C; 5 Pa).
+/// One named constant for the baseline copy check and the copier rule.
+pub const COPY_TOLERANCE_UNITS: u64 = DEFAULT_COPY_TOLERANCE_UNITS;
+
+/// The copy tolerance of `variable`.
+pub const fn copy_tolerance(_variable: LateScoreVariable) -> u64 {
+    COPY_TOLERANCE_UNITS
 }
 
-impl LateScoreVariable {
-    pub const ALL: [Self; 2] = [Self::TempCCenti, Self::PressurePa];
-
-    /// The key of the integer value in a forecast reveal's `data`.
-    pub const fn data_key(self) -> &'static str {
-        match self {
-            Self::TempCCenti => "temp_c_centi",
-            Self::PressurePa => "pressure_pa",
-        }
-    }
-
-    /// Stable byte in signed and hashed encodings.
-    const fn wire_byte(self) -> u8 {
-        match self {
-            Self::TempCCenti => 0,
-            Self::PressurePa => 1,
-        }
-    }
-
-    /// Copy tolerance in the variable's fixed-point unit (0.05 °C; 5 Pa).
-    pub const fn copy_tolerance(self) -> u64 {
-        DEFAULT_COPY_TOLERANCE_UNITS
+/// The key of the integer value in a forecast reveal's `data`:
+/// `temp_c_centi` (0.01 °C) or `pressure_pa` (Pa).
+pub const fn data_key(variable: LateScoreVariable) -> &'static str {
+    match variable {
+        LateScoreVariable::TemperatureC => "temp_c_centi",
+        LateScoreVariable::PressureHpa => "pressure_pa",
     }
 }
 
-/// What an oracle quorum signs: the observation one bucket is scored against.
-/// Every number is a fixed-point integer in the variable's unit.
+/// Stable byte of a variable in signed and hashed encodings.
+const fn wire_byte(variable: LateScoreVariable) -> u8 {
+    match variable {
+        LateScoreVariable::TemperatureC => 0,
+        LateScoreVariable::PressureHpa => 1,
+    }
+}
+
+/// What an oracle quorum signs: the observation that the forecasts of one
+/// station, variable and lead COMMITTED IN ONE BLOCK are scored against. The
+/// window and `last` depend on the commit block, so there is one attestation
+/// per commit block. Every number is a fixed-point integer in the variable's
+/// unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationAttestation {
     pub station_id: String,
     pub variable: LateScoreVariable,
-    /// Lead of the bucket, in hours; the reference error depends on it.
+    /// Lead in hours.
     pub lead_hours: u32,
-    /// The hour scored, unix seconds, on a whole hour.
-    pub valid_at: i64,
-    /// The station reading at `valid_at`.
+    /// Height and time (unix seconds) of the block the forecasts were
+    /// committed in.
+    pub commit_height: u64,
+    pub commit_time: i64,
+    /// `commit_time + lead_hours`, the time scored.
+    pub target: i64,
+    /// The station reading nearest `target`.
     pub truth: i64,
+    /// Commit id of that reading.
+    pub truth_commit_id: String,
     /// The smaller of the window's spread and its lagged-persistence error.
     pub reference: u64,
-    /// Mean of the window.
+    /// Mean of the window's hourly samples.
     pub mean24: i64,
-    /// The last reading before issue.
+    /// The last reading before the commit.
     pub last: i64,
-    /// Lowercase hex SHA3-256 of the readings window
+    /// Lowercase hex SHA3-256 of the 24 hourly samples
     /// (`wrfcoin_forecast_score::late_score::window_hash`).
     pub window_hash: String,
-    /// Commit ids of the on-chain station readings the truth was taken from.
-    pub reading_commit_ids: Vec<String>,
+    /// Commit ids of the readings the window and `last` were built from,
+    /// strictly ascending in byte order. Every one landed below
+    /// `commit_height`.
+    pub window_commit_ids: Vec<String>,
 }
 
 /// One oracle's signature over [`observation_attestation_message`].
@@ -185,17 +205,23 @@ pub enum ForecastLateScoreError {
     UnauthorizedOracle,
     #[error("{have} authorized oracle signatures, quorum is {need}")]
     BelowQuorum { have: usize, need: usize },
-    #[error("too early: the bucket can be scored from {opens_at}")]
+    #[error("too early: the forecast can be scored from {opens_at}")]
     TooEarly { opens_at: i64 },
     #[error("too late: the bucket closed at {closes_at}")]
     Closed { closes_at: i64 },
     #[error("no forecast is recorded for this station, variable, lead and hour")]
     UnknownBucket,
-    #[error("the bucket is already scored against a different observation")]
+    #[error("these forecasts are already scored against a different observation")]
     ObservationConflict,
-    #[error("a cited station reading is not an attested on-chain reading of this station")]
+    #[error("the truth reading is not an attested on-chain reading of this station")]
+    TruthNotAttested,
+    #[error("a window reading is not an attested on-chain reading of this station")]
     ReadingNotAttested,
-    #[error("forecast {0} does not belong to the attested bucket")]
+    #[error("a window reading landed at or after the forecast's commit height")]
+    ReadingAfterCommit,
+    #[error(
+        "forecast {0} does not belong to the attested station, variable, lead and commit block"
+    )]
     ForecastNotInBucket(String),
     #[error("no listed forecast is waiting for a score")]
     NothingToScore,
@@ -233,26 +259,29 @@ pub fn observation_attestation_message(
     push(&mut message, chain_id.as_bytes());
     push(&mut message, network_id.as_bytes());
     push(&mut message, attestation.station_id.as_bytes());
-    push(&mut message, &[attestation.variable.wire_byte()]);
+    push(&mut message, &[wire_byte(attestation.variable)]);
     push(&mut message, &attestation.lead_hours.to_le_bytes());
-    push(&mut message, &attestation.valid_at.to_le_bytes());
+    push(&mut message, &attestation.commit_height.to_le_bytes());
+    push(&mut message, &attestation.commit_time.to_le_bytes());
+    push(&mut message, &attestation.target.to_le_bytes());
     push(&mut message, &attestation.truth.to_le_bytes());
+    push(&mut message, attestation.truth_commit_id.as_bytes());
     push(&mut message, &attestation.reference.to_le_bytes());
     push(&mut message, &attestation.mean24.to_le_bytes());
     push(&mut message, &attestation.last.to_le_bytes());
     push(&mut message, attestation.window_hash.as_bytes());
     push(
         &mut message,
-        &(attestation.reading_commit_ids.len() as u64).to_le_bytes(),
+        &(attestation.window_commit_ids.len() as u64).to_le_bytes(),
     );
-    for id in &attestation.reading_commit_ids {
+    for id in &attestation.window_commit_ids {
         push(&mut message, id.as_bytes());
     }
     message
 }
 
-/// Lowercase hex SHA3-256 of [`observation_attestation_message`]: what a
-/// bucket pins once it is scored.
+/// Lowercase hex SHA3-256 of [`observation_attestation_message`]: what the
+/// forecasts of one commit block are pinned to once scored.
 pub fn observation_digest(
     chain_id: &str,
     network_id: &str,
@@ -265,45 +294,38 @@ pub fn observation_digest(
     )))
 }
 
-/// Whether `valid_at` is a whole, non-negative hour.
-fn is_whole_hour(valid_at: i64) -> bool {
-    valid_at >= 0 && valid_at % SECS_PER_HOUR == 0
+/// The time a forecast committed at `commit_time` with `lead_hours` is scored
+/// at: `commit_time + lead`. `None` for an unsupported lead or a negative or
+/// overflowing time.
+pub fn target_for(commit_time: i64, lead_hours: u32) -> Option<i64> {
+    if commit_time < 0 || !LEAD_HOURS.contains(&lead_hours) {
+        return None;
+    }
+    commit_time.checked_add(i64::from(lead_hours).checked_mul(SECS_PER_HOUR)?)
 }
 
-/// The id of the bucket (station, variable, lead, valid hour). It sorts by
-/// valid time first, so the buckets due to close are a prefix of the map.
+/// The start of the hour `target` falls in: the hour a bucket competes over.
+pub fn bucket_hour(target: i64) -> Option<i64> {
+    (target >= 0).then(|| target - target % SECS_PER_HOUR)
+}
+
+/// The id of the bucket (station, variable, lead, target hour). It sorts by
+/// hour first, so the buckets due to close are a prefix of the map.
 pub fn bucket_id(
     station_id: &str,
     variable: LateScoreVariable,
     lead_hours: u32,
-    valid_at: i64,
+    hour: i64,
 ) -> Option<String> {
-    let valid = u64::try_from(valid_at).ok()?;
+    let sortable = u64::try_from(hour).ok()?;
     let mut material = Vec::new();
     push(&mut material, BUCKET_ID_DOMAIN_TAG);
     push(&mut material, station_id.as_bytes());
-    push(&mut material, &[variable.wire_byte()]);
+    push(&mut material, &[wire_byte(variable)]);
     push(&mut material, &lead_hours.to_le_bytes());
-    push(&mut material, &valid_at.to_le_bytes());
+    push(&mut material, &hour.to_le_bytes());
     let digest = Sha3_256::digest(&material);
-    Some(format!("{valid:016x}-{}", hex::encode(&digest[..16])))
-}
-
-/// The valid time of a forecast revealed in a block stamped `block_timestamp`:
-/// the first whole hour at or after `block_timestamp + lead`. It comes from the
-/// chain, never from the forecaster, and the effective lead is never shorter
-/// than the nominal one.
-pub fn valid_at_for(block_timestamp: i64, lead_hours: u32) -> Option<i64> {
-    if block_timestamp < 0 || !LEAD_HOURS.contains(&lead_hours) {
-        return None;
-    }
-    let target = block_timestamp.checked_add(i64::from(lead_hours).checked_mul(SECS_PER_HOUR)?)?;
-    let remainder = target % SECS_PER_HOUR;
-    if remainder == 0 {
-        Some(target)
-    } else {
-        target.checked_add(SECS_PER_HOUR - remainder)
-    }
+    Some(format!("{sortable:016x}-{}", hex::encode(&digest[..16])))
 }
 
 impl ObservationAttestation {
@@ -313,13 +335,15 @@ impl ObservationAttestation {
         if !is_plain_id(&self.station_id) {
             return Err(Malformed("station_id"));
         }
-        if !LEAD_HOURS.contains(&self.lead_hours) {
-            return Err(Malformed("lead_hours is not 1, 6, 12 or 24"));
+        if target_for(self.commit_time, self.lead_hours) != Some(self.target) {
+            return Err(Malformed(
+                "target is not commit_time + a lead of 1, 6, 12 or 24 hours",
+            ));
         }
-        if !is_whole_hour(self.valid_at) {
-            return Err(Malformed("valid_at is not a whole hour"));
-        }
-        if !(is_valid_value(self.truth) && is_valid_value(self.mean24) && is_valid_value(self.last))
+        // Rule 1: every reading-derived value is inside the variable's range.
+        if !(self.variable.in_range(self.truth)
+            && self.variable.in_range(self.mean24)
+            && self.variable.in_range(self.last))
         {
             return Err(Malformed("truth, mean24 or last is out of range"));
         }
@@ -329,19 +353,20 @@ impl ObservationAttestation {
         if !is_lower_hex(&self.window_hash, 64) {
             return Err(Malformed("window_hash is not 64 lowercase hex characters"));
         }
-        if self.reading_commit_ids.is_empty()
-            || self.reading_commit_ids.len() > MAX_READING_COMMIT_IDS
-        {
-            return Err(Malformed("reading_commit_ids count"));
+        if !is_plain_id(&self.truth_commit_id) {
+            return Err(Malformed("truth_commit_id"));
         }
-        if !self.reading_commit_ids.iter().all(|id| is_plain_id(id))
+        if self.window_commit_ids.is_empty() || self.window_commit_ids.len() > MAX_WINDOW_READINGS {
+            return Err(Malformed("window_commit_ids count"));
+        }
+        if !self.window_commit_ids.iter().all(|id| is_plain_id(id))
             || !self
-                .reading_commit_ids
+                .window_commit_ids
                 .windows(2)
-                .all(|pair| pair[0] < pair[1])
+                .all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
         {
             return Err(Malformed(
-                "reading_commit_ids must be plain ids, strictly ascending",
+                "window_commit_ids must be plain ids, strictly ascending",
             ));
         }
         Ok(())
@@ -456,6 +481,10 @@ pub struct PendingForecast {
     /// The address of the key that signed the commit.
     pub forecaster: Address,
     pub commit_height: u64,
+    /// Time of the commit block. Stamped by the bucket close that ends the
+    /// commit block (the commit transition carries no time); a reveal in the
+    /// commit block itself takes its own block's time.
+    pub commit_time: Option<i64>,
     /// Last height the reveal may land; the entry is dropped after it.
     pub expires_at_height: u64,
 }
@@ -468,32 +497,27 @@ pub struct ForecastRecord {
     pub variable: LateScoreVariable,
     pub value: i64,
     pub lead_hours: u32,
-    pub valid_at: i64,
     pub commit_height: u64,
+    /// Time of the commit block.
+    pub commit_time: i64,
+    /// `commit_time + lead`: the time scored.
+    pub target: i64,
     pub reveal_height: u64,
     /// Skill in millionths once scored.
     pub skill: Option<u64>,
 }
 
-/// The observation a bucket was first scored against.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PinnedObservation {
-    /// [`observation_digest`] of the attestation.
-    pub digest: String,
-    pub truth: i64,
-    pub reference: u64,
-    pub mean24: i64,
-    pub last: i64,
-}
-
-/// The forecasts competing for one (station, variable, lead, valid hour).
+/// The forecasts competing for one (station, variable, lead, target hour).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForecastBucket {
     pub station_id: String,
     pub variable: LateScoreVariable,
     pub lead_hours: u32,
-    pub valid_at: i64,
-    pub observation: Option<PinnedObservation>,
+    /// Start of the hour the targets fall in.
+    pub hour: i64,
+    /// The observation the forecasts of a commit block were first scored
+    /// against: commit height → [`observation_digest`].
+    pub observations: BTreeMap<u64, String>,
     /// Commit ids in reveal order, at most [`MAX_BUCKET_ENTRIES`], one per
     /// forecaster.
     pub commit_ids: Vec<String>,
@@ -585,22 +609,56 @@ pub fn allocate_pro_rata(nominal: &[u128], budget: u128) -> Option<Vec<u128>> {
 }
 
 /// The integer value a forecast reveal carries for this lane: exactly one
-/// supported key holding a JSON integer in range. Anything else (two
-/// supported keys, a float, a string, out of range) is not recorded.
+/// supported key holding a JSON integer inside the variable's range (rule 1).
+/// Anything else (two supported keys, a float, a string, out of range) is not
+/// recorded. No float is ever parsed or rounded here.
 pub fn forecast_value(data: &serde_json::Value) -> Option<(LateScoreVariable, i64)> {
     let object = data.as_object()?;
     let mut found = None;
     for variable in LateScoreVariable::ALL {
-        if let Some(value) = object.get(variable.data_key()) {
+        if let Some(value) = object.get(data_key(variable)) {
             if found.is_some() {
                 return None;
             }
             // `as_i64` is `None` for floats, strings and integers outside i64.
-            let value = value.as_i64().filter(|v| is_valid_value(*v))?;
+            let value = value.as_i64().filter(|v| variable.in_range(*v))?;
             found = Some((variable, value));
         }
     }
     found
+}
+
+/// What the chain knows of a reading cited by an attestation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitedReading {
+    pub station_id: String,
+    /// Height of the block the reading's reveal landed in.
+    pub landed_at_height: u64,
+    /// Whether it has reached the oracle quorum now.
+    pub has_quorum: bool,
+}
+
+/// The readings an attestation cites must be on-chain readings of the
+/// attested station at oracle quorum, and every window reading must have
+/// landed below the forecasts' commit height. `reading` resolves a commit id
+/// when it is an applied contribution reveal.
+pub fn check_cited_readings(
+    attestation: &ObservationAttestation,
+    reading: impl Fn(&str) -> Option<CitedReading>,
+) -> Result<(), ForecastLateScoreError> {
+    let counts = |commit_id: &str| {
+        reading(commit_id).filter(|r| r.has_quorum && r.station_id == attestation.station_id)
+    };
+    if counts(&attestation.truth_commit_id).is_none() {
+        return Err(ForecastLateScoreError::TruthNotAttested);
+    }
+    for commit_id in &attestation.window_commit_ids {
+        let cited = counts(commit_id).ok_or(ForecastLateScoreError::ReadingNotAttested)?;
+        if cited.landed_at_height >= attestation.commit_height {
+            return Err(ForecastLateScoreError::ReadingAfterCommit);
+        }
+    }
+    Ok(())
 }
 
 impl ForecastLateScoreState {
@@ -624,6 +682,7 @@ impl ForecastLateScoreState {
             PendingForecast {
                 forecaster,
                 commit_height,
+                commit_time: None,
                 expires_at_height,
             },
         );
@@ -655,16 +714,26 @@ impl ForecastLateScoreState {
         {
             return false;
         }
+        // The commit block's time: stamped when that block closed, or this
+        // block's own time when commit and reveal share a block.
+        let commit_time = match pending.commit_time {
+            Some(time) => time,
+            None if pending.commit_height == block_height => block_timestamp,
+            None => return false,
+        };
         let Some(lead_hours) = payload.manifest.as_ref().map(|m| m.horizon_hours) else {
             return false;
         };
         let Some((variable, value)) = forecast_value(&payload.data) else {
             return false;
         };
-        let Some(valid_at) = valid_at_for(block_timestamp, lead_hours) else {
+        let Some(target) = target_for(commit_time, lead_hours) else {
             return false;
         };
-        let Some(id) = bucket_id(&payload.station_id, variable, lead_hours, valid_at) else {
+        let Some(hour) = bucket_hour(target) else {
+            return false;
+        };
+        let Some(id) = bucket_id(&payload.station_id, variable, lead_hours, hour) else {
             return false;
         };
         if self.records.contains_key(&payload.commit_id) {
@@ -687,8 +756,8 @@ impl ForecastLateScoreState {
                 station_id: payload.station_id.clone(),
                 variable,
                 lead_hours,
-                valid_at,
-                observation: None,
+                hour,
+                observations: BTreeMap::new(),
                 commit_ids: Vec::new(),
             })
             .commit_ids
@@ -701,8 +770,9 @@ impl ForecastLateScoreState {
                 variable,
                 value,
                 lead_hours,
-                valid_at,
                 commit_height: pending.commit_height,
+                commit_time,
+                target,
                 reveal_height: block_height,
                 skill: None,
             },
@@ -721,18 +791,19 @@ impl ForecastLateScoreState {
         digest: &str,
         block_timestamp: i64,
     ) -> Result<usize, ForecastLateScoreError> {
+        use ForecastLateScoreError::Overflow;
         let attestation = &payload.attestation;
+        // Not before target + 35 min: the truth candidates are then closed.
         let opens_at = attestation
-            .valid_at
+            .target
             .checked_add(SCORE_OPENS_AFTER_SECS)
-            .ok_or(ForecastLateScoreError::Overflow)?;
-        let closes_at = attestation
-            .valid_at
-            .checked_add(SCORE_WINDOW_SECS)
-            .ok_or(ForecastLateScoreError::Overflow)?;
+            .ok_or(Overflow)?;
         if block_timestamp < opens_at {
             return Err(ForecastLateScoreError::TooEarly { opens_at });
         }
+        let hour =
+            bucket_hour(attestation.target).ok_or(ForecastLateScoreError::Malformed("target"))?;
+        let closes_at = bucket_closes_at(hour).ok_or(Overflow)?;
         if block_timestamp >= closes_at {
             return Err(ForecastLateScoreError::Closed { closes_at });
         }
@@ -740,17 +811,17 @@ impl ForecastLateScoreState {
             &attestation.station_id,
             attestation.variable,
             attestation.lead_hours,
-            attestation.valid_at,
+            hour,
         )
-        .ok_or(ForecastLateScoreError::Malformed("valid_at"))?;
+        .ok_or(ForecastLateScoreError::Malformed("target"))?;
         let bucket = self
             .buckets
             .get(&id)
             .ok_or(ForecastLateScoreError::UnknownBucket)?;
         if bucket
-            .observation
-            .as_ref()
-            .is_some_and(|pinned| pinned.digest != digest)
+            .observations
+            .get(&attestation.commit_height)
+            .is_some_and(|pinned| pinned != digest)
         {
             return Err(ForecastLateScoreError::ObservationConflict);
         }
@@ -761,7 +832,13 @@ impl ForecastLateScoreState {
             let Some(record) = self.records.get(commit_id) else {
                 continue;
             };
-            if !bucket.commit_ids.contains(commit_id) {
+            // The window and `last` belong to one commit block: a forecast
+            // from any other block, bucket or time is a hard refusal.
+            if !bucket.commit_ids.contains(commit_id)
+                || record.commit_height != attestation.commit_height
+                || record.commit_time != attestation.commit_time
+                || record.target != attestation.target
+            {
                 return Err(ForecastLateScoreError::ForecastNotInBucket(
                     commit_id.clone(),
                 ));
@@ -770,12 +847,13 @@ impl ForecastLateScoreState {
                 continue;
             }
             let score = late_skill(&LateScoreInput {
+                variable: attestation.variable,
                 forecast: record.value,
                 truth: attestation.truth,
                 reference: attestation.reference,
                 mean24: attestation.mean24,
                 last: attestation.last,
-                tolerance: attestation.variable.copy_tolerance(),
+                tolerance: copy_tolerance(attestation.variable),
             })
             .map_err(|e| ForecastLateScoreError::Score(e.to_string()))?;
             scored.push((commit_id.clone(), score.skill));
@@ -790,37 +868,17 @@ impl ForecastLateScoreState {
             }
         }
         if let Some(bucket) = self.buckets.get_mut(&id) {
-            if bucket.observation.is_none() {
-                bucket.observation = Some(PinnedObservation {
-                    digest: digest.to_string(),
-                    truth: attestation.truth,
-                    reference: attestation.reference,
-                    mean24: attestation.mean24,
-                    last: attestation.last,
-                });
-            }
+            bucket
+                .observations
+                .entry(attestation.commit_height)
+                .or_insert_with(|| digest.to_string());
         }
         Ok(count)
     }
 
-    /// Whether [`Self::close_due`] would change anything at this block.
-    pub fn close_is_due(&self, block_height: u64, block_timestamp: i64) -> bool {
-        self.pending
-            .values()
-            .any(|p| p.expires_at_height < block_height)
-            || self
-                .buckets
-                .values()
-                .next()
-                .is_some_and(|b| bucket_is_due(b, block_timestamp))
-            || self
-                .pool
-                .keys()
-                .next()
-                .is_some_and(|epoch| pool_epoch_expired(*epoch, block_height))
-    }
-
-    /// Close every bucket due at `block_timestamp` (oldest first, at most
+    /// End-of-block step, once per block while the feature is in force:
+    /// stamp this block's time on the forecast commits it carried, close every
+    /// bucket due at `block_timestamp` (oldest first, at most
     /// [`MAX_BUCKET_CLOSES_PER_BLOCK`]), drop expired pending commits and old
     /// pool epochs, and return what the closed buckets earned, in bucket order
     /// then rank. Closed buckets and their records are deleted whether or not
@@ -834,12 +892,17 @@ impl ForecastLateScoreState {
         block_timestamp: i64,
         station_owner: impl Fn(&str) -> Option<Address>,
     ) -> Vec<BucketAward> {
+        for pending in self.pending.values_mut() {
+            if pending.commit_height == block_height && pending.commit_time.is_none() {
+                pending.commit_time = Some(block_timestamp);
+            }
+        }
         self.pending
             .retain(|_, pending| pending.expires_at_height >= block_height);
         self.pool
             .retain(|epoch, _| !pool_epoch_expired(*epoch, block_height));
 
-        // Ids sort by valid time, so the due buckets are a prefix.
+        // Ids sort by hour, so the due buckets are a prefix.
         let due: Vec<String> = self
             .buckets
             .iter()
@@ -1001,6 +1064,13 @@ impl ForecastLateScoreState {
             push(material, commit_id.as_bytes());
             material.extend_from_slice(&pending.forecaster.0);
             u64le(material, pending.commit_height);
+            match pending.commit_time {
+                Some(time) => {
+                    material.push(1);
+                    i64le(material, time);
+                },
+                None => material.push(0),
+            }
             u64le(material, pending.expires_at_height);
         }
         u64le(material, self.records.len() as u64);
@@ -1008,11 +1078,12 @@ impl ForecastLateScoreState {
             push(material, commit_id.as_bytes());
             material.extend_from_slice(&record.forecaster.0);
             push(material, record.station_id.as_bytes());
-            material.push(record.variable.wire_byte());
+            material.push(wire_byte(record.variable));
             i64le(material, record.value);
             u64le(material, u64::from(record.lead_hours));
-            i64le(material, record.valid_at);
             u64le(material, record.commit_height);
+            i64le(material, record.commit_time);
+            i64le(material, record.target);
             u64le(material, record.reveal_height);
             match record.skill {
                 Some(skill) => {
@@ -1026,19 +1097,13 @@ impl ForecastLateScoreState {
         for (id, bucket) in &self.buckets {
             push(material, id.as_bytes());
             push(material, bucket.station_id.as_bytes());
-            material.push(bucket.variable.wire_byte());
+            material.push(wire_byte(bucket.variable));
             u64le(material, u64::from(bucket.lead_hours));
-            i64le(material, bucket.valid_at);
-            match &bucket.observation {
-                Some(observation) => {
-                    material.push(1);
-                    push(material, observation.digest.as_bytes());
-                    i64le(material, observation.truth);
-                    u64le(material, observation.reference);
-                    i64le(material, observation.mean24);
-                    i64le(material, observation.last);
-                },
-                None => material.push(0),
+            i64le(material, bucket.hour);
+            u64le(material, bucket.observations.len() as u64);
+            for (commit_height, digest) in &bucket.observations {
+                u64le(material, *commit_height);
+                push(material, digest.as_bytes());
             }
             u64le(material, bucket.commit_ids.len() as u64);
             for commit_id in &bucket.commit_ids {
@@ -1060,13 +1125,17 @@ impl ForecastLateScoreState {
     }
 }
 
+/// When the bucket of `hour` closes: 24 h after the end of the hour, so every
+/// forecast in it has had at least 24 h after its target to be scored.
+pub fn bucket_closes_at(hour: i64) -> Option<i64> {
+    hour.checked_add(SECS_PER_HOUR)?
+        .checked_add(SCORE_WINDOW_SECS)
+}
+
 fn bucket_is_due(bucket: &ForecastBucket, block_timestamp: i64) -> bool {
     // An overflowing close time can never be reached; such a bucket closes at
     // once rather than living forever.
-    bucket
-        .valid_at
-        .checked_add(SCORE_WINDOW_SECS)
-        .is_none_or(|closes_at| block_timestamp >= closes_at)
+    bucket_closes_at(bucket.hour).is_none_or(|closes_at| block_timestamp >= closes_at)
 }
 
 fn pool_epoch_expired(epoch: u64, block_height: u64) -> bool {
@@ -1106,7 +1175,7 @@ fn bucket_awards(
     entries: &[(String, ForecastRecord)],
     station_owner: Option<Address>,
 ) -> Result<Vec<BucketAward>, ForecastLateScoreError> {
-    let tolerance = bucket.variable.copy_tolerance();
+    let tolerance = copy_tolerance(bucket.variable);
     let is_copy = |record: &ForecastRecord| {
         entries.iter().any(|(_, other)| {
             other.forecaster != record.forecaster
@@ -1153,23 +1222,6 @@ fn bucket_awards(
         .collect())
 }
 
-/// The reading commit ids an attestation cites must all be on-chain readings
-/// of the attested station that reached the oracle quorum. `reading` resolves
-/// a commit id to `(station id, has quorum)` when it is an applied reveal.
-pub fn check_cited_readings(
-    attestation: &ObservationAttestation,
-    reading: impl Fn(&str) -> Option<(String, bool)>,
-) -> Result<(), ForecastLateScoreError> {
-    let cited: BTreeSet<&String> = attestation.reading_commit_ids.iter().collect();
-    for commit_id in cited {
-        match reading(commit_id) {
-            Some((station_id, true)) if station_id == attestation.station_id => {},
-            _ => return Err(ForecastLateScoreError::ReadingNotAttested),
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,11 +1240,12 @@ mod tests {
         ForecastRecord {
             forecaster: addr(forecaster),
             station_id: "st-1".into(),
-            variable: LateScoreVariable::TempCCenti,
+            variable: LateScoreVariable::TemperatureC,
             value,
             lead_hours: 6,
-            valid_at: 7_200,
             commit_height: commit,
+            commit_time: 1_000,
+            target: 22_600,
             reveal_height: reveal,
             skill,
         }
@@ -1201,10 +1254,10 @@ mod tests {
     fn bucket() -> ForecastBucket {
         ForecastBucket {
             station_id: "st-1".into(),
-            variable: LateScoreVariable::TempCCenti,
+            variable: LateScoreVariable::TemperatureC,
             lead_hours: 6,
-            valid_at: 7_200,
-            observation: None,
+            hour: 21_600,
+            observations: BTreeMap::new(),
             commit_ids: Vec::new(),
         }
     }
@@ -1219,72 +1272,6 @@ mod tests {
             .into_iter()
             .map(|a| (a.commit_id, a.amount))
             .collect()
-    }
-
-    #[test]
-    fn valid_at_is_the_next_whole_hour_at_or_after_block_time_plus_lead() {
-        assert_eq!(valid_at_for(0, 1), Some(3_600));
-        assert_eq!(valid_at_for(1, 1), Some(7_200));
-        assert_eq!(valid_at_for(3_599, 1), Some(7_200));
-        assert_eq!(valid_at_for(3_600, 6), Some(25_200));
-        assert_eq!(valid_at_for(1_762_646_461, 24), Some(1_762_736_400));
-        for lead in [0, 2, 3, 5, 7, 23, 25, 48, u32::MAX] {
-            assert_eq!(valid_at_for(1_000, lead), None, "lead {lead}");
-        }
-        assert_eq!(valid_at_for(-1, 1), None);
-        assert_eq!(valid_at_for(i64::MAX, 24), None);
-        assert_eq!(valid_at_for(i64::MAX - 86_400, 24), None);
-    }
-
-    #[test]
-    fn bucket_ids_sort_by_valid_time_and_separate_every_field() {
-        let id = |station: &str, variable, lead, valid| {
-            bucket_id(station, variable, lead, valid).unwrap()
-        };
-        let t = LateScoreVariable::TempCCenti;
-        let base = id("st-1", t, 6, 7_200);
-        assert!(
-            base < id("st-0", t, 1, 10_800),
-            "earlier valid time sorts first whatever the rest"
-        );
-        assert_ne!(base, id("st-2", t, 6, 7_200));
-        assert_ne!(base, id("st-1", LateScoreVariable::PressurePa, 6, 7_200));
-        assert_ne!(base, id("st-1", t, 12, 7_200));
-        assert_eq!(base, id("st-1", t, 6, 7_200));
-        assert_eq!(bucket_id("st-1", t, 6, -3_600), None);
-    }
-
-    #[test]
-    fn forecast_value_takes_exactly_one_integer() {
-        use serde_json::json;
-        let t = LateScoreVariable::TempCCenti;
-        assert_eq!(
-            forecast_value(&json!({"temp_c_centi": 2137})),
-            Some((t, 2137))
-        );
-        assert_eq!(
-            forecast_value(&json!({"temp_c_centi": -40, "note": "x"})),
-            Some((t, -40))
-        );
-        assert_eq!(
-            forecast_value(&json!({"pressure_pa": 101_325})),
-            Some((LateScoreVariable::PressurePa, 101_325))
-        );
-        for bad in [
-            json!({"temp_c_centi": 21.37}),
-            json!({"temp_c_centi": 2137.0}),
-            json!({"temp_c_centi": "2137"}),
-            json!({"temp_c_centi": null}),
-            json!({"temp_c_centi": 1_000_000_001i64}),
-            json!({"temp_c_centi": -1_000_000_001i64}),
-            json!({"temp_c_centi": u64::MAX}),
-            json!({"temp_c_centi": 2137, "pressure_pa": 101_325}),
-            json!({"temperature": 21}),
-            json!([2137]),
-            json!(2137),
-        ] {
-            assert_eq!(forecast_value(&bad), None, "{bad}");
-        }
     }
 
     #[test]
@@ -1497,14 +1484,232 @@ mod tests {
     }
 
     #[test]
+    fn target_is_commit_time_plus_lead_and_buckets_are_whole_hours() {
+        assert_eq!(target_for(0, 1), Some(3_600));
+        assert_eq!(target_for(1_762_646_461, 24), Some(1_762_732_861));
+        for lead in [0, 2, 3, 5, 7, 23, 25, 48, u32::MAX] {
+            assert_eq!(target_for(1_000, lead), None, "lead {lead}");
+        }
+        assert_eq!(target_for(-1, 1), None);
+        assert_eq!(target_for(i64::MAX, 24), None);
+        assert_eq!(bucket_hour(0), Some(0));
+        assert_eq!(bucket_hour(3_599), Some(0));
+        assert_eq!(bucket_hour(3_600), Some(3_600));
+        assert_eq!(bucket_hour(1_762_732_861), Some(1_762_732_800));
+        assert_eq!(bucket_hour(-1), None);
+        // Every forecast of an hour has at least 24 h after its target.
+        assert_eq!(bucket_closes_at(3_600), Some(3_600 + 3_600 + 86_400));
+        assert_eq!(bucket_closes_at(i64::MAX - 10), None);
+        assert_eq!(SCORE_OPENS_AFTER_SECS, 35 * 60);
+    }
+
+    #[test]
+    fn bucket_ids_sort_by_hour_and_separate_every_field() {
+        let id =
+            |station: &str, variable, lead, hour| bucket_id(station, variable, lead, hour).unwrap();
+        let t = LateScoreVariable::TemperatureC;
+        let base = id("st-1", t, 6, 7_200);
+        assert!(
+            base < id("st-0", t, 1, 10_800),
+            "an earlier hour sorts first whatever the rest"
+        );
+        assert_ne!(base, id("st-2", t, 6, 7_200));
+        assert_ne!(base, id("st-1", LateScoreVariable::PressureHpa, 6, 7_200));
+        assert_ne!(base, id("st-1", t, 12, 7_200));
+        assert_eq!(base, id("st-1", t, 6, 7_200));
+        assert_eq!(bucket_id("st-1", t, 6, -3_600), None);
+    }
+
+    #[test]
+    fn forecast_value_takes_exactly_one_in_range_integer() {
+        use serde_json::json;
+        let t = LateScoreVariable::TemperatureC;
+        let p = LateScoreVariable::PressureHpa;
+        assert_eq!(
+            forecast_value(&json!({"temp_c_centi": 2137})),
+            Some((t, 2137))
+        );
+        assert_eq!(
+            forecast_value(&json!({"temp_c_centi": -40, "note": "x"})),
+            Some((t, -40))
+        );
+        assert_eq!(
+            forecast_value(&json!({"temp_c_centi": -10_000})),
+            Some((t, -10_000))
+        );
+        assert_eq!(
+            forecast_value(&json!({"temp_c_centi": 10_000})),
+            Some((t, 10_000))
+        );
+        assert_eq!(
+            forecast_value(&json!({"pressure_pa": 101_325})),
+            Some((p, 101_325))
+        );
+        assert_eq!(
+            forecast_value(&json!({"pressure_pa": 30_000})),
+            Some((p, 30_000))
+        );
+        assert_eq!(
+            forecast_value(&json!({"pressure_pa": 120_000})),
+            Some((p, 120_000))
+        );
+        for bad in [
+            json!({"temp_c_centi": 21.37}),
+            json!({"temp_c_centi": 2137.0}),
+            json!({"temp_c_centi": "2137"}),
+            json!({"temp_c_centi": null}),
+            json!({"temp_c_centi": 10_001}),
+            json!({"temp_c_centi": -10_001}),
+            json!({"temp_c_centi": u64::MAX}),
+            json!({"pressure_pa": 29_999}),
+            json!({"pressure_pa": 120_001}),
+            json!({"pressure_pa": 1013.25}),
+            json!({"temp_c_centi": 2137, "pressure_pa": 101_325}),
+            json!({"temperature_c": 21}),
+            json!([2137]),
+            json!(2137),
+        ] {
+            assert_eq!(forecast_value(&bad), None, "{bad}");
+        }
+    }
+
+    fn attestation() -> ObservationAttestation {
+        ObservationAttestation {
+            station_id: "st-1".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 100,
+            commit_time: 1_000,
+            target: 22_600,
+            truth: 2_000,
+            truth_commit_id: "truth".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["w1".into(), "w2".into()],
+        }
+    }
+
+    #[test]
+    fn attestation_shape_and_range_rules() {
+        assert_eq!(attestation().validate(), Ok(()));
+        let bad = |change: fn(&mut ObservationAttestation)| {
+            let mut a = attestation();
+            change(&mut a);
+            a.validate().is_err()
+        };
+        assert!(bad(|a| a.target += 1), "target must be commit_time + lead");
+        assert!(bad(|a| a.lead_hours = 5));
+        assert!(bad(|a| a.commit_time = -22_000));
+        assert!(bad(|a| a.truth = 10_001));
+        assert!(bad(|a| a.mean24 = -10_001));
+        assert!(bad(|a| a.last = 30_000), "a pressure is not a temperature");
+        assert!(bad(|a| a.reference = MAX_REFERENCE + 1));
+        assert!(bad(|a| a.window_hash = "5A".repeat(32)));
+        assert!(bad(|a| a.truth_commit_id = String::new()));
+        assert!(bad(|a| a.window_commit_ids.clear()));
+        assert!(bad(|a| a.window_commit_ids = vec!["w2".into(), "w1".into()]));
+        assert!(bad(|a| a.window_commit_ids = vec!["w1".into(), "w1".into()]));
+        assert!(bad(|a| a.window_commit_ids = (0..=MAX_WINDOW_READINGS)
+            .map(|i| format!("w{i:05}"))
+            .collect()));
+        assert!(bad(|a| a.station_id = "has space".into()));
+    }
+
+    #[test]
+    fn cited_readings_must_be_attested_station_readings_landed_before_the_commit() {
+        let a = attestation();
+        let chain = |id: &str| -> Option<CitedReading> {
+            let (station, height, quorum) = match id {
+                "truth" => ("st-1", 400, true),
+                "w1" => ("st-1", 98, true),
+                "w2" => ("st-1", 99, true),
+                "at-commit" => ("st-1", 100, true),
+                "after-commit" => ("st-1", 101, true),
+                "no-quorum" => ("st-1", 50, false),
+                "other-station" => ("st-2", 50, true),
+                _ => return None,
+            };
+            Some(CitedReading {
+                station_id: station.into(),
+                landed_at_height: height,
+                has_quorum: quorum,
+            })
+        };
+        assert_eq!(check_cited_readings(&a, chain), Ok(()));
+        let with_window = |id: &str| {
+            let mut a = attestation();
+            a.window_commit_ids = vec![id.to_string()];
+            check_cited_readings(&a, chain)
+        };
+        // A reading that landed in or after the commit block can never enter
+        // the window, whatever observation time it claims.
+        assert_eq!(
+            with_window("at-commit"),
+            Err(ForecastLateScoreError::ReadingAfterCommit)
+        );
+        assert_eq!(
+            with_window("after-commit"),
+            Err(ForecastLateScoreError::ReadingAfterCommit)
+        );
+        assert_eq!(
+            with_window("no-quorum"),
+            Err(ForecastLateScoreError::ReadingNotAttested)
+        );
+        assert_eq!(
+            with_window("other-station"),
+            Err(ForecastLateScoreError::ReadingNotAttested)
+        );
+        assert_eq!(
+            with_window("unknown"),
+            Err(ForecastLateScoreError::ReadingNotAttested)
+        );
+        for truth in ["no-quorum", "other-station", "unknown"] {
+            let mut a = attestation();
+            a.truth_commit_id = truth.into();
+            assert_eq!(
+                check_cited_readings(&a, chain),
+                Err(ForecastLateScoreError::TruthNotAttested)
+            );
+        }
+    }
+
+    #[test]
+    fn close_stamps_the_commit_time_of_this_block_only() {
+        let mut state = ForecastLateScoreState::default();
+        state.note_commit("c1", addr(1), 5, 8);
+        state.note_commit("c2", addr(2), 6, 9);
+        assert!(state.close_due(5, 111, |_| None).is_empty());
+        assert_eq!(state.pending["c1"].commit_time, Some(111));
+        assert_eq!(state.pending["c2"].commit_time, None);
+        state.close_due(6, 222, |_| None);
+        assert_eq!(
+            state.pending["c1"].commit_time,
+            Some(111),
+            "a stamp is never rewritten"
+        );
+        assert_eq!(state.pending["c2"].commit_time, Some(222));
+        state.close_due(9, 333, |_| None);
+        assert!(
+            !state.pending.contains_key("c1"),
+            "expired after its reveal window"
+        );
+        assert!(state.pending.contains_key("c2"));
+    }
+
+    #[test]
     fn state_round_trips_through_json_and_bincode() {
         let mut state = ForecastLateScoreState::default();
         assert_eq!(bincode::serialize(&state).unwrap(), vec![0u8; 32]);
         state.note_commit("c0", addr(1), 5, 8);
+        state.close_due(5, 99, |_| None);
         state
             .records
             .insert("c1".into(), record(1, -2_000, 5, 6, Some(7)));
-        state.buckets.insert("b1".into(), bucket());
+        let mut scored = bucket();
+        scored.observations.insert(5, "d".into());
+        state.buckets.insert("b1".into(), scored);
         state
             .settle_awards(10, &[award(1, "a", 50)], 1_000, u128::MAX)
             .unwrap();
@@ -1537,21 +1742,24 @@ mod tests {
         let mut seen = vec![root(&state)];
         state.note_commit("c1", addr(1), 5, 8);
         seen.push(root(&state));
+        state.close_due(5, 99, |_| None);
+        seen.push(root(&state));
         state
             .records
             .insert("c1".into(), record(1, 2_000, 5, 6, None));
         seen.push(root(&state));
         state.records.get_mut("c1").unwrap().skill = Some(0);
         seen.push(root(&state));
+        state.records.get_mut("c1").unwrap().target += 1;
+        seen.push(root(&state));
         state.buckets.insert("b1".into(), bucket());
         seen.push(root(&state));
-        state.buckets.get_mut("b1").unwrap().observation = Some(PinnedObservation {
-            digest: "d".into(),
-            truth: 1,
-            reference: 2,
-            mean24: 3,
-            last: 4,
-        });
+        state
+            .buckets
+            .get_mut("b1")
+            .unwrap()
+            .observations
+            .insert(5, "d".into());
         seen.push(root(&state));
         state.pool.insert(
             3,
@@ -1561,7 +1769,7 @@ mod tests {
             },
         );
         seen.push(root(&state));
-        let distinct: BTreeSet<&Vec<u8>> = seen.iter().collect();
+        let distinct: std::collections::BTreeSet<&Vec<u8>> = seen.iter().collect();
         assert_eq!(distinct.len(), seen.len());
     }
 }

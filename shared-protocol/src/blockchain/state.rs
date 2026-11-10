@@ -8274,14 +8274,20 @@ impl State {
                 self.oracle_quorum,
             )
             .map_err(refuse)?;
-        // The truth must come from readings of this station that are on chain
-        // and reached the oracle quorum.
+        // The truth and every window reading must be readings of this station
+        // that are on chain and at the oracle quorum in force now, and every
+        // window reading must have landed below the forecasts' commit height.
         let quorum = self.oracle_quorum.max(1);
         late::check_cited_readings(&payload.attestation, |commit_id| {
             let reveal = self.commit_reveal_state.applied_reveals.get(commit_id)?;
-            let attested =
-                self.attestations.get(commit_id).is_some_and(|set| set.has_quorum(quorum));
-            Some((reveal.station_id.clone(), attested))
+            Some(late::CitedReading {
+                station_id: reveal.station_id.clone(),
+                landed_at_height: reveal.revealed_at,
+                has_quorum: self
+                    .attestations
+                    .get(commit_id)
+                    .is_some_and(|set| set.has_quorum(quorum)),
+            })
         })
         .map_err(refuse)?;
         let digest =

@@ -14,14 +14,12 @@ use wrfcoin_shared_protocol::blockchain::transaction::{
     CommitPayload, ForecastArtifactManifest, OracleAttestationPayload, RevealPayload, Transaction,
     TransactionInput, TransactionOutput, TransactionType,
 };
-use wrfcoin_shared_protocol::config::settings::Config;
-use wrfcoin_shared_protocol::crypto::hash::hash_string;
-use wrfcoin_shared_protocol::mempool::pool::Mempool;
 use wrfcoin_shared_protocol::common::types::{Address, Balance};
+use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
-    POOL_EPOCH_BLOCKS, SCORE_OPENS_AFTER_SECS, SCORE_WINDOW_SECS, bucket_id, forecaster_key,
-    observation_attestation_message,
+    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+    ObservationSignature, POOL_EPOCH_BLOCKS, SCORE_OPENS_AFTER_SECS, SCORE_WINDOW_SECS,
+    bucket_closes_at, bucket_id, forecaster_key, observation_attestation_message,
 };
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::{
     EmissionRole, FORECAST_REWARD_REASON_PREFIX,
@@ -31,7 +29,9 @@ use wrfcoin_shared_protocol::crypto::chain_binding::{
     forecast_late_score_active, forecast_late_score_active_with,
     forecast_late_score_schedule_allowed, refresh_feature_schedule_extensions,
 };
+use wrfcoin_shared_protocol::crypto::hash::hash_string;
 use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+use wrfcoin_shared_protocol::mempool::pool::Mempool;
 use wrfcoin_shared_protocol::station_registry::{
     ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
 };
@@ -213,18 +213,28 @@ fn attested_reading(
     commit_id
 }
 
-fn attestation(valid_at: i64, reading: &str) -> ObservationAttestation {
+/// The observation for the forecasts committed at `commit_height` /
+/// `commit_time` (6 h lead): truth 20.00, reference 3.00, mean 19.00, last 21.00.
+fn attestation(
+    commit_height: u64,
+    commit_time: i64,
+    truth: &str,
+    window: &str,
+) -> ObservationAttestation {
     ObservationAttestation {
         station_id: STATION.to_string(),
-        variable: LateScoreVariable::TempCCenti,
+        variable: LateScoreVariable::TemperatureC,
         lead_hours: 6,
-        valid_at,
+        commit_height,
+        commit_time,
+        target: commit_time + 6 * HOUR,
         truth: 2_000,
+        truth_commit_id: truth.to_string(),
         reference: 300,
         mean24: 1_900,
         last: 2_100,
         window_hash: "5a".repeat(32),
-        reading_commit_ids: vec![reading.to_string()],
+        window_commit_ids: vec![window.to_string()],
     }
 }
 
@@ -345,7 +355,12 @@ fn forecast_late_score_end_to_end() {
                 public_key: None,
                 coinbase_data: None,
             }],
-            vec![TransactionOutput { amount: 0, address: relay.to_string(), script: "OP_TRUE".into(), nft_data: None }],
+            vec![TransactionOutput {
+                amount: 0,
+                address: relay.to_string(),
+                script: "OP_TRUE".into(),
+                nft_data: None,
+            }],
         );
         tx.tx_type = TransactionType::ForecastScore;
         tx.sender_address = relay;
@@ -353,7 +368,11 @@ fn forecast_late_score_end_to_end() {
         tx.set_id();
         tx
     };
-    let admission_probe = score_payload(attestation(T0, "r"), &[&key(0x21), &key(0x22)], &["f"]);
+    let admission_probe = score_payload(
+        attestation(5, T0, "t", "r"),
+        &[&key(0x21), &key(0x22)],
+        &["f"],
+    );
     let admit = |tx: Transaction, tip: u64| {
         Mempool::new(&Config::default())
             .add_transaction_with_signing_keys_at_height(tx, None, Some(tip))
@@ -385,7 +404,10 @@ fn forecast_late_score_end_to_end() {
     let mut forged = admission_probe.clone();
     forged.attestation.truth += 1;
     let err = admit(relay_tx(&forged), ACTIVE).unwrap_err();
-    assert!(err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"), "{err}");
+    assert!(
+        err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"),
+        "{err}"
+    );
     let mut junk = relay_tx(&admission_probe);
     junk.data = Some("{\"attestation\":1}".to_string());
     let err = admit(junk, ACTIVE).unwrap_err();
@@ -407,6 +429,7 @@ fn forecast_late_score_end_to_end() {
             oracle_quorum: 2,
         })
         .expect("oracle config");
+    // Window readings: landed before any forecast commit.
     let reading = attested_reading(
         &mut state,
         &owner,
@@ -426,7 +449,7 @@ fn forecast_late_score_end_to_end() {
         ACTIVE - 6,
     );
 
-    // ---- Dormant: one block below the effective height. ----
+    // ---- Dormant: below the effective height. ----
     let (commit, reveal) = forecast(
         &alice,
         STATION,
@@ -435,16 +458,15 @@ fn forecast_late_score_end_to_end() {
         "dormant",
     );
     commit_at(&mut state, &commit, ACTIVE - 3);
-    reveal_at(&mut state, &reveal, ACTIVE - 2, T0);
+    reveal_at(&mut state, &reveal, ACTIVE - 3, T0);
     assert!(
         state.forecast_late_score.is_empty(),
         "nothing is recorded before the feature is in force"
     );
     assert!(!has_root_section(&state));
     let before = state.state_root_material();
-    let dormant_valid_at = T0 + 6 * HOUR;
     let dormant_score = score_payload(
-        attestation(dormant_valid_at, &reading),
+        attestation(ACTIVE - 3, T0, &reading, &reading),
         &[&oracle_a, &oracle_b],
         &[&commit.commit_id],
     );
@@ -453,7 +475,7 @@ fn forecast_late_score_end_to_end() {
             &mut state,
             &dormant_score,
             ACTIVE - 1,
-            dormant_valid_at + SCORE_OPENS_AFTER_SECS
+            T0 + 6 * HOUR + SCORE_OPENS_AFTER_SECS
         ),
         Err(StateError::InvalidTransition)
     ));
@@ -479,60 +501,82 @@ fn forecast_late_score_end_to_end() {
     );
 
     // ---- Active: records at reveal. ----
-    let reveal_ts = T0 + 100; // valid time = first whole hour at or after T0 + 100 s + 6 h.
-    let valid_at = T0 + 7 * HOUR;
-    let record = |state: &mut State,
-                  signer: &PrivateKey,
-                  value: serde_json::Value,
-                  tag: &str,
-                  commit_height: u64,
-                  reveal_height: u64| {
+    // Block ACTIVE (time T0 + 100): Alice and Bob commit and reveal in it.
+    // Block ACTIVE + 1 (time T0 + 200): Carol and Erin commit; they reveal in
+    // the next block, so their commit time is the stamp the close left.
+    // Block ACTIVE + 3 (time T0 + 400): Dave commits AFTER Alice's reveal,
+    // 2 units from her value: a copy.
+    let (t_a, t_c, t_d) = (T0 + 100, T0 + 200, T0 + 400);
+    let commit_only = |state: &mut State,
+                       signer: &PrivateKey,
+                       value: serde_json::Value,
+                       tag: &str,
+                       height: u64| {
         let (commit, reveal) = forecast(signer, STATION, value, 6, tag);
-        commit_at(state, &commit, commit_height);
-        reveal_at(state, &reveal, reveal_height, reveal_ts);
-        commit.commit_id
+        commit_at(state, &commit, height);
+        reveal
     };
-    let f_alice = record(
+    let reveal = commit_only(
         &mut state,
         &alice,
         serde_json::json!({"temp_c_centi": 2_040}),
         "alice",
         ACTIVE,
-        ACTIVE + 1,
     );
-    let f_bob = record(
+    let f_alice = reveal.commit_id.clone();
+    reveal_at(&mut state, &reveal, ACTIVE, t_a);
+    let reveal = commit_only(
         &mut state,
         &bob,
         serde_json::json!({"temp_c_centi": 2_150}),
         "bob",
         ACTIVE,
-        ACTIVE + 1,
     );
-    let f_carol = record(
+    let f_bob = reveal.commit_id.clone();
+    reveal_at(&mut state, &reveal, ACTIVE, t_a);
+    close_at(&mut state, ACTIVE, t_a).expect("end of block");
+    let carol_reveal = commit_only(
         &mut state,
         &carol,
         serde_json::json!({"temp_c_centi": 2_210}),
         "carol",
         ACTIVE + 1,
-        ACTIVE + 2,
     );
-    let f_erin = record(
+    let erin_reveal = commit_only(
         &mut state,
         &erin,
         serde_json::json!({"temp_c_centi": 2_290}),
         "erin",
         ACTIVE + 1,
-        ACTIVE + 2,
     );
-    // Dave commits AFTER Alice's reveal, 2 units from her value: a copy.
-    let f_dave = record(
+    let (f_carol, f_erin) = (
+        carol_reveal.commit_id.clone(),
+        erin_reveal.commit_id.clone(),
+    );
+    assert_eq!(
+        state.forecast_late_score.pending[&f_carol].commit_time,
+        None
+    );
+    close_at(&mut state, ACTIVE + 1, t_c).expect("end of block");
+    assert_eq!(
+        state.forecast_late_score.pending[&f_carol].commit_time,
+        Some(t_c),
+        "the close stamps the commit block's time"
+    );
+    reveal_at(&mut state, &carol_reveal, ACTIVE + 2, t_c + 100);
+    reveal_at(&mut state, &erin_reveal, ACTIVE + 2, t_c + 100);
+    close_at(&mut state, ACTIVE + 2, t_c + 100).expect("end of block");
+    let reveal = commit_only(
         &mut state,
         &dave,
         serde_json::json!({"temp_c_centi": 2_042}),
         "dave",
-        ACTIVE + 2,
         ACTIVE + 3,
     );
+    let f_dave = reveal.commit_id.clone();
+    reveal_at(&mut state, &reveal, ACTIVE + 3, t_d);
+    close_at(&mut state, ACTIVE + 3, t_d).expect("end of block");
+
     assert_eq!(state.forecast_late_score.records.len(), 5);
     assert!(
         state.forecast_late_score.pending.is_empty(),
@@ -544,23 +588,32 @@ fn forecast_late_score_end_to_end() {
         address_of(&alice),
         "the forecaster is the key that signed the commit"
     );
-    assert_eq!(
-        (
-            alice_record.value,
-            alice_record.lead_hours,
-            alice_record.valid_at
-        ),
-        (2_040, 6, valid_at)
-    );
+    assert_eq!((alice_record.value, alice_record.lead_hours), (2_040, 6));
     assert_eq!(
         (
             alice_record.commit_height,
-            alice_record.reveal_height,
-            alice_record.skill
+            alice_record.commit_time,
+            alice_record.target
         ),
-        (ACTIVE, ACTIVE + 1, None)
+        (ACTIVE, t_a, t_a + 6 * HOUR)
     );
-    let bucket = bucket_id(STATION, LateScoreVariable::TempCCenti, 6, valid_at).unwrap();
+    assert_eq!(
+        (alice_record.reveal_height, alice_record.skill),
+        (ACTIVE, None)
+    );
+    let carol_record = &state.forecast_late_score.records[&f_carol];
+    assert_eq!(
+        (
+            carol_record.commit_height,
+            carol_record.commit_time,
+            carol_record.target,
+            carol_record.reveal_height
+        ),
+        (ACTIVE + 1, t_c, t_c + 6 * HOUR, ACTIVE + 2),
+        "the target comes from the COMMIT block's time, not the reveal's"
+    );
+    let hour = T0 + 6 * HOUR;
+    let bucket = bucket_id(STATION, LateScoreVariable::TemperatureC, 6, hour).unwrap();
     assert_eq!(
         state.forecast_late_score.buckets[&bucket].commit_ids,
         vec![
@@ -574,41 +627,36 @@ fn forecast_late_score_end_to_end() {
     assert!(has_root_section(&state));
 
     // Not recorded: a second forecast by the same wallet for the bucket, the
-    // station owner's own forecast, a float, two variables, an unsupported
-    // lead, an unregistered station.
+    // station owner's own forecast, a float, an out-of-range value, two
+    // variables, an unsupported lead, an unregistered station.
     let records_before = state.forecast_late_score.records.len();
-    record(
-        &mut state,
-        &alice,
-        serde_json::json!({"temp_c_centi": 2_000}),
-        "alice-2",
-        ACTIVE + 3,
-        ACTIVE + 4,
-    );
-    record(
-        &mut state,
-        &owner,
-        serde_json::json!({"temp_c_centi": 2_001}),
-        "owner",
-        ACTIVE + 3,
-        ACTIVE + 4,
-    );
-    record(
-        &mut state,
-        &key(0x31),
-        serde_json::json!({"temp_c_centi": 20.4}),
-        "float",
-        ACTIVE + 3,
-        ACTIVE + 4,
-    );
-    record(
-        &mut state,
-        &key(0x32),
-        serde_json::json!({"temp_c_centi": 2_040, "pressure_pa": 101_325}),
-        "two",
-        ACTIVE + 3,
-        ACTIVE + 4,
-    );
+    let h = ACTIVE + 4;
+    for (signer, value, tag) in [
+        (
+            &alice,
+            serde_json::json!({"temp_c_centi": 2_000}),
+            "alice-2",
+        ),
+        (&owner, serde_json::json!({"temp_c_centi": 2_001}), "owner"),
+        (
+            &key(0x31),
+            serde_json::json!({"temp_c_centi": 20.4}),
+            "float",
+        ),
+        (
+            &key(0x36),
+            serde_json::json!({"temp_c_centi": 10_001}),
+            "too-hot",
+        ),
+        (
+            &key(0x32),
+            serde_json::json!({"temp_c_centi": 2_040, "pressure_pa": 101_325}),
+            "two",
+        ),
+    ] {
+        let reveal = commit_only(&mut state, signer, value, tag, h);
+        reveal_at(&mut state, &reveal, h, t_d + 100);
+    }
     for (signer, lead, station, tag) in [
         (key(0x33), 3u32, STATION, "lead-3"),
         (key(0x34), 6, "st-unregistered", "no-station"),
@@ -620,8 +668,8 @@ fn forecast_late_score_end_to_end() {
             lead,
             tag,
         );
-        commit_at(&mut state, &commit, ACTIVE + 3);
-        reveal_at(&mut state, &reveal, ACTIVE + 4, reveal_ts);
+        commit_at(&mut state, &commit, h);
+        reveal_at(&mut state, &reveal, h, t_d + 100);
     }
     assert_eq!(state.forecast_late_score.records.len(), records_before);
     assert!(state.forecast_late_score.pending.is_empty());
@@ -633,20 +681,21 @@ fn forecast_late_score_end_to_end() {
         6,
         "never",
     );
-    commit_at(&mut state, &never_revealed, ACTIVE + 4);
+    commit_at(&mut state, &never_revealed, h);
     assert_eq!(state.forecast_late_score.pending.len(), 1);
     // A second bucket (24 h lead) that nobody scores.
-    let (commit, reveal) = forecast(
+    let (commit_24, reveal_24) = forecast(
         &bob,
         STATION,
-        serde_json::json!({"temp_c_centi": 2_100}),
+        serde_json::json!({"temp_c_centi": 2_101}),
         24,
-        "bob-24",
+        "bob-24h",
     );
-    commit_at(&mut state, &commit, ACTIVE + 4);
-    reveal_at(&mut state, &reveal, ACTIVE + 5, reveal_ts);
+    commit_at(&mut state, &commit_24, h);
+    reveal_at(&mut state, &reveal_24, h, t_d + 100);
+    close_at(&mut state, h, t_d + 100).expect("end of block");
     let unscored_bucket =
-        bucket_id(STATION, LateScoreVariable::TempCCenti, 24, T0 + 25 * HOUR).unwrap();
+        bucket_id(STATION, LateScoreVariable::TemperatureC, 24, T0 + 24 * HOUR).unwrap();
     assert!(
         state
             .forecast_late_score
@@ -654,31 +703,46 @@ fn forecast_late_score_end_to_end() {
             .contains_key(&unscored_bucket)
     );
 
-    // ---- Scoring: every refusal leaves the state untouched. ----
-    let opens_at = valid_at + SCORE_OPENS_AFTER_SECS;
-    let all = [
-        f_alice.as_str(),
-        f_bob.as_str(),
-        f_carol.as_str(),
-        f_erin.as_str(),
-        f_dave.as_str(),
-    ];
-    let good = score_payload(
-        attestation(valid_at, &reading),
+    // Readings that land AFTER the commits: the truth (landed near the
+    // target, so after every commit) and a late reading for the window test.
+    let truth = attested_reading(
+        &mut state,
+        &owner,
+        STATION,
+        "truth",
         &[&oracle_a, &oracle_b],
-        &all,
+        ACTIVE + 280,
     );
+    let late_reading = attested_reading(
+        &mut state,
+        &owner,
+        STATION,
+        "late",
+        &[&oracle_a, &oracle_b],
+        ACTIVE + 1,
+    );
+
+    // ---- Scoring: every refusal leaves the state untouched. ----
+    let target_a = t_a + 6 * HOUR;
+    let opens_at = target_a + SCORE_OPENS_AFTER_SECS;
+    assert_eq!(
+        SCORE_OPENS_AFTER_SECS,
+        35 * 60,
+        "15 minutes of readings plus 20 to land and reach quorum"
+    );
+    let closes_at = bucket_closes_at(hour).unwrap();
+    assert_eq!(closes_at, hour + HOUR + SCORE_WINDOW_SECS);
+    let group_a = [f_alice.as_str(), f_bob.as_str()];
+    let att_a = || attestation(ACTIVE, t_a, &truth, &reading);
+    let good = score_payload(att_a(), &[&oracle_a, &oracle_b], &group_a);
     let h = ACTIVE + 400;
     let snapshot = state.state_root_material();
     refused(score_at(&mut state, &good, h, opens_at - 1), "too early");
-    refused(
-        score_at(&mut state, &good, h, valid_at + SCORE_WINDOW_SECS),
-        "too late",
-    );
+    refused(score_at(&mut state, &good, h, closes_at), "too late");
     refused(
         score_at(
             &mut state,
-            &score_payload(attestation(valid_at, &reading), &[&oracle_a], &all),
+            &score_payload(att_a(), &[&oracle_a], &group_a),
             h,
             opens_at,
         ),
@@ -687,11 +751,7 @@ fn forecast_late_score_end_to_end() {
     refused(
         score_at(
             &mut state,
-            &score_payload(
-                attestation(valid_at, &reading),
-                &[&oracle_a, &stranger],
-                &all,
-            ),
+            &score_payload(att_a(), &[&oracle_a, &stranger], &group_a),
             h,
             opens_at,
         ),
@@ -715,7 +775,9 @@ fn forecast_late_score_end_to_end() {
         score_at(&mut state, &duplicated, h, opens_at),
         "strictly ascending",
     );
-    for bad_reading in [
+    // Cited readings: the truth and every window reading must be attested
+    // readings of this station.
+    for bad in [
         weak_reading.as_str(),
         other_station_reading.as_str(),
         "no-such-reading",
@@ -724,37 +786,108 @@ fn forecast_late_score_end_to_end() {
             score_at(
                 &mut state,
                 &score_payload(
-                    attestation(valid_at, bad_reading),
+                    attestation(ACTIVE, t_a, bad, &reading),
                     &[&oracle_a, &oracle_b],
-                    &all,
+                    &group_a,
                 ),
                 h,
                 opens_at,
             ),
-            "not an attested on-chain reading",
+            "truth reading is not an attested",
+        );
+        refused(
+            score_at(
+                &mut state,
+                &score_payload(
+                    attestation(ACTIVE, t_a, &truth, bad),
+                    &[&oracle_a, &oracle_b],
+                    &group_a,
+                ),
+                h,
+                opens_at,
+            ),
+            "window reading is not an attested",
         );
     }
-    let mut other_hour = attestation(valid_at + HOUR, &reading);
-    other_hour.lead_hours = 6;
+    // A reading that landed at or after the commit height can never be in the
+    // window, even fully attested.
+    for after_commit in [late_reading.as_str(), truth.as_str()] {
+        refused(
+            score_at(
+                &mut state,
+                &score_payload(
+                    attestation(ACTIVE, t_a, &truth, after_commit),
+                    &[&oracle_a, &oracle_b],
+                    &group_a,
+                ),
+                h,
+                opens_at,
+            ),
+            "landed at or after",
+        );
+    }
+    // Out of range, a target that is not commit time + lead, another hour.
+    let mut hot = att_a();
+    hot.truth = 10_001;
     refused(
         score_at(
             &mut state,
-            &score_payload(other_hour, &[&oracle_a, &oracle_b], &all),
+            &score_payload(hot, &[&oracle_a, &oracle_b], &group_a),
             h,
-            opens_at + HOUR,
+            opens_at,
+        ),
+        "out of range",
+    );
+    let mut shifted = att_a();
+    shifted.target += 60;
+    refused(
+        score_at(
+            &mut state,
+            &score_payload(shifted, &[&oracle_a, &oracle_b], &group_a),
+            h,
+            opens_at,
+        ),
+        "target is not commit_time",
+    );
+    refused(
+        score_at(
+            &mut state,
+            &score_payload(
+                attestation(ACTIVE, t_a + 3 * HOUR, &truth, &reading),
+                &[&oracle_a, &oracle_b],
+                &group_a,
+            ),
+            h,
+            opens_at + 3 * HOUR,
         ),
         "no forecast is recorded",
     );
-    let mut half_hour = attestation(valid_at + 1_800, &reading);
-    half_hour.truth = 2_000;
+    // The right bucket but another commit block's time or height: refused.
     refused(
         score_at(
             &mut state,
-            &score_payload(half_hour, &[&oracle_a, &oracle_b], &all),
+            &score_payload(
+                attestation(ACTIVE + 1, t_c, &truth, &reading),
+                &[&oracle_a, &oracle_b],
+                &group_a,
+            ),
             h,
             opens_at + HOUR,
         ),
-        "whole hour",
+        "does not belong",
+    );
+    refused(
+        score_at(
+            &mut state,
+            &score_payload(
+                attestation(ACTIVE, t_a + 1, &truth, &reading),
+                &[&oracle_a, &oracle_b],
+                &group_a,
+            ),
+            h,
+            opens_at + HOUR,
+        ),
+        "does not belong",
     );
     assert_eq!(
         state.state_root_material(),
@@ -762,15 +895,11 @@ fn forecast_late_score_end_to_end() {
         "refused scores change nothing"
     );
 
-    // Two of five first, by one relay; then all five by another (the two
-    // already scored are skipped).
+    // One of the two first, by one relay; then both by another (the one
+    // already scored is skipped).
     score_at(
         &mut state,
-        &score_payload(
-            attestation(valid_at, &reading),
-            &[&oracle_b, &oracle_c],
-            &[&f_alice, &f_bob],
-        ),
+        &score_payload(att_a(), &[&oracle_b, &oracle_c], &[&f_alice]),
         h,
         opens_at,
     )
@@ -779,42 +908,31 @@ fn forecast_late_score_end_to_end() {
         state.forecast_late_score.records[&f_alice].skill,
         Some(866_667)
     );
+    assert_eq!(state.forecast_late_score.records[&f_bob].skill, None);
     assert_eq!(
-        state.forecast_late_score.records[&f_bob].skill,
-        Some(500_000)
-    );
-    assert_eq!(state.forecast_late_score.records[&f_carol].skill, None);
-    assert!(
         state.forecast_late_score.buckets[&bucket]
-            .observation
-            .is_some()
+            .observations
+            .len(),
+        1
     );
-    // The bucket is pinned to that observation: a different one is refused,
-    // even with a full quorum.
-    let mut conflicting = attestation(valid_at, &reading);
+    // That commit block is pinned to that observation: a different one is
+    // refused, even with a full quorum.
+    let mut conflicting = att_a();
     conflicting.truth = 2_200;
     refused(
         score_at(
             &mut state,
-            &score_payload(conflicting, &[&oracle_a, &oracle_b], &all),
+            &score_payload(conflicting, &[&oracle_a, &oracle_b], &group_a),
             h + 1,
             opens_at,
         ),
         "different observation",
     );
-    score_at(&mut state, &good, h + 1, valid_at + SCORE_WINDOW_SECS - 1)
+    score_at(&mut state, &good, h + 1, closes_at - 1)
         .expect("the rest score up to the last second");
     assert_eq!(
-        state.forecast_late_score.records[&f_carol].skill,
-        Some(300_000)
-    );
-    assert_eq!(
-        state.forecast_late_score.records[&f_erin].skill,
-        Some(33_334)
-    );
-    assert_eq!(
-        state.forecast_late_score.records[&f_dave].skill,
-        Some(860_000)
+        state.forecast_late_score.records[&f_bob].skill,
+        Some(500_000)
     );
     assert_eq!(
         state.forecast_late_score.records[&f_alice].skill,
@@ -826,19 +944,50 @@ fn forecast_late_score_end_to_end() {
         score_at(&mut state, &good, h + 2, opens_at),
         "no listed forecast is waiting",
     );
-    // A forecast from another bucket in the list is a hard refusal.
+    // The other commit blocks have their own observations (same numbers here).
+    let group_c = [f_carol.as_str(), f_erin.as_str()];
+    let opens_c = t_c + 6 * HOUR + SCORE_OPENS_AFTER_SECS;
+    let score_c = score_payload(
+        attestation(ACTIVE + 1, t_c, &truth, &reading),
+        &[&oracle_a, &oracle_b],
+        &group_c,
+    );
     refused(
-        score_at(
-            &mut state,
-            &score_payload(
-                attestation(valid_at, &reading),
-                &[&oracle_a, &oracle_b],
-                &[&commit.commit_id],
-            ),
-            h + 2,
-            opens_at,
-        ),
-        "does not belong",
+        score_at(&mut state, &score_c, h + 2, opens_c - 1),
+        "too early",
+    );
+    score_at(&mut state, &score_c, h + 2, opens_c).expect("second commit block scores");
+    assert_eq!(
+        state.forecast_late_score.records[&f_carol].skill,
+        Some(300_000)
+    );
+    assert_eq!(
+        state.forecast_late_score.records[&f_erin].skill,
+        Some(33_334)
+    );
+    // Dave's window may include the reading that landed at ACTIVE + 1: it is
+    // below his commit height (ACTIVE + 3).
+    let score_d = score_payload(
+        attestation(ACTIVE + 3, t_d, &truth, &late_reading),
+        &[&oracle_a, &oracle_c],
+        &[&f_dave],
+    );
+    score_at(
+        &mut state,
+        &score_d,
+        h + 3,
+        t_d + 6 * HOUR + SCORE_OPENS_AFTER_SECS,
+    )
+    .expect("third commit block scores");
+    assert_eq!(
+        state.forecast_late_score.records[&f_dave].skill,
+        Some(860_000)
+    );
+    assert_eq!(
+        state.forecast_late_score.buckets[&bucket]
+            .observations
+            .len(),
+        3
     );
 
     // ---- No baseline credit for a forecast reveal once in force. ----
@@ -851,7 +1000,7 @@ fn forecast_late_score_end_to_end() {
                 station_id: STATION.to_string(),
                 provenance_class: ContributionProvenanceClass::Real,
             },
-            current_block: h + 2,
+            current_block: h + 3,
         }),
         "forecast reveal credits are off",
     );
@@ -868,7 +1017,13 @@ fn forecast_late_score_end_to_end() {
     }
 
     // ---- Close and pay. ----
-    let closes_at = valid_at + SCORE_WINDOW_SECS;
+    let all = [
+        f_alice.as_str(),
+        f_bob.as_str(),
+        f_carol.as_str(),
+        f_erin.as_str(),
+        f_dave.as_str(),
+    ];
     let close_height = 3_000u64;
     let supply_before = state.total_minted_supply();
     // One second early: only the expired pending commit goes.
@@ -955,7 +1110,7 @@ fn forecast_late_score_end_to_end() {
     close_at(
         &mut state,
         close_height + 2,
-        T0 + 25 * HOUR + SCORE_WINDOW_SECS,
+        bucket_closes_at(T0 + 24 * HOUR).unwrap(),
     )
     .expect("unscored close");
     assert!(state.forecast_late_score.buckets.is_empty());

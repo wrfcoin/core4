@@ -1109,29 +1109,29 @@ mod tests {
         }
         {
             use crate::consensus::forecast_late_score::{
-                ForecastBucket, ForecastPoolEpoch, ForecastRecord, LateScoreVariable, PinnedObservation, bucket_id,
-                forecaster_key,
+                ForecastBucket, ForecastPoolEpoch, ForecastRecord, LateScoreVariable, bucket_id, forecaster_key,
             };
             let late = &mut s.forecast_late_score;
             late.note_commit("f0", a(9), 4, 7);
-            let id = bucket_id("station-a", LateScoreVariable::TempCCenti, 6, 7_200).expect("bucket id");
+            let id = bucket_id("station-a", LateScoreVariable::TemperatureC, 6, 7_200).expect("bucket id");
             late.records.insert("f1".into(), ForecastRecord {
                 forecaster: a(10),
                 station_id: "station-a".into(),
-                variable: LateScoreVariable::TempCCenti,
+                variable: LateScoreVariable::TemperatureC,
                 value: -1_250,
                 lead_hours: 6,
-                valid_at: 7_200,
                 commit_height: 3,
+                commit_time: -14_000 + 21_600,
+                target: 7_600 + 21_600,
                 reveal_height: 4,
                 skill: Some(640_000),
             });
             late.buckets.insert(id, ForecastBucket {
                 station_id: "station-a".into(),
-                variable: LateScoreVariable::TempCCenti,
+                variable: LateScoreVariable::TemperatureC,
                 lead_hours: 6,
-                valid_at: 7_200,
-                observation: Some(PinnedObservation { digest: "ab".repeat(32), truth: -1_300, reference: 139, mean24: -900, last: -2_000 }),
+                hour: 7_200,
+                observations: [(3u64, "ab".repeat(32))].into_iter().collect(),
                 commit_ids: vec!["f1".into()],
             });
             late.pool.insert(0, ForecastPoolEpoch {

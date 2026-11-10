@@ -28002,15 +28002,18 @@ mod forecast_late_score_block_guards {
         let key = PrivateKey::from_bytes(&[7; 32]).unwrap();
         let mut attestation = ObservationAttestation {
             station_id: format!("st-{tag}"),
-            variable: LateScoreVariable::TempCCenti,
+            variable: LateScoreVariable::TemperatureC,
             lead_hours: 6,
-            valid_at: 3_600,
+            commit_height: 5,
+            commit_time: 3_600,
+            target: 25_200,
             truth: 2_000,
+            truth_commit_id: "t1".into(),
             reference: 300,
             mean24: 1_900,
             last: 2_100,
             window_hash: "5a".repeat(32),
-            reading_commit_ids: vec!["r1".into()],
+            window_commit_ids: vec!["r1".into()],
         };
         let identity = ChainIdentity::active();
         let message = observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);

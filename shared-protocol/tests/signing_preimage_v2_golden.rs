@@ -1213,15 +1213,18 @@ fn build_forecast_observation_attestation_case() -> Value {
     let (sk, pk) = keypair(seed);
     let attestation = ObservationAttestation {
         station_id: "station-golden-1".to_string(),
-        variable: LateScoreVariable::TempCCenti,
+        variable: LateScoreVariable::TemperatureC,
         lead_hours: 6,
-        valid_at: 1_762_650_000,
+        commit_height: 21_504,
+        commit_time: 1_762_628_423,
+        target: 1_762_650_023,
         truth: -1_300,
+        truth_commit_id: "c3".repeat(32),
         reference: 139,
         mean24: -900,
         last: -2_000,
         window_hash: "5a".repeat(32),
-        reading_commit_ids: vec!["a1".repeat(32), "b2".repeat(32)],
+        window_commit_ids: vec!["a1".repeat(32), "b2".repeat(32)],
     };
     let mut tampered = attestation.clone();
     tampered.truth = -1_299;
