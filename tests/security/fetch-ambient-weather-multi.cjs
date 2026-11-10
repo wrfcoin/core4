@@ -59,10 +59,13 @@
  *                           backend entry whose device (MAC) or station id is already in
  *                           the file is dropped. Backend entries are checked one at a
  *                           time, so a bad one is dropped alone. If the backend cannot be
- *                           read, the file's stations are collected as always and the
- *                           backend's from the last good answer held in memory (at most
- *                           24 hours old; only with --loop-seconds, a single run has no
- *                           memory). The answer is never written to disk or logged.
+ *                           reached (network error, timeout, 5xx), the file's stations are
+ *                           collected as always and the backend's from the last good
+ *                           answer held in memory (at most 24 hours old; only with
+ *                           --loop-seconds, a single run has no memory). Any other answer
+ *                           (401/403/404, 429, not a roster) drops the backend stations at
+ *                           once. An unreadable file uses no backend entry that cycle. The
+ *                           answer is never written to disk or logged.
  *   --loop-seconds <N>      Run a cycle every N seconds (at least 60) in this one process
  *                           instead of exiting after one.
  */
@@ -412,10 +415,25 @@ function backendRosterEntries(data) {
 }
 
 /**
- * Read the backend roster. On any failure fall back to the last good answer in
- * memory while it is younger than BACKEND_ROSTER_MAX_AGE_MS, else to nothing.
- * Returns { entries, state } with state 'fresh' | 'last_good' | 'none'. Never
- * throws and never logs the answer.
+ * Whether a failed read may fall back to the last good roster. Only a failure
+ * that says nothing about what the backend wants: no answer at all (network
+ * error, refused connection, timeout, an answer cut off) or a 5xx. Anything
+ * else is the backend's answer and is obeyed at once: 401/403/404 (the switch
+ * turned off, the token rotated or revoked), 429, any other status, and a 200
+ * that is not a roster. Those clear the memory, so turning the roster off or
+ * rotating the token stops backend collection on the next cycle, not a day later.
+ */
+function mayUseLastGood(res) {
+    if (!res || res.status === null || res.status === undefined) return true;
+    return Number.isInteger(res.status) && res.status >= 500 && res.status <= 599;
+}
+
+/**
+ * Read the backend roster. A roster answer replaces the memory. A network
+ * failure or 5xx falls back to the last good answer while it is younger than
+ * BACKEND_ROSTER_MAX_AGE_MS; any other answer clears it. Returns
+ * { entries, state } with state 'fresh' | 'last_good' | 'none'. Never throws
+ * and never logs the answer.
  */
 async function loadBackendRoster(deps = {}) {
     const getJson = deps.getJson || ((urlPath) => backendGetJson(
@@ -440,6 +458,17 @@ async function loadBackendRoster(deps = {}) {
         return { entries: parsed.entries, state: 'fresh' };
     }
     const ageMs = nowMs - memory.atMs;
+    if (!mayUseLastGood(res)) {
+        const had = Array.isArray(memory.entries) ? memory.entries.length : 0;
+        memory.entries = null;
+        memory.atMs = 0;
+        // Status only: the body is never logged.
+        logStructured('warn', 'Backend collector roster refused or not a roster; backend stations dropped', {
+            http_status: res.status,
+            dropped_station_count: had,
+        });
+        return { entries: [], state: 'none' };
+    }
     if (Array.isArray(memory.entries) && ageMs >= 0 && ageMs <= BACKEND_ROSTER_MAX_AGE_MS) {
         // Status only: the body is never logged, redacted or not.
         logStructured('warn', 'Backend collector roster unavailable; using the last good one in memory', {
@@ -492,6 +521,14 @@ async function loadRoster(deps = {}) {
         ? (deps.fileRoster || await loadPrimaryRoster())
         : { entries: [], source: 'none' };
     if (file.source === 'invalid') return file;
+    // A roster file that was named but could not be read: this cycle cannot know
+    // which devices the file owns, so no backend entry is used either. Otherwise
+    // a website entry could be collected, and paid to the website owner, for a
+    // device the file assigns to someone else.
+    if (file.unreadable) {
+        logStructured('error', 'Roster file unreadable; backend roster not used this cycle', {});
+        return { entries: [], source: file.source };
+    }
     const backend = await loadBackendRoster(deps);
     const merged = mergeRosters(file.entries, backend.entries);
     for (const drop of merged.dropped) {
@@ -534,7 +571,7 @@ async function loadPrimaryRoster() {
                 file: CREDENTIALS_FILE,
                 error_message: err.message,
             });
-            return { entries: [], source: 'none' };
+            return { entries: [], source: 'none', unreadable: true };
         }
     }
 

@@ -2743,7 +2743,7 @@ async function run() {
         assert.deepStrictEqual(multi.backendRosterEntries({ version: 'collector_roster_v1', stations: [] }), { entries: [], dropped: 0 });
     });
 
-    await test('backend down: the last good roster in memory is used, for at most 24 hours, and the answer body is never printed', async () => {
+    await test('backend unreachable or 5xx: the last good roster in memory is used, for at most 24 hours, and the answer body is never printed', async () => {
         const memory = { entries: null, atMs: 0 };
         let clock = 5_000;
         let answer = backendAnswer([backendEntry(11)]);
@@ -2751,26 +2751,27 @@ async function run() {
         assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'fresh');
 
         for (const failure of [
-            { status: 503, data: { error: 'boom APIKEYSECRET-LEAK' } },
-            { status: 403, data: { error: { code: 'FORBIDDEN' } } },
-            { status: 429, data: 'slow down' },
+            { status: 503, data: { error: 'boom APIKEYSECRET-LEAK' } }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 500, data: 'APIKEYSECRET-LEAK' }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 502, data: null },
             { status: null, error: 'ECONNREFUSED' },
-            { status: 200, data: 'APIKEYSECRET-LEAK not json' },
+            { status: null, error: 'timeout' },
         ]) {
             answer = failure;
             clock += 60_000;
             const { result, printed } = await capturing(() => multi.loadBackendRoster(deps));
-            assert.strictEqual(result.state, 'last_good');
+            assert.strictEqual(result.state, 'last_good', `status ${failure.status}`);
             assert.deepStrictEqual(result.entries.map((e) => e.stationId), ['pws-0000000000000011']);
             assert.ok(!printed.includes('SECRET'), 'a failing answer body must never be printed');
         }
-        // A request that throws is the same as one that fails.
-        const throwing = { ...deps, getJson: async () => { throw new Error('socket APIKEYSECRET-LEAK'); } };
+        // A request that throws is the same as no answer.
+        const throwing = { ...deps, getJson: async () => { throw new Error('socket APIKEYSECRET-LEAK'); } }; // pragma: allowlist secret -- made-up text
         const thrown = await capturing(() => multi.loadBackendRoster(throwing));
         assert.strictEqual(thrown.result.state, 'last_good');
         assert.ok(!thrown.printed.includes('SECRET'));
 
         // Exactly 24 hours after the last good read it is still used; a moment later it is dropped for good.
+        answer = { status: 503, data: null };
         clock = 5_000 + multi.BACKEND_ROSTER_MAX_AGE_MS;
         assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'last_good');
         clock += 1;
@@ -2780,6 +2781,51 @@ async function run() {
         // And a later good read fills it again; an empty roster is a real answer, not a failure.
         answer = backendAnswer([]);
         assert.deepStrictEqual((await capturing(() => multi.loadBackendRoster(deps))).result, { entries: [], state: 'fresh' });
+    });
+
+    await test('a deliberate refusal drops the backend stations at once: switch off (404), token rotated (401/403), 429, not a roster', async () => {
+        for (const refusal of [
+            { status: 404, data: { error: { code: 'NOT_FOUND' } } },
+            { status: 403, data: { error: { code: 'FORBIDDEN' } } },
+            { status: 401, data: null },
+            { status: 429, data: 'slow down' },
+            { status: 400, data: null },
+            { status: 200, data: 'APIKEYSECRET-LEAK not json' }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 200, data: [backendEntry(11)] },
+            { status: 200, data: { version: 'other', stations: [] } },
+        ]) {
+            const memory = { entries: null, atMs: 0 };
+            let answer = backendAnswer([backendEntry(11)]);
+            const deps = { getJson: async () => answer, nowMs: () => 10_000, memory };
+            assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'fresh');
+            answer = refusal;
+            const { result, printed } = await capturing(() => multi.loadBackendRoster(deps));
+            assert.deepStrictEqual(result, { entries: [], state: 'none' }, `status ${refusal.status}`);
+            assert.strictEqual(memory.entries, null);
+            assert.ok(!printed.includes('SECRET'));
+            // And a network failure right after a refusal has nothing to fall back to.
+            answer = { status: null, error: 'ECONNREFUSED' };
+            assert.deepStrictEqual((await capturing(() => multi.loadBackendRoster(deps))).result, { entries: [], state: 'none' });
+        }
+    });
+
+    await test('an unreadable roster file: no backend entry is used that cycle, and the backend is not even asked', async () => {
+        let asked = 0;
+        const { result } = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'none', unreadable: true }, memory: { entries: null, atMs: 0 },
+            getJson: async () => { asked += 1; return backendAnswer([backendEntry(11)]); },
+        }));
+        assert.deepStrictEqual(result, { entries: [], source: 'none' });
+        assert.strictEqual(asked, 0);
+        // A missing file (no file named at all) is different: the backend's stations are used.
+        const none = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'none' }, memory: { entries: null, atMs: 0 },
+            getJson: async () => backendAnswer([backendEntry(11)]),
+        }));
+        assert.strictEqual(none.result.source, 'backend');
+        // The real reader marks an unreadable file as such.
+        const src = fs.readFileSync(path.join(__dirname, 'fetch-ambient-weather-multi.cjs'), 'utf8');
+        assert.ok(src.includes("return { entries: [], source: 'none', unreadable: true };"));
     });
 
     await test('a station that left the backend roster is gone on the next good read', async () => {
