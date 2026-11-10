@@ -29,6 +29,26 @@
       snapshots it serves with. Never overwrites an existing key. Once the file
       exists, every Start locks it to the current user and passes it to the
       node as WRFCOIN_SNAPSHOT_SERVER_KEY_FILE; the node logs its public key.
+  -Action NewOracleKey
+      Creates %LOCALAPPDATA%\WRFCoin\oracle.key (testnet only): the oracle
+      attester's software key, locked to the current user before the seed is
+      written and never shown. Never overwrites an existing key. Also creates
+      oracle.token, the node's Oracle-role API token. Writes only the PUBLIC key
+      (the oracle id, from wrfcoin.exe oracle public-key) to oracle-public.txt
+      in the data folder and on the Desktop as wrfcoin-oracle-public.txt. Once
+      oracle.key exists, every node Start passes oracle.token to the node as
+      WRFCOIN_ORACLE_TOKEN; restart a running node to pick it up.
+  -Action StartAttester
+      Starts oracle_attester.exe in the background against the local node,
+      with chain-888.conf plus attester-888.conf (installed next to this
+      script), oracle.key as WRFCOIN_TESTNET_ORACLE_KEY_FILE and oracle.token as
+      its API token. The node must be running. Output goes to logs\attester.log.
+      A value in attester-888.conf that still reads REPLACE_ME... stops the
+      start. If server.key exists, its public key is added to the attester's
+      refused snapshot keys, so the oracle key can never be the server key.
+  -Action StopAttester
+      Sends the attester Ctrl+C on its hidden console and waits for it to exit.
+      -Action Stop stops the attester too, before the node.
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
 
@@ -60,13 +80,17 @@
     logs\launcher.log  this script's own errors
     operator.token     the node's local API operator token
     server.key         optional testnet server key (-Action ServerKey)
+    oracle.key         optional testnet oracle attester key (-Action NewOracleKey)
+    oracle.token       the node's Oracle-role API token (created with oracle.key)
+    oracle-public.txt  the oracle key's public half (safe to share)
+    logs\attester.log  oracle attester output (previous run: attester.log.1)
     reachable.conf     optional: open a P2P port (see above)
   The folder is restricted to the current user (inheritance removed, one
   full-control entry for the user's SID).
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey')]
+    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -98,6 +122,14 @@ $LauncherLog = Join-Path $LogDir 'launcher.log'
 $TokenFile = Join-Path $Root 'operator.token'
 $ServerKeyFile = Join-Path $Root 'server.key'
 $ReachableConfig = Join-Path $Root 'reachable.conf'
+$AttesterExe = Join-Path $AppDir 'oracle_attester.exe'
+$CliExe = Join-Path $AppDir 'wrfcoin.exe'
+$AttesterConfig = Join-Path $AppDir 'attester-888.conf'
+$OracleKeyFile = Join-Path $Root 'oracle.key'
+$OracleTokenFile = Join-Path $Root 'oracle.token'
+$OraclePublicFile = Join-Path $Root 'oracle-public.txt'
+$AttesterLog = Join-Path $LogDir 'attester.log'
+$AttesterStartSeconds = 15
 # The only chain-888.conf keys a user may override (case-sensitive). The last
 # two switch on bonded mode and are checked together by Resolve-NodeMode.
 $ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID')
@@ -167,6 +199,16 @@ function Initialize-UserState {
     $identity = Join-Path $DataDir 'peer_identity.key'
     if (Test-Path -LiteralPath $identity) { Protect-UserOnly $identity }
     if (Test-Path -LiteralPath $ServerKeyFile) { Protect-UserOnly $ServerKeyFile }
+    if (Test-Path -LiteralPath $OracleKeyFile) {
+        Protect-UserOnly $OracleKeyFile
+        # The Oracle-role token exists only for a node that has an attester key.
+        if (-not (Test-Path -LiteralPath $OracleTokenFile)) {
+            [System.IO.File]::WriteAllText($OracleTokenFile, '')
+            Protect-UserOnly $OracleTokenFile
+            [System.IO.File]::WriteAllText($OracleTokenFile, (New-RandomHex))
+        }
+        Protect-UserOnly $OracleTokenFile
+    }
 }
 
 function New-RandomHex {
@@ -191,6 +233,158 @@ function New-ServerKey {
     Protect-UserOnly $ServerKeyFile
     [System.IO.File]::WriteAllText($ServerKeyFile, (New-RandomHex))
     Show-Message "Created the node's server key: $ServerKeyFile. Restart the node; its log shows the public key."
+}
+
+function Get-OraclePublicKey([string]$KeyFile) {
+    # Only the public half comes back; wrfcoin.exe opens the key file through
+    # the owner-only check and never prints the seed.
+    if (-not (Test-Path -LiteralPath $CliExe)) { Fail "missing $CliExe - reinstall the package" }
+    # A native command's stderr must not become a terminating error here; the exit code decides.
+    $ErrorActionPreference = 'Continue'
+    $out = & $CliExe --output json oracle public-key --key-file $KeyFile 2>$null | Out-String
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -ne 0) { Fail "wrfcoin.exe could not read the public key of $KeyFile (exit $LASTEXITCODE)" }
+    $pub = "$((ConvertFrom-Json $out).data.publicKey)".ToLower()
+    if ($pub -notmatch '^[0-9a-f]{64}$') { Fail "wrfcoin.exe returned no public key for $KeyFile" }
+    return $pub
+}
+
+function Get-ServerPublicKey {
+    # A native command's stderr must not become a terminating error here; the exit code decides.
+    $ErrorActionPreference = 'Continue'
+    $out = & $CliExe --output json node bond key-info --key-file $ServerKeyFile 2>$null | Out-String
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -ne 0) { Fail "wrfcoin.exe could not read the public key of $ServerKeyFile (exit $LASTEXITCODE)" }
+    $pub = "$((ConvertFrom-Json $out).data.public_key)".ToLower()
+    if ($pub -notmatch '^[0-9a-f]{64}$') { Fail "wrfcoin.exe returned no public key for $ServerKeyFile" }
+    return $pub
+}
+
+function Write-OraclePublic([string]$Public) {
+    [System.IO.File]::WriteAllText($OraclePublicFile, "$Public`r`n")
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    if ($desktop -and (Test-Path -LiteralPath $desktop)) {
+        [System.IO.File]::WriteAllText((Join-Path $desktop 'wrfcoin-oracle-public.txt'), "$Public`r`n")
+    }
+}
+
+function New-OracleKey {
+    # Testnet only: the attester refuses a key file on any other network.
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'a software oracle key is for testnet only' }
+    if (Test-Path -LiteralPath $OracleKeyFile) {
+        Protect-UserOnly $OracleKeyFile
+        $public = Get-OraclePublicKey $OracleKeyFile
+        Write-OraclePublic $public
+        Show-Message "The attester key already exists: $OracleKeyFile (not replaced). Oracle public key: $public"
+        return
+    }
+    # Create the file empty, lock it, then write the seed: it is never readable
+    # by anyone else, not even for a moment. The seed is never displayed.
+    [System.IO.File]::WriteAllText($OracleKeyFile, '')
+    Protect-UserOnly $OracleKeyFile
+    [System.IO.File]::WriteAllText($OracleKeyFile, (New-RandomHex))
+    Initialize-UserState   # creates and locks oracle.token now that the key exists
+    $public = Get-OraclePublicKey $OracleKeyFile
+    Write-OraclePublic $public
+    Show-Message "Created the attester key: $OracleKeyFile. Oracle public key: $public (also in $OraclePublicFile). Restart the node so it picks up the attester token."
+}
+
+function Read-AttesterConfig([string]$Path) {
+    # Flat KEY=VALUE lines like chain-888.conf; only WRFCOIN_ATTESTER_* keys.
+    # A REPLACE_ME... value is a setting this package could not fill in from
+    # public configuration: the attester does not start until it is set.
+    if (-not (Test-Path -LiteralPath $Path)) { Fail "missing $Path - reinstall the package" }
+    $pairs = [ordered]@{}
+    $unset = @()
+    $n = 0
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $n++
+        if ($line -eq '') { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { Fail "${Path} line ${n} is not KEY=VALUE" }
+        $key = $line.Substring(0, $eq)
+        if ($key -cnotmatch '^WRFCOIN_ATTESTER_[A-Z0-9_]+$') { Fail "${Path} line ${n}: only WRFCOIN_ATTESTER_* keys may be set there" }
+        if ($pairs.Contains($key)) { Fail "${Path} defines $key twice" }
+        $value = $line.Substring($eq + 1)
+        if ($value.StartsWith('REPLACE_ME')) { $unset += $key }
+        $pairs[$key] = $value
+    }
+    if ($unset.Count -gt 0) { Fail "${Path} still has placeholder values for: $($unset -join ', ')" }
+    foreach ($key in 'WRFCOIN_ATTESTER_FORBID_GOVERNANCE_PUBKEY', 'WRFCOIN_ATTESTER_FORBID_PRODUCER_PUBKEY', 'WRFCOIN_ATTESTER_FORBID_SNAPSHOT_PUBKEY') {
+        if (-not $pairs.Contains($key)) { Fail "${Path} is missing $key" }
+    }
+    return $pairs
+}
+
+function Get-AttesterProcess {
+    # Only this installation's attester.
+    $target = [System.IO.Path]::GetFullPath($AttesterExe)
+    @(Get-Process -Name oracle_attester -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -ieq $target) } catch { $false }
+    })
+}
+
+function Start-Attester {
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'the software oracle key is for testnet only' }
+    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    if (@(Get-AttesterProcess).Count -gt 0) { Show-Message 'The WRFCoin attester is already running.'; return }
+    if (-not (Test-Path -LiteralPath $AttesterExe)) { Fail "missing $AttesterExe - reinstall the package" }
+    if (-not (Test-Path -LiteralPath $OracleKeyFile)) { Fail "no attester key yet: use 'Create attester key' first" }
+    $att = Read-AttesterConfig $AttesterConfig
+    if (@(Get-NodeProcess).Count -eq 0) { Fail "the node is not running: start it first ('WRFCoin Node')" }
+    $token = [System.IO.File]::ReadAllText($OracleTokenFile).Trim()
+    # The node accepts the token only if it was started after the key existed.
+    try {
+        $null = Invoke-WebRequest -Uri "$api/transactions/oracle/pending" -UseBasicParsing -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
+    } catch {
+        $code = 0
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($code -eq 401 -or $code -eq 403) { Fail "the node does not accept the attester token yet: stop and start the node, then start the attester" }
+        Fail "the node did not answer $api/transactions/oracle/pending: $($_.Exception.Message)"
+    }
+
+    foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
+    foreach ($key in $att.Keys) { [Environment]::SetEnvironmentVariable($key, $att[$key], 'Process') }
+    if ($att['WRFCOIN_ATTESTER_NWS_STATION'] -eq 'PHYSICS_ONLY') {
+        [Environment]::SetEnvironmentVariable('WRFCOIN_ATTESTER_NWS_STATION', $null, 'Process')
+    }
+    if (Test-Path -LiteralPath $ServerKeyFile) {
+        # This node's own server key is a snapshot key too: refuse it as the oracle key.
+        $snap = "$($att['WRFCOIN_ATTESTER_FORBID_SNAPSHOT_PUBKEY']),$(Get-ServerPublicKey)"
+        [Environment]::SetEnvironmentVariable('WRFCOIN_ATTESTER_FORBID_SNAPSHOT_PUBKEY', $snap, 'Process')
+    }
+    [Environment]::SetEnvironmentVariable('WRFCOIN_ATTESTER_NODE_URL', $api, 'Process')
+    [Environment]::SetEnvironmentVariable('WRFCOIN_ATTESTER_API_TOKEN', $token, 'Process')
+    [Environment]::SetEnvironmentVariable('WRFCOIN_TESTNET_ORACLE_KEY_FILE', $OracleKeyFile, 'Process')
+    # Nothing else from the node's own secrets goes to the attester.
+    foreach ($key in 'WRFCOIN_OPERATOR_TOKEN', 'WRFCOIN_SNAPSHOT_SERVER_KEY_FILE', 'WRFCOIN_ORACLE_TOKEN') {
+        [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+    }
+
+    if (Test-Path -LiteralPath $AttesterLog) { Move-Item -LiteralPath $AttesterLog -Destination "$AttesterLog.1" -Force }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $psi.Arguments = "/d /c `"`"$AttesterExe`" >> `"$AttesterLog`" 2>&1`""
+    $psi.WorkingDirectory = $Root
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $null = [System.Diagnostics.Process]::Start($psi)
+
+    # The attester checks its configuration and key at startup and exits on a
+    # refusal; report that with the end of its log.
+    $deadline = (Get-Date).AddSeconds($AttesterStartSeconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 1
+        if (@(Get-AttesterProcess).Count -eq 0) {
+            Start-Sleep -Seconds 1
+            $tail = if (Test-Path -LiteralPath $AttesterLog) { (Get-Content -LiteralPath $AttesterLog -Tail 15) -join "`n" } else { '' }
+            Fail "the attester stopped during startup. Last lines of ${AttesterLog}:`n`n$tail"
+        }
+    }
+    Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) StartAttester: running"
+    Show-Message "The WRFCoin attester is running. Log: $AttesterLog"
 }
 
 function Read-NodeConfig([string]$Path) {
@@ -335,6 +529,10 @@ function Start-Node {
         # Locked to this user by Initialize-UserState; the node checks it again.
         [Environment]::SetEnvironmentVariable('WRFCOIN_SNAPSHOT_SERVER_KEY_FILE', $ServerKeyFile, 'Process')
     }
+    if ((Test-Path -LiteralPath $OracleKeyFile) -and (Test-Path -LiteralPath $OracleTokenFile)) {
+        # Oracle role for the local attester only; locked by Initialize-UserState.
+        [Environment]::SetEnvironmentVariable('WRFCOIN_ORACLE_TOKEN', ([System.IO.File]::ReadAllText($OracleTokenFile).Trim()), 'Process')
+    }
     if ($mode -eq 'bonded') {
         Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) Start: bonded mode, service id $($reach['WRFCOIN_SERVICE_ID'])"
     }
@@ -390,10 +588,29 @@ public static class WrfcoinConsoleCtrl {
 }
 '@
 
+function Stop-Attester([bool]$Report = $true) {
+    $procs = @(Get-AttesterProcess)
+    if ($procs.Count -eq 0) {
+        if ($Report) { Show-Message 'The WRFCoin attester is not running.' }
+        return
+    }
+    if (-not ('WrfcoinConsoleCtrl' -as [type])) { Add-Type -TypeDefinition $ConsoleCtrl }
+    foreach ($proc in $procs) {
+        $err = [WrfcoinConsoleCtrl]::SendCtrlC([uint32]$proc.Id)
+        if ($err -ne 0) { Fail "could not signal the attester (process $($proc.Id), Win32 error $err)" }
+    }
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline -and @(Get-AttesterProcess).Count -gt 0) { Start-Sleep -Seconds 1 }
+    if (@(Get-AttesterProcess).Count -gt 0) { Fail "the attester is still running after 30 s; see $AttesterLog" }
+    if ($Report) { Show-Message 'The WRFCoin attester has stopped.' }
+}
+
 function Stop-Node {
+    # The attester needs the node; stop it first (also lets an upgrade replace its file).
+    Stop-Attester $false
     $nodes = @(Get-NodeProcess)
     if ($nodes.Count -eq 0) { Show-Message 'The WRFCoin node is not running.'; return }
-    Add-Type -TypeDefinition $ConsoleCtrl
+    if (-not ('WrfcoinConsoleCtrl' -as [type])) { Add-Type -TypeDefinition $ConsoleCtrl }
     foreach ($node in $nodes) {
         $err = [WrfcoinConsoleCtrl]::SendCtrlC([uint32]$node.Id)
         if ($err -ne 0) { Fail "could not signal the node (process $($node.Id), Win32 error $err)" }
@@ -412,6 +629,9 @@ try {
     switch ($Action) {
         'Setup' { Initialize-UserState }
         'ServerKey' { Initialize-UserState; New-ServerKey }
+        'NewOracleKey' { Initialize-UserState; New-OracleKey }
+        'StartAttester' { Initialize-UserState; Start-Attester }
+        'StopAttester' { Stop-Attester }
         'Start' { Initialize-UserState; Start-Node }
         'Stop'  { Stop-Node }
     }

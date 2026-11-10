@@ -23,7 +23,7 @@ def function_body(name: str) -> str:
 
 class ServerKey(unittest.TestCase):
     def test_action_is_offered_and_dispatched(self) -> None:
-        self.assertIn("'Setup', 'ServerKey')]", LAUNCHER)
+        self.assertIn("'Setup', 'ServerKey'", LAUNCHER)
         self.assertIn("'ServerKey' { Initialize-UserState; New-ServerKey }", LAUNCHER)
 
     def test_testnet_only_and_never_overwritten(self) -> None:
