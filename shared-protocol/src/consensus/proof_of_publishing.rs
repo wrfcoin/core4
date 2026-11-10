@@ -6804,6 +6804,7 @@ impl ProofOfPublishing {
         // block, by transaction order; the applier's extractor uses the same
         // slot, so producer == applier == WAL replay. Inert while inactive.
         let mut registrar_slot = crate::consensus::station_registrar::RegistrarBlockSlot::new();
+        let mut forecast_scores = Vec::new();
         for (tx_index, tx) in block.transactions.iter().enumerate() {
             if let Some(transition) = registrar_slot.admit(
                 Self::launch_transition_for_transaction(
@@ -6816,6 +6817,12 @@ impl ProofOfPublishing {
                 if let StateTransition::ApplyReveal { payload, .. } = &transition {
                     revealed_commit_ids.insert(payload.commit_id.clone());
                 }
+                // `forecast_late_score`: a score is applied after every other
+                // transaction's transition (below), not where it sits.
+                if matches!(transition, StateTransition::ApplyForecastScore { .. }) {
+                    forecast_scores.push((tx_index, tx.tx_type, transition));
+                    continue;
+                }
                 transitions.push((tx_index, tx.tx_type, transition));
                 if tx.tx_type == TransactionType::Coinbase {
                     transitions.push((tx_index, tx.tx_type, StateTransition::ApplyFaucetReward));
@@ -6823,10 +6830,15 @@ impl ProofOfPublishing {
             }
         }
 
-        // `forecast_late_score`: one bucket close per block, after the
-        // block's transactions, whenever the feature is in force. The
-        // applier's extractor appends the same transition at the same place,
-        // so producer == applier == WAL replay. Never emitted while inactive.
+        // `forecast_late_score`: the block's scores, in transaction order,
+        // then one bucket close, at the END of this batch whenever the
+        // feature is in force. This batch runs after the block's governance
+        // transitions, so a score and a close see the block's governance and
+        // every other launch transition of the block. The applier's extractor
+        // puts the same transitions after its governance step, so producer ==
+        // applier == WAL replay. Never emitted while inactive (a score's
+        // apply arm fails closed, so the vector is empty in any valid block).
+        transitions.append(&mut forecast_scores);
         if let Some(close) =
             Self::forecast_bucket_close_transition(block.height, block.timestamp.timestamp())
         {
@@ -7924,55 +7936,83 @@ impl ProofOfPublishing {
         if replay_state.begin_node_service_block(block_height, parent_hash).is_err() {
             return transactions.drain(..).filter_map(|tx| tx.id).collect();
         }
-        // The block applies its governance transitions BEFORE this batch
-        // (`create_next_block`), and a forecast score reads what governance
-        // can change in the same block: the oracle set, the quorum, the
-        // signing keys. So from `forecast_late_score` the trial apply runs on
-        // the state the batch will really run on. Otherwise a score that was
-        // valid before the block's governance and is not after it would
-        // survive this screen and then fail the block's own apply, and this
-        // producer would refuse its own block for as long as that score sat
-        // in its mempool. Below the feature the screen is unchanged.
-        if crate::crypto::chain_binding::forecast_late_score_active(block_height) {
-            let governance =
-                replay_state.governance_transitions_for_block(transactions, block_height, block_timestamp);
-            let mut governed = replay_state.clone();
-            // A governance batch that does not apply fails the block on its
-            // own account; the screen then keeps the pre-governance view.
-            if governed.apply_transitions_batch(governance).is_ok() {
-                replay_state = governed;
-            }
-        }
         let mut skipped = Vec::new();
-        let mut retained = Vec::with_capacity(transactions.len());
+        // (kept?, transaction), in the candidate's order.
+        let mut screened: Vec<(bool, Transaction)> = Vec::with_capacity(transactions.len());
+        let mut skip = |tx: &Transaction, tx_index: usize, err: &dyn std::fmt::Display| {
+            warn!(
+                "Skipping stale/invalid PoP mempool tx {:?}{} at block {} index {}: {}",
+                tx.tx_type,
+                tx.id.map(|id| format!(" id={id}")).unwrap_or_default(),
+                block_height,
+                tx_index,
+                err
+            );
+            if let Some(tx_id) = tx.id {
+                skipped.push(tx_id);
+            }
+        };
 
         for (tx_index, tx) in transactions.drain(..).enumerate() {
-            match self.apply_launch_transaction_to_state(
+            // `forecast_late_score`: the block applies a score after every
+            // other launch transition and after its governance transitions,
+            // so it is screened there too (second pass below).
+            if tx.tx_type == TransactionType::ForecastScore {
+                screened.push((true, tx));
+                continue;
+            }
+            let kept = match self.apply_launch_transaction_to_state(
                 &mut replay_state,
                 block_height,
                 block_timestamp,
                 tx_index,
                 &tx,
             ) {
-                Ok(()) => retained.push(tx),
+                Ok(()) => true,
                 Err(err) => {
-                    let tx_id = tx.id;
-                    warn!(
-                        "Skipping stale/invalid PoP mempool tx {:?}{} at block {} index {}: {}",
-                        tx.tx_type,
-                        tx_id.map(|id| format!(" id={id}")).unwrap_or_default(),
-                        block_height,
-                        tx_index,
-                        err
-                    );
-                    if let Some(tx_id) = tx_id {
-                        skipped.push(tx_id);
-                    }
+                    skip(&tx, tx_index, &err);
+                    false
                 },
+            };
+            screened.push((kept, tx));
+        }
+
+        // Second pass, forecast scores only. A score reads what the block's
+        // governance can change (the oracle set, the quorum, the signing
+        // keys), and the block applies governance before its launch batch. A
+        // score screened without it could pass here and then fail the
+        // block's own apply, and this producer would refuse its own block for
+        // as long as that score sat in its mempool. So the trial state gets
+        // the block's governance first. Nothing else is screened on it.
+        if screened.iter().any(|(_, tx)| tx.tx_type == TransactionType::ForecastScore) {
+            let kept: Vec<Transaction> =
+                screened.iter().filter(|(kept, _)| *kept).map(|(_, tx)| tx.clone()).collect();
+            let governance =
+                replay_state.governance_transitions_for_block(&kept, block_height, block_timestamp);
+            // A governance batch that does not apply fails the block on its
+            // own account; the scores are then screened without it.
+            let mut governed = replay_state.clone();
+            if governed.apply_transitions_batch(governance).is_ok() {
+                replay_state = governed;
+            }
+            for (tx_index, (kept, tx)) in screened.iter_mut().enumerate() {
+                if tx.tx_type != TransactionType::ForecastScore {
+                    continue;
+                }
+                if let Err(err) = self.apply_launch_transaction_to_state(
+                    &mut replay_state,
+                    block_height,
+                    block_timestamp,
+                    tx_index,
+                    tx,
+                ) {
+                    skip(tx, tx_index, &err);
+                    *kept = false;
+                }
             }
         }
 
-        *transactions = retained;
+        *transactions = screened.into_iter().filter(|(kept, _)| *kept).map(|(_, tx)| tx).collect();
         skipped
     }
 

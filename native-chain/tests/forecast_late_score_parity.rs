@@ -23,8 +23,10 @@
 //!   - a forecaster's `stake_required` set in the closing block: the close
 //!     locks part of her payment only if governance came first.
 //!
-//!   A follower that applied governance after the launch batch would fail the
-//!   score blocks and diverge on the closing one.
+//!   A follower that applied a score or the close before the block's
+//!   governance would fail the score blocks and diverge on the closing one.
+//!   No existing transition is reordered for this: only the score and the
+//!   close have a fixed place, after governance, on both sides.
 //! - After the first score block the follower's state is thrown away and
 //!   rebuilt from the store (WAL replay from an empty state), and the run
 //!   continues on the rebuilt state. The checkpoint encoding of a populated
