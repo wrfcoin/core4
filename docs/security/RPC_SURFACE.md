@@ -212,11 +212,14 @@ station's registry location **at 0.1° (~11 km) for every token except the
 node operator's**, and at full precision for the Operator token; omitted when
 the station has no registry entry. Rounding: whole tenths of a degree computed
 on the 1e-7 degree integer form, a tie going up (towards +infinity), the same
-rule as the website API, so site and node agree. It exists so a service-side attester can pick the
-nearest NWS reference station. The exact coordinates are already chain data:
-they are in the `StationRegistration` transaction body in its block, and in the
-`station_registry` state that peers exchange. This surface serves a deliberately
-coarser value, and only to an authenticated Reader-or-higher principal. Note that
+rule as the website API, so site and node agree. It exists so a service-side
+attester can pick the nearest NWS reference station. This rounding is scoped to
+this read: chain data (blocks and state snapshots) carries the coordinates a
+station was registered with; registering at 0.1° keeps them coarse. This
+surface serves the 0.1° value to non-operator tokens, and only to an
+authenticated Reader-or-higher principal. For an attester on a non-operator
+token, the #3299 DEM table entry is bound to the station's 0.1° cell, so a move
+within that cell keeps the old DEM elevation. Note that
 `GET /transactions/station/registrations/{station_id}` does **not** return
 location, so this is the first dedicated HTTP read of it. That is why it is
 coarsened rather than echoed. (`elevation_meters`, added to the same entries by
