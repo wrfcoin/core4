@@ -236,13 +236,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let seed = "22".repeat(32);
 
-        let good = key_file(&dir, "oracle.key", &format!("{seed}\n"), 0o600); // secret-leak-ok: fixed all-0x22 test fixture written to a temp file, not a real key
+        let good = key_file(&dir, "oracle.key", &format!("{seed}\n"), 0o600); // secret-leak-ok: fixed all-0x22 test fixture written to a temp file, not a real key // secret-copy-ok: fixed test fixture written to a temp file
         let signer = load_testnet_oracle_key(&good).unwrap();
         let expected = PublicKey::from_private_key(&PrivateKey::from_hex(&seed).unwrap());
         assert_eq!(signer.public_key(), expected);
         let signature = signer.sign(b"payload").unwrap();
         assert!(expected.verify(b"payload", &signature));
-        assert!(!format!("{signer:?}").contains(&seed)); // secret-leak-ok: asserts the Debug output does NOT contain the fixture
+        assert!(!format!("{signer:?}").contains(&seed)); // secret-leak-ok: asserts the Debug output does NOT contain the fixture // secret-copy-ok: asserts the fixture is absent from Debug output
 
         let loose = key_file(&dir, "loose.key", &seed, 0o644);
         assert!(load_testnet_oracle_key(&loose).is_err());
