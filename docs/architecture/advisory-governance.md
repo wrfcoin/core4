@@ -7,7 +7,8 @@ consensus feature `advisory_governance` (ordinal 33). Code:
 ## What a wallet can do
 
 - **Propose**: a title (1–160 bytes, one line) and a summary (1–1,024 bytes,
-  newlines allowed), signed by the wallet's ed25519 key. The chain picks the id
+  newlines allowed), signed by the wallet's ed25519 key or, for a passkey
+  wallet, its passkey (see below). The chain picks the id
   (`adv-` + 16 hex), the deadline (1,120 blocks, about 24 h at 77 s) and the
   deposit (1 WRF, debited from the signer's own spendable balance only).
 - **Vote**: for or against, once per proposal, signed. A wallet may vote if its
@@ -52,6 +53,31 @@ applies (the nonce then advances). So a signature cannot move to another chain,
 network, wallet, text, vote or nonce. Golden vectors:
 `shared-protocol/tests/fixtures/golden/signing_preimage_v2.json`, kind
 `advisory_governance_action_v2`.
+
+### Passkey wallets
+
+A passkey (P-256 WebAuthn) wallet signs the same message. Its assertion's
+challenge is `sha3_256(message above)` (`advisory_passkey_challenge`, the same
+hash the passkey transfer challenge uses), so it binds the same chain, network,
+account, action and nonce. The payload carries a `passkey` member (the same
+`PasskeyAuthorization` shape a passkey transfer carries: P-256 key, RP ID hash,
+authenticatorData, clientDataJSON, DER signature, all hex) and no
+`public_key`/`signature`. Exactly one of the two forms is accepted; unknown
+members inside `passkey` are refused too.
+
+Verification is the shared `accounts::passkey::verify_webauthn` under the
+consensus policy (type `webauthn.get`, the challenge, RP ID hash, user present
+and verified, low-s P-256), as for `passkey_bond_payout` and
+`security_key_spend`, and the credential must derive `account`. The RP ID hash
+is part of a passkey address, so an assertion made for another site names
+another account. Replays stop at the account nonce, as for ed25519. Same flag:
+nothing here is reachable before `advisory_governance` activates. A passkey
+action is priced one extra P-256 verification. An ed25519 payload is
+byte-identical to before.
+
+Neither signature covers the outer transaction, so its id can change in
+transit (no funds are at risk). Wallets track a proposal by its id and a vote
+by `(account, nonce)`, not by tx id.
 
 ## Limits
 
