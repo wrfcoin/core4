@@ -53,6 +53,18 @@
  *                           instead of the backend (implies offline credential source;
  *                           still hits live Ambient unless combined with --dry-run on
  *                           a fixture that has no real keys).
+ *   --backend-roster        ALSO read the backend's collector roster
+ *                           (GET ${BACKEND_ROSTER_PATH:-/api/weather/stations/collector-roster},
+ *                           operator token) and merge it with the file. The file wins: a
+ *                           backend entry whose device (MAC) or station id is already in
+ *                           the file is dropped. Backend entries are checked one at a
+ *                           time, so a bad one is dropped alone. If the backend cannot be
+ *                           read, the file's stations are collected as always and the
+ *                           backend's from the last good answer held in memory (at most
+ *                           24 hours old; only with --loop-seconds, a single run has no
+ *                           memory). The answer is never written to disk or logged.
+ *   --loop-seconds <N>      Run a cycle every N seconds (at least 60) in this one process
+ *                           instead of exiting after one.
  */
 
 const http = require('http');
@@ -121,6 +133,8 @@ const config = loadTestConfig({
         { name: 'skip-nws', type: 'boolean', description: 'Skip NWS comparison (propagated to single-account fallback)' },
         { name: 'max-age-minutes', type: 'int', default: 30, description: 'Max accepted data age (minutes) before skipping submission' },
         { name: 'credentials-file', type: 'string', description: 'Local JSON roster fixture instead of backend' },
+        { name: 'backend-roster', type: 'boolean', description: 'Also read the backend collector roster and merge it with the file (file wins)' },
+        { name: 'loop-seconds', type: 'int', default: 0, description: 'Run a cycle every N seconds (min 60) in one process; 0 = one cycle' },
     ],
 });
 
@@ -136,6 +150,17 @@ const BACKEND_HOST = process.env.BACKEND_HOST || 'wrfcoin-backend';
 const BACKEND_PORT = parseInt(process.env.BACKEND_PORT || '4001', 10);
 const CREDENTIALS_PATH = '/api/weather/stations/credentials';
 const MULTI_TENANT_DISABLED = process.env.MULTI_TENANT_DISABLED === '1';
+// The backend's roster of website stations that are registered on chain. Read
+// only with --backend-roster; the path is fixed unless the operator overrides it.
+const BACKEND_ROSTER = Boolean(config.values['backend-roster']);
+const BACKEND_ROSTER_PATH = process.env.BACKEND_ROSTER_PATH || '/api/weather/stations/collector-roster';
+const BACKEND_ROSTER_VERSION = 'collector_roster_v1';
+const BACKEND_ROSTER_MAX_BYTES = 2 * 1024 * 1024;
+const BACKEND_ROSTER_MAX_ENTRIES = 500;
+// How long a backend roster that can no longer be refreshed is still used.
+const BACKEND_ROSTER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const LOOP_SECONDS = Number.isFinite(config.values['loop-seconds']) ? config.values['loop-seconds'] : 0;
+const MIN_LOOP_SECONDS = 60;
 
 const NWS_STATION_ID = process.env.NWS_STATION_ID || 'KDLH';
 // Same value fetch-ambient-weather.cjs uses for its own accuracy report.
@@ -239,7 +264,7 @@ function writeStationDashboardFiles(station, fetchResult, nwsObs) {
 // ---------------------------------------------------------------------------
 // Backend roster fetch
 // ---------------------------------------------------------------------------
-function backendGetJson(host, port, urlPath, token, timeoutMs = 8000) {
+function backendGetJson(host, port, urlPath, token, timeoutMs = 8000, maxBytes = Infinity) {
     return new Promise((resolve) => {
         const req = http.request({
             hostname: host,
@@ -250,8 +275,19 @@ function backendGetJson(host, port, urlPath, token, timeoutMs = 8000) {
             timeout: timeoutMs,
         }, (res) => {
             let raw = '';
-            res.on('data', (c) => { raw += c; });
+            let tooLarge = false;
+            res.on('data', (c) => {
+                if (tooLarge) return;
+                if (raw.length + c.length > maxBytes) {
+                    tooLarge = true;
+                    raw = '';
+                    req.destroy(new Error('response too large'));
+                    return;
+                }
+                raw += c;
+            });
             res.on('end', () => {
+                if (tooLarge) return;
                 try {
                     resolve({ status: res.statusCode, data: JSON.parse(raw) });
                 } catch (_) {
@@ -335,11 +371,152 @@ function finalizeRoster(list, source) {
     return { entries, source };
 }
 
+// ---------------------------------------------------------------------------
+// Backend collector roster (--backend-roster), merged with the file
+// ---------------------------------------------------------------------------
+// The last backend roster that could be read, kept in this process's memory
+// only. It is never written to disk and never logged: it holds provider keys.
+const backendRosterMemory = { entries: null, atMs: 0 };
+
+/**
+ * The entries of a backend roster answer, each checked ON ITS OWN, or null if
+ * the answer is not a roster. Unlike the file (the operator's own, rejected as
+ * a whole if any entry is wrong), one bad backend entry is dropped alone: it
+ * must not be able to stop the other stations. Duplicates of a device or a
+ * station id inside the answer keep the first.
+ */
+function backendRosterEntries(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (data.version !== BACKEND_ROSTER_VERSION || !Array.isArray(data.stations)) return null;
+    if (data.stations.length > BACKEND_ROSTER_MAX_ENTRIES) return null;
+    const entries = [];
+    const macs = new Set();
+    const ids = new Set();
+    let dropped = 0;
+    data.stations.forEach((raw, index) => {
+        const entry = normalizeRosterEntry(raw, index);
+        // A backend entry is only usable with both keys and a position: without
+        // a position the pipeline would fall back to the provider's own.
+        if (!entry || !entry.apiKey || !entry.appKey
+            || !Number.isFinite(entry.latitude) || !Number.isFinite(entry.longitude)
+            || macs.has(entry.mac) || ids.has(entry.stationId)) {
+            dropped += 1;
+            return;
+        }
+        macs.add(entry.mac);
+        ids.add(entry.stationId);
+        // The backend sends no name; drop one if it ever does.
+        entries.push({ ...entry, name: undefined });
+    });
+    return { entries, dropped };
+}
+
+/**
+ * Read the backend roster. On any failure fall back to the last good answer in
+ * memory while it is younger than BACKEND_ROSTER_MAX_AGE_MS, else to nothing.
+ * Returns { entries, state } with state 'fresh' | 'last_good' | 'none'. Never
+ * throws and never logs the answer.
+ */
+async function loadBackendRoster(deps = {}) {
+    const getJson = deps.getJson || ((urlPath) => backendGetJson(
+        BACKEND_HOST, BACKEND_PORT, urlPath, WRFCOIN_TOKEN, 8000, BACKEND_ROSTER_MAX_BYTES,
+    ));
+    const nowMs = typeof deps.nowMs === 'function' ? deps.nowMs() : Date.now();
+    const memory = deps.memory || backendRosterMemory;
+    let res;
+    try {
+        res = await getJson(BACKEND_ROSTER_PATH);
+    } catch (_) {
+        res = { status: null };
+    }
+    const parsed = res && res.status === 200 ? backendRosterEntries(res.data) : null;
+    if (parsed) {
+        memory.entries = parsed.entries;
+        memory.atMs = nowMs;
+        logStructured('info', 'Loaded backend collector roster', {
+            station_count: parsed.entries.length,
+            dropped_entries: parsed.dropped,
+        });
+        return { entries: parsed.entries, state: 'fresh' };
+    }
+    const ageMs = nowMs - memory.atMs;
+    if (Array.isArray(memory.entries) && ageMs >= 0 && ageMs <= BACKEND_ROSTER_MAX_AGE_MS) {
+        // Status only: the body is never logged, redacted or not.
+        logStructured('warn', 'Backend collector roster unavailable; using the last good one in memory', {
+            http_status: res ? res.status : null,
+            station_count: memory.entries.length,
+            age_seconds: Math.round(ageMs / 1000),
+        });
+        return { entries: memory.entries, state: 'last_good' };
+    }
+    memory.entries = null;
+    logStructured('warn', 'Backend collector roster unavailable; no usable earlier answer', {
+        http_status: res ? res.status : null,
+    });
+    return { entries: [], state: 'none' };
+}
+
+/**
+ * File entries first, then the backend entries that do not collide with them.
+ * THE FILE WINS: it holds the stations the operator added and checked by hand,
+ * so nothing the backend says can change which owner an existing device pays.
+ * A collision is on the device (MAC) or on the station id.
+ */
+function mergeRosters(fileEntries, backendEntries) {
+    const macs = new Set(fileEntries.map((entry) => entry.mac));
+    const ids = new Set(fileEntries.map((entry) => entry.stationId));
+    const entries = [...fileEntries];
+    const dropped = [];
+    for (const entry of backendEntries) {
+        if (macs.has(entry.mac) || ids.has(entry.stationId)) {
+            dropped.push({ station_id: entry.stationId, reason: macs.has(entry.mac) ? 'device_in_file' : 'station_id_in_file' });
+            continue;
+        }
+        macs.add(entry.mac);
+        ids.add(entry.stationId);
+        entries.push(entry);
+    }
+    return { entries, dropped };
+}
+
 /**
  * Source the contributor roster. Returns { entries, source } where source is
- * one of 'file' | 'backend' | 'none'. Never throws.
+ * one of 'file' | 'backend' | 'file+backend' | 'none' | 'invalid'. Never throws.
  */
-async function loadRoster() {
+async function loadRoster(deps = {}) {
+    if (!BACKEND_ROSTER && !deps.backendRoster) return loadPrimaryRoster();
+    // File first, exactly as without the flag. An INVALID file still refuses
+    // everything (the operator's own roster is wrong); a missing or unreadable
+    // one leaves the backend's stations.
+    const file = CREDENTIALS_FILE || deps.fileRoster
+        ? (deps.fileRoster || await loadPrimaryRoster())
+        : { entries: [], source: 'none' };
+    if (file.source === 'invalid') return file;
+    const backend = await loadBackendRoster(deps);
+    const merged = mergeRosters(file.entries, backend.entries);
+    for (const drop of merged.dropped) {
+        logStructured('warn', 'Backend roster entry dropped: the file wins', drop);
+    }
+    const strict = validateStationRoster(merged.entries.map(strictRosterProjection));
+    if (!strict.ok) {
+        // Cannot happen after the merge; if it does, the file alone is used.
+        logStructured('error', 'Merged roster failed validation; using the file only', {
+            reason_codes: strict.errors.map((error) => error.code),
+        });
+        return file;
+    }
+    const source = file.entries.length > 0
+        ? (merged.entries.length > file.entries.length ? 'file+backend' : file.source)
+        : (merged.entries.length > 0 ? 'backend' : file.source);
+    logStructured('info', 'Roster merged', {
+        file_count: file.entries.length,
+        backend_count: merged.entries.length - file.entries.length,
+        backend_state: backend.state,
+    });
+    return { entries: merged.entries, source };
+}
+
+async function loadPrimaryRoster() {
     if (CREDENTIALS_FILE) {
         try {
             const abs = path.isAbsolute(CREDENTIALS_FILE)
@@ -655,6 +832,8 @@ async function main() {
         backend: `${BACKEND_HOST}:${BACKEND_PORT}`,
         multi_tenant_disabled: MULTI_TENANT_DISABLED,
         credentials_file: CREDENTIALS_FILE || 'none',
+        backend_roster: BACKEND_ROSTER,
+        loop_seconds: LOOP_SECONDS > 0 ? Math.max(MIN_LOOP_SECONDS, LOOP_SECONDS) : 0,
         max_age_minutes: MAX_AGE_MINUTES,
         ambient_readings_limit: READINGS_LIMIT,
     }));
@@ -777,9 +956,40 @@ async function main() {
     if (totals.mineFailed > 0 || totals.withheld > 0 || totals.nonPaidOutcomes > 0) process.exitCode = 1;
 }
 
+/**
+ * --loop-seconds: one cycle after another in this process, so the last good
+ * backend roster stays in memory. A cycle that throws is logged and the loop
+ * goes on; nothing here ends the loop.
+ */
+async function runLoop(seconds, deps = {}) {
+    const cycle = deps.cycle || main;
+    const sleepFn = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const keepGoing = deps.keepGoing || (() => true);
+    const waitMs = Math.max(MIN_LOOP_SECONDS, seconds) * 1000;
+    while (keepGoing()) {
+        try {
+            await cycle();
+        } catch (err) {
+            logStructured('error', 'Collector cycle failed; the loop continues', {
+                error_message: redactSecrets(String(err && err.message)).slice(0, 200),
+            });
+        }
+        // A failed cycle must not turn the long-running process's exit code red for good.
+        process.exitCode = 0;
+        if (!keepGoing()) break;
+        await sleepFn(waitMs);
+    }
+}
+
 module.exports = {
     backendGetJson,
     normalizeRosterEntry,
+    backendRosterEntries,
+    loadBackendRoster,
+    mergeRosters,
+    runLoop,
+    BACKEND_ROSTER_MAX_AGE_MS,
+    BACKEND_ROSTER_PATH,
     loadRoster,
     processContributor,
     emitCollectorCycleOutcome,
@@ -792,7 +1002,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-    main().catch((err) => {
+    const started = LOOP_SECONDS > 0 ? runLoop(LOOP_SECONDS) : main();
+    started.catch((err) => {
         console.error('Fatal error:', err);
         process.exit(1);
     });
