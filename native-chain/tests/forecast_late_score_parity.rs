@@ -23,10 +23,8 @@
 //!   - a forecaster's `stake_required` set in the closing block: the close
 //!     locks part of her payment only if governance came first.
 //!
-//!   A follower that applied a score or the close before the block's
-//!   governance would fail the score blocks and diverge on the closing one.
-//!   No existing transition is reordered for this: only the score and the
-//!   close have a fixed place, after governance, on both sides.
+//!   A follower that applied governance after the launch batch would fail the
+//!   score blocks and diverge on the closing one.
 //! - After the first score block the follower's state is thrown away and
 //!   rebuilt from the store (WAL replay from an empty state), and the run
 //!   continues on the rebuilt state. The checkpoint encoding of a populated
@@ -34,12 +32,16 @@
 //!   migration tests).
 //!
 //! What this is not: the follower here calls `verify_block`,
-//! `extract_transitions` and `apply_transitions_batch_at_height` directly. It
-//! does not go through the node's P2P receive path (`p2p_events`), which
-//! wraps the same three calls with networking, fork choice and persistence.
+//! `validate_block`, `extract_transitions` and
+//! `apply_transitions_batch_at_height` directly. It does not go through the
+//! node's P2P receive path (`p2p_events`), which wraps the same calls with
+//! networking, fork choice and persistence.
 //!
 //! At EVERY height the block the producer built (`create_next_block`) is
-//! verified by a separate follower (`verify_block`), applied by the follower
+//! verified by a separate follower (`verify_block`), validated against the
+//! follower's own pre-block chain by the consensus adapter's `validate_block`
+//! (block verification plus the launch-state replay, the check a node runs
+//! on a received block before applying it), applied by the follower
 //! through `extract_transitions` → `apply_transitions_batch_at_height`, and
 //! persisted. The follower's `state_root`, lane state and balances must equal
 //! the producer's own post-state. At the end the WAL is replayed from an empty
@@ -62,6 +64,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use rustc_hash::FxHashSet;
 use tokio::sync::RwLock;
 use transition_extractor::extract_transitions;
+use wrfcoin_consensus_engines::{ConsensusEngine, PopConsensusAdapter};
 use wrfcoin_native_chain::blockchain::chain::Blockchain;
 use wrfcoin_native_chain::config::settings::Config;
 use wrfcoin_native_chain::consensus::proof_of_publishing::{Clock, ProofOfPublishing};
@@ -438,6 +441,12 @@ async fn run() {
     let mut verifier_pop = ProofOfPublishing::new(1, 60, 0, 32);
     verifier_pop.declare_no_genesis_oracles();
     verifier_pop.set_clock(clock.clone());
+    // The node's received-block validation: the consensus adapter, on a
+    // follower chain that holds only the pre-block state and tip.
+    let mut validator_pop = ProofOfPublishing::new(1, 60, 0, 32);
+    validator_pop.declare_no_genesis_oracles();
+    validator_pop.set_clock(clock.clone());
+    let validator = PopConsensusAdapter::new(validator_pop);
     let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
     let miner = Address([0x41; 20]).to_string();
 
@@ -490,6 +499,19 @@ async fn run() {
                     .expect("verdict"),
                 "a follower rejects the producer's block at {height}"
             );
+            {
+                let mut pre_block = Blockchain::default();
+                pre_block.height = height - 1;
+                pre_block.tip = block.prev_block_hash;
+                pre_block.state = before.clone();
+                assert!(
+                    validator
+                        .validate_block(&block, &pre_block)
+                        .await
+                        .unwrap_or_else(|e| panic!("validate_block failed at {height}: {e}")),
+                    "validate_block refuses the producer's block at {height}"
+                );
+            }
             let producer = chain.read().await.state.clone();
             let transitions = extract_transitions(&before, &block, block.height, block_time);
             follower

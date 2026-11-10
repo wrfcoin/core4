@@ -1298,6 +1298,17 @@ pub fn forecast_late_score_active(height: u64) -> bool {
     forecast_late_score_active_with(feature_active, height)
 }
 
+/// Whether a block at `height` applies its governance transitions BEFORE its
+/// launch batch on every path that orders a block's transitions: the
+/// producer (which always has), the assembly screen, the validation replay
+/// and the transition extractor. The one place this order is decided; true
+/// exactly while the forecast late score is in force, because a score reads
+/// what governance can change in the same block (the oracle set, the quorum,
+/// the signing keys) and a bucket close reads `stake_required`.
+pub fn governance_before_launch(height: u64) -> bool {
+    forecast_late_score_active(height)
+}
+
 /// [`forecast_late_score_active`] over an explicit activation predicate.
 pub fn forecast_late_score_active_with(
     active: impl Fn(ConsensusFeature, u64) -> bool,
