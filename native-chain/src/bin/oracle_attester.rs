@@ -19,6 +19,12 @@
 //! - **Test key (today):** debug build with
 //!   `WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY=<hex>` or
 //!   `WRFCOIN_ORACLE_SIGNER_KEY_FILE=<path>` (mode 0600).
+//! - **Testnet software key (release builds):**
+//!   `WRFCOIN_TESTNET_ORACLE_KEY_FILE=<path>`, a file holding the ed25519 seed
+//!   as 64 hex characters, readable only by its owner (mode 0600 on Unix, an
+//!   owner-only DACL on Windows). Accepted only with `WRFCOIN_NETWORK_ID=testnet`
+//!   and an explicit non-mainnet `WRFCOIN_CHAIN_ID`; refused when an HSM or a
+//!   debug oracle key is also configured.
 //! - **Real identity (after re-keying ceremony):**
 //!   `WRFCOIN_HSM_MODULE_PATH=<softhsm2/ykcs11 .so>` plus
 //!   `WRFCOIN_HSM_ORACLE_KEY_LABEL=<label>` — the PKCS#11 path, which takes
@@ -1419,9 +1425,10 @@ fn attester_from_env() -> Result<Attester> {
         // session can reach it. The only interpolation in this function is
         // `forbidden.uninventoried()` above, which yields role names.
         None => bail!( // secret-leak-ok: static help text naming env vars, no values interpolated
-            "no oracle signer is configured. Set WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
-             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) or WRFCOIN_HSM_MODULE_PATH + \
-             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11) — an oracle that cannot sign cannot \
+            "no oracle signer is configured. Set WRFCOIN_HSM_MODULE_PATH + \
+             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11), WRFCOIN_TESTNET_ORACLE_KEY_FILE \
+             (testnet only, owner-only file), or WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
+             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) — an oracle that cannot sign cannot \
              attest, and a node short of quorum pays no contributor."
         ),
     }
