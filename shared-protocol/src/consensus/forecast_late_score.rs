@@ -1749,12 +1749,13 @@ mod tests {
         );
         // In the set but with no registered key lifecycle: not an oracle. The
         // identity is never its own key here.
+        let empty = SigningKeyRegistry::default();
         assert_eq!(
-            check(&payload, &SigningKeyRegistry::default(), &|_| true, 2),
+            check(&payload, &empty, &|_| true, 2),
             Err(ForecastLateScoreError::UnauthorizedOracle)
         );
         assert_eq!(
-            payload.verify_registered_signers("888", "testnet", &SigningKeyRegistry::default(), 10),
+            payload.verify_registered_signers("888", "testnet", &empty, 10),
             Err(ForecastLateScoreError::UnauthorizedOracle)
         );
         assert_eq!(

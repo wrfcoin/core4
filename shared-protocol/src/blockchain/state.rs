@@ -8289,8 +8289,10 @@ impl State {
                 landed_at_height: reveal.revealed_at,
                 synthetic: reveal.provenance_class == ContributionProvenanceClass::Synthetic,
                 // A station reading is a reveal that carried a weather
-                // observation; only those get a quality score. A forecast
-                // reveal never does.
+                // observation; only those get a quality score. While this
+                // feature is in force a forecast-type reveal never gets one,
+                // whatever its data carries (`CommitRevealState` skips the
+                // weather parse for it).
                 is_weather_reading: reveal.quality_score.is_some(),
                 has_quorum: self
                     .attestations

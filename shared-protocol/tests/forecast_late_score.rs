@@ -214,6 +214,32 @@ fn attested_reading(
     commit_id
 }
 
+/// `signers` approve `commit_id` (any applied reveal), as `attested_reading` does.
+fn attest(state: &mut State, commit_id: &str, signers: &[&PrivateKey], tag: &str, height: u64) {
+    for (index, signer) in signers.iter().enumerate() {
+        let mut payload = OracleAttestationPayload {
+            commit_id: commit_id.to_string(),
+            oracle_id: oracle_id(signer),
+            approved: true,
+            signature: None,
+            confidence: Some(1.0),
+            timestamp: T0,
+            nonce: Some(format!("att-{tag}-{index}")),
+        };
+        payload.signature = Some(
+            signer
+                .sign(payload.signing_message().as_bytes())
+                .to_string(),
+        );
+        state
+            .apply_transition(StateTransition::RecordOracleAttestation {
+                payload,
+                current_block: height,
+            })
+            .expect("attestation applies");
+    }
+}
+
 /// The observation for the forecasts committed at `commit_height` /
 /// `commit_time` (6 h lead): truth 20.00, reference 3.00, mean 19.00, last 21.00.
 fn attestation(
@@ -768,6 +794,29 @@ fn forecast_late_score_end_to_end() {
         ACTIVE + 1,
     );
 
+    // A forecast-type reveal is never a reading, even when its data is a
+    // complete weather observation and the oracle quorum has attested it: it
+    // holds no quality score, so it cannot be cited as truth or as a window
+    // reading (checked with the score refusals below). A station reading
+    // with the same data holds one: `truth` is cited by every good score.
+    let weather_fields = serde_json::json!({
+        "quality": 1.0, "volume": 1.0, "uniqueness": 1.0,
+        "temperature_c": 20.0, "humidity_percent": 60.0, "pressure_hpa": 1014.0,
+        "wind_speed_ms": 2.8, "precipitation_mm": 0.0, "dewpoint_c": 12.0
+    });
+    let (weatherish_commit, weatherish_reveal) =
+        forecast(&erin, STATION, weather_fields, 6, "weatherish");
+    commit_at(&mut state, &weatherish_commit, ACTIVE + 281);
+    reveal_at(&mut state, &weatherish_reveal, ACTIVE + 281, T0);
+    let weatherish = weatherish_commit.commit_id.clone();
+    attest(
+        &mut state,
+        &weatherish,
+        &[&oracle_a, &oracle_b],
+        "weatherish",
+        ACTIVE + 281,
+    );
+
     // ---- Scoring: every refusal leaves the state untouched. ----
     let target_a = t_a + 6 * HOUR;
     let opens_at = target_a + SCORE_OPENS_AFTER_SECS;
@@ -907,6 +956,22 @@ fn forecast_late_score_end_to_end() {
             "does not verify",
         );
     }
+    // The attested forecast reveal with weather fields is not a reading. As
+    // truth it landed after the commit and has quorum, so only the
+    // station-reading rule refuses it.
+    refused(
+        score_at(
+            &mut state,
+            &score_payload(
+                attestation(ACTIVE, t_a, &weatherish, &reading),
+                &[&oracle_a, &oracle_b],
+                &group_a,
+            ),
+            h,
+            opens_at,
+        ),
+        "truth reading is not an attested",
+    );
     // Cited readings: the truth and every window reading must be attested
     // readings of this station.
     for bad in [
