@@ -182,12 +182,15 @@ pub async fn submit_oracle_attestation(
     // silently accept signatures from any caller that uses their own public key
     // as oracle_id, producing confusing errors at mempool admission (#1844).
     // The mempool also enforces has_identity_role, but we fail-closed here too.
-    let (oracle_registered, signature_valid) = {
+    let (oracle_registered, in_oracle_set, signature_valid) = {
         let blockchain = state.blockchain.read().await;
         let registered = blockchain
             .state
             .signing_keys
             .has_identity_role(&request.oracle_id, SigningRole::Oracle);
+        // The mempool checks the signing-key registry; the oracle set is chain
+        // state, so membership is checked here at the node's ingress.
+        let in_set = blockchain.state.oracle_set.contains(&request.oracle_id);
         let sig_valid = registered
             && blockchain
                 .state
@@ -199,7 +202,7 @@ pub async fn submit_oracle_attestation(
                     message.as_bytes(),
                     signature_hex,
                 );
-        (registered, sig_valid)
+        (registered, in_set, sig_valid)
     };
     if !oracle_registered {
         return envelope_error(
@@ -207,6 +210,14 @@ pub async fn submit_oracle_attestation(
             StatusCode::UNPROCESSABLE_ENTITY,
             "UNPROCESSABLE_ENTITY",
             "oracle_id is not a registered oracle operator",
+        );
+    }
+    if !in_oracle_set {
+        return envelope_error(
+            &req,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "UNPROCESSABLE_ENTITY",
+            "oracle_id is not in the current oracle set",
         );
     }
     if !signature_valid {

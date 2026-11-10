@@ -8974,6 +8974,92 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn oracle_attestation_requires_the_signer_in_the_current_oracle_set() {
+        use wrfcoin_native_chain::security::key_registry::SigningRole;
+
+        let (outside_sk, outside_id) = keypair(402);
+        let (member_sk, member_id) = keypair(403);
+        let state = test_state(None);
+        {
+            let mut blockchain = state.blockchain.write().await;
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![outside_id.clone(), member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+            for id in [&outside_id, &member_id] {
+                blockchain
+                    .apply_state_transition(StateTransition::RegisterSigningKeyEpoch {
+                        identity: id.clone(),
+                        role: SigningRole::Oracle,
+                        epoch: 1,
+                        public_key: id.clone(),
+                        activated_at: 0,
+                    })
+                    .unwrap();
+            }
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+        }
+        let app = test::init_service(test_app(state.clone())).await;
+
+        let timestamp = chrono::Utc::now().timestamp();
+        let body_for = |sk: &wrfcoin_native_chain::crypto::signature::PrivateKey, id: &str, nonce: &str| {
+            let payload = OracleAttestationPayload {
+                commit_id: "d".repeat(64),
+                oracle_id: id.to_string(),
+                approved: true,
+                signature: None,
+                confidence: None,
+                timestamp,
+                nonce: Some(nonce.to_string()),
+            };
+            let signature = sk.sign(payload.signing_message().as_bytes());
+            json!({
+                "oracle_id": id,
+                "commit_hash": "d".repeat(64),
+                "approved": true,
+                "signature": signature.to_string(),
+                "timestamp": timestamp,
+                "nonce": nonce
+            })
+        };
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&outside_sk, &outside_id, "outside-set"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body.to_string().contains("not in the current oracle set"),
+            "refusal names the oracle set: {body}"
+        );
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enters the pool");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&member_sk, &member_id, "in-set"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[actix_web::test]
     async fn stake_routes_return_state_backed_fields_and_consistent_metrics() {
         let state = test_state(None);
         let primary = "0x3333333333333333333333333333333333333333"
