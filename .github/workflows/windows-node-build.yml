@@ -99,19 +99,38 @@ jobs:
       - name: Build the CLI (wrfcoin.exe)
         shell: bash
         run: cargo build --release --locked -p wrfcoin_cli --bin wrfcoin
+      # The oracle attester service (feature `attester`; its HTTP client uses the
+      # platform TLS stack, SChannel on msvc). No `hsm` feature: on Windows the
+      # oracle key is a testnet key file with an owner-only DACL.
+      - name: Build the oracle attester (oracle_attester.exe)
+        shell: bash
+        run: cargo build --release --locked -p wrfcoin-native-chain --bin oracle_attester --features attester
       # launch_api has no --help/--version flag (any run starts a node), so this only
       # proves the binary was produced; the run test is a sync against chain 888.
       - name: Binaries produced
         shell: bash
         run: |
-          ls -l target/release/launch_api.exe target/release/wrfcoin.exe
+          ls -l target/release/launch_api.exe target/release/wrfcoin.exe target/release/oracle_attester.exe
           target/release/wrfcoin.exe --version
+          # Offline: --help touches no config, key or network.
+          target/release/oracle_attester.exe --help | tee target/release/oracle_attester-help.txt
+          grep -q WRFCOIN_ATTESTER_NODE_URL target/release/oracle_attester-help.txt
+          # With no environment it must refuse to start (non-zero), not run.
+          if env -u WRFCOIN_ATTESTER_NODE_URL target/release/oracle_attester.exe 2> target/release/oracle_attester-noenv.txt; then
+            echo 'oracle_attester.exe started with no configuration'; exit 1
+          fi
+          cat target/release/oracle_attester-noenv.txt
+          # An unrecognised argument is refused, never ignored.
+          if target/release/oracle_attester.exe foo --help > /dev/null 2>&1; then
+            echo 'oracle_attester.exe accepted an unrecognised argument'; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: wrfcoin-node-windows-x86_64
           path: |
             target/release/launch_api.exe
             target/release/wrfcoin.exe
+            target/release/oracle_attester.exe
           retention-days: 14
 
       # ---- Windows package (packaging/windows) --------------------------------
@@ -129,7 +148,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
           }
           $version = "$((Get-Content VERSION -Raw).Trim())-g$($env:HEAD_SHA.Substring(0, 8))"
-          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" "/DSourceCli=$PWD\target\release\wrfcoin.exe" `
+          & $iscc /Q "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\launch_api.exe" "/DSourceCli=$PWD\target\release\wrfcoin.exe" "/DSourceAttester=$PWD\target\release\oracle_attester.exe" `
             "/DOutputDir=$PWD\target\installer" packaging\windows\wrfcoin-node.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
           Get-ChildItem target\installer
@@ -151,9 +170,13 @@ jobs:
           $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
           $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
           $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
-          foreach ($f in 'launch_api.exe','wrfcoin.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+          foreach ($f in 'launch_api.exe','wrfcoin.exe','oracle_attester.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
           }
+          # The installed attester runs (offline --help) from its install folder.
+          $attHelp = & (Join-Path $app 'oracle_attester.exe') --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or $attHelp -notmatch 'WRFCOIN_ATTESTER_NODE_URL') { throw "installed oracle_attester.exe --help failed: $attHelp" }
+          Write-Host 'installed oracle_attester.exe --help: OK'
           foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
             if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
           }
@@ -388,6 +411,7 @@ jobs:
           if ($un.ExitCode -ne 0) { throw "uninstaller exit $($un.ExitCode)" }
           Start-Sleep 3
           if (Test-Path (Join-Path $app 'launch_api.exe')) { throw 'uninstall left launch_api.exe' }
+          if (Test-Path (Join-Path $app 'oracle_attester.exe')) { throw 'uninstall left oracle_attester.exe' }
           if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
           if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
           Write-Host 'install / hidden start / chain-888 check / clean stop / dashboard Stop route / uninstall: OK'

@@ -2156,6 +2156,51 @@ fn run_sea_level_preview(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// What the command line asks for (after `--sea-level-preview`, handled first).
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// No arguments: run from the environment.
+    Run,
+    /// Exactly one of `--help`, `-h`, `--version`, `-V`.
+    Usage,
+    /// Anything else: refuse, naming the first offending argument.
+    Refuse(String),
+}
+
+fn parse_args(args: &[String]) -> CliAction {
+    let is_usage = |a: &String| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V");
+    if args.is_empty() {
+        return CliAction::Run;
+    }
+    if args.len() == 1 && is_usage(&args[0]) {
+        return CliAction::Usage;
+    }
+    // The first argument that is not a usage flag, or the second one if both are.
+    let offending = args.iter().find(|a| !is_usage(a)).unwrap_or_else(|| &args[1]);
+    CliAction::Refuse(offending.clone())
+}
+
+/// `--help` / `--version` text. Configuration is environment-only, so this
+/// names the required variables rather than flags.
+fn usage() -> String {
+    format!(
+        "oracle_attester {version}\n\
+         Polls a node's pending oracle surface, checks each reading mechanically, signs and\n\
+         submits attestations. Configured entirely through the environment.\n\
+         \n\
+         Required: WRFCOIN_ATTESTER_NODE_URL, WRFCOIN_ATTESTER_API_TOKEN, WRFCOIN_CHAIN_ID,\n\
+         WRFCOIN_NETWORK_ID, WRFCOIN_ATTESTER_FORBID_{{GOVERNANCE,SNAPSHOT,PRODUCER}}_PUBKEY, and\n\
+         an oracle signer: WRFCOIN_HSM_MODULE_PATH + WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11),\n\
+         or a testnet key file (see the module docs).\n\
+         \n\
+         Usage:\n\
+         \x20 oracle_attester                       run (reads the environment)\n\
+         \x20 oracle_attester --sea-level-preview   offline sea-level pressure preview\n\
+         \x20 oracle_attester --help | --version    this text\n",
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
@@ -2164,6 +2209,19 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--sea-level-preview") {
         return run_sea_level_preview(&args[1..]);
+    }
+    // Offline: prints usage and exits; touches no config, key or network.
+    // Anything else on the command line is refused, never ignored: a typo
+    // must not start a live attester.
+    match parse_args(&args) {
+        CliAction::Run => {},
+        CliAction::Usage => {
+            print!("{}", usage());
+            return Ok(());
+        },
+        CliAction::Refuse(arg) => {
+            bail!("unrecognised argument '{arg}'. Configuration is environment-only; see --help")
+        },
     }
 
     let config = Config::from_env()?;
@@ -2307,6 +2365,29 @@ fn build_attester_http_client() -> Result<reqwest::Client> {
 mod tests {
     use super::*;
     use wrfcoin_shared_protocol::crypto::signature::PrivateKey;
+
+    #[test]
+    fn only_no_arguments_runs_and_anything_unrecognised_is_refused() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&a(&[])), CliAction::Run);
+        for flag in ["--help", "-h", "--version", "-V"] {
+            assert_eq!(parse_args(&a(&[flag])), CliAction::Usage);
+        }
+        assert_eq!(parse_args(&a(&["foo", "--help"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--help", "foo"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--once"])), CliAction::Refuse("--once".into()));
+        assert_eq!(parse_args(&a(&[""])), CliAction::Refuse(String::new()));
+    }
+
+    #[test]
+    fn usage_names_the_required_environment_and_no_secret_values() {
+        let text = usage();
+        assert!(text.starts_with("oracle_attester "));
+        for var in ["WRFCOIN_ATTESTER_NODE_URL", "WRFCOIN_CHAIN_ID", "WRFCOIN_NETWORK_ID"] {
+            assert!(text.contains(var), "usage does not name {var}");
+        }
+        assert!(text.contains("WRFCOIN_ATTESTER_FORBID_{GOVERNANCE,SNAPSHOT,PRODUCER}_PUBKEY"));
+    }
 
     /// #2833: entries with quorum land in `ready_to_mine`, which this binary
     /// previously did not even deserialize — a fully-attested backlog read as
