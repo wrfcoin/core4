@@ -307,10 +307,15 @@ function New-OracleKey {
     foreach ($stale in $OracleKeyTmp, $OracleKeyFile) {
         if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }   # leftovers of an interrupted create
     }
-    [System.IO.File]::WriteAllText($OracleKeyTmp, '')
-    Protect-UserOnly $OracleKeyTmp
-    [System.IO.File]::WriteAllText($OracleKeyTmp, (New-RandomHex))
-    [System.IO.File]::Move($OracleKeyTmp, $OracleKeyFile)
+    try {
+        [System.IO.File]::WriteAllText($OracleKeyTmp, '')
+        Protect-UserOnly $OracleKeyTmp
+        [System.IO.File]::WriteAllText($OracleKeyTmp, (New-RandomHex))
+        [System.IO.File]::Move($OracleKeyTmp, $OracleKeyFile)
+    } finally {
+        # On any failure no partial seed file stays behind (after a successful move it no longer exists).
+        if (Test-Path -LiteralPath $OracleKeyTmp) { Remove-Item -LiteralPath $OracleKeyTmp -Force -ErrorAction SilentlyContinue }
+    }
     Protect-UserOnly $OracleKeyFile
     Initialize-UserState   # creates and locks oracle.token now that the key exists
     $public = Get-OraclePublicKey $OracleKeyFile
@@ -656,7 +661,12 @@ function Stop-Attester([bool]$Report = $true) {
     if (-not ('WrfcoinConsoleCtrl' -as [type])) { Add-Type -TypeDefinition $ConsoleCtrl }
     foreach ($proc in $procs) {
         $err = [WrfcoinConsoleCtrl]::SendCtrlC([uint32]$proc.Id)
-        if ($err -ne 0 -and $Report) { Fail "could not signal the attester (process $($proc.Id), Win32 error $err)" }
+        if ($err -ne 0) {
+            if ($Report) { Fail "could not signal the attester (process $($proc.Id), Win32 error $err)" }
+            # Node-stop path: no point waiting 30 s for a signal that never arrived.
+            try { Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) Stop: Ctrl+C to the attester failed (Win32 error $err); force-stopping it" } catch { }
+            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
     }
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline -and @(Get-AttesterProcess).Count -gt 0) { Start-Sleep -Seconds 1 }

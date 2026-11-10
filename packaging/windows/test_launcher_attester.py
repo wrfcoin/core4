@@ -186,7 +186,19 @@ class StartStopAttester(unittest.TestCase):
         self.assertIn('if ($Report) { Fail "the attester is still running after 30 s', rest)
         self.assertIn("force-stopping it", rest)
         self.assertIn("$left | Stop-Process -Force", rest)
-        self.assertIn("if ($err -ne 0 -and $Report) { Fail", body)
+        # A failed Ctrl+C on the node-stop path force-stops right away instead of waiting.
+        failed = body.index("if ($err -ne 0) {")
+        wait = body.index("$deadline = (Get-Date).AddSeconds(30)")
+        self.assertLess(body.index("$proc | Stop-Process -Force", failed), wait)
+        self.assertIn("Ctrl+C to the attester failed", body)
+
+    def test_temp_key_file_is_removed_on_failure(self) -> None:
+        body = function_body("New-OracleKey")
+        try_ = body.index("try {")
+        fin = body.index("} finally {", try_)
+        self.assertLess(try_, body.index("WriteAllText($OracleKeyTmp, (New-RandomHex))"))
+        self.assertLess(body.index("[System.IO.File]::Move($OracleKeyTmp, $OracleKeyFile)"), fin)
+        self.assertIn("Remove-Item -LiteralPath $OracleKeyTmp -Force", body[fin:])
 
 
 class AttesterConfig(unittest.TestCase):
