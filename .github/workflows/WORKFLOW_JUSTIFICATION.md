@@ -479,3 +479,5 @@ Two details worth keeping:
 | Trigger | Runner | Why |
 |---|---|---|
 | `pull_request` (no paths filter), `push` to `main`, `workflow_dispatch` | `ubuntu-latest` | Runs the `tools/forecast-kit` and `tools/report-kit` unittest suites, which no hosted job ran before. Path selection happens inside the job, so the check always reports and can be required. A PR touching none of `tools/forecast-kit/`, `tools/report-kit/`, `forecast-score/` or the workflow passes in one cheap step that says so. Every present kit must run more than zero tests. When `forecast-score-batch` exists it is built, and zero skipped tests are required. No schedule. |
+
+2026-11-09: the same job also runs the `tools/forecaster-worker` unittest suite (standard library only, no model and no network), selected by the same in-job path check. No new trigger, runner or permission.
