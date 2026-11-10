@@ -16272,10 +16272,8 @@ mod station_registration_admission_tests {
             })
             .unwrap();
         assert!(!state.oracle_set.contains(&c), "c left the set");
-        assert!(
-            state.signing_keys.has_identity_role(&c, SigningRole::Oracle),
-            "c still holds its Oracle role in the registry"
-        );
+        let keeps_role = state.signing_keys.has_identity_role(&c, SigningRole::Oracle);
+        assert!(keeps_role, "c still holds its Oracle role in the registry");
     }
 
     /// Every non-test caller of the registry-checked admission path in this
