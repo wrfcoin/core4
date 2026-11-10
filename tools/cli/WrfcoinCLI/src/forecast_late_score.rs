@@ -192,10 +192,8 @@ pub fn sign_observation(
     ensure!(!ids.is_empty(), "a score signs at least one forecast commit id");
     let message = forecast_score_message(chain_id, network_id, attestation, &ids);
     let signature = key.sign(&message);
-    ensure!(
-        PublicKey::from_private_key(key).verify(&message, &signature),
-        "signature does not verify against the signing key"
-    );
+    let verifies = PublicKey::from_private_key(key).verify(&message, &signature);
+    ensure!(verifies, "signature does not verify against the signing key");
     Ok(ObservationSignature { oracle: oracle.to_string(), ed25519: signature.to_hex() })
 }
 
@@ -435,14 +433,15 @@ mod tests {
         let later = build_score_transaction(&payload, CHAIN, NET, Address([0x78; 20]), 1_800_200_001).unwrap();
         assert_eq!(tx.inputs[0].txid, later.inputs[0].txid, "same score, same outpoint: relays conflict");
         assert_eq!(tx.inputs[0].txid, score_outpoint(CHAIN, NET, &payload), "core4's derived outpoint");
-        assert!(payload.signatures.iter().all(|sig| keys.iter().any(|k| verify_observation_signature(
+        let all_verify = payload.signatures.iter().all(|sig| keys.iter().any(|k| verify_observation_signature(
             &PublicKey::from_private_key(k),
             CHAIN,
             NET,
             a,
             &payload.forecast_commit_ids,
             sig
-        ))));
+        )));
+        assert!(all_verify);
         assert_eq!(ForecastScorePayload::parse(&tx).unwrap(), payload);
 
         let mut twice = signatures.clone();
