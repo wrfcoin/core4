@@ -1127,4 +1127,163 @@ fn forecast_late_score_end_to_end() {
     .expect("late close");
     assert!(state.forecast_late_score.is_empty());
     assert!(!has_root_section(&state));
+
+    reorg_and_rejection_atomicity();
+}
+
+/// Reorg and rejection atomicity. Runs inside the end-to-end test because the
+/// feature schedule is process-wide (it is active here).
+///
+/// A node reorgs by restoring the fork-point `State` and replaying the new
+/// branch. So: build a fork point with live lane state, apply branch A,
+/// restore the fork point from its checkpoint-codec bytes, apply branch B,
+/// and require the result to equal a node that only ever saw B.
+fn reorg_and_rejection_atomicity() {
+    let owner = key(0x01);
+    let (alice, bob, carol) = (key(0x41), key(0x42), key(0x43));
+    let (oracle_a, oracle_b) = (key(0x21), key(0x22));
+    let fork_height = ACTIVE + 10;
+    let (t_x, t_fork) = (T0 + 50, T0 + 150);
+
+    struct Common {
+        reading: String,
+        f_alice: String,
+        bob_reveal: RevealPayload,
+    }
+    // Everything up to and including the fork-point block. At the fork point
+    // the lane holds a record (Alice), a stamped pending commit (Bob) and a
+    // bucket.
+    let prefix = |state: &mut State| -> Common {
+        register_station(state, STATION, address_of(&owner));
+        state
+            .apply_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![oracle_id(&oracle_a), oracle_id(&oracle_b)],
+                oracle_quorum: 2,
+            })
+            .expect("oracle config");
+        let reading = attested_reading(state, &owner, STATION, "reorg-r", &[&oracle_a, &oracle_b], ACTIVE);
+        let (commit, reveal) = forecast(&alice, STATION, serde_json::json!({"temp_c_centi": 2_040}), 6, "reorg-alice");
+        commit_at(state, &commit, fork_height - 1);
+        reveal_at(state, &reveal, fork_height - 1, t_x);
+        close_at(state, fork_height - 1, t_x).expect("end of block");
+        let (bob_commit, bob_reveal) = forecast(&bob, STATION, serde_json::json!({"temp_c_centi": 2_150}), 6, "reorg-bob");
+        commit_at(state, &bob_commit, fork_height);
+        close_at(state, fork_height, t_fork).expect("end of fork block");
+        state.recalculate_state_root();
+        Common { reading, f_alice: commit.commit_id, bob_reveal }
+    };
+    let hour = T0 + 6 * HOUR;
+    let closes_at = bucket_closes_at(hour).unwrap();
+    let observation = |common: &Common, truth_id: &str, truth: i64| {
+        let mut a = attestation(fork_height - 1, t_x, truth_id, &common.reading);
+        a.truth = truth;
+        score_payload(a, &[&oracle_a, &oracle_b], &[&common.f_alice])
+    };
+    // Branch A: Bob never reveals; Carol forecasts; Alice is scored against
+    // truth 20.00 and paid at close.
+    let branch_a = |state: &mut State, common: &Common| {
+        let (commit, reveal) = forecast(&carol, STATION, serde_json::json!({"temp_c_centi": 2_210}), 6, "reorg-carol");
+        commit_at(state, &commit, fork_height + 1);
+        reveal_at(state, &reveal, fork_height + 1, t_fork + 100);
+        close_at(state, fork_height + 1, t_fork + 100).expect("A: end of block");
+        let truth = attested_reading(state, &owner, STATION, "reorg-truth-a", &[&oracle_a, &oracle_b], fork_height + 200);
+        score_at(state, &observation(common, &truth, 2_000), fork_height + 300, t_x + 6 * HOUR + SCORE_OPENS_AFTER_SECS)
+            .expect("A: score");
+        close_at(state, fork_height + 400, closes_at).expect("A: close and pay");
+        state.recalculate_state_root();
+    };
+    // Branch B: Bob reveals (his stamp comes from the fork block); Alice is
+    // scored against a different truth; nothing has closed yet.
+    let branch_b = |state: &mut State, common: &Common| {
+        reveal_at(state, &common.bob_reveal, fork_height + 1, t_fork + 77);
+        close_at(state, fork_height + 1, t_fork + 77).expect("B: end of block");
+        let truth = attested_reading(state, &owner, STATION, "reorg-truth-b", &[&oracle_a, &oracle_b], fork_height + 200);
+        score_at(state, &observation(common, &truth, 2_100), fork_height + 300, t_x + 6 * HOUR + SCORE_OPENS_AFTER_SECS)
+            .expect("B: score");
+        state.recalculate_state_root();
+    };
+
+    // The node that followed A and then reorgs to B.
+    let mut node = State::new();
+    let common = prefix(&mut node);
+    assert_eq!(node.forecast_late_score.records.len(), 1);
+    assert_eq!(node.forecast_late_score.pending.values().next().unwrap().commit_time, Some(t_fork));
+    let fork_bytes = bincode::serialize(&node).expect("checkpoint codec");
+    let fork_material = node.state_root_material();
+    branch_a(&mut node, &common);
+    assert!(node.forecast_late_score.buckets.is_empty(), "A closed the bucket");
+    assert_eq!(node.forecast_late_score.pool.len(), 1, "A paid from the pool");
+    assert!(balance(&node, &address_of(&alice)) > 0);
+    let after_a = node.state_root_material();
+
+    let mut node: State = bincode::deserialize(&fork_bytes).expect("restore the fork point");
+    assert_eq!(node.state_root_material(), fork_material, "the restored fork point is the fork point");
+    branch_b(&mut node, &common);
+
+    // A node that only ever saw B.
+    let mut fresh = State::new();
+    let fresh_common = prefix(&mut fresh);
+    assert_eq!(fresh_common.f_alice, common.f_alice);
+    branch_b(&mut fresh, &fresh_common);
+
+    assert_eq!(node.forecast_late_score, fresh.forecast_late_score, "no residue of branch A in the lane");
+    assert_eq!(node.state_root_material(), fresh.state_root_material());
+    assert_eq!(node.state_root, fresh.state_root);
+    assert_ne!(node.state_root_material(), after_a);
+    let lane = &node.forecast_late_score;
+    assert!(lane.pool.is_empty(), "A's pool ledger is gone");
+    assert_eq!(balance(&node, &address_of(&alice)), 0, "A's payment is gone");
+    assert_eq!(lane.records.len(), 2, "Alice and Bob; Carol's record from A is gone");
+    assert_eq!(lane.records[&common.bob_reveal.commit_id].commit_time, t_fork, "Bob keeps the fork block's stamp");
+    assert_eq!(lane.records[&common.f_alice].skill, Some(800_000), "scored against B's truth, not A's");
+    assert!(lane.pending.is_empty());
+
+    // Rejection atomicity: after each kind of lane write is in the state, a
+    // refused transition of every lane-writing kind changes nothing.
+    let mut checked = 0;
+    let mut probe = |state: &mut State, label: &str| {
+        let before = state.state_root_material();
+        let lane_before = state.forecast_late_score.clone();
+        let height = fork_height + 500;
+        // A duplicate commit id, a reveal with no commit, a forged score and a
+        // close for the wrong height.
+        let (dup_commit, _) = forecast(&alice, STATION, serde_json::json!({"temp_c_centi": 2_040}), 6, "reorg-alice");
+        let known = state.forecast_late_score.records.contains_key(&dup_commit.commit_id);
+        let dup = state.apply_transition(StateTransition::RegisterCommit { payload: dup_commit, block_height: height });
+        assert_eq!(dup.is_err(), known, "{label}: a commit id already revealed is refused");
+        let (_, orphan) = forecast(&carol, STATION, serde_json::json!({"temp_c_centi": 1_111}), 6, "reorg-orphan");
+        assert!(state
+            .apply_transition(StateTransition::ApplyReveal { payload: orphan, block_height: height, block_timestamp: t_fork })
+            .is_err());
+        let mut forged = observation(&common, &common.reading, 2_000);
+        forged.attestation.truth += 1;
+        assert!(score_at(state, &forged, height, closes_at - 1).is_err());
+        assert!(state
+            .apply_transition(StateTransition::CloseForecastBuckets { block_height: height + 9_999, block_timestamp: closes_at })
+            .is_err());
+        if known {
+            assert_eq!(state.forecast_late_score, lane_before, "{label}: lane untouched");
+            assert_eq!(state.state_root_material(), before, "{label}: root material untouched");
+        }
+        checked += 1;
+    };
+    // After a record + a stamped pending commit (the fork point) …
+    let mut at_fork: State = bincode::deserialize(&fork_bytes).unwrap();
+    probe(&mut at_fork, "record and stamped pending");
+    // … after a score and a second record (branch B) …
+    probe(&mut node, "scored");
+    // … and after a close with a payment and a pool ledger (branch A).
+    let mut paid: State = bincode::deserialize(&fork_bytes).unwrap();
+    branch_a(&mut paid, &common);
+    assert!(!paid.forecast_late_score.pool.is_empty());
+    let (pool_before, material_before) = (paid.forecast_late_score.clone(), paid.state_root_material());
+    let mut forged = observation(&common, &common.reading, 2_000);
+    forged.attestation.truth += 1;
+    assert!(score_at(&mut paid, &forged, fork_height + 500, closes_at + 1).is_err());
+    assert!(paid
+        .apply_transition(StateTransition::CloseForecastBuckets { block_height: 1, block_timestamp: closes_at + 9 })
+        .is_err());
+    assert_eq!(paid.forecast_late_score, pool_before, "pool ledger untouched by refusals");
+    assert_eq!(paid.state_root_material(), material_before);
+    assert_eq!(checked, 2);
 }
