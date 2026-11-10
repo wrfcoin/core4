@@ -18,6 +18,12 @@
 //!    closes 24 h after the end of its hour. Its top forecasters by skill are
 //!    paid from a capped share of the Contribution slice. Whatever is not paid
 //!    is not minted. Unscored forecasts are dropped unpaid.
+//! 4. **Track record.** Every scored forecast also enters its forecaster's
+//!    [`TrackRecord`] for that station, variable and lead: the signed skills
+//!    of the last [`TRACK_RECORD_LEN`] scored forecasts. A forecaster is paid
+//!    in a bucket only when that record is full and its sum is above
+//!    [`TRACK_RECORD_MIN_SUM`], so payment requires a positive signed average
+//!    skill over the last 20 scored forecasts, not one good bucket.
 //!
 //! What the chain checks of an observation, and what it leaves to the oracles
 //! that sign it:
@@ -58,8 +64,7 @@ use crate::security::key_registry::{SigningKeyRegistry, SigningRole};
 /// Domain tag of what oracles sign for a score: the full score payload (the
 /// observation and the forecast commit ids it scores), see
 /// [`forecast_score_message`].
-pub const FORECAST_SCORE_ATTESTATION_DOMAIN_TAG: &[u8] =
-    b"wrfcoin.forecast_score_attestation.v2";
+pub const FORECAST_SCORE_ATTESTATION_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_score_attestation.v2";
 /// Domain tag of the input outpoint a score transaction must spend
 /// ([`score_outpoint`]).
 pub const FORECAST_SCORE_OUTPOINT_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_score_outpoint.v1";
@@ -70,6 +75,9 @@ const OBSERVATION_DIGEST_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_observation_dige
 const BUCKET_ID_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_late_score.bucket.v1";
 /// Domain tag of the state-root section.
 const ROOT_MATERIAL_TAG: &[u8] = b"wrfcoin_forecast_late_score_v1";
+/// Tag of the track-record section of the root pre-image, present only when
+/// at least one track record exists.
+const TRACK_RECORD_ROOT_TAG: &[u8] = b"wrfcoin_forecast_late_score_track_record_v1";
 
 /// Largest `Transaction::data` of a score transaction.
 pub const MAX_FORECAST_SCORE_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -99,6 +107,19 @@ const SECS_PER_HOUR: i64 = 3_600;
 pub const MAX_BUCKET_ENTRIES: usize = 32;
 /// Forecasters paid per bucket.
 pub const PAID_PER_BUCKET: usize = 3;
+/// Scored forecasts in a [`TrackRecord`]: the last 20 for one forecaster,
+/// station, variable and lead.
+pub const TRACK_RECORD_LEN: usize = 20;
+/// A forecaster is paid in a bucket only when its full track record sums to
+/// more than this (signed millionths). Zero: a positive signed average skill.
+pub const TRACK_RECORD_MIN_SUM: i64 = 0;
+/// Lowest signed skill a forecast adds to a track record: one forecast can
+/// take away at most as much as a perfect one adds.
+pub const SIGNED_SKILL_FLOOR: i64 = -(SKILL_PRECISION as i64);
+/// A track record with no new score for this long is dropped at a bucket
+/// close. Dropping only ever empties a record (an empty record is not paid),
+/// so it bounds the state without opening a way around the rule.
+pub const TRACK_RECORD_IDLE_SECS: i64 = 30 * 24 * 60 * 60;
 /// Most buckets closed in one block; the rest close in the following blocks.
 pub const MAX_BUCKET_CLOSES_PER_BLOCK: usize = 256;
 
@@ -283,7 +304,10 @@ fn push_observation(message: &mut Vec<u8>, attestation: &ObservationAttestation)
     push(message, &attestation.mean24.to_le_bytes());
     push(message, &attestation.last.to_le_bytes());
     push(message, attestation.window_hash.as_bytes());
-    push(message, &(attestation.window_commit_ids.len() as u64).to_le_bytes());
+    push(
+        message,
+        &(attestation.window_commit_ids.len() as u64).to_le_bytes(),
+    );
     for id in &attestation.window_commit_ids {
         push(message, id.as_bytes());
     }
@@ -305,7 +329,10 @@ pub fn forecast_score_message(
     push(&mut message, chain_id.as_bytes());
     push(&mut message, network_id.as_bytes());
     push_observation(&mut message, attestation);
-    push(&mut message, &(forecast_commit_ids.len() as u64).to_le_bytes());
+    push(
+        &mut message,
+        &(forecast_commit_ids.len() as u64).to_le_bytes(),
+    );
     for id in forecast_commit_ids {
         push(&mut message, id.as_bytes());
     }
@@ -622,6 +649,69 @@ pub struct ForecastPoolEpoch {
     pub paid_by_forecaster: BTreeMap<String, Balance>,
 }
 
+/// The signed skills of a forecaster's last scored forecasts for one
+/// station, variable and lead, by [`track_record_key`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackRecord {
+    /// Signed skills in millionths ([`signed_skill`]), oldest first, at most
+    /// [`TRACK_RECORD_LEN`].
+    pub skills: Vec<i64>,
+    /// Block time of the latest score that entered the record.
+    pub last_scored_at: i64,
+}
+
+impl TrackRecord {
+    /// Full, and its sum above [`TRACK_RECORD_MIN_SUM`].
+    pub fn is_eligible(&self) -> bool {
+        self.skills.len() >= TRACK_RECORD_LEN
+            && self
+                .skills
+                .iter()
+                .try_fold(0i64, |sum, skill| sum.checked_add(*skill))
+                .is_some_and(|sum| sum > TRACK_RECORD_MIN_SUM)
+    }
+
+    fn push(&mut self, skill: i64, scored_at: i64) {
+        self.skills.push(skill);
+        if self.skills.len() > TRACK_RECORD_LEN {
+            let excess = self.skills.len() - TRACK_RECORD_LEN;
+            self.skills.drain(..excess);
+        }
+        self.last_scored_at = scored_at;
+    }
+}
+
+/// The key of a track record: forecaster, lead, variable, station, in that
+/// order. The first three parts never contain `/`, and the station id is
+/// last, so the key is unambiguous.
+pub fn track_record_key(
+    forecaster: &Address,
+    station_id: &str,
+    variable: LateScoreVariable,
+    lead_hours: u32,
+) -> String {
+    format!(
+        "{}/{lead_hours}/{}/{station_id}",
+        forecaster_key(forecaster),
+        data_key(variable)
+    )
+}
+
+/// The signed skill a scored forecast adds to its track record:
+/// `1_000_000 − 1_000_000·err/reference`, floored at [`SIGNED_SKILL_FLOOR`];
+/// 0 for a copy or a zero reference (as the paid skill). Where it is positive
+/// it equals the paid (clamped) skill.
+pub fn signed_skill(err: u64, reference: u64, copied: bool) -> i64 {
+    if copied || reference == 0 {
+        return 0;
+    }
+    // ≤ 10^6 · u64::MAX: fits a u128.
+    let lost = u128::from(SKILL_PRECISION) * u128::from(err) / u128::from(reference);
+    let max_lost = u128::from(SKILL_PRECISION) * 2;
+    // lost ≤ 2·10^6 here, so both fit an i64.
+    SKILL_PRECISION as i64 - lost.min(max_lost) as i64
+}
+
 /// All state of the lane. Empty until the feature is in force.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForecastLateScoreState {
@@ -637,6 +727,10 @@ pub struct ForecastLateScoreState {
     /// Pool ledger, by epoch (`height / POOL_EPOCH_BLOCKS`).
     #[serde(default)]
     pub pool: BTreeMap<u64, ForecastPoolEpoch>,
+    /// Track records, by [`track_record_key`]. Must stay the last field: an
+    /// empty state is the final bytes of a checkpoint.
+    #[serde(default)]
+    pub track_records: BTreeMap<String, TrackRecord>,
 }
 
 /// The key of a forecaster in [`ForecastPoolEpoch::paid_by_forecaster`]: the
@@ -792,7 +886,9 @@ impl ForecastLateScoreState {
                 || record.commit_time != a.commit_time
                 || record.target != a.target
             {
-                return Err(ForecastLateScoreError::ForecastNotInBucket(commit_id.clone()));
+                return Err(ForecastLateScoreError::ForecastNotInBucket(
+                    commit_id.clone(),
+                ));
             }
             if record.skill.is_some() {
                 return Err(ForecastLateScoreError::AlreadyScored(commit_id.clone()));
@@ -806,6 +902,7 @@ impl ForecastLateScoreState {
             && self.records.is_empty()
             && self.buckets.is_empty()
             && self.pool.is_empty()
+            && self.track_records.is_empty()
     }
 
     /// A forecast commit was registered: remember who signed it.
@@ -998,15 +1095,26 @@ impl ForecastLateScoreState {
                 tolerance: copy_tolerance(attestation.variable),
             })
             .map_err(|e| ForecastLateScoreError::Score(e.to_string()))?;
-            scored.push((commit_id.clone(), score.skill));
+            let signed = signed_skill(score.err, attestation.reference, score.copied.is_some());
+            scored.push((commit_id.clone(), score.skill, signed));
         }
         if scored.is_empty() {
             return Err(ForecastLateScoreError::NothingToScore);
         }
         let count = scored.len();
-        for (commit_id, skill) in scored {
+        // Payload order (strictly ascending commit ids): deterministic.
+        for (commit_id, skill, signed) in scored {
             if let Some(record) = self.records.get_mut(&commit_id) {
                 record.skill = Some(skill);
+                self.track_records
+                    .entry(track_record_key(
+                        &record.forecaster,
+                        &record.station_id,
+                        record.variable,
+                        record.lead_hours,
+                    ))
+                    .or_default()
+                    .push(signed, block_timestamp);
             }
         }
         if let Some(bucket) = self.buckets.get_mut(&id) {
@@ -1043,6 +1151,9 @@ impl ForecastLateScoreState {
             .retain(|_, pending| pending.expires_at_height >= block_height);
         self.pool
             .retain(|epoch, _| !pool_epoch_expired(*epoch, block_height));
+        self.track_records.retain(|_, record| {
+            record.last_scored_at.saturating_add(TRACK_RECORD_IDLE_SECS) > block_timestamp
+        });
 
         // Ids sort by hour, so the due buckets are a prefix.
         let due: Vec<String> = self
@@ -1069,7 +1180,10 @@ impl ForecastLateScoreState {
             let owner = station_owner(&bucket.station_id);
             // Arithmetic that cannot be completed pays nothing for the bucket;
             // it never stops the block (fail closed).
-            awards.extend(bucket_awards(&id, &bucket, &entries, owner).unwrap_or_default());
+            awards.extend(
+                bucket_awards(&id, &bucket, &entries, owner, &self.track_records)
+                    .unwrap_or_default(),
+            );
         }
         awards
     }
@@ -1269,6 +1383,20 @@ impl ForecastLateScoreState {
                 u128le(material, *paid);
             }
         }
+        // Track records: a tagged section only when there is one, so the
+        // pre-image of a state without any is unchanged.
+        if !self.track_records.is_empty() {
+            material.extend_from_slice(TRACK_RECORD_ROOT_TAG);
+            u64le(material, self.track_records.len() as u64);
+            for (key, record) in &self.track_records {
+                push(material, key.as_bytes());
+                i64le(material, record.last_scored_at);
+                u64le(material, record.skills.len() as u64);
+                for skill in &record.skills {
+                    i64le(material, *skill);
+                }
+            }
+        }
     }
 }
 
@@ -1310,8 +1438,12 @@ pub fn block_share(contribution_slice: u128) -> Option<u128> {
 /// skill (ties: earlier commit, then commit id), `skill × SKILL_UNIT / 10^6`
 /// each, scaled pro rata to [`BUCKET_CAP`].
 ///
-/// A forecast earns nothing when it is unscored, scored zero, a copy, or its
-/// forecaster owns the station. A copy: another forecaster's forecast in the
+/// A forecast earns nothing when it is unscored, scored zero, a copy, its
+/// forecaster owns the station, or its forecaster's [`TrackRecord`] for the
+/// bucket's station, variable and lead is not eligible (fewer than
+/// [`TRACK_RECORD_LEN`] scored forecasts, or a sum not above
+/// [`TRACK_RECORD_MIN_SUM`]). Ineligible forecasts are left out before the
+/// top [`PAID_PER_BUCKET`] are picked. A copy: another forecaster's forecast in the
 /// bucket was revealed BEFORE this one was committed and is within the copy
 /// tolerance of it. Forecasts committed in or before the block the other was
 /// revealed in cannot have copied it.
@@ -1320,7 +1452,18 @@ fn bucket_awards(
     bucket: &ForecastBucket,
     entries: &[(String, ForecastRecord)],
     station_owner: Option<Address>,
+    track_records: &BTreeMap<String, TrackRecord>,
 ) -> Result<Vec<BucketAward>, ForecastLateScoreError> {
+    let has_record = |record: &ForecastRecord| {
+        track_records
+            .get(&track_record_key(
+                &record.forecaster,
+                &bucket.station_id,
+                bucket.variable,
+                bucket.lead_hours,
+            ))
+            .is_some_and(TrackRecord::is_eligible)
+    };
     let tolerance = copy_tolerance(bucket.variable);
     let is_copy = |record: &ForecastRecord| {
         entries.iter().any(|(_, other)| {
@@ -1335,7 +1478,7 @@ fn bucket_awards(
             let skill = record
                 .skill
                 .filter(|skill| *skill > 0 && *skill <= SKILL_PRECISION)?;
-            if Some(record.forecaster) == station_owner || is_copy(record) {
+            if Some(record.forecaster) == station_owner || is_copy(record) || !has_record(record) {
                 return None;
             }
             Some((skill, record.commit_height, commit_id, record.forecaster))
@@ -1413,7 +1556,13 @@ mod tests {
             .iter()
             .map(|(id, r)| ((*id).to_string(), r.clone()))
             .collect();
-        bucket_awards("b", &bucket(), &entries, owner)
+        // Every forecaster here has a full, positive track record: these tests
+        // are about ranking, caps, copies and owners.
+        let records: BTreeMap<String, TrackRecord> = entries
+            .iter()
+            .map(|(_, r)| (track_key(r.forecaster), full_record(SKILL_PRECISION as i64)))
+            .collect();
+        bucket_awards("b", &bucket(), &entries, owner, &records)
             .unwrap()
             .into_iter()
             .map(|a| (a.commit_id, a.amount))
@@ -1989,7 +2138,7 @@ mod tests {
     #[test]
     fn state_round_trips_through_json_and_bincode() {
         let mut state = ForecastLateScoreState::default();
-        assert_eq!(bincode::serialize(&state).unwrap(), vec![0u8; 32]);
+        assert_eq!(bincode::serialize(&state).unwrap(), vec![0u8; 40]);
         state.note_commit("c0", addr(1), 5, 8);
         state.close_due(5, 99, |_| None);
         state
@@ -2151,7 +2300,11 @@ mod tests {
     /// skill in two buckets of three, but a negative sum over any 20.
     fn step_truth(round: u64) -> i64 {
         let forecast = LAST + 10;
-        if round % 3 == 2 { forecast + 300 } else { forecast + 60 }
+        if round % 3 == 2 {
+            forecast + 300
+        } else {
+            forecast + 60
+        }
     }
 
     #[test]
@@ -2177,9 +2330,235 @@ mod tests {
         for round in 0..19 {
             // Error 20: skill 800_000 every time.
             let paid = play_round(&mut state, round, &[(2, LAST + 10)], LAST + 30);
-            assert!(paid.is_empty(), "round {round}: only {} scored forecasts", round + 1);
+            assert!(
+                paid.is_empty(),
+                "round {round}: only {} scored forecasts",
+                round + 1
+            );
         }
         let paid = play_round(&mut state, 19, &[(2, LAST + 10)], LAST + 30);
-        assert_eq!(paid.len(), 1, "the 20th scored forecast completes the record");
+        assert_eq!(
+            paid.len(),
+            1,
+            "the 20th scored forecast completes the record"
+        );
+    }
+
+    fn track_key(forecaster: Address) -> String {
+        track_record_key(&forecaster, "st-1", LateScoreVariable::TemperatureC, 6)
+    }
+
+    fn full_record(skill: i64) -> TrackRecord {
+        TrackRecord {
+            skills: vec![skill; TRACK_RECORD_LEN],
+            last_scored_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_skilled_forecaster_is_paid_once_its_record_is_full() {
+        let mut state = ForecastLateScoreState::default();
+        for round in 0..19 {
+            assert!(play_round(&mut state, round, &[(3, LAST + 10)], LAST + 30).is_empty());
+        }
+        for round in 19..25 {
+            let paid = play_round(&mut state, round, &[(3, LAST + 10)], LAST + 30);
+            // skill 800_000 → 0.8 WRF, inside the bucket cap.
+            assert_eq!(paid, vec![(3, 80_000_000)], "round {round}");
+        }
+        let record = &state.track_records[&track_key(addr(3))];
+        assert_eq!(
+            record.skills,
+            vec![800_000; TRACK_RECORD_LEN],
+            "the window holds 20"
+        );
+    }
+
+    #[test]
+    fn the_window_slides_over_the_last_twenty() {
+        let mut state = ForecastLateScoreState::default();
+        // 20 losses of three references: signed −1_000_000 each, never paid.
+        for round in 0..20 {
+            assert!(play_round(&mut state, round, &[(4, LAST + 10)], LAST + 310).is_empty());
+        }
+        // Then wins of 800_000. After k wins the sum is
+        // 800_000·k − 1_000_000·(20 − k): positive from k = 12.
+        let mut first_paid = None;
+        for k in 1..=20u64 {
+            let paid = play_round(&mut state, 19 + k, &[(4, LAST + 10)], LAST + 30);
+            if !paid.is_empty() && first_paid.is_none() {
+                first_paid = Some(k);
+            }
+            if first_paid.is_some() {
+                assert_eq!(paid.len(), 1, "stays eligible after win {k}");
+            }
+        }
+        assert_eq!(first_paid, Some(12));
+        // A losing bucket pays nothing (paid skill 0); the record of 19 wins
+        // and that loss is still positive, so the next win is paid.
+        assert!(play_round(&mut state, 41, &[(4, LAST + 10)], LAST + 310).is_empty());
+        assert_eq!(
+            play_round(&mut state, 42, &[(4, LAST + 10)], LAST + 30).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn copies_and_zero_references_count_as_zero() {
+        assert_eq!(signed_skill(0, 100, true), 0, "a copy");
+        assert_eq!(signed_skill(1_000, 0, false), 0, "no reference");
+        assert_eq!(signed_skill(0, 100, false), 1_000_000);
+        assert_eq!(signed_skill(100, 100, false), 0);
+        assert_eq!(signed_skill(150, 100, false), -500_000);
+        assert_eq!(signed_skill(300, 100, false), SIGNED_SKILL_FLOOR);
+        assert_eq!(signed_skill(u64::MAX, 1, false), SIGNED_SKILL_FLOOR);
+        // Where positive it is the paid skill; elsewhere the paid skill is 0.
+        for reference in [0u64, 1, 7, 100, 999, MAX_REFERENCE] {
+            for err in [0u64, 1, 6, 50, 99, 100, 101, 250, 5_000, 90_000] {
+                for copied in [false, true] {
+                    let forecast = 1_000i64;
+                    let truth = forecast + i64::try_from(err).unwrap();
+                    let (mean24, last) = if copied {
+                        (forecast, forecast)
+                    } else {
+                        (-9_000, -9_000)
+                    };
+                    let paid = late_skill(&LateScoreInput {
+                        variable: LateScoreVariable::TemperatureC,
+                        forecast,
+                        truth: truth.min(10_000),
+                        reference,
+                        mean24,
+                        last,
+                        tolerance: COPY_TOLERANCE_UNITS,
+                    })
+                    .unwrap();
+                    let signed = signed_skill(paid.err, reference, paid.copied.is_some());
+                    assert_eq!(signed.max(0), i64::try_from(paid.skill).unwrap());
+                    assert!(signed >= SIGNED_SKILL_FLOOR);
+                }
+            }
+        }
+        // A record of 20 copies has sum 0: not paid.
+        let mut state = ForecastLateScoreState::default();
+        for round in 0..20 {
+            assert!(play_round(&mut state, round, &[(5, LAST + 3)], LAST + 3).is_empty());
+        }
+        assert_eq!(state.track_records[&track_key(addr(5))].skills, vec![0; 20]);
+    }
+
+    #[test]
+    fn an_ineligible_forecaster_is_skipped_before_the_top_three() {
+        let entries: Vec<(String, ForecastRecord)> = (1..=4u8)
+            .map(|f| {
+                let mut r = record(
+                    f,
+                    2_000 + i64::from(f) * 100,
+                    5,
+                    6,
+                    Some(900_000 - u64::from(f)),
+                );
+                r.forecaster = addr(f);
+                (format!("c{f}"), r)
+            })
+            .collect();
+        let mut records: BTreeMap<String, TrackRecord> = (1..=4u8)
+            .map(|f| (track_key(addr(f)), full_record(500_000)))
+            .collect();
+        // Forecaster 1 has the best skill but a non-positive record; 2 has
+        // only 19 scores. 3 and 4 are paid.
+        records.insert(track_key(addr(1)), full_record(0));
+        records.get_mut(&track_key(addr(2))).unwrap().skills.pop();
+        let paid: Vec<u8> = bucket_awards("b", &bucket(), &entries, None, &records)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.forecaster.0[0])
+            .collect();
+        assert_eq!(paid, vec![3, 4]);
+        // A record for another lead, variable or station does not count.
+        let mut other = BTreeMap::new();
+        for key in [
+            track_record_key(&addr(3), "st-1", LateScoreVariable::TemperatureC, 12),
+            track_record_key(&addr(3), "st-1", LateScoreVariable::PressureHpa, 6),
+            track_record_key(&addr(3), "st-2", LateScoreVariable::TemperatureC, 6),
+        ] {
+            other.insert(key, full_record(500_000));
+        }
+        assert!(
+            bucket_awards("b", &bucket(), &entries, None, &other)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn idle_track_records_are_dropped_at_a_close() {
+        let mut state = ForecastLateScoreState::default();
+        state.track_records.insert(
+            "old".into(),
+            TrackRecord {
+                skills: vec![1],
+                last_scored_at: 100,
+            },
+        );
+        state.track_records.insert(
+            "new".into(),
+            TrackRecord {
+                skills: vec![1],
+                last_scored_at: 200,
+            },
+        );
+        state.close_due(1, 100 + TRACK_RECORD_IDLE_SECS - 1, |_| None);
+        assert_eq!(state.track_records.len(), 2);
+        state.close_due(2, 100 + TRACK_RECORD_IDLE_SECS, |_| None);
+        assert_eq!(state.track_records.keys().collect::<Vec<_>>(), vec!["new"]);
+        state.close_due(3, i64::MAX, |_| None);
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn track_records_round_trip_and_enter_the_root_only_when_present() {
+        let root = |state: &ForecastLateScoreState| {
+            let mut material = Vec::new();
+            state.root_material(&mut material);
+            material
+        };
+        let contains =
+            |haystack: &[u8], needle: &[u8]| haystack.windows(needle.len()).any(|w| w == needle);
+        let mut state = ForecastLateScoreState::default();
+        state.pool.insert(3, ForecastPoolEpoch::default());
+        let before = root(&state);
+        assert!(!contains(&before, TRACK_RECORD_ROOT_TAG));
+        play_round(&mut state, 0, &[(6, LAST + 10)], LAST + 30);
+        let after = root(&state);
+        assert!(contains(&after, TRACK_RECORD_ROOT_TAG));
+        assert!(
+            after.starts_with(&before),
+            "the section is appended; nothing before it moves"
+        );
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ForecastLateScoreState>(&json).unwrap(),
+            state
+        );
+        let bytes = bincode::serialize(&state).unwrap();
+        assert_eq!(
+            bincode::deserialize::<ForecastLateScoreState>(&bytes).unwrap(),
+            state
+        );
+        // Every part of a record moves the root.
+        let mut seen = vec![after];
+        let key = track_key(addr(6));
+        state.track_records.get_mut(&key).unwrap().skills.push(1);
+        seen.push(root(&state));
+        state.track_records.get_mut(&key).unwrap().skills[0] -= 1;
+        seen.push(root(&state));
+        state.track_records.get_mut(&key).unwrap().last_scored_at += 1;
+        seen.push(root(&state));
+        let record = state.track_records.remove(&key).unwrap();
+        state.track_records.insert(track_key(addr(7)), record);
+        seen.push(root(&state));
+        let distinct: std::collections::BTreeSet<&Vec<u8>> = seen.iter().collect();
+        assert_eq!(distinct.len(), seen.len());
     }
 }

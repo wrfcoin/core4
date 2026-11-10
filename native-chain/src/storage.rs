@@ -1821,7 +1821,7 @@ fn decode_state_checkpoint_migrating(
             // Likewise the advisory-proposal map (format 17): a migration
             // appends it empty.
             // Likewise the forecast late-score state (format 18): a migration
-            // appends it empty (four empty maps, 32 zero bytes).
+            // appends it empty (five empty maps, 40 zero bytes).
             let v17_body = &migrated[header_len..migrated.len() - migrations::EMPTY_FORECAST_LATE_SCORE_BYTES];
             let v16_body = &v17_body[..v17_body.len() - 8];
             let v15_body = &v16_body[..v16_body.len() - 8];

@@ -10,7 +10,9 @@
 //!   forecasters each commit and reveal a temperature and a pressure forecast
 //!   (two buckets); the truth reading lands near the target; two
 //!   `ForecastScore` transactions score them at target + 35 min; both buckets
-//!   close a day later and pay, each at its cap.
+//!   close a day later and pay, each at its cap. Before that, 19 warm-up
+//!   rounds per forecaster and variable fill the track records the payment
+//!   needs (they close unpaid), so the paid round is each record's 20th.
 //! - Governance in the same block as the lane. Every score carries two
 //!   oracle signatures, and the quorum moves under them, by proposals due at
 //!   exact heights:
@@ -80,9 +82,9 @@ use wrfcoin_shared_protocol::blockchain::transaction::{
 };
 use wrfcoin_shared_protocol::common::types::{Address, Balance};
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
-    ObservationSignature, SCORE_OPENS_AFTER_SECS, bucket_closes_at, bucket_hour,
-    forecast_score_message, score_outpoint,
+    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, MAX_FORECAST_SCORE_TXS_PER_BLOCK,
+    ObservationAttestation, ObservationSignature, SCORE_OPENS_AFTER_SECS, TRACK_RECORD_LEN,
+    bucket_closes_at, bucket_hour, forecast_score_message, score_outpoint, track_record_key,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
     ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, GENESIS_CHAIN_ID_KEY,
@@ -95,14 +97,30 @@ use wrfcoin_shared_protocol::station_registry::{
 };
 
 const ACTIVE: u64 = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS;
+/// Track-record warm-up rounds before the paid lifecycle: with the paid
+/// round, each forecaster's record per variable is exactly full.
+const WARMUP_ROUNDS: usize = TRACK_RECORD_LEN - 1;
+/// Warm-up scores: one temperature and one pressure score per round.
+const WARMUP_SCORES: usize = 2 * WARMUP_ROUNDS;
+/// Empty blocks that carry the clock from the warm-up scores to the close of
+/// every warm-up bucket (about a day). Spread over several blocks: a station
+/// reading's time may lead its last accepted reading only by an allowance
+/// that grows with the blocks in between.
+const WARMUP_CLOSE_BLOCKS: i64 = 16;
+/// Blocks of the warm-up: commit and reveal per round, the truth reading
+/// (commit, reveal), the score blocks, and the closing blocks.
+const WARMUP_BLOCKS: u64 = (2 * WARMUP_ROUNDS
+    + 2
+    + WARMUP_SCORES.div_ceil(MAX_FORECAST_SCORE_TXS_PER_BLOCK)) as u64
+    + WARMUP_CLOSE_BLOCKS as u64;
 /// The block that carries the temperature score and lowers the quorum to 2.
-const SCORE_HEIGHT: u64 = ACTIVE + 7;
+const SCORE_HEIGHT: u64 = ACTIVE + 7 + WARMUP_BLOCKS;
 /// The block that raises the quorum back to 3 and is offered the pressure score.
-const RAISE_HEIGHT: u64 = ACTIVE + 8;
+const RAISE_HEIGHT: u64 = ACTIVE + 8 + WARMUP_BLOCKS;
 /// The block that lowers the quorum to 2 again and carries the pressure score.
-const RESCORE_HEIGHT: u64 = ACTIVE + 9;
+const RESCORE_HEIGHT: u64 = ACTIVE + 9 + WARMUP_BLOCKS;
 /// The block that closes the buckets, and the stake change the close meets.
-const CLOSE_HEIGHT: u64 = ACTIVE + 10;
+const CLOSE_HEIGHT: u64 = ACTIVE + 10 + WARMUP_BLOCKS;
 /// What Alice must lock from the closing block on.
 const ALICE_STAKE_REQUIRED: u128 = 10_000_000;
 const CHILD_ENV: &str = "WRFCOIN_FORECAST_LATE_SCORE_PARITY_CHILD";
@@ -583,8 +601,205 @@ async fn run() {
                 "window att b",
                 attestation_tx(&window.commit_id, &oracle_b, now, "window-b")
             ),
+            // A third attestation: the warm-up scores run at quorum 3.
+            (
+                "window att c",
+                attestation_tx(&window.commit_id, &oracle_c, now, "window-c")
+            ),
         ]
     );
+
+    // ---- Track-record warm-up: 19 scored rounds per forecaster and
+    // variable, through real blocks at quorum 3. Their buckets close before
+    // the paid lifecycle with nothing paid (no record is full yet); the paid
+    // round below is each record's 20th score. ----
+    let warm_values = [
+        (&alice, 2_040i64, 101_440i64, "alice"),
+        (&bob, 2_150, 101_550, "bob"),
+        (&carol, 2_010, 101_410, "carol"),
+    ];
+    // (commit height, commit time, temperature ids, pressure ids)
+    let mut warm_rounds: Vec<(u64, i64, Vec<String>, Vec<String>)> = Vec::new();
+    for round in 0..WARMUP_ROUNDS {
+        now += HOUR;
+        let mut temp = Vec::new();
+        let mut pres = Vec::new();
+        for (who, t, p, name) in warm_values {
+            temp.push(commit_reveal(
+                who,
+                "forecast",
+                serde_json::json!({ "temp_c_centi": t }),
+                Some(1),
+                now,
+                &format!("warm{round}-{name}"),
+            ));
+            pres.push(commit_reveal(
+                who,
+                "forecast",
+                serde_json::json!({ "pressure_pa": p }),
+                Some(1),
+                now,
+                &format!("warm{round}-{name}-p"),
+            ));
+        }
+        let commit_time = block!(
+            now,
+            temp.iter()
+                .chain(&pres)
+                .map(|f| ("warm-up commit", f.commit.clone()))
+                .collect()
+        );
+        let commit_height = height;
+        now += 60;
+        block!(
+            now,
+            temp.iter()
+                .chain(&pres)
+                .map(|f| ("warm-up reveal", f.reveal.clone()))
+                .collect()
+        );
+        let ids = |pairs: &[Pair]| pairs.iter().map(|f| f.commit_id.clone()).collect();
+        warm_rounds.push((commit_height, commit_time, ids(&temp), ids(&pres)));
+    }
+    // One truth reading for every warm-up round: it lands above all of their
+    // commit heights.
+    now += HOUR;
+    // Not the same weather values as the other readings: identical
+    // consecutive readings of a station are not all accepted.
+    let warm_truth = commit_reveal(
+        &owner,
+        "contribution",
+        serde_json::json!({
+            "quality": 1.0, "volume": 1.0, "uniqueness": 1.0,
+            "temperature_c": 19.0, "humidity_percent": 62.0, "pressure_hpa": 1013.0,
+            "wind_speed_ms": 2.1, "precipitation_mm": 0.0, "dewpoint_c": 11.0
+        }),
+        None,
+        now,
+        "warm-truth",
+    );
+    block!(now, vec![("warm-up truth commit", warm_truth.commit.clone())]);
+    now += 60;
+    block!(
+        now,
+        vec![
+            ("warm-up truth reveal", warm_truth.reveal.clone()),
+            (
+                "warm-up truth att a",
+                attestation_tx(&warm_truth.commit_id, &oracle_a, now, "warm-truth-a")
+            ),
+            (
+                "warm-up truth att b",
+                attestation_tx(&warm_truth.commit_id, &oracle_b, now, "warm-truth-b")
+            ),
+            (
+                "warm-up truth att c",
+                attestation_tx(&warm_truth.commit_id, &oracle_c, now, "warm-truth-c")
+            ),
+        ]
+    );
+    let warm_score = |commit_height: u64,
+                      commit_time: i64,
+                      variable,
+                      truth_value: i64,
+                      ids: &[String]| {
+        let attestation = ObservationAttestation {
+            station_id: STATION.to_string(),
+            variable,
+            lead_hours: 1,
+            commit_height,
+            commit_time,
+            target: commit_time + HOUR,
+            truth: truth_value,
+            truth_commit_id: warm_truth.commit_id.clone(),
+            reference: 300,
+            mean24: truth_value - 100,
+            last: truth_value + 100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec![window.commit_id.clone()],
+        };
+        let mut forecast_commit_ids = ids.to_vec();
+        forecast_commit_ids.sort();
+        let identity = ChainIdentity::active();
+        let message = forecast_score_message(
+            &identity.chain_id,
+            &identity.network_id,
+            &attestation,
+            &forecast_commit_ids,
+        );
+        let mut signatures: Vec<ObservationSignature> = [&oracle_a, &oracle_b, &oracle_c]
+            .into_iter()
+            .map(|oracle| ObservationSignature {
+                oracle: oracle_id(oracle),
+                ed25519: oracle.sign(&message).to_hex(),
+            })
+            .collect();
+        signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
+        ForecastScorePayload {
+            attestation,
+            signatures,
+            forecast_commit_ids,
+        }
+    };
+    let mut warm_scores = Vec::new();
+    for (commit_height, commit_time, temp, pres) in &warm_rounds {
+        warm_scores.push(warm_score(
+            *commit_height,
+            *commit_time,
+            LateScoreVariable::TemperatureC,
+            2_000,
+            temp,
+        ));
+        warm_scores.push(warm_score(
+            *commit_height,
+            *commit_time,
+            LateScoreVariable::PressureHpa,
+            101_400,
+            pres,
+        ));
+    }
+    assert_eq!(warm_scores.len(), WARMUP_SCORES);
+    let last_warm_target = warm_rounds.last().map(|r| r.1 + HOUR).unwrap();
+    now = last_warm_target + SCORE_OPENS_AFTER_SECS;
+    let warm_relay = Address([0x78; 20]);
+    for chunk in warm_scores.chunks(MAX_FORECAST_SCORE_TXS_PER_BLOCK) {
+        block!(
+            now,
+            chunk
+                .iter()
+                .map(|payload| ("warm-up score", score_tx(warm_relay, now, payload)))
+                .collect()
+        );
+        now += 60;
+    }
+    let record_len = |s: &State, who: &PrivateKey, variable| {
+        s.forecast_late_score
+            .track_records
+            .get(&track_record_key(&address_of(who), STATION, variable, 1))
+            .map_or(0, |record| record.skills.len())
+    };
+    for who in [&alice, &bob, &carol] {
+        for variable in [LateScoreVariable::TemperatureC, LateScoreVariable::PressureHpa] {
+            assert_eq!(record_len(&follower, who, variable), WARMUP_ROUNDS);
+        }
+    }
+    // Every warm-up bucket closes; no record is full, so nothing is paid.
+    let warm_closed = bucket_closes_at(bucket_hour(last_warm_target).unwrap());
+    let step = (warm_closed - now) / WARMUP_CLOSE_BLOCKS + 1;
+    for _ in 0..WARMUP_CLOSE_BLOCKS {
+        now = (now + step).min(warm_closed);
+        block!(now, Vec::new());
+    }
+    assert_eq!(now, warm_closed);
+    {
+        let lane = &follower.forecast_late_score;
+        assert!(lane.buckets.is_empty() && lane.records.is_empty());
+        assert!(lane.pool.is_empty(), "no warm-up bucket paid");
+        for who in [&alice, &bob, &carol] {
+            assert_eq!(follower.get_account(&address_of(who)).map_or(0, |a| a.balance.into_inner()), 0);
+        }
+    }
+    assert_eq!(height, ACTIVE + 2 + WARMUP_BLOCKS);
 
     // ---- Three forecasters, 1 h lead, temperature and pressure: two
     // buckets, all six commits in one block. ----
@@ -783,6 +998,12 @@ async fn run() {
         assert_eq!(lane.records[&f_alice.commit_id].skill, Some(866_667));
         assert_eq!(lane.records[&f_bob.commit_id].skill, Some(500_000));
         assert_eq!(lane.records[&f_carol.commit_id].skill, Some(966_667));
+    }
+    // The paid round is each record's 20th score: every record is full.
+    for who in [&alice, &bob, &carol] {
+        for variable in [LateScoreVariable::TemperatureC, LateScoreVariable::PressureHpa] {
+            assert_eq!(record_len(&follower, who, variable), TRACK_RECORD_LEN);
+        }
     }
 
     // ---- The buckets close a day after the end of their hour, in the block

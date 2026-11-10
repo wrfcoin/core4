@@ -19,7 +19,8 @@ use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
     BUCKET_CAP, ForecastLateScoreError, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
     ObservationSignature, POOL_EPOCH_BLOCKS, SCORE_OPENS_AFTER_SECS, SCORE_WINDOW_SECS,
-    bucket_closes_at, bucket_id, forecaster_key, forecast_score_message, score_outpoint,
+    TRACK_RECORD_LEN, TrackRecord, bucket_closes_at, bucket_id, forecaster_key,
+    forecast_score_message, score_outpoint, track_record_key,
 };
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::{
     EmissionRole, FORECAST_REWARD_REASON_PREFIX,
@@ -343,6 +344,22 @@ fn has_root_section(state: &State) -> bool {
         .state_root_material()
         .windows(ROOT_TAG.len())
         .any(|window| window == ROOT_TAG)
+}
+
+/// Give each forecaster 19 earlier positive scores for (STATION,
+/// temperature, 6 h), so the score under test is the 20th and decides the
+/// payment. The rule itself (window, eligibility, sliding) is covered in the
+/// module tests and over real blocks in `forecast_late_score_parity`.
+fn seed_track_records(state: &mut State, forecasters: &[&PrivateKey], at: i64) {
+    for who in forecasters {
+        state.forecast_late_score.track_records.insert(
+            track_record_key(&address_of(who), STATION, LateScoreVariable::TemperatureC, 6),
+            TrackRecord {
+                skills: vec![500_000; TRACK_RECORD_LEN - 1],
+                last_scored_at: at,
+            },
+        );
+    }
 }
 
 fn balance(state: &State, address: &Address) -> u128 {
@@ -716,6 +733,7 @@ fn forecast_late_score_end_to_end() {
     close_at(&mut state, ACTIVE + 3, t_d).expect("end of block");
 
     assert_eq!(state.forecast_late_score.records.len(), 5);
+    seed_track_records(&mut state, &[&alice, &bob, &carol, &dave, &erin], t_d);
     assert!(
         state.forecast_late_score.pending.is_empty(),
         "a revealed commit leaves the pending map"
@@ -1531,6 +1549,7 @@ fn reorg_and_rejection_atomicity() {
             "reorg-bob",
         );
         commit_at(state, &bob_commit, fork_height);
+        seed_track_records(state, &[&alice, &bob, &carol], t_fork);
         close_at(state, fork_height, t_fork).expect("end of fork block");
         state.recalculate_state_root();
         Common {

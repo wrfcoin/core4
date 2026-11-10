@@ -579,14 +579,15 @@ impl CheckpointMigration for MigrationV16ToV17 {
     }
 }
 
-/// Bytes of an empty forecast late-score state in the checkpoint codec: four
-/// empty maps, each a u64 zero length.
-pub(super) const EMPTY_FORECAST_LATE_SCORE_BYTES: usize = 4 * 8;
+/// Bytes of an empty forecast late-score state in the checkpoint codec: five
+/// empty maps (pending, records, buckets, pool, track records), each a u64
+/// zero length.
+pub(super) const EMPTY_FORECAST_LATE_SCORE_BYTES: usize = 5 * 8;
 
 /// Format 18 appends the forecast late-score state
 /// (`ConsensusFeature::ForecastLateScore`). A format-17 checkpoint predates
-/// the feature, so the state is empty: append exactly its four u64 zero
-/// lengths. No forecast, bucket or pool entry is invented.
+/// the feature, so the state is empty: append exactly its five u64 zero
+/// lengths. No forecast, bucket, pool or track-record entry is invented.
 pub struct MigrationV17ToV18;
 impl CheckpointMigration for MigrationV17ToV18 {
     fn from_version(&self) -> u32 { 17 }
@@ -610,7 +611,7 @@ pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error
     if !state.forecast_late_score.is_empty() {
         return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
     }
-    // Empty (always, until `forecast_late_score` is in force): drop its four
+    // Empty (always, until `forecast_late_score` is in force): drop its five
     // u64 zero lengths and continue with the format-17 writer.
     let suffix = [0u8; EMPTY_FORECAST_LATE_SCORE_BYTES];
     assert!(payload.ends_with(&suffix), "empty forecast late-score state must be the final field");
@@ -708,7 +709,7 @@ mod tests {
             vec![0, 0, 0, 0],
             vec![0; 8],
             vec![0; 8],
-            vec![0; 32],
+            vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES],
         ]
         .concat()
     }
@@ -889,7 +890,7 @@ mod tests {
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
-                &[0; 32], // empty forecast late-score state (format 18)
+                &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
             ].concat()
         );
     }
@@ -928,7 +929,7 @@ mod tests {
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
-                &[0; 32], // empty forecast late-score state (format 18)
+                &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
             ]
             .concat()
         );
@@ -1008,7 +1009,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; 32]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES]]
                 .concat()
                 .as_slice()
         );
@@ -1035,7 +1036,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 60]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -1066,7 +1067,7 @@ mod tests {
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
         assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(18));
-        assert_eq!(&body(&golden(18))[body(&v11).len()..], &[0; 52]);
+        assert_eq!(&body(&golden(18))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
     }
 
     #[test]
@@ -1189,12 +1190,20 @@ mod tests {
         // Empty: the writer keeps the deployed format.
         let written = encode_compatible(&state).unwrap();
         assert!(u32::from_le_bytes(written[8..12].try_into().unwrap()) < 16);
-        // Any entry in any of its four maps: format 18, full layout, exact round trip.
+        // Any entry in any of its maps: format 18, full layout, exact round trip.
         let mut pending = state.clone();
         pending.forecast_late_score.note_commit("c1", Address([7; 20]), 5, 8);
         let mut pooled = state.clone();
         pooled.forecast_late_score.pool.insert(3, Default::default());
-        for with_entry in [pending, pooled] {
+        let mut tracked = state.clone();
+        tracked.forecast_late_score.track_records.insert(
+            "k".into(),
+            wrfcoin_shared_protocol::consensus::forecast_late_score::TrackRecord {
+                skills: vec![-1_000_000, 0, 640_000],
+                last_scored_at: 1_700_000_000,
+            },
+        );
+        for with_entry in [pending, pooled, tracked] {
             let written = encode_compatible(&with_entry).unwrap();
             assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
             let back: State = decode_exact(body(&written)).unwrap();

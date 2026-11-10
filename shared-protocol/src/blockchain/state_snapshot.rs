@@ -1140,6 +1140,10 @@ mod tests {
                 unissued: Balance::new(1),
                 paid_by_forecaster: [(forecaster_key(&a(10)), Balance::new(64))].into_iter().collect(),
             });
+            late.track_records.insert(
+                crate::consensus::forecast_late_score::track_record_key(&a(10), "station-a", LateScoreVariable::TemperatureC, 6),
+                crate::consensus::forecast_late_score::TrackRecord { skills: vec![-1_000_000, 0, 640_000], last_scored_at: 7_600 + 25_200 },
+            );
         }
         s
     }
