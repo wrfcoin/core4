@@ -34,6 +34,30 @@
 //! nonce advances when the action applies, so neither action replays. The
 //! signature covers bytes, not JSON.
 //!
+//! ### Passkey accounts
+//!
+//! An account controlled by a passkey (`accounts::passkey`, P-256 WebAuthn)
+//! signs the SAME message: its assertion's challenge is
+//! [`advisory_passkey_challenge`] = `sha3_256(advisory_action_message(..))`,
+//! so it binds exactly the chain, network, account, action and nonce the
+//! ed25519 signature does. The payload then carries a `passkey` member (a
+//! `PasskeyAuthorization`) and no `public_key`/`signature`; exactly one of the
+//! two forms is accepted. Verification is the shared
+//! `accounts::passkey::verify_webauthn` under `CONSENSUS_WEBAUTHN_POLICY`
+//! (type `webauthn.get`, challenge, RP ID hash, user present AND verified,
+//! low-s P-256), the same path `passkey_bond_payout` and `security_key_spend`
+//! use, and the credential (P-256 key + RP ID hash) must derive the account
+//! (`passkey_account_address`), so an assertion made for another relying
+//! party names a different account. Replay is stopped by the account nonce,
+//! as for ed25519 (no per-credential counter is stored, as on the passkey
+//! transfer path). Same feature flag: nothing about it is reachable below
+//! the `advisory_governance` activation. An ed25519 payload serializes
+//! byte-identically to one built before this option existed.
+//!
+//! Neither signature covers the outer transaction (its id is malleable;
+//! no funds are at risk). Clients track an action by proposal id or by
+//! `(account, nonce)`, never by tx id.
+//!
 //! ## Activation
 //!
 //! Below the activation height of `ConsensusFeature::AdvisoryGovernance`
@@ -50,6 +74,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::accounts::passkey::{
+    CONSENSUS_WEBAUTHN_POLICY, PasskeyAuthorization, PasskeyError, passkey_account_address,
+    verify_webauthn,
+};
 use crate::blockchain::transaction::{Transaction, TransactionType};
 use crate::common::constants::WRF_UNITS_PER_COIN;
 use crate::common::types::{Address, Balance};
@@ -108,10 +136,75 @@ pub struct SignedAdvisoryAction {
     /// Must equal the transaction's `nonce`, which must equal the account's
     /// nonce when the action applies.
     pub nonce: u64,
-    /// Lowercase hex ed25519 public key; must hash to `account`.
+    /// Lowercase hex ed25519 public key; must hash to `account`. Absent (empty
+    /// here, never serialized) when `passkey` authorizes the action; an
+    /// explicit `""` is refused, so each action has one encoding.
+    #[serde(default, deserialize_with = "deserialize_present_nonempty", skip_serializing_if = "String::is_empty")]
     pub public_key: String,
-    /// Hex ed25519 signature over [`advisory_action_message`].
+    /// Lowercase hex ed25519 signature over [`advisory_action_message`].
+    /// Absent when `passkey` authorizes the action; an explicit `""` is refused.
+    #[serde(default, deserialize_with = "deserialize_present_nonempty", skip_serializing_if = "String::is_empty")]
     pub signature: String,
+    /// Passkey (P-256 WebAuthn) authorization instead of the ed25519 key and
+    /// signature: an assertion over [`advisory_passkey_challenge`] from the
+    /// credential that derives `account`. Absent members are never
+    /// serialized, so ed25519 payloads are unchanged. Parsed strictly:
+    /// unknown members inside it are refused, like everywhere in this payload,
+    /// and so is an explicit `null` (absent is the only "no passkey").
+    #[serde(
+        default,
+        deserialize_with = "deserialize_strict_passkey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub passkey: Option<PasskeyAuthorization>,
+}
+
+/// The shared `PasskeyAuthorization` tolerates unknown members (it is
+/// embedded in older payloads). The advisory payload refuses them, so a
+/// `parameter`-shaped member cannot ride inside `passkey` either.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictPasskeyAuthorization {
+    public_key_p256: String,
+    rp_id_hash: String,
+    authenticator_data: String,
+    client_data_json: String,
+    signature: String,
+}
+
+/// Only called when the member is present (`default` covers absence), so
+/// `"passkey": null` fails here: a `StrictPasskeyAuthorization` is an object.
+fn deserialize_strict_passkey<'de, D>(deserializer: D) -> Result<Option<PasskeyAuthorization>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let p = StrictPasskeyAuthorization::deserialize(deserializer)?;
+    Ok(Some(PasskeyAuthorization {
+        public_key_p256: p.public_key_p256,
+        rp_id_hash: p.rp_id_hash,
+        authenticator_data: p.authenticator_data,
+        client_data_json: p.client_data_json,
+        signature: p.signature,
+    }))
+}
+
+/// A present `public_key`/`signature` member must not be `""` (absent is the
+/// only "not this form").
+fn deserialize_present_nonempty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(serde::de::Error::custom("an authorization member, when present, must not be empty"));
+    }
+    Ok(value)
+}
+
+/// Non-empty, even-length, lowercase hex: the one accepted spelling of every
+/// hex member (ed25519 key and signature, each passkey field).
+fn is_canonical_hex(value: &str) -> bool {
+    !value.is_empty() && value.len() % 2 == 0 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// How a proposal ended.
@@ -179,6 +272,13 @@ pub enum AdvisoryError {
     Summary(TextError),
     #[error("proposal id is not a chain-derived advisory id")]
     BadProposalId,
+    /// The payload carries both an ed25519 key/signature and a passkey
+    /// authorization, or neither.
+    #[error("exactly one of an ed25519 signature or a passkey authorization is required")]
+    AuthorizationForm,
+    /// The passkey assertion failed WebAuthn verification.
+    #[error("passkey assertion: {0}")]
+    Passkey(PasskeyError),
 }
 
 /// Why a title or summary is refused.
@@ -310,7 +410,64 @@ pub fn advisory_action_message(
     message
 }
 
+/// The 32-byte WebAuthn challenge a passkey account's assertion commits to:
+/// `sha3_256` of the exact [`advisory_action_message`] the ed25519 path signs
+/// (the same hash the passkey transfer challenge uses). The message opens with
+/// the length-prefixed [`ADVISORY_ACTION_DOMAIN_TAG`], so it cannot equal a
+/// passkey transfer, security-key spend or bond-payout challenge preimage.
+pub fn advisory_passkey_challenge(
+    chain_id: &str,
+    network_id: &str,
+    account: &Address,
+    action: &AdvisoryAction,
+    nonce: u64,
+) -> [u8; 32] {
+    *crate::crypto::hash::hash_bytes(&advisory_action_message(
+        chain_id, network_id, account, action, nonce,
+    ))
+    .as_bytes()
+}
+
 impl SignedAdvisoryAction {
+    /// Wrap a passkey authorization (the browser's assertion over
+    /// [`advisory_passkey_challenge`]) for `account`. No verification here.
+    pub fn with_passkey(
+        account: Address,
+        action: AdvisoryAction,
+        nonce: u64,
+        passkey: PasskeyAuthorization,
+    ) -> Self {
+        Self {
+            account,
+            action,
+            nonce,
+            public_key: String::new(),
+            signature: String::new(),
+            passkey: Some(passkey),
+        }
+    }
+
+    /// Sign `action` with a software passkey (tests and fixtures only; the
+    /// chain never signs P-256).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn sign_passkey(
+        chain_id: &str,
+        network_id: &str,
+        authenticator: &crate::accounts::passkey::test_support::SoftwareAuthenticator,
+        action: AdvisoryAction,
+        nonce: u64,
+    ) -> Self {
+        let account = authenticator.account();
+        let challenge = advisory_passkey_challenge(chain_id, network_id, &account, &action, nonce);
+        let passkey = authenticator.authorization_for(&authenticator.assert(&challenge));
+        Self::with_passkey(account, action, nonce, passkey)
+    }
+
+    /// Whether a passkey authorizes this action (for pricing).
+    pub fn is_passkey(&self) -> bool {
+        self.passkey.is_some()
+    }
+
     /// Sign `action` with `key` (CLI and tests).
     pub fn sign(
         chain_id: &str,
@@ -328,6 +485,7 @@ impl SignedAdvisoryAction {
             nonce,
             public_key: public_key.to_hex(),
             signature: key.sign(&message).to_hex(),
+            passkey: None,
         }
     }
 
@@ -345,6 +503,21 @@ impl SignedAdvisoryAction {
                     return Err(AdvisoryError::BadProposalId);
                 }
             },
+        }
+        if let Some(passkey) = &self.passkey {
+            if !self.public_key.is_empty() || !self.signature.is_empty() {
+                return Err(AdvisoryError::AuthorizationForm);
+            }
+            if !self.has_canonical_hex() {
+                return Err(AdvisoryError::Malformed("passkey fields must be lowercase hex"));
+            }
+            return self.verify_passkey(passkey, chain_id, network_id);
+        }
+        if self.public_key.is_empty() || self.signature.is_empty() {
+            return Err(AdvisoryError::AuthorizationForm);
+        }
+        if !self.has_canonical_hex() {
+            return Err(AdvisoryError::Malformed("public key and signature must be lowercase hex"));
         }
         let public_key = PublicKey::from_hex(self.public_key.trim())
             .map_err(|_| AdvisoryError::Malformed("public key is not hex ed25519"))?;
@@ -366,6 +539,43 @@ impl SignedAdvisoryAction {
         Ok(())
     }
 
+    /// Every hex member present is in its one accepted spelling (lowercase,
+    /// no whitespace, even length), so each action has one encoding.
+    fn has_canonical_hex(&self) -> bool {
+        match &self.passkey {
+            Some(p) => [&p.public_key_p256, &p.rp_id_hash, &p.authenticator_data, &p.client_data_json, &p.signature]
+                .into_iter()
+                .all(|v| is_canonical_hex(v)),
+            None => is_canonical_hex(&self.public_key) && is_canonical_hex(&self.signature),
+        }
+    }
+
+    /// The passkey arm of [`Self::verify`], built from the same pieces as
+    /// `node_bond_registry::verify_payout_passkey`: the credential must derive
+    /// the account, then full WebAuthn verification under the consensus
+    /// policy for this action's challenge.
+    fn verify_passkey(
+        &self,
+        passkey: &PasskeyAuthorization,
+        chain_id: &str,
+        network_id: &str,
+    ) -> Result<(), AdvisoryError> {
+        let credential = passkey
+            .credential()
+            .map_err(|_| AdvisoryError::Malformed("passkey key or rp_id_hash is not hex of the right length"))?;
+        if passkey_account_address(&credential) != self.account {
+            return Err(AdvisoryError::KeyAddressMismatch);
+        }
+        let assertion = passkey
+            .assertion()
+            .map_err(|_| AdvisoryError::Malformed("passkey assertion field is not hex"))?;
+        let challenge =
+            advisory_passkey_challenge(chain_id, network_id, &self.account, &self.action, self.nonce);
+        verify_webauthn(&credential, &assertion, &challenge, CONSENSUS_WEBAUTHN_POLICY)
+            .map_err(AdvisoryError::Passkey)?;
+        Ok(())
+    }
+
     /// Parse a `TransactionType::AdvisoryGovernance` transaction. `None` for
     /// any other type, an oversized or unparsable payload, an unknown member,
     /// a payload whose account is not the transaction's `sender_address`, or
@@ -379,7 +589,15 @@ impl SignedAdvisoryAction {
             return None;
         }
         let parsed: Self = serde_json::from_str(data).ok()?;
-        (parsed.account == tx.sender_address && parsed.nonce == tx.nonce).then_some(parsed)
+        // One encoding per action: an ed25519 payload needs both members (as
+        // before the passkey option existed), a passkey payload carries
+        // neither, and every hex member is lowercase (`"passkey": null` and
+        // explicit `""` members already failed deserialization).
+        let form_ok = match parsed.passkey {
+            None => !parsed.public_key.is_empty() && !parsed.signature.is_empty(),
+            Some(_) => parsed.public_key.is_empty() && parsed.signature.is_empty(),
+        } && parsed.has_canonical_hex();
+        (form_ok && parsed.account == tx.sender_address && parsed.nonce == tx.nonce).then_some(parsed)
     }
 
     /// Whether this is a proposal (for the per-block cap).
@@ -817,5 +1035,218 @@ mod tests {
         let mut q = record(100);
         assert_eq!(finalize(&mut q, 150).unwrap(), Balance::new(0));
         assert_eq!(q.status, AdvisoryStatus::FailedQuorum);
+    }
+
+    mod passkey {
+        use super::*;
+        use crate::accounts::passkey::test_support::SoftwareAuthenticator;
+        use crate::accounts::passkey::{FLAG_USER_PRESENT, P256Error};
+
+        fn authenticator(seed: u8) -> SoftwareAuthenticator {
+            let mut secret = [seed; 32];
+            secret[0] = 0x01; // keep the scalar in range
+            SoftwareAuthenticator::new(&secret, "wrfcoin.org")
+        }
+
+        fn vote(id: &str, approve: bool) -> AdvisoryAction {
+            AdvisoryAction::Vote {
+                proposal_id: id.into(),
+                approve,
+            }
+        }
+
+        #[test]
+        fn a_passkey_action_verifies_and_every_bound_field_breaks_it() {
+            let a = authenticator(7);
+            let signed = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("Welcome", "Hello."), 4);
+            assert_eq!(signed.account, a.account());
+            signed.verify(CHAIN, NET).expect("verifies");
+            let challenge_mismatch = Err(AdvisoryError::Passkey(PasskeyError::ChallengeMismatch));
+            assert_eq!(signed.verify("777", NET), challenge_mismatch);
+            assert_eq!(signed.verify(CHAIN, "devnet"), challenge_mismatch);
+            let mut other_nonce = signed.clone();
+            other_nonce.nonce = 5;
+            assert_eq!(other_nonce.verify(CHAIN, NET), challenge_mismatch);
+            let mut other_action = signed.clone();
+            other_action.action = propose("Welcome!", "Hello.");
+            assert_eq!(other_action.verify(CHAIN, NET), challenge_mismatch);
+            // Another account (an ed25519 one, or another passkey's).
+            let mut other_account = signed.clone();
+            other_account.account = Address([9; 20]);
+            assert_eq!(other_account.verify(CHAIN, NET), Err(AdvisoryError::KeyAddressMismatch));
+            let mut other_key = signed.clone();
+            other_key.passkey.as_mut().unwrap().public_key_p256 =
+                hex::encode(authenticator(8).key.public_key().to_raw_xy());
+            assert_eq!(other_key.verify(CHAIN, NET), Err(AdvisoryError::KeyAddressMismatch));
+            // A vote cannot be flipped or moved to another proposal.
+            let id = proposal_id(&Address([1; 20]), 0);
+            let v = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, vote(&id, true), 0);
+            v.verify(CHAIN, NET).unwrap();
+            let mut flipped = v.clone();
+            flipped.action = vote(&id, false);
+            assert_eq!(flipped.verify(CHAIN, NET), challenge_mismatch);
+            let mut moved = v;
+            moved.action = vote(&proposal_id(&Address([1; 20]), 1), true);
+            assert_eq!(moved.verify(CHAIN, NET), challenge_mismatch);
+        }
+
+        #[test]
+        fn the_challenge_is_the_hash_of_the_ed25519_message() {
+            let account = Address([3; 20]);
+            let action = propose("T", "S");
+            let message = advisory_action_message(CHAIN, NET, &account, &action, 2);
+            assert_eq!(
+                advisory_passkey_challenge(CHAIN, NET, &account, &action, 2),
+                crate::accounts::passkey::passkey_transfer_challenge(&message)
+            );
+        }
+
+        #[test]
+        fn wrong_relying_party_or_bad_assertion_is_refused() {
+            let a = authenticator(7);
+            let action = propose("T", "S");
+            let challenge = advisory_passkey_challenge(CHAIN, NET, &a.account(), &action, 0);
+            // A phishing origin can only obtain assertions for its own RP ID.
+            // Named with the victim's account: the credential derives another
+            // account (the RP ID hash is folded into the address).
+            let mut evil = authenticator(7);
+            evil.rp_id_hash = Sha256::digest(b"wrfcoin.org.evil.example").into();
+            evil.origin = "https://wrfcoin.org.evil.example".into();
+            let mut phished = SignedAdvisoryAction::with_passkey(
+                a.account(),
+                action.clone(),
+                0,
+                evil.authorization_for(&evil.assert(&challenge)),
+            );
+            assert_eq!(phished.verify(CHAIN, NET), Err(AdvisoryError::KeyAddressMismatch));
+            // ...and claiming the real RP ID hash over evil authenticatorData
+            // fails the RP ID check.
+            phished.passkey.as_mut().unwrap().rp_id_hash = hex::encode(a.rp_id_hash);
+            assert_eq!(
+                phished.verify(CHAIN, NET),
+                Err(AdvisoryError::Passkey(PasskeyError::RpIdMismatch))
+            );
+            // Registration ceremony type.
+            let mut created = a.client_data_json(&challenge);
+            created = String::from_utf8(created).unwrap().replace("webauthn.get", "webauthn.create").into_bytes();
+            let wrong_type = SignedAdvisoryAction::with_passkey(
+                a.account(), action.clone(), 0, a.authorization_for(&a.assert_with(a.authenticator_data(), created)),
+            );
+            assert!(matches!(
+                wrong_type.verify(CHAIN, NET),
+                Err(AdvisoryError::Passkey(PasskeyError::WrongCeremonyType { .. }))
+            ));
+            // User present but not verified.
+            let mut no_uv = authenticator(7);
+            no_uv.flags = FLAG_USER_PRESENT;
+            let s = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &no_uv, action.clone(), 0);
+            assert_eq!(s.verify(CHAIN, NET), Err(AdvisoryError::Passkey(PasskeyError::UserNotVerified)));
+            // A tampered signature.
+            let mut bad_sig = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, action.clone(), 0);
+            let other = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("U", "S"), 0);
+            bad_sig.passkey.as_mut().unwrap().signature = other.passkey.unwrap().signature;
+            assert!(matches!(bad_sig.verify(CHAIN, NET), Err(AdvisoryError::Passkey(PasskeyError::Curve(_)))));
+            // A high-s signature (the malleated twin) is refused.
+            let good = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, action.clone(), 0);
+            let der = hex::decode(&good.passkey.as_ref().unwrap().signature).unwrap();
+            let high_s = crate::accounts::passkey::P256Signature::from_der(&der).unwrap().malleable_twin().unwrap().to_der_bytes();
+            let mut malleated = good.clone();
+            malleated.passkey.as_mut().unwrap().signature = hex::encode(high_s);
+            assert_eq!(
+                malleated.verify(CHAIN, NET),
+                Err(AdvisoryError::Passkey(PasskeyError::Curve(P256Error::HighS)))
+            );
+            // Malformed hex.
+            let mut junk = good;
+            junk.passkey.as_mut().unwrap().rp_id_hash = "zz".into();
+            assert!(matches!(junk.verify(CHAIN, NET), Err(AdvisoryError::Malformed(_))));
+        }
+
+        #[test]
+        fn exactly_one_authorization_form() {
+            let a = authenticator(7);
+            let mut both = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
+            let ed = SignedAdvisoryAction::sign(CHAIN, NET, &key(1), propose("T", "S"), 0);
+            both.public_key = ed.public_key.clone();
+            both.signature = ed.signature.clone();
+            assert_eq!(both.verify(CHAIN, NET), Err(AdvisoryError::AuthorizationForm));
+            let mut neither = ed.clone();
+            neither.signature.clear();
+            assert_eq!(neither.verify(CHAIN, NET), Err(AdvisoryError::AuthorizationForm));
+            // parse refuses both forms too.
+            let account = both.account;
+            assert!(SignedAdvisoryAction::parse(&tx_with(serde_json::to_string(&both).unwrap(), account, 0)).is_none());
+            let only = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
+            let parsed = SignedAdvisoryAction::parse(&tx_with(serde_json::to_string(&only).unwrap(), account, 0));
+            assert_eq!(parsed, Some(only));
+        }
+
+        #[test]
+        fn one_encoding_per_action() {
+            let a = authenticator(7);
+            let pk = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
+            let ed = SignedAdvisoryAction::sign(CHAIN, NET, &key(1), propose("T", "S"), 0);
+            let parses = |v: &serde_json::Value, account: Address| {
+                SignedAdvisoryAction::parse(&tx_with(v.to_string(), account, 0)).is_some()
+            };
+            let pk_json = serde_json::to_value(&pk).unwrap();
+            let ed_json = serde_json::to_value(&ed).unwrap();
+            assert!(parses(&pk_json, pk.account) && parses(&ed_json, ed.account), "canonical forms parse");
+            // Explicit `"passkey": null` on an ed25519 payload.
+            let mut v = ed_json.clone();
+            v["passkey"] = serde_json::Value::Null;
+            assert!(!parses(&v, ed.account));
+            // Explicit empty ed25519 members on a passkey payload.
+            for member in ["public_key", "signature"] {
+                let mut v = pk_json.clone();
+                v[member] = serde_json::json!("");
+                assert!(!parses(&v, pk.account), "{member}: \"\"");
+            }
+            // Uppercase hex anywhere: refused by parse and by verify.
+            for field in ["public_key_p256", "rp_id_hash", "authenticator_data", "client_data_json", "signature"] {
+                let mut v = pk_json.clone();
+                let upper = v["passkey"][field].as_str().unwrap().to_uppercase();
+                v["passkey"][field] = serde_json::json!(upper);
+                assert!(!parses(&v, pk.account), "passkey.{field} uppercase");
+                let mut s = pk.clone();
+                let p = s.passkey.as_mut().unwrap();
+                match field {
+                    "public_key_p256" => p.public_key_p256 = upper,
+                    "rp_id_hash" => p.rp_id_hash = upper,
+                    "authenticator_data" => p.authenticator_data = upper,
+                    "client_data_json" => p.client_data_json = upper,
+                    _ => p.signature = upper,
+                }
+                assert!(matches!(s.verify(CHAIN, NET), Err(AdvisoryError::Malformed(_))), "verify passkey.{field}");
+            }
+            for member in ["public_key", "signature"] {
+                let mut v = ed_json.clone();
+                let upper = v[member].as_str().unwrap().to_uppercase();
+                v[member] = serde_json::json!(upper.clone());
+                assert!(!parses(&v, ed.account), "{member} uppercase");
+                let mut v = ed_json.clone();
+                v[member] = serde_json::json!(format!(" {}", ed_json[member].as_str().unwrap()));
+                assert!(!parses(&v, ed.account), "{member} with whitespace");
+            }
+            let mut s = ed.clone();
+            s.signature = s.signature.to_uppercase();
+            assert!(matches!(s.verify(CHAIN, NET), Err(AdvisoryError::Malformed(_))));
+        }
+
+        #[test]
+        fn passkey_payload_json_is_strict_and_ed25519_json_is_unchanged() {
+            let a = authenticator(7);
+            let signed = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
+            let json = serde_json::to_string(&signed).unwrap();
+            assert!(!json.contains("\"public_key\"") && !json.contains("\"signature\":\"\""));
+            let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            v["passkey"]["parameter"] = serde_json::json!("emission_rate");
+            assert!(SignedAdvisoryAction::parse(&tx_with(v.to_string(), a.account(), 0)).is_none());
+            // ed25519: exactly the member set it had before the passkey option.
+            let ed = SignedAdvisoryAction::sign(CHAIN, NET, &key(1), propose("T", "S"), 0);
+            let v: serde_json::Value = serde_json::to_value(&ed).unwrap();
+            let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["account", "action", "nonce", "public_key", "signature"]);
+        }
     }
 }
