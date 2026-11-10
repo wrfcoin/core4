@@ -60,9 +60,14 @@ pub enum ForecastScoreCommands {
         /// Attestation output file.
         #[clap(long)]
         out: PathBuf,
-        /// Also sign it with this oracle key file; the signature goes to `<out>.sig.json`.
-        #[clap(long, requires_all = ["chain_id", "network_id"])]
+        /// Also sign it with this oracle key file, for the `--forecast` ids; the
+        /// signature goes to `<out>.sig.json`.
+        #[clap(long, requires_all = ["chain_id", "network_id", "forecasts"])]
         key: Option<PathBuf>,
+        /// Forecast commit ids the signature covers (repeat). The oracle
+        /// signature covers the full score payload: the observation and these ids.
+        #[clap(long = "forecast")]
+        forecasts: Vec<String>,
         /// The oracle identity as the chain's oracle set holds it (default: the key's public key hex).
         #[clap(long, requires = "key")]
         oracle: Option<String>,
@@ -71,10 +76,14 @@ pub enum ForecastScoreCommands {
         #[clap(long)]
         network_id: Option<String>,
     },
-    /// Sign an observation attestation as one oracle.
+    /// Sign a score as one oracle: an observation attestation and the forecast
+    /// commit ids it scores (the full score payload).
     SignObservation {
         #[clap(long)]
         attestation: PathBuf,
+        /// Forecast commit ids to score (repeat; up to 64). `build` must list the same ids.
+        #[clap(long = "forecast", required = true)]
+        forecasts: Vec<String>,
         /// The oracle's ed25519 private key file (hex, at most 0600).
         #[clap(long)]
         key: PathBuf,
@@ -189,6 +198,7 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
             commit_time,
             out,
             key,
+            forecasts,
             oracle,
             chain_id,
             network_id,
@@ -217,7 +227,8 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
             if let (Some(key), Some(chain_id), Some(network_id)) = (key, chain_id, network_id) {
                 let key = read_signer(key)?;
                 let oracle = oracle.clone().unwrap_or_else(|| default_oracle_identity(&key));
-                let signature = sign_observation(&key, &oracle, chain_id, network_id, &report.attestation)?;
+                let signature =
+                    sign_observation(&key, &oracle, chain_id, network_id, &report.attestation, forecasts)?;
                 let path = sig_path(out);
                 write_json(&path, &signature)?;
                 result["signature_file"] = json!(path.display().to_string());
@@ -225,11 +236,11 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
             }
             Ok(result)
         },
-        C::SignObservation { attestation, key, oracle, chain_id, network_id, out } => {
+        C::SignObservation { attestation, forecasts, key, oracle, chain_id, network_id, out } => {
             let attestation: ObservationAttestation = read_json(attestation, "an observation attestation")?;
             let key = read_signer(key)?;
             let oracle = oracle.clone().unwrap_or_else(|| default_oracle_identity(&key));
-            let signature = sign_observation(&key, &oracle, chain_id, network_id, &attestation)?;
+            let signature = sign_observation(&key, &oracle, chain_id, network_id, &attestation, forecasts)?;
             write_json(out, &signature)?;
             Ok(json!({
                 "signature_file": out.display().to_string(),
@@ -263,6 +274,7 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
                     chain_id,
                     network_id,
                     &attestation,
+                    forecasts,
                 )?);
             }
             ensure!(!collected.is_empty(), "give at least one --signature or --key");

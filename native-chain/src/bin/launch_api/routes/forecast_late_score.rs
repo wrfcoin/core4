@@ -11,6 +11,10 @@
 //!   is refused. A score with fewer signatures than the tip's quorum is
 //!   ADMITTED and flagged `below_quorum_at_tip`, like the mempool (and the P2P
 //!   path) admit it: the quorum can change in the block that includes it.
+//!   Every listed forecast must be recorded, unscored and of the attested
+//!   commit block (`check_admissible_score`, read-only). The transaction's one
+//!   input must be the outpoint derived from the signed payload, so the pool
+//!   holds one transaction per signed payload (mempool admission).
 //!   Apply is the only authority (quorum, timing, bucket and cited readings);
 //!   a score that does not apply is dropped at assembly and removed from that
 //!   producer's mempool. Each token may submit at most
@@ -170,6 +174,12 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             &chain.state.signing_keys,
             tx.timestamp.timestamp(),
         ) {
+            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
+        }
+        // Every listed forecast recorded, unscored and of the attested commit
+        // block: read-only, not a consensus rule (apply skips unknown and
+        // scored ones so racing relays do not fail each other).
+        if let Err(error) = chain.state.forecast_late_score.check_admissible_score(&payload) {
             return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
         }
         (chain.state.signing_keys.clone(), payload.signatures.len() < chain.state.oracle_quorum.max(1))

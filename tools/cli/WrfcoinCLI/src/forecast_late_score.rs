@@ -10,7 +10,8 @@
 //!    candidates and the nearest reading, window candidates, the 24 hourly
 //!    samples, the reference, `mean24`, `last` and the window hash.
 //! 2. **Sign** ([`sign_observation`]): one oracle signs the exact bytes core4
-//!    verifies (`observation_attestation_message`), and the signature is
+//!    verifies (`forecast_score_message`: the observation and the forecast
+//!    commit ids it scores, i.e. the full score payload), and the signature is
 //!    checked against the signing key before it is returned.
 //! 3. **Build** ([`build_score_payload`], [`build_score_transaction`]): collect
 //!    the quorum's signatures and the forecast commit ids into a
@@ -36,14 +37,12 @@ use wrfcoin_shared_protocol::blockchain::transaction::{
 use wrfcoin_shared_protocol::common::types::Address;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
     ForecastScorePayload, LateScoreVariable, MAX_FORECASTS_PER_SCORE_TX, MAX_OBSERVATION_SIGNATURES,
-    MAX_WINDOW_READINGS, ObservationAttestation, ObservationSignature, observation_attestation_message,
-    observation_digest, target_for,
+    MAX_WINDOW_READINGS, ObservationAttestation, ObservationSignature, forecast_score_message, score_outpoint,
+    target_for,
 };
-use wrfcoin_shared_protocol::crypto::hash::hash_bytes;
 use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey, Signature};
 
 const SECS_PER_HOUR: i64 = 3_600;
-const OUTPOINT_DOMAIN: &[u8] = b"wrfcoin.forecast_score.outpoint.v1";
 
 /// The forecasts one attestation covers: one station, variable and lead,
 /// committed in one block.
@@ -165,21 +164,33 @@ pub fn default_oracle_identity(key: &PrivateKey) -> String {
     PublicKey::from_private_key(key).to_hex()
 }
 
-/// One oracle's signature over `attestation` on (`chain_id`, `network_id`).
-/// `oracle` is the identity exactly as the chain's oracle set holds it. The
-/// attestation is shape-checked first and the signature verified after.
+/// Forecast commit ids as a score lists (and signs) them: trimmed, sorted in
+/// byte order, each once.
+pub fn normalize_forecast_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let set: BTreeSet<String> = ids.into_iter().map(|id| id.trim().to_string()).collect();
+    set.into_iter().collect()
+}
+
+/// One oracle's signature over the full score payload on (`chain_id`,
+/// `network_id`): `attestation` and the forecast commit ids it scores
+/// (normalized as the payload lists them). `oracle` is the identity exactly
+/// as the chain's oracle set holds it. The attestation is shape-checked first
+/// and the signature verified after.
 pub fn sign_observation(
     key: &PrivateKey,
     oracle: &str,
     chain_id: &str,
     network_id: &str,
     attestation: &ObservationAttestation,
+    forecast_commit_ids: &[String],
 ) -> Result<ObservationSignature> {
     ensure!(!chain_id.trim().is_empty() && !network_id.trim().is_empty(), "chain id and network id are required");
     attestation
         .validate()
         .map_err(|e| anyhow!("attestation refused before signing: {e}"))?;
-    let message = observation_attestation_message(chain_id, network_id, attestation);
+    let ids = normalize_forecast_ids(forecast_commit_ids.iter().cloned());
+    ensure!(!ids.is_empty(), "a score signs at least one forecast commit id");
+    let message = forecast_score_message(chain_id, network_id, attestation, &ids);
     let signature = key.sign(&message);
     ensure!(
         PublicKey::from_private_key(key).verify(&message, &signature),
@@ -188,15 +199,16 @@ pub fn sign_observation(
     Ok(ObservationSignature { oracle: oracle.to_string(), ed25519: signature.to_hex() })
 }
 
-/// Whether `signature` is `public_key`'s signature over `attestation`.
+/// Whether `signature` is `public_key`'s signature over this score payload.
 pub fn verify_observation_signature(
     public_key: &PublicKey,
     chain_id: &str,
     network_id: &str,
     attestation: &ObservationAttestation,
+    forecast_commit_ids: &[String],
     signature: &ObservationSignature,
 ) -> bool {
-    let message = observation_attestation_message(chain_id, network_id, attestation);
+    let message = forecast_score_message(chain_id, network_id, attestation, forecast_commit_ids);
     Signature::from_hex(signature.ed25519.trim()).is_ok_and(|s| public_key.verify(&message, &s))
 }
 
@@ -216,21 +228,21 @@ pub fn build_score_payload(
         "{} signatures; a score carries at most {MAX_OBSERVATION_SIGNATURES}",
         signatures.len()
     );
-    let ids: BTreeSet<String> = forecast_commit_ids.into_iter().map(|id| id.trim().to_string()).collect();
+    let ids = normalize_forecast_ids(forecast_commit_ids);
     ensure!(
         ids.len() <= MAX_FORECASTS_PER_SCORE_TX,
         "{} forecasts; a score lists at most {MAX_FORECASTS_PER_SCORE_TX}",
         ids.len()
     );
-    let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids: ids.into_iter().collect() };
+    let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids: ids };
     payload.validate().map_err(|e| anyhow!("score payload refused: {e}"))?;
     Ok(payload)
 }
 
 /// The relayable `ForecastScore` transaction for `payload`. `relay` is only a
-/// label (nothing is debited or paid to it). The one input's outpoint is
-/// derived from the observation and the forecast ids, so two relays of the
-/// same score conflict in the mempool instead of both being carried.
+/// label (nothing is debited or paid to it). The one input is the outpoint
+/// core4 derives from the signed payload (`score_outpoint`), which mempool
+/// admission requires: one pending transaction per signed payload.
 pub fn build_score_transaction(
     payload: &ForecastScorePayload,
     chain_id: &str,
@@ -239,15 +251,9 @@ pub fn build_score_transaction(
     submitted_at: i64,
 ) -> Result<Transaction> {
     payload.validate().map_err(|e| anyhow!("score payload refused: {e}"))?;
-    let mut outpoint = OUTPOINT_DOMAIN.to_vec();
-    outpoint.extend_from_slice(observation_digest(chain_id, network_id, &payload.attestation).as_bytes());
-    for id in &payload.forecast_commit_ids {
-        outpoint.extend_from_slice(&(id.len() as u64).to_le_bytes());
-        outpoint.extend_from_slice(id.as_bytes());
-    }
     let mut tx = Transaction::new(
         vec![TransactionInput {
-            txid: hash_bytes(&outpoint),
+            txid: score_outpoint(chain_id, network_id, payload),
             vout: 0,
             signature: None,
             public_key: None,
@@ -288,7 +294,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["kind"] == "forecast_observation_attestation_v1")
+            .find(|c| c["kind"] == "forecast_score_attestation_v2")
             .expect("forecast observation case")
             .clone()
     }
@@ -307,20 +313,31 @@ mod tests {
         let input = &case["input"];
         let (chain, net) = (input["chain_id"].as_str().unwrap(), input["network_id"].as_str().unwrap());
         let attestation: ObservationAttestation = serde_json::from_value(input["attestation"].clone()).unwrap();
+        let ids: Vec<String> = serde_json::from_value(input["forecast_commit_ids"].clone()).unwrap();
         assert_eq!(
-            hex::encode(observation_attestation_message(chain, net, &attestation)),
+            hex::encode(forecast_score_message(chain, net, &attestation, &ids)),
             case["preimage_hex"].as_str().unwrap()
         );
-        let signed = sign_observation(&key, "o1", chain, net, &attestation).unwrap();
+        let signed = sign_observation(&key, "o1", chain, net, &attestation, &ids).unwrap();
         assert_eq!(signed.ed25519, case["signature_hex"].as_str().unwrap(), "ed25519 is deterministic");
         assert_eq!(default_oracle_identity(&key), case["signer_public_key_hex"].as_str().unwrap());
         let public = PublicKey::from_private_key(&key);
-        assert!(verify_observation_signature(&public, chain, net, &attestation, &signed));
-        let tampered: ObservationAttestation =
-            serde_json::from_value(case["tampered_input"]["attestation"].clone()).unwrap();
-        assert!(!verify_observation_signature(&public, chain, net, &tampered, &signed));
-        assert!(!verify_observation_signature(&public, "acr888", net, &attestation, &signed), "chain-bound");
-        assert!(!verify_observation_signature(&public, chain, "devnet", &attestation, &signed), "network-bound");
+        assert!(verify_observation_signature(&public, chain, net, &attestation, &ids, &signed));
+        // The tampered twin keeps the observation and changes the forecast list.
+        let tampered_ids: Vec<String> =
+            serde_json::from_value(case["tampered_input"]["forecast_commit_ids"].clone()).unwrap();
+        assert_ne!(tampered_ids, ids);
+        assert!(!verify_observation_signature(&public, chain, net, &attestation, &tampered_ids, &signed));
+        let mut changed = attestation.clone();
+        changed.truth += 1;
+        assert!(!verify_observation_signature(&public, chain, net, &changed, &ids, &signed), "value-bound");
+        assert!(!verify_observation_signature(&public, "acr888", net, &attestation, &ids, &signed), "chain-bound");
+        assert!(!verify_observation_signature(&public, chain, "devnet", &attestation, &ids, &signed), "network-bound");
+        // Signing normalizes the list as the payload lists it.
+        let mut shuffled = ids.clone();
+        shuffled.reverse();
+        shuffled.push(ids[0].clone());
+        assert_eq!(sign_observation(&key, "o1", chain, net, &attestation, &shuffled).unwrap(), signed);
     }
 
     #[test]
@@ -330,7 +347,7 @@ mod tests {
         let mut attestation: ObservationAttestation =
             serde_json::from_value(case["input"]["attestation"].clone()).unwrap();
         attestation.target += 1;
-        assert!(sign_observation(&key, "o1", CHAIN, NET, &attestation).is_err());
+        assert!(sign_observation(&key, "o1", CHAIN, NET, &attestation, &["f1".to_string()]).is_err());
     }
 
     fn full_day() -> (Vec<ChainSample>, CommitBlock) {
@@ -400,7 +417,10 @@ mod tests {
         let signatures: Vec<ObservationSignature> = keys
             .iter()
             .rev()
-            .map(|k| sign_observation(k, &default_oracle_identity(k), CHAIN, NET, a).unwrap())
+            .map(|k| {
+                sign_observation(k, &default_oracle_identity(k), CHAIN, NET, a, &["f2".to_string(), "f1".to_string()])
+                    .unwrap()
+            })
             .collect();
         let payload =
             build_score_payload(a.clone(), signatures.clone(), ["f2".to_string(), "f1".into(), "f2".into()]).unwrap();
@@ -414,6 +434,15 @@ mod tests {
         assert_eq!(tx.inputs[0].txid, again.inputs[0].txid);
         let later = build_score_transaction(&payload, CHAIN, NET, Address([0x78; 20]), 1_800_200_001).unwrap();
         assert_eq!(tx.inputs[0].txid, later.inputs[0].txid, "same score, same outpoint: relays conflict");
+        assert_eq!(tx.inputs[0].txid, score_outpoint(CHAIN, NET, &payload), "core4's derived outpoint");
+        assert!(payload.signatures.iter().all(|sig| keys.iter().any(|k| verify_observation_signature(
+            &PublicKey::from_private_key(k),
+            CHAIN,
+            NET,
+            a,
+            &payload.forecast_commit_ids,
+            sig
+        ))));
         assert_eq!(ForecastScorePayload::parse(&tx).unwrap(), payload);
 
         let mut twice = signatures.clone();

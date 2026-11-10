@@ -10,8 +10,8 @@ mod tests {
     use super::*;
     use wrfcoin_shared_protocol::blockchain::transaction::{TransactionInput, TransactionOutput};
     use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-        ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
-        observation_attestation_message,
+        ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
+        forecast_score_message, score_outpoint,
     };
     use wrfcoin_shared_protocol::crypto::chain_binding::{
         ChainIdentity, ConsensusFeature, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
@@ -48,9 +48,13 @@ mod tests {
         }
     }
     fn payload(signers: &[&PrivateKey], corrupt: bool) -> ForecastScorePayload {
+        payload_for(signers, corrupt, "f")
+    }
+    fn payload_for(signers: &[&PrivateKey], corrupt: bool, forecast: &str) -> ForecastScorePayload {
         let id = ChainIdentity::active();
         let attestation = attestation();
-        let message = observation_attestation_message(&id.chain_id, &id.network_id, &attestation);
+        let ids = vec![forecast.to_string()];
+        let message = forecast_score_message(&id.chain_id, &id.network_id, &attestation, &ids);
         let mut signatures: Vec<ObservationSignature> = signers
             .iter()
             .map(|k| ObservationSignature { oracle: oracle_id(k), ed25519: k.sign(&message).to_hex() })
@@ -59,15 +63,16 @@ mod tests {
         if corrupt {
             signatures[0].ed25519 = oracle(0x99).sign(&message).to_hex();
         }
-        ForecastScorePayload { attestation, signatures, forecast_commit_ids: vec!["f".into()] }
+        ForecastScorePayload { attestation, signatures, forecast_commit_ids: ids }
     }
     fn relay_tx(payload: &ForecastScorePayload) -> Transaction {
         let mut tx = Transaction::new(
             vec![TransactionInput {
-                // One outpoint per payload, so different scores never conflict.
-                txid: wrfcoin_shared_protocol::crypto::hash::hash_bytes(
-                    serde_json::to_string(payload).unwrap().as_bytes(),
-                ),
+                // The outpoint derived from the signed payload, as admission requires.
+                txid: {
+                    let id = ChainIdentity::active();
+                    score_outpoint(&id.chain_id, &id.network_id, payload)
+                },
                 vout: 0,
                 signature: None,
                 public_key: None,
@@ -106,6 +111,25 @@ mod tests {
             chain.state.signing_keys.ensure_legacy_identity_key(&id, SigningRole::Oracle, 0).unwrap();
         }
         chain.state.oracle_quorum = 2;
+        // Recorded, unscored forecasts of the attested commit block.
+        let a = attestation();
+        for commit_id in ["f", "g", "h"] {
+            chain.state.forecast_late_score.records.insert(
+                commit_id.to_string(),
+                ForecastRecord {
+                    forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                    station_id: a.station_id.clone(),
+                    variable: a.variable,
+                    value: 1_950,
+                    lead_hours: a.lead_hours,
+                    commit_height: a.commit_height,
+                    commit_time: a.commit_time,
+                    target: a.target,
+                    reveal_height: a.commit_height + 1,
+                    skill: None,
+                },
+            );
+        }
     }
     /// POST `tx` to the submit route with a contributor token: (status, body).
     macro_rules! post {
@@ -137,7 +161,7 @@ mod tests {
         assert_eq!(body["data"]["in_force_next_height"], false, "{body}");
         assert_eq!(body["data"]["chain_id"], "777");
         assert_eq!(body["data"]["oracle_quorum"], 2);
-        assert_eq!(body["data"]["records"], 0);
+        assert_eq!(body["data"]["records"], 3);
 
         let tx = relay_tx(&payload(&[&oracle(0x21), &oracle(0x22)], false));
         let unauth = test::call_service(&app, test::TestRequest::post().uri(SUBMIT).set_json(&tx).to_request()).await;
@@ -186,7 +210,7 @@ mod tests {
 
         // Below the tip's quorum of 2: admitted and flagged, as the mempool and
         // the P2P path admit it (the including block may lower the quorum).
-        let (status, body) = post!(&app, &relay_tx(&payload(&[&oracle(0x21)], false)));
+        let (status, body) = post!(&app, &relay_tx(&payload_for(&[&oracle(0x21)], false, "g")));
         assert_eq!(status, StatusCode::ACCEPTED, "{body}");
         assert_eq!(body["data"]["below_quorum_at_tip"], true, "{body}");
         assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
@@ -229,10 +253,35 @@ mod tests {
         assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(server.mempool.read().await.get_all_transactions().len(), 2);
 
-        // Reads: nothing is recorded in this fixture.
-        let missing = test::call_service(
+        // The same signed payload in another wrapper (relay label, time) is
+        // not a second pool entry.
+        let mut rewrapped = relay_tx(&payload(&[&oracle(0x21), &oracle(0x22)], false));
+        rewrapped.sender_address = wrfcoin_shared_protocol::common::types::Address([0x78; 20]);
+        rewrapped.timestamp += chrono::Duration::seconds(7);
+        rewrapped.set_id();
+        let (status, body) = post!(&app, &rewrapped);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.to_string().contains("SP_FORECAST_LATE_SCORE_DUPLICATE"), "{body}");
+        // A forecast that is not recorded, or already scored, is refused.
+        let (status, body) = post!(&app, &relay_tx(&payload_for(&[&oracle(0x21), &oracle(0x22)], false, "zz")));
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.to_string().contains("does not belong"), "{body}");
+        server.blockchain.write().await.state.forecast_late_score.records.get_mut("h").unwrap().skill = Some(1);
+        let (status, body) = post!(&app, &relay_tx(&payload_for(&[&oracle(0x21), &oracle(0x22)], false, "h")));
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.to_string().contains("already scored"), "{body}");
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 2);
+
+        // Reads.
+        let record = test::call_service(
             &app,
             test::TestRequest::get().uri("/forecast/late-score/records/f").to_request(),
+        )
+        .await;
+        assert_eq!(record.status(), StatusCode::OK);
+        let missing = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/forecast/late-score/records/zz").to_request(),
         )
         .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
