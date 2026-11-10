@@ -64,7 +64,10 @@ mod tests {
     fn relay_tx(payload: &ForecastScorePayload) -> Transaction {
         let mut tx = Transaction::new(
             vec![TransactionInput {
-                txid: wrfcoin_shared_protocol::crypto::hash::hash_bytes(b"forecast-score-route"),
+                // One outpoint per payload, so different scores never conflict.
+                txid: wrfcoin_shared_protocol::crypto::hash::hash_bytes(
+                    serde_json::to_string(payload).unwrap().as_bytes(),
+                ),
                 vout: 0,
                 signature: None,
                 public_key: None,
@@ -165,10 +168,6 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert!(body.to_string().contains("FORECAST_SCORE_REFUSED"), "{body}");
         assert!(body.to_string().contains("does not verify"), "{body}");
-        // Below the quorum of 2.
-        let (status, body) = post!(&app, &relay_tx(&payload(&[&oracle(0x21)], false)));
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-        assert!(body.to_string().contains("quorum is 2"), "{body}");
         // A signer outside the oracle set.
         let (status, body) = post!(&app, &relay_tx(&payload(&[&oracle(0x21), &oracle(0x29)], false)));
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -185,21 +184,29 @@ mod tests {
         assert!(body.to_string().contains("FORECAST_SCORE_PAYLOAD"), "{body}");
         assert!(server.mempool.read().await.get_all_transactions().is_empty());
 
+        // Below the tip's quorum of 2: admitted and flagged, as the mempool and
+        // the P2P path admit it (the including block may lower the quorum).
+        let (status, body) = post!(&app, &relay_tx(&payload(&[&oracle(0x21)], false)));
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["data"]["below_quorum_at_tip"], true, "{body}");
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
+
         // A well-formed quorum score is admitted.
         let tx = relay_tx(&payload(&[&oracle(0x21), &oracle(0x22)], false));
         let (status, body) = post!(&app, &tx);
         assert_eq!(status, StatusCode::ACCEPTED, "{body}");
         assert_eq!(body["data"]["tx_id"], tx.id.unwrap().to_hex());
         assert_eq!(body["data"]["included"], false);
+        assert_eq!(body["data"]["below_quorum_at_tip"], false, "{body}");
         let pending = server.mempool.read().await.get_all_transactions();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].tx_type, TransactionType::ForecastScore);
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().all(|t| t.tx_type == TransactionType::ForecastScore));
 
         // A resend is refused before any signature work, and nothing is added.
         let (status, body) = post!(&app, &tx);
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert!(body.to_string().contains("ALREADY_PENDING"), "{body}");
-        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 2);
         // A reader token may not relay.
         let reader = test::call_service(
             &app,
@@ -220,7 +227,7 @@ mod tests {
         )
         .await;
         assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 1);
+        assert_eq!(server.mempool.read().await.get_all_transactions().len(), 2);
 
         // Reads: nothing is recorded in this fixture.
         let missing = test::call_service(
@@ -235,5 +242,23 @@ mod tests {
         )
         .await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn one_token_is_rate_limited() {
+        const NAME: &str = "tests::forecast_late_score_route::tests::one_token_is_rate_limited";
+        if crate::helpers::test_env::isolated_chain_domain(NAME, "777", "testnet", "0x2727272727272727272727272727272727272727", "none") {
+            return;
+        }
+        let server = test_state(None);
+        let app = test::init_service(test_app(server.clone())).await;
+        let tx = relay_tx(&payload(&[&oracle(0x21), &oracle(0x22)], false));
+        for _ in 0..crate::routes::forecast_late_score::RATE_LIMIT_PER_MIN {
+            let (status, body) = post!(&app, &tx);
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        }
+        let (status, body) = post!(&app, &tx);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert!(body.to_string().contains("RATE_LIMITED"), "{body}");
     }
 }

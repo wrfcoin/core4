@@ -5,12 +5,16 @@
 //!   to the mempool with the chain's signing-key registry, and gossips it.
 //!   Anyone with a contributor token may relay a score; it pays the relay
 //!   nothing. Refused with 503 `FEATURE_NOT_ACTIVE` until `forecast_late_score`
-//!   is in force at tip + 1. Before admission the node runs the consensus
-//!   quorum check read-only against the oracle set, quorum and signing keys at
-//!   the tip, so a relay hears about a missing signature now instead of seeing
-//!   a silent drop. That dry run is advisory: apply is the only authority (the
-//!   timing, bucket and cited-reading checks run there), and a stateful
-//!   refusal there is an inert drop at assembly.
+//!   is in force at tip + 1. Before admission the node checks, read-only at
+//!   the tip, that every signer is in the oracle set and that every signature
+//!   verifies through the signing-key registry; a forged or outside signature
+//!   is refused. A score with fewer signatures than the tip's quorum is
+//!   ADMITTED and flagged `below_quorum_at_tip`, like the mempool (and the P2P
+//!   path) admit it: the quorum can change in the block that includes it.
+//!   Apply is the only authority (quorum, timing, bucket and cited readings);
+//!   a score that does not apply is dropped at assembly and removed from that
+//!   producer's mempool. Each token may submit at most
+//!   [`RATE_LIMIT_PER_MIN`] scores a minute (429 `RATE_LIMITED`).
 //! - `GET /forecast/late-score` says whether the lane is in force, the chain
 //!   and network id a signer binds, the oracle set and quorum, the limits and
 //!   the state counts.
@@ -22,6 +26,10 @@ use crate::{
     helpers::{envelope_error, envelope_success, require_role},
     state::AppState,
 };
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use actix_web::{HttpRequest, Responder, http::StatusCode, web};
 use wrfcoin_native_chain::security::api_auth::ApiRole;
 use wrfcoin_shared_protocol::{
@@ -33,6 +41,35 @@ use wrfcoin_shared_protocol::{
 /// Largest accepted JSON body. The payload is capped at 64 KiB, and it sits
 /// in the transaction as an escaped JSON string, so allow for escaping.
 pub const MAX_FORECAST_SCORE_JSON_BYTES: usize = 4 * late::MAX_FORECAST_SCORE_PAYLOAD_BYTES;
+
+/// Score submissions one bearer token may make per minute.
+pub const RATE_LIMIT_PER_MIN: usize = 60;
+const WINDOW: Duration = Duration::from_secs(60);
+const MAX_TRACKED_TOKENS: usize = 1024;
+static LIMITER: Mutex<Option<HashMap<[u8; 32], VecDeque<Instant>>>> = Mutex::new(None);
+
+/// Sliding-window limiter keyed by a hash of the bearer token (the same shape
+/// as the node-fraud route's). False when over budget.
+fn allow(token: &str, now: Instant) -> bool {
+    let key = *wrfcoin_shared_protocol::crypto::hash::hash_bytes(token.as_bytes()).as_bytes();
+    let mut guard = LIMITER.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    if map.len() >= MAX_TRACKED_TOKENS && !map.contains_key(&key) {
+        map.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < WINDOW));
+        if map.len() >= MAX_TRACKED_TOKENS {
+            return false;
+        }
+    }
+    let q = map.entry(key).or_default();
+    while q.front().is_some_and(|t| now.duration_since(*t) >= WINDOW) {
+        q.pop_front();
+    }
+    if q.len() >= RATE_LIMIT_PER_MIN {
+        return false;
+    }
+    q.push_back(now);
+    true
+}
 
 fn limits() -> serde_json::Value {
     serde_json::json!({
@@ -52,6 +89,23 @@ fn limits() -> serde_json::Value {
 
 pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Json<Transaction>) -> impl Responder {
     if let Err(response) = require_role(&req, &state, ApiRole::Contributor) {
+        return response;
+    }
+    // require_role succeeded, so the header is a well-formed known token.
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    // determinism-ok: API-edge per-token request rate limiter; wall-clock only decides whether this HTTP request is served and never feeds consensus, state or a signing preimage
+    if !allow(token, Instant::now()) {
+        let mut response =
+            envelope_error(&req, StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", "forecast score rate limit exceeded");
+        response.headers_mut().insert(
+            actix_web::http::header::RETRY_AFTER,
+            actix_web::http::header::HeaderValue::from_static("60"),
+        );
         return response;
     }
     let tx = body.into_inner();
@@ -96,21 +150,29 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", "admission cost refused");
         }
     }
-    // Advisory dry run of the consensus quorum check at the tip, read-only.
-    let signing_keys = {
+    // Read-only signer checks at the tip, before the pool is touched: every
+    // signer in the oracle set, every signature verifying through the
+    // registry. The quorum count is NOT a refusal here (see the module doc).
+    let (signing_keys, below_quorum_at_tip) = {
         let chain = state.blockchain.read().await;
+        if !payload.signatures.iter().all(|s| chain.state.oracle_set.contains(&s.oracle)) {
+            return envelope_error(
+                &req,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "FORECAST_SCORE_REFUSED",
+                late::ForecastLateScoreError::UnauthorizedOracle.to_string(),
+            );
+        }
         let identity = ChainIdentity::active();
-        if let Err(error) = payload.verify_quorum(
+        if let Err(error) = payload.verify_registered_signers(
             &identity.chain_id,
             &identity.network_id,
             &chain.state.signing_keys,
-            |oracle| chain.state.oracle_set.contains(oracle),
-            chain.state.oracle_quorum,
             tx.timestamp.timestamp(),
         ) {
             return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "FORECAST_SCORE_REFUSED", error.to_string());
         }
-        chain.state.signing_keys.clone()
+        (chain.state.signing_keys.clone(), payload.signatures.len() < chain.state.oracle_quorum.max(1))
     };
     let id = tx.id.map(|id| id.to_hex());
     #[cfg(feature = "p2p")]
@@ -134,6 +196,9 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             "forecasts": payload.forecast_commit_ids,
             "admitted": true,
             "included": false,
+            // The tip's quorum is above the signatures carried: the score
+            // applies only if the including block lowers it first.
+            "below_quorum_at_tip": below_quorum_at_tip,
         }),
     )
 }

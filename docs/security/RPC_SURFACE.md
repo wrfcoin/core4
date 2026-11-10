@@ -461,9 +461,13 @@ change: it admits a transaction type the mempool and `apply` already handle.
 `POST /forecast/late-score/submit` (`routes/forecast_late_score.rs:forecast_late_score::submit`) is registered
 through a `web::resource(..)` (256 KiB JSON limit), which the table scanner (`.route(` only) does not see.
 Classification: `authenticated` (Contributor token), mutates state (mempool admission and gossip of a
-`ForecastScore`), bounded work: a duplicate (409 `ALREADY_PENDING`), a full pool (503 `MEMPOOL_FULL`) and the
-admission-cost check are refused before any signature work; then at most 16 ed25519 verifications in a read-only
-quorum dry run at the tip, and the same again in mempool admission. It answers 503 `FEATURE_NOT_ACTIVE` until
+`ForecastScore`), bounded work. Each token may submit 60 scores a minute (429 `RATE_LIMITED`). A duplicate (409
+`ALREADY_PENDING`), a full pool (503 `MEMPOOL_FULL`) and the admission-cost check are refused before any signature
+work. Then, read-only at the tip, a signer outside the oracle set or a signature that does not verify through the
+signing-key registry is refused (422), with at most 16 ed25519 verifications, and the same again in mempool
+admission. A score with fewer signatures than the tip's quorum is admitted with `below_quorum_at_tip: true`, as the
+mempool and the P2P path admit it, because the including block may change the quorum. A score that does not apply is
+dropped at assembly and removed from that producer's mempool. It answers 503 `FEATURE_NOT_ACTIVE` until
 `forecast_late_score` is in force at the next block. Non-forking: it only admits a transaction the mempool and apply
 already handle, and consensus re-checks it at the inclusion height. The reads `GET /forecast/late-score`,
 `/forecast/late-score/buckets/{id}` and `/forecast/late-score/records/{commit_id}` are in the table above.
