@@ -627,15 +627,15 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let (sk, expected) = keypair(0x44);
         let seed_hex = sk.to_hex(); // secret-leak-ok: fixed all-0x44 test fixture
-        assert_eq!(seed_hex.len(), 64);
+        assert_eq!(seed_hex.len(), 64); // secret-leak-ok: compares the fixture length only
 
-        let good = key_file(&dir, "oracle.key", &format!("{seed_hex}\r\n"), 0o600);
+        let good = key_file(&dir, "oracle.key", &format!("{seed_hex}\r\n"), 0o600); // secret-leak-ok: writes the fixed test fixture to a temp file
         let out = handle_oracle_command(&OracleCommands::PublicKey { key_file: good })
             .await
             .unwrap();
         assert_eq!(out["publicKey"], expected);
         assert_eq!(out["oracleId"], expected);
-        assert!(!out.to_string().contains(&seed_hex), "output must not contain the seed");
+        assert!(!out.to_string().contains(&seed_hex), "output must not contain the seed"); // secret-leak-ok: asserts the fixture is ABSENT; the message names only the case
 
         let loose = key_file(&dir, "loose.key", &seed_hex, 0o644);
         assert!(oracle_public_key_from_file(&loose).is_err());
@@ -643,12 +643,12 @@ mod tests {
             ("empty.key", String::new()),
             ("short.key", "abcd".to_string()),
             ("nothex.key", "zz".repeat(32)),
-            ("long.key", format!("{seed_hex}00")),
+            ("long.key", format!("{seed_hex}00")), // secret-leak-ok: builds a malformed fixture for a temp file
         ] {
             let path = key_file(&dir, name, &body, 0o600);
             let err = format!("{:#}", oracle_public_key_from_file(&path).unwrap_err());
             assert!(err.contains("64 hex characters"), "{name}: {err}");
-            assert!(!err.contains(&seed_hex), "{name}: error must not echo key material");
+            assert!(!err.contains(&seed_hex), "{name}: error must not echo key material"); // secret-leak-ok: asserts the fixture is ABSENT; the message names only the case
         }
         assert!(oracle_public_key_from_file(&dir.join("missing.key")).is_err());
         let _ = fs::remove_dir_all(&dir);
