@@ -23,6 +23,17 @@
 //! * one of the debug-only oracle key variables is also set, for the same
 //!   reason.
 //!
+//! # What the gate trusts
+//!
+//! The testnet check reads the process's own declared `WRFCOIN_NETWORK_ID`
+//! and `WRFCOIN_CHAIN_ID`; it cannot tell a real testnet from a host that
+//! declares one. It does not need to: every attestation signature binds the
+//! chain id and network id (the `wrfcoin.oracle_attestation.v1` domain), so a
+//! key file used under a declared testnet produces signatures that only a
+//! testnet chain with that id accepts. Mainnet keeps requiring a token because
+//! a software key there is refused at startup, not because the signature would
+//! be valid anywhere.
+//!
 //! Process-local startup configuration only: it decides which key signs this
 //! attester's votes, never block validity, state transitions or the state root.
 //! The attester's custody check (the oracle key must differ from every other
@@ -266,6 +277,120 @@ mod tests {
             "a symlink must not redirect the read"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Captures log records so the attester's startup banner can be asserted.
+    struct CaptureLogger;
+    static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    impl log::Log for CaptureLogger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            CAPTURED
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(format!("{}", record.args()));
+        }
+        fn flush(&self) {}
+    }
+    static CAPTURE: CaptureLogger = CaptureLogger;
+
+    const ENV_VARS: [&str; 8] = [
+        TESTNET_ORACLE_KEY_FILE,
+        env_vars::HSM_MODULE_PATH,
+        env_vars::ORACLE_SIGNER_PRIVATE_KEY,
+        env_vars::ORACLE_SIGNER_KEY_FILE,
+        env_vars::SNAPSHOT_SIGNER_PRIVATE_KEY,
+        env_vars::PRODUCER_SIGNER_PRIVATE_KEY,
+        crate::crypto::domain_signing::CHAIN_ID_ENV,
+        crate::crypto::domain_signing::NETWORK_ID_ENV,
+    ];
+
+    fn save_env() -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+        ENV_VARS.iter().map(|v| (*v, std::env::var_os(v))).collect()
+    }
+
+    fn restore_env(saved: Vec<(&'static str, Option<std::ffi::OsString>)>) {
+        // SAFETY: callers hold `test_env_lock`.
+        unsafe {
+            for (v, value) in saved {
+                match value {
+                    Some(value) => std::env::set_var(v, value),
+                    None => std::env::remove_var(v),
+                }
+            }
+        }
+    }
+
+    /// The attester path names the testnet key at startup (the banner is how an
+    /// operator sees which signer is active).
+    #[cfg(unix)]
+    #[test]
+    fn attester_from_env_logs_the_testnet_key_banner() {
+        let _guard = super::super::test_env_lock();
+        let installed = log::set_logger(&CAPTURE).is_ok();
+        log::set_max_level(log::LevelFilter::Trace);
+        let dir = std::env::temp_dir()
+            .join(format!("wrfcoin-testnet-oracle-banner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let seed = "44".repeat(32);
+        let path = key_file(&dir, "oracle.key", &seed, 0o600); // secret-leak-ok: fixed all-0x44 test fixture written to a temp file // secret-copy-ok: fixed test fixture
+        let oracle_id = PublicKey::from_private_key(&PrivateKey::from_hex(&seed).unwrap()).to_hex();
+
+        let saved = save_env();
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe {
+            for v in ENV_VARS {
+                std::env::remove_var(v);
+            }
+            std::env::set_var(TESTNET_ORACLE_KEY_FILE, &path);
+            std::env::set_var(crate::crypto::domain_signing::CHAIN_ID_ENV, "888");
+            std::env::set_var(crate::crypto::domain_signing::NETWORK_ID_ENV, "testnet");
+        }
+        let other = |b: u8| PublicKey::from_private_key(&PrivateKey::from_bytes(&[b; 32]).unwrap());
+        let forbidden = crate::oracle::attester::ForbiddenRoleKeys::default()
+            .with_key("snapshot", other(1))
+            .with_key("producer", other(2))
+            .with_key("governance", other(3));
+        let attester = crate::oracle::attester::Attester::from_env(&forbidden);
+        restore_env(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let attester = attester.unwrap().expect("attester");
+        assert_eq!(attester.oracle_id(), oracle_id);
+        assert!(installed, "another logger was already installed; the banner cannot be observed");
+        let logs = CAPTURED.lock().unwrap_or_else(|p| p.into_inner()).join("\n");
+        assert!(
+            logs.contains("TESTNET software oracle key active")
+                && logs.contains(&format!("public key {oracle_id}")),
+            "attester startup did not log the testnet key banner: {logs}"
+        );
+    }
+
+    /// Ceremony signing refuses the testnet key file instead of using it.
+    #[test]
+    fn ceremony_loader_refuses_the_testnet_key_file() {
+        let _guard = super::super::test_env_lock();
+        let saved = save_env();
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe {
+            for v in ENV_VARS {
+                std::env::remove_var(v);
+            }
+            std::env::set_var(TESTNET_ORACLE_KEY_FILE, "/nonexistent/oracle.key");
+            std::env::set_var(crate::crypto::domain_signing::CHAIN_ID_ENV, "888");
+            std::env::set_var(crate::crypto::domain_signing::NETWORK_ID_ENV, "testnet");
+        }
+        let refused = super::super::load_oracle_signer_for_ceremony();
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(TESTNET_ORACLE_KEY_FILE) };
+        let unset = super::super::load_oracle_signer_for_ceremony();
+        restore_env(saved);
+        let err = format!("{:#}", refused.unwrap_err());
+        assert!(err.contains("ceremony signing accepts only"), "{err}");
+        assert!(unset.unwrap().is_none(), "with nothing configured the ceremony loader finds no signer");
     }
 
     /// End to end through the public oracle loader: a release-capable path

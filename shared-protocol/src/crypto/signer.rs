@@ -767,6 +767,23 @@ pub fn load_oracle_signer() -> Result<Option<ResolvedSigner>> {
     load_block_signer_for(SignerEnv::oracle())
 }
 
+/// Load the oracle signer for a **key ceremony** (possession proofs).
+///
+/// Ceremony signing stays on the HSM / debug paths of [`SignerEnv::oracle`]:
+/// the testnet software key file ([`TESTNET_ORACLE_KEY_FILE`]) is for running
+/// an attester, not for ceremony material, so its presence is a refusal here
+/// rather than a silent choice of a different key.
+pub fn load_oracle_signer_for_ceremony() -> Result<Option<ResolvedSigner>> {
+    // determinism-ok: ceremony-startup presence check of a signer config var, never consensus input
+    if std::env::var_os(TESTNET_ORACLE_KEY_FILE).is_some_and(|v| !v.is_empty()) {
+        bail!(
+            "{TESTNET_ORACLE_KEY_FILE} is set, but ceremony signing accepts only a PKCS#11 \
+             oracle key (or a debug key in debug builds). Unset it for the ceremony"
+        );
+    }
+    load_block_signer_for(SignerEnv::oracle())
+}
+
 /// [`load_block_signer`] for an explicit [`SignerEnv`] role.
 pub fn load_block_signer_for(env: SignerEnv<'_>) -> Result<Option<ResolvedSigner>> {
     let Some(raw) = resolve_raw_signer(env)? else {
