@@ -63,6 +63,9 @@ that exploitation is currently demonstrated.
 | `GET /heatmap/json` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::get_heatmap_json_compat` | `public` | no | no | global-read |
 | `GET /cross_chain` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::cross_chain_feature_disabled` | `disabled-in-release` | no | no | global-read |
 | `GET /cross_chain/status` | `http` | `native-chain/src/bin/launch_api/routes/chain.rs:chain::cross_chain_feature_disabled` | `disabled-in-release` | no | no | global-read |
+| `GET /governance/advisory/proposals` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::list` | `public` | no | no | global-read |
+| `GET /governance/advisory/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::show` | `public` | no | no | global-read |
+| `GET /governance/advisory/proposals/{id}/eligibility` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::eligibility` | `public` | no | no | global-read |
 | `GET /governance/proposals` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::list_governance_proposals` | `public` | no | yes | global-read |
 | `POST /governance/proposals/submit` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::submit_governance_proposal` | `admin` | yes | no | global-write |
 | `GET /governance/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::get_governance_proposal` | `public` | no | no | global-read |

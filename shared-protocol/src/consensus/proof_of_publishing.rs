@@ -2251,6 +2251,8 @@ struct BlockTxValidationAccumulators {
     feeless_tx_count: usize,
     node_bond_lifecycle_count: usize,
     session_key_action_count: usize,
+    /// Advisory-governance proposals seen so far (`advisory_governance`).
+    advisory_proposal_count: usize,
     node_receipt_batch_count: usize,
     node_fraud_report_count: usize,
     /// Per-worker fee-less transaction counts for the per-block rate limit.
@@ -9149,6 +9151,31 @@ impl ProofOfPublishing {
                 });
             if !valid {
                 return Some("SP_SEND_ALLOWLIST_AUTHORIZATION".into());
+            }
+        }
+        // Advisory governance: below the unscheduled activation a block
+        // carrying the type is invalid on every node (an older binary cannot
+        // even decode it). From activation the signed action must verify, and
+        // a block carries at most `MAX_PROPOSALS_PER_BLOCK` proposals (each
+        // walks every account for its electorate snapshot). Stateful rules
+        // (nonce, snapshot, deadline, slots, deposit) are apply's: a stale
+        // action is dropped at assembly and fails a peer's apply.
+        if tx.tx_type == TransactionType::AdvisoryGovernance {
+            use crate::governance::advisory::{MAX_PROPOSALS_PER_BLOCK, SignedAdvisoryAction};
+            if !feature_active(ConsensusFeature::AdvisoryGovernance, ctx.height) {
+                return Some("SP_ADVISORY_GOVERNANCE_INACTIVE".into());
+            }
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            let Some(signed) = SignedAdvisoryAction::parse(tx)
+                .filter(|signed| signed.verify(&identity.chain_id, &identity.network_id).is_ok())
+            else {
+                return Some("SP_ADVISORY_GOVERNANCE_AUTHORIZATION".into());
+            };
+            if signed.is_propose() {
+                acc.advisory_proposal_count += 1;
+                if acc.advisory_proposal_count > MAX_PROPOSALS_PER_BLOCK {
+                    return Some("SP_ADVISORY_GOVERNANCE_BLOCK_CAP".into());
+                }
             }
         }
         if tx.tx_type == TransactionType::NodeServiceBatch {

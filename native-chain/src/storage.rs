@@ -126,9 +126,11 @@ pub const CHECKPOINT_ENVELOPE_MAGIC: [u8; 8] = *b"WRFCKPT\0";
 /// Version14 freezes the S3 receipt layout and adds unminted Node settlement.
 /// Version15 appends Node sanctions. Version16 appends the send-allowlist map
 /// (written only when non-empty; an empty map keeps the format-15 writer).
+/// Version17 appends the advisory-proposal map (written only when non-empty;
+/// an empty map keeps the format-16 or older writer).
 /// Version-3 through version-11 checkpoints
 /// migrate through registered, frozen layouts before decoding.
-pub const CHECKPOINT_FORMAT_VERSION: u32 = 16;
+pub const CHECKPOINT_FORMAT_VERSION: u32 = 17;
 
 /// Maximum number of decoded blocks [`Storage::scan_persisted_blocks`] holds in
 /// memory at once.
@@ -1814,9 +1816,14 @@ fn decode_state_checkpoint_migrating(
             // the original payload, so do not reserialize the decoded State.
             // A migration from an older format never invents a send
             // allowlist: the appended map is empty (its u64 zero length).
-            let v15_body = &migrated[header_len..migrated.len() - 8];
-            let compatible = if !state.send_allowlists.is_empty() {
+            // Likewise the advisory-proposal map (format 17): a migration
+            // appends it empty.
+            let v16_body = &migrated[header_len..migrated.len() - 8];
+            let v15_body = &v16_body[..v16_body.len() - 8];
+            let compatible = if !state.advisory_proposals.is_empty() {
                 migrated.clone()
+            } else if !state.send_allowlists.is_empty() {
+                migrations::envelope(16, v16_body)
             } else if state.node_receipt_registry.is_none() {
                 // Each absent appended Option occupies one byte. Preserve all
                 // prior bytes, including historical map iteration order.

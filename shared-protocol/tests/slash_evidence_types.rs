@@ -30,7 +30,9 @@ fn appended_evidence_transaction_discriminant_is_36() {
     assert_eq!(bincode::deserialize::<TransactionType>(&41u32.to_le_bytes()).unwrap(), TransactionType::SecurityKeyAction);
     // Send allowlist appends 42.
     assert_eq!(bincode::deserialize::<TransactionType>(&42u32.to_le_bytes()).unwrap(), TransactionType::SendAllowlist);
-    assert!(bincode::deserialize::<TransactionType>(&43u32.to_le_bytes()).is_err());
+    // Advisory governance appends 43.
+    assert_eq!(bincode::deserialize::<TransactionType>(&43u32.to_le_bytes()).unwrap(), TransactionType::AdvisoryGovernance);
+    assert!(bincode::deserialize::<TransactionType>(&44u32.to_le_bytes()).is_err());
 }
 
 #[test]

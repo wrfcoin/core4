@@ -3,6 +3,8 @@
 //! This module provides mechanisms for protocol-level governance and decision-making.
 
 pub mod actor_policy;
+/// Signed, text-only advisory proposals (unscheduled `advisory_governance`).
+pub mod advisory;
 pub mod implementation;
 pub mod policy_engine;
 pub mod proposal;

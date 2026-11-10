@@ -1241,6 +1241,22 @@ pub enum ConsensusFeature {
     /// schedule it on a chain with no pinned key. Scheduling is the owner's
     /// signature only.
     StationRegistrarKey,
+    /// Advisory governance (`governance::advisory`). From its activation a
+    /// wallet may put a signed, text-only proposal (a title and a summary)
+    /// on chain with a fixed 1 WRF deposit debited only from the signer, and
+    /// wallets that held at least 1 WRF spendable when it was proposed may
+    /// cast one signed vote each. Finalize only records the outcome and
+    /// returns the deposit; nothing is executed, no parameter or law changes.
+    /// Below activation `TransactionType::AdvisoryGovernance` is refused by
+    /// mempool admission, the block classifier and apply, so
+    /// `State::advisory_proposals` is empty and blocks and `state_root` are
+    /// byte-identical. The legacy unsigned `GovernanceProposal` stays refused
+    /// at every height whatever this feature's state.
+    ///
+    /// Wire ordinal 33. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. The binary accepts a live schedule extension
+    /// naming it; scheduling is the owner's signature only.
+    AdvisoryGovernance,
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1290,6 +1306,7 @@ impl ConsensusFeature {
         Self::BondAdmissionKey,
         Self::StreakReplayRecipientParity,
         Self::StationRegistrarKey,
+        Self::AdvisoryGovernance,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1328,6 +1345,7 @@ impl ConsensusFeature {
             Self::BondAdmissionKey => "bond_admission_key",
             Self::StreakReplayRecipientParity => "streak_replay_recipient_parity",
             Self::StationRegistrarKey => "station_registrar_key",
+            Self::AdvisoryGovernance => "advisory_governance",
         }
     }
 
@@ -1432,7 +1450,11 @@ impl ConsensusFeature {
             | Self::SendAllowlist
             // Wired end to end (admission, apply, pricing, CLI); scheduling is
             // the owner's signature.
-            | Self::PasskeyBondPayout => true,
+            | Self::PasskeyBondPayout
+            // Wired end to end (admission, block classifier, apply, finalize,
+            // pricing, checkpoint/snapshot layout); scheduling is the owner's
+            // signature, after review and the determinism differential.
+            | Self::AdvisoryGovernance => true,
         }
     }
 
@@ -1470,6 +1492,8 @@ impl ConsensusFeature {
             // Station registrar key: the registration step, its apply arm and
             // the per-block slot read it.
             Self::StationRegistrarKey => true,
+            // Advisory governance: admission, classifier, apply and finalize read it.
+            Self::AdvisoryGovernance => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1544,7 +1568,13 @@ mod forecast_skill_baseline_tests {
         assert_eq!(ConsensusFeature::ALL[30], ConsensusFeature::BondAdmissionKey);
         assert_eq!(ConsensusFeature::ALL[31], ConsensusFeature::StreakReplayRecipientParity);
         assert_eq!(ConsensusFeature::ALL[32], ConsensusFeature::StationRegistrarKey);
-        assert_eq!(ConsensusFeature::ALL.len(), 33);
+        assert_eq!(ConsensusFeature::ALL.len(), 34);
+        // Advisory governance is appended after it at ordinal 33.
+        assert_eq!(ConsensusFeature::ALL[33], ConsensusFeature::AdvisoryGovernance);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::AdvisoryGovernance).unwrap(),
+            33u32.to_le_bytes()
+        );
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3030,6 +3060,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 33: the binary accepts scheduling it; the owner signs it.
+        expected.push("advisory_governance");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -3071,6 +3103,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 33: the binary accepts scheduling it; the owner signs it.
+        expected.push("advisory_governance");
         assert_eq!(schedulable, expected);
     }
 

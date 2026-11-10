@@ -495,7 +495,9 @@ pub fn export_state_entries(state: &State) -> Result<Vec<(Vec<u8>, Vec<u8>)>, St
         if is_node_local(&name) || (name == "node_bond_registry" && state.node_bond_registry.is_none()) || (name == "node_receipt_registry" && state.node_receipt_registry.is_none()) || (name == "node_settlement" && state.node_settlement.is_none()) || (name == "node_fraud" && state.node_fraud.is_none())
             // Send allowlist: absent while empty (always, pre-activation), so a
             // snapshot is byte-identical to one from a binary without it.
-            || (name == "send_allowlists" && state.send_allowlists.is_empty()) {
+            || (name == "send_allowlists" && state.send_allowlists.is_empty())
+            // Advisory governance: absent while empty (always, pre-activation).
+            || (name == "advisory_proposals" && state.advisory_proposals.is_empty()) {
             continue;
         }
         match value {
@@ -611,7 +613,7 @@ pub fn import_state_entries(
         } else if name == "node_receipt_registry" && version != Some(b"4".as_slice()) && version != Some(b"5".as_slice()) && version != Some(b"6".as_slice()) {
             if carried.contains_key(name) { return Err(malformed(name, "receipt marker in legacy snapshot".into())); }
             Value::Null
-        } else if name == "send_allowlists" && !carried.contains_key(name) {
+        } else if (name == "send_allowlists" || name == "advisory_proposals") && !carried.contains_key(name) {
             // Omitted by the exporter while empty; any format version.
             Value::Map(Vec::new())
         } else if is_node_local(name) {
@@ -1083,6 +1085,26 @@ mod tests {
         s.node_settlement = Some(crate::consensus::node_settlement::NodeSettlement { last_finalized_height:Some(5), ..Default::default() });
         s.node_fraud = Some(crate::consensus::node_fraud::NodeFraudState { block_height:5, ..Default::default() });
         s.send_allowlists.insert(a(9), crate::accounts::send_allowlist::AccountSendAllowlist { action_nonce: 3, policy: None });
+        {
+            use crate::governance::advisory::{AdvisoryProposal, AdvisoryStatus, proposal_id};
+            let id = proposal_id(&a(9), 4);
+            s.advisory_proposals.insert(id.clone(), AdvisoryProposal {
+                id,
+                proposer: a(9),
+                title: "Fixture".into(),
+                summary: "Line one\nline two".into(),
+                created_at_block: 5,
+                voting_deadline: 1_125,
+                deposit: Balance::new(100_000_000),
+                eligible_voters: [a(9), a(10)].into_iter().collect(),
+                eligible_count: 2,
+                votes: [(a(10), false)].into_iter().collect(),
+                yes_votes: 0,
+                no_votes: 1,
+                status: AdvisoryStatus::Active,
+                finalized_at_block: None,
+            });
+        }
         s
     }
 
