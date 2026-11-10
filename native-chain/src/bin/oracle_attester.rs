@@ -87,8 +87,9 @@
 //! nowhere else. The chain receives only the signed attestation — `commit_id`,
 //! `oracle_id`, `approved`, `confidence`, `timestamp`, `nonce` — and never the
 //! reference station, the distance or the residuals. The station location comes
-//! from the node's pending surface (`station_location`, registry-sourced and
-//! coarsened to 0.01°), never from the contributor-controlled reveal `data`,
+//! from the node's pending surface (`station_location`, registry-sourced, at
+//! 0.1° for any token but the node operator's, and re-coarsened here to at
+//! most 0.01°), never from the contributor-controlled reveal `data`,
 //! which would let a contributor pick their own reference. Fallback order, each
 //! step named in the verdict reasons and logged: nearest station within
 //! `WRFCOIN_ATTESTER_MAX_REFERENCE_KM` → the configured
@@ -116,6 +117,7 @@ use wrfcoin_shared_protocol::weather::station_reference::{
     SeaLevelPressureClaim, pair_station_reference_sea_level,
 };
 use wrfcoin_shared_protocol::weather::validation::weather_observation_from_json;
+use wrfcoin_native_chain::weather::public_location::{tenth_degree, tenth_degree_cell};
 
 /// How long a locally-submitted commit id suppresses re-submission while the
 /// attestation waits to mine. After this, chain state (`attesting_oracles`)
@@ -329,6 +331,12 @@ impl ReferenceLocation {
     }
 }
 
+/// A location's public 0.1° cell, in whole tenths (the node's rounding rule).
+// determinism-ok: attester-side lookup key; never consensus
+fn tenth_cell(latitude: f64, longitude: f64) -> Option<(i64, i64)> {
+    Some((tenth_degree_cell(latitude)?, tenth_degree_cell(longitude)?))
+}
+
 /// Trusted DEM ground elevations for the #3299 sea-level band, keyed by
 /// station id (`WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE`).
 ///
@@ -338,14 +346,17 @@ impl ReferenceLocation {
 /// registration too), must not be a mutable backend column (the backend skips
 /// the DEM lookup exactly when an operator override is given, the laundering
 /// path), and must be the same for every attester and every cycle. The
-/// attester also sees only the 0.01°-coarsened location, too coarse for a DEM
+/// attester also sees only a coarsened location (0.1° unless it holds the
+/// node operator's token), too coarse for a DEM
 /// lookup on a hillside. So the operator builds the file once from the
 /// registry's exact coordinates (`docs/deployment/attester-dem-table/`), it is
 /// reviewable, and every attester loads the same bytes.
 ///
 /// Each entry is bound to the station's coarse location: when the pending
 /// surface serves a different (or no) location, the station has moved since
-/// the file was built and the entry is not used.
+/// the file was built and the entry is not used. A node answers a non-operator
+/// token at the public 0.1° grid; such a location is matched against the 0.1°
+/// cell of the entry, so the binding is then only as fine as that cell.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DemTable {
     by_station: HashMap<String, DemEntry>,
@@ -357,6 +368,8 @@ pub(crate) struct DemTable {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DemEntry {
     location: ReferenceLocation,
+    /// The entry's 0.1° cell in whole tenths, from the file's own values.
+    tenth_cell: (i64, i64),
     // determinism-ok: attester-side #3299 DEM ground elevation; never consensus
     dem_ground_elevation_m: f64,
 }
@@ -402,7 +415,9 @@ impl DemTable {
             {
                 bail!("DEM table: station {} has an implausible DEM elevation", row.station_id);
             }
-            let entry = DemEntry { location, dem_ground_elevation_m: row.dem_ground_elevation_m };
+            let tenth_cell = tenth_cell(row.latitude, row.longitude)
+                .ok_or_else(|| anyhow!("DEM table: station {} has an invalid location", row.station_id))?;
+            let entry = DemEntry { location, tenth_cell, dem_ground_elevation_m: row.dem_ground_elevation_m };
             if by_station.insert(row.station_id.clone(), entry).is_some() {
                 bail!("DEM table: station {} appears twice", row.station_id);
             }
@@ -443,8 +458,15 @@ impl DemTable {
     // determinism-ok: attester-side #3299 lookup; never consensus
     fn lookup(&self, station_id: &str, served: Option<ReferenceLocation>) -> Option<f64> {
         let entry = self.by_station.get(station_id)?;
-        let served = served.and_then(ReferenceLocation::coarse)?;
-        (served.point_key() == entry.location.point_key()).then_some(entry.dem_ground_elevation_m)
+        let served = served?;
+        if served.coarse()?.point_key() == entry.location.point_key() {
+            return Some(entry.dem_ground_elevation_m);
+        }
+        // A non-operator view: exactly on the public 0.1° grid. Match its cell.
+        let on_tenth_grid = tenth_degree(served.latitude) == Some(served.latitude)
+            && tenth_degree(served.longitude) == Some(served.longitude);
+        (on_tenth_grid && tenth_cell(served.latitude, served.longitude)? == entry.tenth_cell)
+            .then_some(entry.dem_ground_elevation_m)
     }
 }
 
@@ -2698,6 +2720,12 @@ mod tests {
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(exact)), Some(247.9));
         let moved = ReferenceLocation { latitude: 46.85, longitude: -92.10 };
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(moved)), None);
+        // A non-operator node view at 0.1 degree matches the entry's 0.1 cell,
+        // and only that cell.
+        let public = ReferenceLocation { latitude: 46.8, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(public)), Some(247.9));
+        let next_cell = ReferenceLocation { latitude: 46.9, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(next_cell)), None);
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", None), None);
         assert_eq!(table.lookup("PWS-OTHER", Some(here)), None);
 
