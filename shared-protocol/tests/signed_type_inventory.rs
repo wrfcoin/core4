@@ -742,6 +742,11 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         golden_kind: "declare_authorization_v2",
     },
     AuthSurface {
+        rust_type: "SignedAdvisoryAction",
+        domain_tag: "wrfcoin.advisory_governance_action.v1",
+        golden_kind: "advisory_governance_action_v2",
+    },
+    AuthSurface {
         rust_type: "SignedSendAllowlistAction",
         domain_tag: "wrfcoin.send_allowlist_action.v1",
         golden_kind: "send_allowlist_action_v2",

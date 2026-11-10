@@ -1053,6 +1053,14 @@
       "target": "send_allowlist_interactions"
     },
     {
+      "package": "wrfcoin-native-chain",
+      "target": "advisory_governance_parity"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "advisory_governance"
+    },
+    {
       "package": "wrfcoin-shared-protocol",
       "target": "passkey_bond_payout"
     },

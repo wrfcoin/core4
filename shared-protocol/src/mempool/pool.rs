@@ -578,6 +578,27 @@ impl Mempool {
                 .map_err(|e| anyhow!("SP_SEND_ALLOWLIST_AUTHORIZATION: {e}"))?;
         }
 
+        // Advisory governance: refused until the feature is active at the next
+        // height; then only a well-formed, signer-bound, signed action is
+        // admitted. Nonce, snapshot, deadline and slot rules are state's
+        // (apply refuses, assembly drops). The legacy `GovernanceProposal`
+        // fence above stays unconditional.
+        if tx.tx_type == TransactionType::AdvisoryGovernance {
+            let height = current_height.ok_or_else(|| anyhow!("SP_ADVISORY_GOVERNANCE_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::feature_active(
+                crate::crypto::chain_binding::ConsensusFeature::AdvisoryGovernance,
+                height.saturating_add(1),
+            ) {
+                return Err(anyhow!("SP_ADVISORY_GOVERNANCE_INACTIVE"));
+            }
+            let signed = crate::governance::advisory::SignedAdvisoryAction::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_ADVISORY_GOVERNANCE_PAYLOAD"))?;
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            signed
+                .verify(&identity.chain_id, &identity.network_id)
+                .map_err(|e| anyhow!("SP_ADVISORY_GOVERNANCE_AUTHORIZATION: {e}"))?;
+        }
+
         // #3277 S4: live feature-schedule extensions. ADMISSION POLICY, not
         // validity: a block carrying an extension this refuses is still valid
         // (design §1.3). Refused here: an unparsable payload, and any

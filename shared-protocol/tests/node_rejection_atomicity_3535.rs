@@ -555,6 +555,7 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyStationRegistrarRegistration { .. } => {
             "ApplyStationRegistrarRegistration"
         },
+        StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
     }
 }
 
@@ -772,6 +773,11 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
             },
             other => panic!("fixture 53 drifted: {other:?}"),
         },
+        // `advisory_governance`: no such proposal, so refused.
+        59 => StateTransition::FinalizeAdvisoryProposal {
+            proposal_id: "adv-0000000000000000".into(),
+            current_block: fixture::A,
+        },
         _ => {
             // Synthetic zero-value fixtures, preserving the original sweep inputs.
             // StateTransition is not a protocol bincode boundary; keep fixtures JSON.
@@ -847,6 +853,7 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "ApplyNodeServiceBatch",
         "ApplyNodeFraudReport",
         "ApplyStationRegistrarRegistration",
+        "FinalizeAdvisoryProposal",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {

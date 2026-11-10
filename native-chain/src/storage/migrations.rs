@@ -106,6 +106,7 @@ pub static MIGRATIONS: &[&dyn CheckpointMigration] = &[
     &MigrationV13ToV14,
     &MigrationV14ToV15,
     &MigrationV15ToV16,
+    &MigrationV16ToV17,
 ];
 
 /// The registered migration that reads `version`, if any.
@@ -555,8 +556,25 @@ impl CheckpointMigration for MigrationV15ToV16 {
         let _: legacy::state_v15::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 15, error: e.to_string() })?;
         let mut migrated = body.to_vec();
         migrated.extend_from_slice(&0u64.to_le_bytes());
-        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 16, error: e.to_string() })?;
-        debug_assert!(current.send_allowlists.is_empty());
+        let _: legacy::state_v16::State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 16, error: e.to_string() })?;
+        Ok(migrated)
+    }
+}
+
+/// Format 17 appends the advisory-proposal map
+/// (`ConsensusFeature::AdvisoryGovernance`). A format-16 checkpoint predates
+/// the feature, so the map is empty: append exactly its u64 zero length. No
+/// proposal is invented.
+pub struct MigrationV16ToV17;
+impl CheckpointMigration for MigrationV16ToV17 {
+    fn from_version(&self) -> u32 { 16 }
+    fn to_version(&self) -> u32 { 17 }
+    fn migrate(&self, body: &[u8]) -> Result<Vec<u8>, MigrationError> {
+        let _: legacy::state_v16::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 16, error: e.to_string() })?;
+        let mut migrated = body.to_vec();
+        migrated.extend_from_slice(&0u64.to_le_bytes());
+        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 17, error: e.to_string() })?;
+        debug_assert!(current.advisory_proposals.is_empty());
         Ok(migrated)
     }
 }
@@ -566,9 +584,19 @@ impl CheckpointMigration for MigrationV15ToV16 {
 /// validation prevents an accidental field reorder from silently truncating.
 pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error> {
     let mut payload = bincode::serialize(state)?;
-    // Format 16: any send-allowlist entry needs the full current layout.
-    if !state.send_allowlists.is_empty() {
+    // Format 17: any advisory proposal needs the full current layout.
+    if !state.advisory_proposals.is_empty() {
         return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
+    }
+    // Empty (always, before `advisory_governance` activates): drop the map's
+    // u64 zero length and continue with the format-16 writer.
+    let suffix = 0u64.to_le_bytes();
+    assert!(payload.ends_with(&suffix), "empty advisory proposals must be the final field");
+    payload.truncate(payload.len() - suffix.len());
+    let _: legacy::state_v16::State = decode_exact(&payload)?;
+    // Format 16: any send-allowlist entry needs the format-16 layout.
+    if !state.send_allowlists.is_empty() {
+        return Ok(envelope(16, &payload));
     }
     // Empty (always, before `send_allowlist` activates): write exactly the
     // format-15 bytes and let the existing chain pick the deployed version.
@@ -646,6 +674,7 @@ mod tests {
             appended_station_block_time(),
             appended_owner_ledger(),
             vec![0, 0, 0, 0],
+            vec![0; 8],
             vec![0; 8],
         ]
         .concat()
@@ -826,6 +855,7 @@ mod tests {
                 appended_owner_ledger().as_slice(),
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
+                &[0; 8], // empty advisory proposal map (format 17)
             ].concat()
         );
     }
@@ -863,6 +893,7 @@ mod tests {
                 appended_owner_ledger().as_slice(),
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
+                &[0; 8], // empty advisory proposal map (format 17)
             ]
             .concat()
         );
@@ -942,7 +973,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8]]
                 .concat()
                 .as_slice()
         );
@@ -969,7 +1000,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 20]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -999,14 +1030,14 @@ mod tests {
         assert_eq!(&body(&v11)[..body(&v10).len()], body(&v10));
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
-        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(16));
-        assert_eq!(&body(&golden(16))[body(&v11).len()..], &[0; 12]);
+        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(17));
+        assert_eq!(&body(&golden(17))[body(&v11).len()..], &[0; 20]);
     }
 
     #[test]
     fn v13_off_migrates_exactly_and_prior_node_activation_is_refused() {
         let v13=golden(13);
-        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(16));
+        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(17));
         for receipt_marker in [false,true] {
             // Independent frozen suffix: bond Option tag/body, then the S3
             // receipt Option tag and its original three-field empty body.
@@ -1032,28 +1063,71 @@ mod tests {
     #[test]
     fn v15_golden_appends_only_the_empty_send_allowlist_map() {
         let v15 = golden(15);
+        let v16 = golden(16);
         let _: legacy::state_v15::State = decode_exact(body(&v15)).unwrap();
+        assert_eq!(MigrationV15ToV16.migrate(body(&v15)).unwrap(), body(&v16));
+        assert_eq!(&body(&v16)[..body(&v15).len()], body(&v15));
+        assert_eq!(&body(&v16)[body(&v15).len()..], &[0; 8]);
         let migrated = migrate_to_current(15, body(&v15)).unwrap();
-        assert_eq!(migrated, golden(16));
-        assert_eq!(&body(&migrated)[..body(&v15).len()], body(&v15));
-        assert_eq!(&body(&migrated)[body(&v15).len()..], &[0; 8]);
+        assert_eq!(migrated, golden(17));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.send_allowlists.is_empty());
-        // Empty map: the writer never emits format 16 (byte-identical to the
-        // deployed writer). A non-empty map: format 16, full layout.
+        // Empty maps: the writer never emits format 16 or 17 (byte-identical
+        // to the deployed writer). A send-allowlist entry alone: format 16.
         let written = encode_compatible(&state).unwrap();
-        assert_ne!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+        assert!(u32::from_le_bytes(written[8..12].try_into().unwrap()) < 16);
         let mut with_policy = state.clone();
         with_policy.send_allowlists.insert(
             Address([7; 20]),
             wrfcoin_shared_protocol::accounts::send_allowlist::AccountSendAllowlist::default(),
         );
         let written = encode_compatible(&with_policy).unwrap();
-        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
-        let back: State = decode_exact(body(&written)).unwrap();
+        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), 16);
+        let frozen: legacy::state_v16::State = decode_exact(body(&written)).unwrap();
+        assert_eq!(frozen.send_allowlists, with_policy.send_allowlists);
+        let back: State = decode_exact(&migrate_to_current(16, body(&written)).unwrap()[12..]).unwrap();
         assert_eq!(back.send_allowlists, with_policy.send_allowlists);
         // A format-15 body cannot be mislabelled as 16 or vice versa.
-        assert!(migrate_to_current(15, body(&migrated)).is_err());
+        assert!(migrate_to_current(15, body(&v16)).is_err());
+    }
+
+    #[test]
+    fn v16_golden_appends_only_the_empty_advisory_proposal_map() {
+        let v16 = golden(16);
+        let _: legacy::state_v16::State = decode_exact(body(&v16)).unwrap();
+        let migrated = migrate_to_current(16, body(&v16)).unwrap();
+        assert_eq!(migrated, golden(17));
+        assert_eq!(&body(&migrated)[..body(&v16).len()], body(&v16));
+        assert_eq!(&body(&migrated)[body(&v16).len()..], &[0; 8]);
+        let state: State = decode_exact(body(&migrated)).unwrap();
+        assert!(state.advisory_proposals.is_empty());
+        let mut with_proposal = state.clone();
+        let id = wrfcoin_shared_protocol::governance::advisory::proposal_id(&Address([7; 20]), 0);
+        with_proposal.advisory_proposals.insert(
+            id.clone(),
+            wrfcoin_shared_protocol::governance::advisory::AdvisoryProposal {
+                id,
+                proposer: Address([7; 20]),
+                title: "T".into(),
+                summary: "S".into(),
+                created_at_block: 1,
+                voting_deadline: 1_121,
+                deposit: wrfcoin_shared_protocol::common::types::Balance::new(100_000_000),
+                eligible_voters: [Address([7; 20])].into_iter().collect(),
+                eligible_count: 1,
+                votes: BTreeMap::new(),
+                yes_votes: 0,
+                no_votes: 0,
+                status: wrfcoin_shared_protocol::governance::advisory::AdvisoryStatus::Active,
+                finalized_at_block: None,
+            },
+        );
+        let written = encode_compatible(&with_proposal).unwrap();
+        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+        let back: State = decode_exact(body(&written)).unwrap();
+        assert_eq!(back.advisory_proposals, with_proposal.advisory_proposals);
+        // A format-16 body cannot be mislabelled as 17 or vice versa.
+        assert!(migrate_to_current(16, body(&migrated)).is_err());
     }
 
     #[test]
