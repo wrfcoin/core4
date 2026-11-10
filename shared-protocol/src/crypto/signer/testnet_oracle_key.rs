@@ -254,10 +254,7 @@ mod tests {
             let path = key_file(&dir, name, body, 0o600);
             let err = format!("{:#}", load_testnet_oracle_key(&path).unwrap_err());
             assert!(err.contains("64 hex characters"), "{name}: {err}");
-            assert!(
-                !err.contains(&seed),
-                "{name}: error must not echo key material"
-            );
+            assert!(!err.contains(&seed), "{name}: error must not echo key material"); // secret-leak-ok: asserts the error does NOT contain the fixture; the message names only the case
         }
         let big = key_file(&dir, "big.key", &"a".repeat(5000), 0o600);
         assert!(load_testnet_oracle_key(&big).is_err());
