@@ -741,12 +741,13 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         domain_tag: "wrfcoin.declare_authorization.v1",
         golden_kind: "declare_authorization_v2",
     },
-    // Forecast late score: the observation attestation an oracle quorum
-    // signs, carried by `TransactionType::ForecastScore`.
+    // Forecast late score: what an oracle quorum signs, the full score payload
+    // (observation and forecast commit ids), carried by
+    // `TransactionType::ForecastScore`.
     AuthSurface {
         rust_type: "ForecastScorePayload",
-        domain_tag: "wrfcoin.forecast_observation_attestation.v1",
-        golden_kind: "forecast_observation_attestation_v1",
+        domain_tag: "wrfcoin.forecast_score_attestation.v2",
+        golden_kind: "forecast_score_attestation_v2",
     },
     AuthSurface {
         rust_type: "SignedAdvisoryAction",

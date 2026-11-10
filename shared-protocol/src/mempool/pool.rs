@@ -678,9 +678,24 @@ impl Mempool {
             }
             let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(&tx)
                 .ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_PAYLOAD"))?;
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            // One input, the outpoint derived from the signed score message:
+            // every transaction carrying the same signed payload spends it, so
+            // the pool holds at most one of them. Checked before any signature
+            // work; a second one is refused here instead of as a double spend.
+            let outpoint = crate::consensus::forecast_late_score::score_outpoint(
+                &identity.chain_id,
+                &identity.network_id,
+                &payload,
+            );
+            if tx.inputs.len() != 1 || tx.inputs[0].txid != outpoint || tx.inputs[0].vout != 0 {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_OUTPOINT: the input must be the score's own outpoint"));
+            }
+            if self.double_spends.get(&(outpoint, 0)).is_some_and(|spenders| !spenders.is_empty()) {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_DUPLICATE: this signed score is already pending"));
+            }
             let registry =
                 signing_keys.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: no key registry"))?;
-            let identity = crate::crypto::chain_binding::ChainIdentity::active();
             payload
                 .verify_registered_signers(&identity.chain_id, &identity.network_id, registry, tx.timestamp.timestamp())
                 .map_err(|e| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: {e}"))?;

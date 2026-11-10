@@ -1202,12 +1202,13 @@ fn build_security_key_action_case(seed: u64) -> Value {
     })
 }
 
-/// Forecast late score (`consensus::forecast_late_score`): the observation
-/// attestation one oracle signs. Negative values and two reading ids, so the
+/// Forecast late score (`consensus::forecast_late_score`): what one oracle
+/// signs, the full score payload (the observation and the forecast commit ids
+/// it scores). Negative values, two reading ids and two forecast ids, so the
 /// signed integer and list encodings are pinned too.
-fn build_forecast_observation_attestation_case() -> Value {
+fn build_forecast_score_attestation_case() -> Value {
     use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-        LateScoreVariable, ObservationAttestation, observation_attestation_message,
+        LateScoreVariable, ObservationAttestation, forecast_score_message,
     };
     let seed = 900_160u64;
     let (sk, pk) = keypair(seed);
@@ -1226,28 +1227,34 @@ fn build_forecast_observation_attestation_case() -> Value {
         window_hash: "5a".repeat(32),
         window_commit_ids: vec!["a1".repeat(32), "b2".repeat(32)],
     };
-    let mut tampered = attestation.clone();
-    tampered.truth = -1_299;
-    let preimage =
-        observation_attestation_message(&identity().chain_id, &identity().network_id, &attestation);
+    let forecast_commit_ids = vec!["d4".repeat(32), "e5".repeat(32)];
+    // The tamper keeps the observation and drops one forecast id.
+    let tampered_ids = vec!["d4".repeat(32)];
+    let preimage = forecast_score_message(
+        &identity().chain_id,
+        &identity().network_id,
+        &attestation,
+        &forecast_commit_ids,
+    );
     let signature = sk.sign(&preimage);
-    let input = |a: &ObservationAttestation| {
+    let input = |ids: &[String]| {
         json!({
             "chain_id": identity().chain_id,
             "network_id": identity().network_id,
-            "attestation": serde_json::to_value(a).expect("attestation serializes"),
+            "attestation": serde_json::to_value(&attestation).expect("attestation serializes"),
+            "forecast_commit_ids": ids,
         })
     };
     json!({
-        "kind": "forecast_observation_attestation_v1",
+        "kind": "forecast_score_attestation_v2",
         "frame": "money_path_v2",
-        "tag": "wrfcoin.forecast_observation_attestation.v1",
+        "tag": "wrfcoin.forecast_score_attestation.v2",
         "signer_seed": seed,
         "signer_secret_hex": sk.to_hex(),
         "signer_public_key_hex": pk.to_hex(),
-        "input": input(&attestation),
-        "tampered_input": input(&tampered),
-        "tamper_note": "truth -1300 -> -1299",
+        "input": input(&forecast_commit_ids),
+        "tampered_input": input(&tampered_ids),
+        "tamper_note": "forecast_commit_ids [d4.., e5..] -> [d4..]",
         "preimage_hex": hex::encode(&preimage),
         "signature_hex": signature.to_hex(),
     })
@@ -1676,7 +1683,7 @@ fn build_all_cases() -> Vec<Value> {
             "vote for -> against",
         ));
     }
-    cases.push(build_forecast_observation_attestation_case());
+    cases.push(build_forecast_score_attestation_case());
     cases
 }
 

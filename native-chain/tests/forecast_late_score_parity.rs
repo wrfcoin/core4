@@ -82,7 +82,7 @@ use wrfcoin_shared_protocol::common::types::{Address, Balance};
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
     BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
     ObservationSignature, SCORE_OPENS_AFTER_SECS, bucket_closes_at, bucket_hour,
-    observation_attestation_message,
+    forecast_score_message, score_outpoint,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
     ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, GENESIS_CHAIN_ID_KEY,
@@ -152,6 +152,15 @@ fn shell(tx_type: TransactionType, sender: Address, now: i64, tag: &str) -> Tran
     tx.sender_address = sender;
     tx.timestamp = chrono::DateTime::from_timestamp(now, 0).expect("representable");
     tx
+}
+
+/// A relayed score: its one input is the outpoint derived from the signed
+/// payload, as mempool admission requires.
+fn score_tx(relay: Address, now: i64, payload: &ForecastScorePayload) -> Transaction {
+    let identity = ChainIdentity::active();
+    let mut tx = shell(TransactionType::ForecastScore, relay, now, "score");
+    tx.inputs[0].txid = score_outpoint(&identity.chain_id, &identity.network_id, payload);
+    with_data(tx, payload, 0)
 }
 
 fn with_data<T: serde::Serialize>(mut tx: Transaction, payload: &T, fee: u64) -> Transaction {
@@ -664,9 +673,16 @@ async fn run() {
             window_hash: "5a".repeat(32),
             window_commit_ids: vec![window.commit_id.clone()],
         };
+        let mut forecast_commit_ids: Vec<String> =
+            ids.iter().map(|f| f.commit_id.clone()).collect();
+        forecast_commit_ids.sort();
         let identity = ChainIdentity::active();
-        let message =
-            observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
+        let message = forecast_score_message(
+            &identity.chain_id,
+            &identity.network_id,
+            &attestation,
+            &forecast_commit_ids,
+        );
         let mut signatures: Vec<ObservationSignature> = [&oracle_a, &oracle_b]
             .into_iter()
             .map(|oracle| ObservationSignature {
@@ -675,9 +691,6 @@ async fn run() {
             })
             .collect();
         signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
-        let mut forecast_commit_ids: Vec<String> =
-            ids.iter().map(|f| f.commit_id.clone()).collect();
-        forecast_commit_ids.sort();
         ForecastScorePayload {
             attestation,
             signatures,
@@ -705,11 +718,7 @@ async fn run() {
         now,
         vec![(
             "temperature score",
-            with_data(
-                shell(TransactionType::ForecastScore, relay, now, "score-t"),
-                &temperature,
-                0
-            )
+            score_tx(relay, now, &temperature)
         )]
     );
     assert_eq!(follower.oracle_quorum, 2);
@@ -745,13 +754,9 @@ async fn run() {
     // back to 3. It passes admission and is valid against the state before
     // the block (quorum 2), but not after the block's governance: the
     // producer leaves it out and still produces the block. ----
-    let pressure_tx = |now: i64, tag: &str| {
-        with_data(
-            shell(TransactionType::ForecastScore, relay, now, tag),
-            &pressure,
-            0,
-        )
-    };
+    // The producer that leaves it out drops it from its pool, so the same
+    // signed score (same outpoint) can be offered again.
+    let pressure_tx = |now: i64, _offer: &str| score_tx(relay, now, &pressure);
     now += 60;
     assert_eq!(height + 1, RAISE_HEIGHT);
     quorum_now = 3;

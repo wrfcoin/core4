@@ -55,9 +55,17 @@ use crate::common::constants::WRF_UNITS_PER_COIN;
 use crate::common::types::{Address, Balance};
 use crate::security::key_registry::{SigningKeyRegistry, SigningRole};
 
-/// Domain tag of the observation attestation oracles sign.
-pub const OBSERVATION_ATTESTATION_DOMAIN_TAG: &[u8] =
-    b"wrfcoin.forecast_observation_attestation.v1";
+/// Domain tag of what oracles sign for a score: the full score payload (the
+/// observation and the forecast commit ids it scores), see
+/// [`forecast_score_message`].
+pub const FORECAST_SCORE_ATTESTATION_DOMAIN_TAG: &[u8] =
+    b"wrfcoin.forecast_score_attestation.v2";
+/// Domain tag of the input outpoint a score transaction must spend
+/// ([`score_outpoint`]).
+pub const FORECAST_SCORE_OUTPOINT_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_score_outpoint.v1";
+/// Domain tag of the observation digest that pins a commit block's forecasts
+/// to one observation ([`observation_digest`]). Never signed.
+const OBSERVATION_DIGEST_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_observation_digest.v1";
 /// Domain tag of a bucket id.
 const BUCKET_ID_DOMAIN_TAG: &[u8] = b"wrfcoin.forecast_late_score.bucket.v1";
 /// Domain tag of the state-root section.
@@ -136,8 +144,9 @@ const fn wire_byte(variable: LateScoreVariable) -> u8 {
     }
 }
 
-/// What an oracle quorum signs: the observation that the forecasts of one
-/// station, variable and lead COMMITTED IN ONE BLOCK are scored against. The
+/// The observation that the forecasts of one station, variable and lead
+/// COMMITTED IN ONE BLOCK are scored against. An oracle quorum signs it
+/// together with the forecast ids it scores ([`forecast_score_message`]). The
 /// window and `last` depend on the commit block, so there is one attestation
 /// per commit block. Every number is a fixed-point integer in the variable's
 /// unit.
@@ -173,7 +182,8 @@ pub struct ObservationAttestation {
     pub window_commit_ids: Vec<String>,
 }
 
-/// One oracle's signature over [`observation_attestation_message`].
+/// One oracle's signature over [`forecast_score_message`]: the full score
+/// payload except the signatures.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationSignature {
@@ -190,7 +200,8 @@ pub struct ObservationSignature {
 #[serde(deny_unknown_fields)]
 pub struct ForecastScorePayload {
     pub attestation: ObservationAttestation,
-    /// Oracle signatures over the attestation, strictly ascending by oracle.
+    /// Oracle signatures over [`forecast_score_message`] (the attestation and
+    /// `forecast_commit_ids`), strictly ascending by oracle.
     pub signatures: Vec<ObservationSignature>,
     /// Forecast commit ids to score, strictly ascending.
     pub forecast_commit_ids: Vec<String>,
@@ -233,6 +244,8 @@ pub enum ForecastLateScoreError {
     ForecastNotInBucket(String),
     #[error("no listed forecast is waiting for a score")]
     NothingToScore,
+    #[error("forecast {0} is already scored")]
+    AlreadyScored(String),
     #[error("score arithmetic refused: {0}")]
     Score(String),
     #[error("arithmetic overflow")]
@@ -254,52 +267,91 @@ fn is_plain_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_ID_BYTES && s.bytes().all(|b| b.is_ascii_graphic())
 }
 
-/// The bytes an oracle signs for `attestation` on this chain. Stable,
-/// length-prefixed, non-serde encoding: a change to the struct layout can
-/// never silently change signed bytes.
-pub fn observation_attestation_message(
+/// Every field of an observation, in a stable, length-prefixed, non-serde
+/// encoding: a change to the struct layout can never silently change signed
+/// or hashed bytes.
+fn push_observation(message: &mut Vec<u8>, attestation: &ObservationAttestation) {
+    push(message, attestation.station_id.as_bytes());
+    push(message, &[wire_byte(attestation.variable)]);
+    push(message, &attestation.lead_hours.to_le_bytes());
+    push(message, &attestation.commit_height.to_le_bytes());
+    push(message, &attestation.commit_time.to_le_bytes());
+    push(message, &attestation.target.to_le_bytes());
+    push(message, &attestation.truth.to_le_bytes());
+    push(message, attestation.truth_commit_id.as_bytes());
+    push(message, &attestation.reference.to_le_bytes());
+    push(message, &attestation.mean24.to_le_bytes());
+    push(message, &attestation.last.to_le_bytes());
+    push(message, attestation.window_hash.as_bytes());
+    push(message, &(attestation.window_commit_ids.len() as u64).to_le_bytes());
+    for id in &attestation.window_commit_ids {
+        push(message, id.as_bytes());
+    }
+}
+
+/// The bytes an oracle signs for a score on this chain: the domain tag, the
+/// chain identity, every field of the observation, then the forecast commit
+/// ids it scores (count, then each id, length-prefixed, in the payload's
+/// strictly ascending order). The signature covers the full score payload
+/// except the signatures, so it binds exactly what apply reads.
+pub fn forecast_score_message(
     chain_id: &str,
     network_id: &str,
     attestation: &ObservationAttestation,
+    forecast_commit_ids: &[String],
 ) -> Vec<u8> {
     let mut message = Vec::new();
-    push(&mut message, OBSERVATION_ATTESTATION_DOMAIN_TAG);
+    push(&mut message, FORECAST_SCORE_ATTESTATION_DOMAIN_TAG);
     push(&mut message, chain_id.as_bytes());
     push(&mut message, network_id.as_bytes());
-    push(&mut message, attestation.station_id.as_bytes());
-    push(&mut message, &[wire_byte(attestation.variable)]);
-    push(&mut message, &attestation.lead_hours.to_le_bytes());
-    push(&mut message, &attestation.commit_height.to_le_bytes());
-    push(&mut message, &attestation.commit_time.to_le_bytes());
-    push(&mut message, &attestation.target.to_le_bytes());
-    push(&mut message, &attestation.truth.to_le_bytes());
-    push(&mut message, attestation.truth_commit_id.as_bytes());
-    push(&mut message, &attestation.reference.to_le_bytes());
-    push(&mut message, &attestation.mean24.to_le_bytes());
-    push(&mut message, &attestation.last.to_le_bytes());
-    push(&mut message, attestation.window_hash.as_bytes());
-    push(
-        &mut message,
-        &(attestation.window_commit_ids.len() as u64).to_le_bytes(),
-    );
-    for id in &attestation.window_commit_ids {
+    push_observation(&mut message, attestation);
+    push(&mut message, &(forecast_commit_ids.len() as u64).to_le_bytes());
+    for id in forecast_commit_ids {
         push(&mut message, id.as_bytes());
     }
     message
 }
 
-/// Lowercase hex SHA3-256 of [`observation_attestation_message`]: what the
-/// forecasts of one commit block are pinned to once scored.
+/// The one input outpoint (txid, vout 0) a `ForecastScore` transaction
+/// spends: derived from the signed score message, so every transaction
+/// carrying the same signed payload spends the same outpoint and the mempool
+/// holds at most one of them. Mempool admission enforces it; apply does not
+/// read it.
+pub fn score_outpoint(
+    chain_id: &str,
+    network_id: &str,
+    payload: &ForecastScorePayload,
+) -> crate::crypto::hash::Hash {
+    let mut material = Vec::new();
+    push(&mut material, FORECAST_SCORE_OUTPOINT_DOMAIN_TAG);
+    push(
+        &mut material,
+        &forecast_score_message(
+            chain_id,
+            network_id,
+            &payload.attestation,
+            &payload.forecast_commit_ids,
+        ),
+    );
+    crate::crypto::hash::hash_bytes(&material)
+}
+
+/// Lowercase hex SHA3-256 of the observation alone (its own domain tag, the
+/// chain identity, every observation field): what the forecasts of one
+/// commit block are pinned to once scored. It leaves out the forecast ids, so
+/// two scores of the same commit block against the same observation (for
+/// different forecasts) agree on it. Never signed.
 pub fn observation_digest(
     chain_id: &str,
     network_id: &str,
     attestation: &ObservationAttestation,
 ) -> String {
-    hex::encode(Sha3_256::digest(observation_attestation_message(
-        chain_id,
-        network_id,
-        attestation,
-    )))
+    let mut material = Vec::new();
+    push(&mut material, OBSERVATION_DIGEST_DOMAIN_TAG);
+    push(&mut material, chain_id.as_bytes());
+    push(&mut material, network_id.as_bytes());
+    push_observation(&mut material, attestation);
+    hex::encode(Sha3_256::digest(material))
 }
 
 /// The time a forecast committed at `commit_time` with `lead_hours` is scored
@@ -456,7 +508,12 @@ impl ForecastScorePayload {
         {
             return Err(ForecastLateScoreError::UnauthorizedOracle);
         }
-        let message = observation_attestation_message(chain_id, network_id, &self.attestation);
+        let message = forecast_score_message(
+            chain_id,
+            network_id,
+            &self.attestation,
+            &self.forecast_commit_ids,
+        );
         for signer in &self.signatures {
             if !registry.verify_signature_for_identity_role(
                 &signer.oracle,
@@ -712,6 +769,38 @@ pub fn check_cited_readings(
 }
 
 impl ForecastLateScoreState {
+    /// Read-only admission pre-check for a node that holds this state (an API
+    /// route, a gossip ingest). NOT a consensus rule: apply
+    /// ([`Self::apply_score`]) skips unknown and already-scored forecasts so
+    /// that racing relays do not fail each other. Here every listed forecast
+    /// must be recorded, unscored, and of the attested station, variable,
+    /// lead, commit block and target.
+    pub fn check_admissible_score(
+        &self,
+        payload: &ForecastScorePayload,
+    ) -> Result<(), ForecastLateScoreError> {
+        let a = &payload.attestation;
+        for commit_id in &payload.forecast_commit_ids {
+            let record = self
+                .records
+                .get(commit_id)
+                .ok_or_else(|| ForecastLateScoreError::ForecastNotInBucket(commit_id.clone()))?;
+            if record.station_id != a.station_id
+                || record.variable != a.variable
+                || record.lead_hours != a.lead_hours
+                || record.commit_height != a.commit_height
+                || record.commit_time != a.commit_time
+                || record.target != a.target
+            {
+                return Err(ForecastLateScoreError::ForecastNotInBucket(commit_id.clone()));
+            }
+            if record.skill.is_some() {
+                return Err(ForecastLateScoreError::AlreadyScored(commit_id.clone()));
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
             && self.records.is_empty()
@@ -1704,7 +1793,7 @@ mod tests {
             .collect();
         let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
         let a = attestation();
-        let message = observation_attestation_message("888", "testnet", &a);
+        let message = forecast_score_message("888", "testnet", &a, &["f1".to_string()]);
         let mut signatures: Vec<ObservationSignature> = keys[..2]
             .iter()
             .map(|k| ObservationSignature {

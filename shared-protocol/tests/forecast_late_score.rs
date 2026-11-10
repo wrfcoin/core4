@@ -17,9 +17,9 @@ use wrfcoin_shared_protocol::blockchain::transaction::{
 use wrfcoin_shared_protocol::common::types::{Address, Balance};
 use wrfcoin_shared_protocol::config::settings::Config;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+    BUCKET_CAP, ForecastLateScoreError, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
     ObservationSignature, POOL_EPOCH_BLOCKS, SCORE_OPENS_AFTER_SECS, SCORE_WINDOW_SECS,
-    bucket_closes_at, bucket_id, forecaster_key, observation_attestation_message,
+    bucket_closes_at, bucket_id, forecaster_key, forecast_score_message, score_outpoint,
 };
 use wrfcoin_shared_protocol::consensus::proof_of_publishing::{
     EmissionRole, FORECAST_REWARD_REASON_PREFIX,
@@ -284,9 +284,16 @@ fn score_payload_as(
     signers: &[(String, &PrivateKey)],
     forecasts: &[&str],
 ) -> ForecastScorePayload {
+    let mut forecast_commit_ids: Vec<String> =
+        forecasts.iter().map(|id| (*id).to_string()).collect();
+    forecast_commit_ids.sort();
     let identity = ChainIdentity::active();
-    let message =
-        observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
+    let message = forecast_score_message(
+        &identity.chain_id,
+        &identity.network_id,
+        &attestation,
+        &forecast_commit_ids,
+    );
     let mut signatures: Vec<ObservationSignature> = signers
         .iter()
         .map(|(oracle, signer)| ObservationSignature {
@@ -295,9 +302,6 @@ fn score_payload_as(
         })
         .collect();
     signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
-    let mut forecast_commit_ids: Vec<String> =
-        forecasts.iter().map(|id| (*id).to_string()).collect();
-    forecast_commit_ids.sort();
     ForecastScorePayload {
         attestation,
         signatures,
@@ -386,11 +390,16 @@ fn forecast_late_score_end_to_end() {
         assert!(!forecast_late_score_active(height));
     }
     // Mempool admission refuses the type while it is not in force.
-    let relay_tx = |payload: &ForecastScorePayload| {
-        let relay = Address([0x77; 20]);
+    // A relayed score: any relay label and timestamp; the input outpoint is
+    // the one derived from the signed payload unless `outpoint` overrides it.
+    let wrap = |payload: &ForecastScorePayload, relay_byte: u8, ts_shift: i64, outpoint: Option<&str>| {
+        let relay = Address([relay_byte; 20]);
+        let identity = ChainIdentity::active();
         let mut tx = Transaction::new(
             vec![TransactionInput {
-                txid: hash_string("forecast-score-relay"),
+                txid: outpoint.map(hash_string).unwrap_or_else(|| {
+                    score_outpoint(&identity.chain_id, &identity.network_id, payload)
+                }),
                 vout: 0,
                 signature: None,
                 public_key: None,
@@ -405,10 +414,12 @@ fn forecast_late_score_end_to_end() {
         );
         tx.tx_type = TransactionType::ForecastScore;
         tx.sender_address = relay;
+        tx.timestamp += chrono::Duration::seconds(ts_shift);
         tx.data = Some(serde_json::to_string(payload).unwrap());
         tx.set_id();
         tx
     };
+    let relay_tx = |payload: &ForecastScorePayload| wrap(payload, 0x77, 0, None);
     let admission_probe = score_payload(
         attestation(5, T0, "t", "r"),
         &[&key(0x21), &key(0x22)],
@@ -458,6 +469,32 @@ fn forecast_late_score_end_to_end() {
         err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"),
         "{err}"
     );
+    // The oracle signature covers the full score payload: the same signed
+    // observation with a different forecast list is not admitted.
+    for other_list in [vec!["g".to_string()], vec!["f".to_string(), "g".to_string()]] {
+        let mut relisted = admission_probe.clone();
+        relisted.forecast_commit_ids = other_list;
+        let err = admit(relay_tx(&relisted), ACTIVE).unwrap_err();
+        assert!(
+            err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION") && err.contains("does not verify"),
+            "{err}"
+        );
+    }
+    // One pending score per signed payload, however it is wrapped: a second
+    // relay label, timestamp or outpoint does not make a second pool entry.
+    {
+        let mut pool = Mempool::new(&Config::default());
+        let mut add = |tx: Transaction| {
+            pool.add_transaction_with_signing_keys_at_height(tx, Some(&admission_keys), Some(ACTIVE))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        add(wrap(&admission_probe, 0x77, 0, None)).expect("the first wrapper is admitted");
+        let err = add(wrap(&admission_probe, 0x78, 5, None)).unwrap_err();
+        assert!(err.contains("SP_FORECAST_LATE_SCORE_DUPLICATE"), "{err}");
+        let err = add(wrap(&admission_probe, 0x79, 9, Some("another-outpoint"))).unwrap_err();
+        assert!(err.contains("SP_FORECAST_LATE_SCORE_OUTPOINT"), "{err}");
+    }
     // Fail closed without a registry, and for a signer that is not a
     // registered oracle identity, however valid its own signature: a key
     // anyone can mint must not buy pool space.
@@ -870,6 +907,22 @@ fn forecast_late_score_end_to_end() {
         score_at(&mut state, &duplicated, h, opens_at),
         "strictly ascending",
     );
+    // The oracle signature covers the full score payload: the observation
+    // signed for `group_a` does not score a different forecast list, neither
+    // a subset nor a superset.
+    for other_list in [vec![f_alice.clone()], {
+        let mut more: Vec<String> = group_a.iter().map(|s| s.to_string()).collect();
+        more.push("zz-extra".to_string());
+        more.sort();
+        more
+    }] {
+        let mut relisted = good.clone();
+        relisted.forecast_commit_ids = other_list;
+        refused(
+            score_at(&mut state, &relisted, h, opens_at),
+            "does not verify",
+        );
+    }
     // Oracle keys are the chain's signing-key registry at the block's time.
     // Oracle A rotates to a new key from `opens_at + 100`: the new key signs
     // for A's identity from then on and not before; once that key epoch is
@@ -1108,6 +1161,23 @@ fn forecast_late_score_end_to_end() {
         "refused scores change nothing"
     );
 
+    // The read-only admission pre-check a node may run (not consensus):
+    // every listed forecast recorded, unscored, of the attested block.
+    let lane = &state.forecast_late_score;
+    assert_eq!(lane.check_admissible_score(&good), Ok(()));
+    let mut unknown = good.clone();
+    unknown.forecast_commit_ids.push("zz-not-recorded".into());
+    assert_eq!(
+        lane.check_admissible_score(&unknown),
+        Err(ForecastLateScoreError::ForecastNotInBucket("zz-not-recorded".into()))
+    );
+    let mut other_block = good.clone();
+    other_block.attestation.commit_height += 1;
+    assert!(matches!(
+        lane.check_admissible_score(&other_block),
+        Err(ForecastLateScoreError::ForecastNotInBucket(_))
+    ));
+
     // One of the two first, by one relay; then both by another (the one
     // already scored is skipped).
     score_at(
@@ -1122,6 +1192,11 @@ fn forecast_late_score_end_to_end() {
         Some(866_667)
     );
     assert_eq!(state.forecast_late_score.records[&f_bob].skill, None);
+    // Apply skips the scored one; the admission pre-check refuses the list.
+    assert_eq!(
+        state.forecast_late_score.check_admissible_score(&good),
+        Err(ForecastLateScoreError::AlreadyScored(f_alice.clone()))
+    );
     assert_eq!(
         state.forecast_late_score.buckets[&bucket]
             .observations

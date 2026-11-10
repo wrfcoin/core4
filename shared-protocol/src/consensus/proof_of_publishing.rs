@@ -28024,7 +28024,7 @@ mod forecast_late_score_block_guards {
     use super::*;
     use crate::consensus::forecast_late_score::{
         ForecastScorePayload, LateScoreVariable, MAX_FORECAST_SCORE_TXS_PER_BLOCK, ObservationAttestation,
-        ObservationSignature, observation_attestation_message,
+        ObservationSignature, forecast_score_message,
     };
     use crate::crypto::chain_binding::{
         ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, FeatureSchedule, forecast_late_score_active,
@@ -28050,7 +28050,8 @@ mod forecast_late_score_block_guards {
             window_commit_ids: vec!["r1".into()],
         };
         let identity = ChainIdentity::active();
-        let message = observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
+        let forecast_commit_ids = vec!["f1".to_string()];
+        let message = forecast_score_message(&identity.chain_id, &identity.network_id, &attestation, &forecast_commit_ids);
         let signatures = vec![ObservationSignature {
             oracle: PublicKey::from_private_key(&key).to_hex(),
             ed25519: key.sign(&message).to_hex(),
@@ -28058,7 +28059,7 @@ mod forecast_late_score_block_guards {
         if tamper {
             attestation.truth += 1;
         }
-        let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids: vec!["f1".into()] };
+        let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids };
         let mut tx = Transaction::new(vec![], vec![]);
         tx.tx_type = TransactionType::ForecastScore;
         tx.data = Some(serde_json::to_string(&payload).unwrap());

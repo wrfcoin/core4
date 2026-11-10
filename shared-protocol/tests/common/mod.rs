@@ -456,13 +456,15 @@ fn money_path_preimage(case: &Value, input_key: &str) -> Vec<u8> {
                 input["nonce"].as_u64().expect("nonce"),
             )
         },
-        "forecast_observation_attestation_v1" => {
+        "forecast_score_attestation_v2" => {
             use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-                ObservationAttestation, observation_attestation_message,
+                ObservationAttestation, forecast_score_message,
             };
             let attestation: ObservationAttestation =
                 serde_json::from_value(input["attestation"].clone()).expect("observation attestation");
-            observation_attestation_message(s("chain_id"), s("network_id"), &attestation)
+            let forecast_commit_ids: Vec<String> =
+                serde_json::from_value(input["forecast_commit_ids"].clone()).expect("forecast commit ids");
+            forecast_score_message(s("chain_id"), s("network_id"), &attestation, &forecast_commit_ids)
         },
         "send_allowlist_action_v2" => {
             use wrfcoin_shared_protocol::accounts::send_allowlist::{
