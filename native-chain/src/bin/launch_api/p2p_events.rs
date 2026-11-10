@@ -3291,9 +3291,10 @@ pub(crate) fn oracle_attestation_admissible(
 }
 
 /// `forecast_late_score` (node policy, no consensus effect): a gossiped
-/// score is offered to the pool only if every forecast it lists is recorded,
-/// unscored and of the attested commit block in this node's state, the same
-/// read-only pre-check the submit route runs. Apply stays the authority (it
+/// score is offered to the pool only if every signer is in the chain's oracle
+/// set and every forecast it lists is recorded, unscored and of the attested
+/// commit block in this node's state: the same read-only checks the submit
+/// route runs before admission. Apply stays the authority (it
 /// skips unknown and scored forecasts so racing relays do not fail each
 /// other). Other transaction types pass through.
 pub(crate) fn forecast_score_admissible(
@@ -3308,6 +3309,10 @@ pub(crate) fn forecast_score_admissible(
     let Some(payload) = ForecastScorePayload::parse(tx) else {
         return true;
     };
+    if !payload.signatures.iter().all(|signer| state.oracle_set.contains(&signer.oracle)) {
+        log::debug!("P2P forecast score not admitted: a signer is not in the oracle set");
+        return false;
+    }
     match state.forecast_late_score.check_admissible_score(&payload) {
         Ok(()) => true,
         Err(error) => {
@@ -16116,6 +16121,226 @@ mod station_registration_admission_tests {
         let mut other = Transaction::new(Vec::new(), Vec::new());
         other.tx_type = TransactionType::Transfer;
         assert!(crate::p2p_events::forecast_score_admissible(&state, &other));
+    }
+
+    /// A gossiped score whose signers include an identity outside the chain's
+    /// oracle set is not offered to the pool, even when that identity still
+    /// holds an Oracle key in the registry; the pending score stays.
+    #[tokio::test]
+    async fn gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered() {
+        const NAME: &str = "p2p_events::station_registration_admission_tests::gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered";
+        if crate::helpers::test_env::isolated_chain_domain(NAME, "777", "testnet", "0x2727272727272727272727272727272727272727", "none") {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
+            forecast_score_message, score_outpoint,
+        };
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ChainIdentity, ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::security::key_registry::{SigningKeyRegistry, SigningRole};
+        refresh_feature_schedule_extensions(vec![
+            (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 0),
+            (ConsensusFeature::ForecastLateScore.name().to_string(), 0),
+        ]);
+        const HEIGHT: u64 = 3_000;
+        let key = |seed: u8| PrivateKey::from_bytes(&[seed; 32]).unwrap();
+        let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
+        let (o1, o2, retired) = (key(0x31), key(0x32), key(0x39));
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let identity = ChainIdentity::active();
+        let ids = vec!["f".to_string()];
+        let score = |signers: &[&PrivateKey]| {
+            let message = forecast_score_message(&identity.chain_id, &identity.network_id, &attestation, &ids);
+            let mut signatures: Vec<ObservationSignature> = signers
+                .iter()
+                .map(|k| ObservationSignature { oracle: id(k), ed25519: k.sign(&message).to_hex() })
+                .collect();
+            signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
+            let payload = ForecastScorePayload { attestation: attestation.clone(), signatures, forecast_commit_ids: ids.clone() };
+            let mut tx = Transaction::new(
+                vec![TransactionInput {
+                    txid: score_outpoint(&identity.chain_id, &identity.network_id, &payload),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 0,
+                    address: wrfcoin_shared_protocol::common::types::Address([0x77; 20]).to_string(),
+                    script: "OP_TRUE".into(),
+                    nft_data: None,
+                }],
+            );
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.sender_address = wrfcoin_shared_protocol::common::types::Address([0x77; 20]);
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        // The retired identity still holds an Oracle key in the registry.
+        let mut keys = SigningKeyRegistry::default();
+        for k in [&o1, &o2, &retired] {
+            keys.ensure_legacy_identity_key(&id(k), SigningRole::Oracle, 0).unwrap();
+        }
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        state.oracle_set = [id(&o1), id(&o2)].into_iter().collect();
+        state.forecast_late_score.records.insert(
+            "f".into(),
+            ForecastRecord {
+                forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                station_id: attestation.station_id.clone(),
+                variable: attestation.variable,
+                value: 1_950,
+                lead_hours: attestation.lead_hours,
+                commit_height: attestation.commit_height,
+                commit_time: attestation.commit_time,
+                target: attestation.target,
+                reveal_height: attestation.commit_height + 1,
+                skill: None,
+            },
+        );
+        let pending = score(&[&o1, &o2]);
+        let superset = score(&[&o1, &o2, &retired]);
+        let mut pool = Mempool::new(&Config::default());
+        if let Err(e) = Mempool::new(&Config::default())
+            .add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT))
+        {
+            panic!("the base score must be admissible: {e}");
+        }
+        for tx in crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![pending.clone()]) {
+            assert_eq!(
+                crate::p2p_events::ingest_gossiped_transaction_at_height(&mut pool, tx, &keys, Some(HEIGHT)),
+                GossipIngest::Admitted
+            );
+        }
+        assert!(pool.contains(&pending.id.unwrap()));
+        // The live ingress: the superset never reaches the pool.
+        let offered = crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![superset.clone()]);
+        assert!(offered.is_empty(), "a signer outside the oracle set is not offered");
+        assert!(pool.contains(&pending.id.unwrap()), "the pending score stays");
+        assert!(!pool.contains(&superset.id.unwrap()));
+        assert_eq!(pool.size(), 1);
+        // Without the set check the pool alone would take it (its registry
+        // check passes for the retired identity): the filter is what stops it.
+        let mut bare = Mempool::new(&Config::default());
+        bare.add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT)).unwrap();
+        bare.add_transaction_with_signing_keys_at_height(superset.clone(), Some(&keys), Some(HEIGHT))
+            .expect("the registry alone authorizes the retired identity");
+    }
+
+    /// What an oracle-set change does to the signing-key registry: an
+    /// identity removed from the set KEEPS its Oracle role and key.
+    #[test]
+    fn an_identity_removed_from_the_oracle_set_keeps_its_registry_role() {
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::security::key_registry::SigningRole;
+        let id = |seed: u8| PublicKey::from_private_key(&PrivateKey::from_bytes(&[seed; 32]).unwrap()).to_hex();
+        let (a, b, c) = (id(0x41), id(0x42), id(0x43));
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        state
+            .apply_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![a.clone(), b.clone(), c.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        for who in [&a, &b, &c] {
+            state.signing_keys.ensure_legacy_identity_key(who, SigningRole::Oracle, 0).unwrap();
+        }
+        state
+            .apply_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![a.clone(), b.clone()],
+                oracle_quorum: 2,
+            })
+            .unwrap();
+        assert!(!state.oracle_set.contains(&c), "c left the set");
+        assert!(
+            state.signing_keys.has_identity_role(&c, SigningRole::Oracle),
+            "c still holds its Oracle role in the registry"
+        );
+    }
+
+    /// Every non-test caller of the registry-checked admission path in this
+    /// binary, pinned. Only the gossip ingest passes a real registry (so a
+    /// `ForecastScore` can pass admission there), and it filters through the
+    /// oracle-set and forecast checks first; `helpers.rs` passes one only for
+    /// `OracleAttestation`; every other caller passes `None`, which fails a
+    /// score closed. A new caller must be added here, with its set check.
+    #[test]
+    fn forecast_score_admission_callers_all_check_the_oracle_set() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/launch_api");
+        let mut found: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != "tests") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let body = source.find("\n#[cfg(test)]\nmod ").map_or(source.as_str(), |cut| &source[..cut]);
+                let rel = path.strip_prefix(&root).unwrap().display().to_string();
+                for (at, _) in body.match_indices("add_transaction_with_signing_keys_at_height(") {
+                    let args: String = body[at..].chars().skip(44).take(120).collect();
+                    let keys_arg = args.split(',').nth(1).unwrap_or("").trim().to_string();
+                    found.push((rel.clone(), keys_arg));
+                }
+            }
+        }
+        found.sort();
+        for (file, keys_arg) in &found {
+            match (file.as_str(), keys_arg.as_str()) {
+                (_, "None") => {},
+                ("p2p_events.rs", "Some(signing_keys)") => {
+                    let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap();
+                    let filter = &source[source.find("pub(crate) fn forecast_score_admissible(").unwrap()..];
+                    let filter = &filter[..filter.find("\n}\n").unwrap()];
+                    assert!(filter.contains("state.oracle_set.contains(&signer.oracle)"), "gossip: oracle-set check");
+                    assert!(filter.contains("check_admissible_score"), "gossip: forecast check");
+                    assert!(
+                        source.contains(".filter(|tx| forecast_score_admissible(state, tx))"),
+                        "the ingress filter runs the check"
+                    );
+                    assert!(
+                        source.contains("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);"),
+                        "the live arm filters before ingest"
+                    );
+                },
+                ("helpers.rs", "signing_keys.as_ref()") => {
+                    let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap();
+                    assert!(
+                        source.contains("== wrfcoin_native_chain::blockchain::transaction::TransactionType::OracleAttestation"),
+                        "helpers.rs passes a registry only for OracleAttestation"
+                    );
+                },
+                other => panic!("unreviewed registry-checked admission caller {other:?}: add it here with its oracle-set check"),
+            }
+        }
+        assert!(found.iter().any(|(f, _)| f == "p2p_events.rs"), "{found:?}");
     }
 
     /// The decision does not depend on the node's role: the ingress has no
