@@ -66,6 +66,9 @@ that exploitation is currently demonstrated.
 | `GET /governance/advisory/proposals` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::list` | `public` | no | no | global-read |
 | `GET /governance/advisory/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::show` | `public` | no | no | global-read |
 | `GET /governance/advisory/proposals/{id}/eligibility` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::eligibility` | `public` | no | no | global-read |
+| `GET /forecast/late-score` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::status` | `public` | no | no | global-read |
+| `GET /forecast/late-score/buckets/{id}` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::bucket` | `public` | no | no | global-read |
+| `GET /forecast/late-score/records/{commit_id}` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::record` | `public` | no | no | global-read |
 | `GET /governance/proposals` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::list_governance_proposals` | `public` | no | yes | global-read |
 | `POST /governance/proposals/submit` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::submit_governance_proposal` | `admin` | yes | no | global-write |
 | `GET /governance/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::get_governance_proposal` | `public` | no | no | global-read |
