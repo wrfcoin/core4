@@ -8283,6 +8283,7 @@ impl State {
             Some(late::CitedReading {
                 station_id: reveal.station_id.clone(),
                 landed_at_height: reveal.revealed_at,
+                synthetic: reveal.provenance_class == ContributionProvenanceClass::Synthetic,
                 has_quorum: self
                     .attestations
                     .get(commit_id)

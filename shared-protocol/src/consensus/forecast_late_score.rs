@@ -219,6 +219,8 @@ pub enum ForecastLateScoreError {
     ReadingNotAttested,
     #[error("a window reading landed at or after the forecast's commit height")]
     ReadingAfterCommit,
+    #[error("a cited reading is of the synthetic provenance class")]
+    SyntheticReading,
     #[error(
         "forecast {0} does not belong to the attested station, variable, lead and commit block"
     )]
@@ -636,12 +638,16 @@ pub struct CitedReading {
     pub landed_at_height: u64,
     /// Whether it has reached the oracle quorum now.
     pub has_quorum: bool,
+    /// Whether its recorded provenance class is `synthetic`.
+    pub synthetic: bool,
 }
 
 /// The readings an attestation cites must be on-chain readings of the
 /// attested station at oracle quorum, and every window reading must have
-/// landed below the forecasts' commit height. `reading` resolves a commit id
-/// when it is an applied contribution reveal.
+/// landed below the forecasts' commit height. A reading whose provenance
+/// class is `synthetic` is refused as truth and as a window reading (no class
+/// recorded, or any other class, counts). `reading` resolves a commit id when
+/// it is an applied contribution reveal.
 pub fn check_cited_readings(
     attestation: &ObservationAttestation,
     reading: impl Fn(&str) -> Option<CitedReading>,
@@ -649,11 +655,15 @@ pub fn check_cited_readings(
     let counts = |commit_id: &str| {
         reading(commit_id).filter(|r| r.has_quorum && r.station_id == attestation.station_id)
     };
-    if counts(&attestation.truth_commit_id).is_none() {
-        return Err(ForecastLateScoreError::TruthNotAttested);
+    let truth = counts(&attestation.truth_commit_id).ok_or(ForecastLateScoreError::TruthNotAttested)?;
+    if truth.synthetic {
+        return Err(ForecastLateScoreError::SyntheticReading);
     }
     for commit_id in &attestation.window_commit_ids {
         let cited = counts(commit_id).ok_or(ForecastLateScoreError::ReadingNotAttested)?;
+        if cited.synthetic {
+            return Err(ForecastLateScoreError::SyntheticReading);
+        }
         if cited.landed_at_height >= attestation.commit_height {
             return Err(ForecastLateScoreError::ReadingAfterCommit);
         }
@@ -1621,20 +1631,22 @@ mod tests {
     fn cited_readings_must_be_attested_station_readings_landed_before_the_commit() {
         let a = attestation();
         let chain = |id: &str| -> Option<CitedReading> {
-            let (station, height, quorum) = match id {
-                "truth" => ("st-1", 400, true),
-                "w1" => ("st-1", 98, true),
-                "w2" => ("st-1", 99, true),
-                "at-commit" => ("st-1", 100, true),
-                "after-commit" => ("st-1", 101, true),
-                "no-quorum" => ("st-1", 50, false),
-                "other-station" => ("st-2", 50, true),
+            let (station, height, quorum, synthetic) = match id {
+                "truth" => ("st-1", 400, true, false),
+                "w1" => ("st-1", 98, true, false),
+                "w2" => ("st-1", 99, true, false),
+                "at-commit" => ("st-1", 100, true, false),
+                "after-commit" => ("st-1", 101, true, false),
+                "no-quorum" => ("st-1", 50, false, false),
+                "other-station" => ("st-2", 50, true, false),
+                "synthetic" => ("st-1", 50, true, true),
                 _ => return None,
             };
             Some(CitedReading {
                 station_id: station.into(),
                 landed_at_height: height,
                 has_quorum: quorum,
+                synthetic,
             })
         };
         assert_eq!(check_cited_readings(&a, chain), Ok(()));
@@ -1664,6 +1676,14 @@ mod tests {
         assert_eq!(
             with_window("unknown"),
             Err(ForecastLateScoreError::ReadingNotAttested)
+        );
+        // A synthetic reading is refused as a window reading and as the truth.
+        assert_eq!(with_window("synthetic"), Err(ForecastLateScoreError::SyntheticReading));
+        let mut synthetic_truth = attestation();
+        synthetic_truth.truth_commit_id = "synthetic".into();
+        assert_eq!(
+            check_cited_readings(&synthetic_truth, chain),
+            Err(ForecastLateScoreError::SyntheticReading)
         );
         for truth in ["no-quorum", "other-station", "unknown"] {
             let mut a = attestation();
