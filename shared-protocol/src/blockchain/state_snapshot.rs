@@ -497,7 +497,9 @@ pub fn export_state_entries(state: &State) -> Result<Vec<(Vec<u8>, Vec<u8>)>, St
             // snapshot is byte-identical to one from a binary without it.
             || (name == "send_allowlists" && state.send_allowlists.is_empty())
             // Advisory governance: absent while empty (always, pre-activation).
-            || (name == "advisory_proposals" && state.advisory_proposals.is_empty()) {
+            || (name == "advisory_proposals" && state.advisory_proposals.is_empty())
+            // Forecast late score: absent while empty (always, until the feature is in force).
+            || (name == "forecast_late_score" && state.forecast_late_score.is_empty()) {
             continue;
         }
         match value {
@@ -613,7 +615,7 @@ pub fn import_state_entries(
         } else if name == "node_receipt_registry" && version != Some(b"4".as_slice()) && version != Some(b"5".as_slice()) && version != Some(b"6".as_slice()) {
             if carried.contains_key(name) { return Err(malformed(name, "receipt marker in legacy snapshot".into())); }
             Value::Null
-        } else if (name == "send_allowlists" || name == "advisory_proposals") && !carried.contains_key(name) {
+        } else if (name == "send_allowlists" || name == "advisory_proposals" || name == "forecast_late_score") && !carried.contains_key(name) {
             // Omitted by the exporter while empty; any format version.
             Value::Map(Vec::new())
         } else if is_node_local(name) {
@@ -1103,6 +1105,40 @@ mod tests {
                 no_votes: 1,
                 status: AdvisoryStatus::Active,
                 finalized_at_block: None,
+            });
+        }
+        {
+            use crate::consensus::forecast_late_score::{
+                ForecastBucket, ForecastPoolEpoch, ForecastRecord, LateScoreVariable, PinnedObservation, bucket_id,
+                forecaster_key,
+            };
+            let late = &mut s.forecast_late_score;
+            late.note_commit("f0", a(9), 4, 7);
+            let id = bucket_id("station-a", LateScoreVariable::TempCCenti, 6, 7_200).expect("bucket id");
+            late.records.insert("f1".into(), ForecastRecord {
+                forecaster: a(10),
+                station_id: "station-a".into(),
+                variable: LateScoreVariable::TempCCenti,
+                value: -1_250,
+                lead_hours: 6,
+                valid_at: 7_200,
+                commit_height: 3,
+                reveal_height: 4,
+                skill: Some(640_000),
+            });
+            late.buckets.insert(id, ForecastBucket {
+                station_id: "station-a".into(),
+                variable: LateScoreVariable::TempCCenti,
+                lead_hours: 6,
+                valid_at: 7_200,
+                observation: Some(PinnedObservation { digest: "ab".repeat(32), truth: -1_300, reference: 139, mean24: -900, last: -2_000 }),
+                commit_ids: vec!["f1".into()],
+            });
+            late.pool.insert(0, ForecastPoolEpoch {
+                budget: Balance::new(5_000),
+                paid: Balance::new(64),
+                unissued: Balance::new(1),
+                paid_by_forecaster: [(forecaster_key(&a(10)), Balance::new(64))].into_iter().collect(),
             });
         }
         s

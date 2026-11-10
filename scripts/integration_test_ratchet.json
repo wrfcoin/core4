@@ -1050,6 +1050,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
     },
     {

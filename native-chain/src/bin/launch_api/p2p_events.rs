@@ -7706,6 +7706,8 @@ mod tests {
             field!("advisory_proposals", |s| field_json(
                 &s.advisory_proposals.iter().collect::<Vec<_>>()
             )),
+            // BTreeMaps throughout: compared as one ordered value.
+            field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
         ]
     }
 
@@ -11487,6 +11489,9 @@ mod tests {
             // Producer/applier/WAL parity with populated proposals:
             // native-chain/tests/advisory_governance_parity.rs.
             "advisory_proposals",
+            // Apply-path coverage with recorded, scored and paid forecasts:
+            // shared-protocol/tests/forecast_late_score.rs.
+            "forecast_late_score",
         ]
         .into_iter()
         .collect();

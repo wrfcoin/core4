@@ -560,6 +560,23 @@ impl Mempool {
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Err(anyhow!("SP_SLASH_EVIDENCE_NOT_SUPPORTED"));
         }
+        // Forecast late score: refused until the feature is in force at the
+        // next height; then only a well-formed payload whose oracle
+        // signatures all verify is admitted. The oracle set, quorum, timing
+        // and bucket rules are state's (apply refuses, assembly drops).
+        if tx.tx_type == TransactionType::ForecastScore {
+            let height =
+                current_height.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::forecast_late_score_active(height.saturating_add(1)) {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_INACTIVE"));
+            }
+            let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_PAYLOAD"))?;
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            payload
+                .verify_signatures(&identity.chain_id, &identity.network_id)
+                .map_err(|e| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: {e}"))?;
+        }
         // Send allowlist: refused until the feature is active at the next
         // height; then only a well-formed, owner-signed action is admitted.
         // Nonce and time-lock rules are state's (apply refuses, assembly drops).

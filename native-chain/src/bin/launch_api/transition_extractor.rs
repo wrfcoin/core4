@@ -82,6 +82,15 @@ pub fn extract_transitions(
                     launch_transitions.push(transition.clone()); transitions.push(transition);
                 }
             },
+            // Forecast late score: the same parse as the PoP producer arm, with
+            // the block's own height and timestamp, so producer == applier ==
+            // WAL replay. The apply arm is gated and fails closed.
+            TransactionType::ForecastScore => {
+                if let Some(payload) = wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload::parse(tx) {
+                    let transition = StateTransition::ApplyForecastScore { payload, block_height, block_timestamp };
+                    launch_transitions.push(transition.clone()); transitions.push(transition);
+                }
+            },
             // --- Commit/Reveal protocol (PoP core) ---
             // Fail-closed sender auth (#1848): a commit without a valid
             // authorization emits no transition so a forged payload injected
@@ -379,6 +388,13 @@ pub fn extract_transitions(
                 // No direct transition emitted here; see comment above.
             },
         }
+    }
+
+    // `forecast_late_score`: one bucket close per block, after the block's
+    // transactions, from the same constructor as the PoP producer's launch
+    // batch. `None` (nothing emitted) while the feature is not in force.
+    if let Some(close) = wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing::forecast_bucket_close_transition(block_height, block_timestamp) {
+        transitions.push(close);
     }
 
     // Governance transitions — read from block metadata if available (miner

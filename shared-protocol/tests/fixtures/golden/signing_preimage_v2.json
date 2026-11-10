@@ -2000,6 +2000,55 @@
         "network_id": "testnet",
         "nonce": 9
       }
+    },
+    {
+      "frame": "money_path_v2",
+      "input": {
+        "attestation": {
+          "last": -2000,
+          "lead_hours": 6,
+          "mean24": -900,
+          "reading_commit_ids": [
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          ],
+          "reference": 139,
+          "station_id": "station-golden-1",
+          "truth": -1300,
+          "valid_at": 1762650000,
+          "variable": "temp_c_centi",
+          "window_hash": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet"
+      },
+      "kind": "forecast_observation_attestation_v1",
+      "preimage_hex": "2b00000000000000777266636f696e2e666f7265636173745f6f62736572766174696f6e5f6174746573746174696f6e2e76310f00000000000000777266636f696e2d746573746e65740700000000000000746573746e6574100000000000000073746174696f6e2d676f6c64656e2d31010000000000000000040000000000000006000000080000000000000090e70f69000000000800000000000000ecfaffffffffffff08000000000000008b0000000000000008000000000000007cfcffffffffffff080000000000000030f8ffffffffffff40000000000000003561356135613561356135613561356135613561356135613561356135613561356135613561356135613561356135613561356135613561356135613561356108000000000000000200000000000000400000000000000061316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131613161316131400000000000000062326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232623262326232",
+      "signature_hex": "c7121aa91249c7ebc20a29cc7327c92886d921cba216be539034772e92a8f0c77b201ba2b87864f2854133137e7d5fa0697b8ed69fa970d7a81f57c604ecaf0f",
+      "signer_public_key_hex": "b610fdbe4d86e89ccd06958e74cd1780572613b073c31ec43bfeb9fd099b14cd",
+      "signer_secret_hex": "b1909120b28121daba92b61d49567de6f4556fb864cec052a450ad9094411030",
+      "signer_seed": 900160,
+      "tag": "wrfcoin.forecast_observation_attestation.v1",
+      "tamper_note": "truth -1300 -> -1299",
+      "tampered_input": {
+        "attestation": {
+          "last": -2000,
+          "lead_hours": 6,
+          "mean24": -900,
+          "reading_commit_ids": [
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          ],
+          "reference": 139,
+          "station_id": "station-golden-1",
+          "truth": -1299,
+          "valid_at": 1762650000,
+          "variable": "temp_c_centi",
+          "window_hash": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+        },
+        "chain_id": "wrfcoin-testnet",
+        "network_id": "testnet"
+      }
     }
   ],
   "chain_id": "wrfcoin-testnet",

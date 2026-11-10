@@ -1202,6 +1202,54 @@ fn build_security_key_action_case(seed: u64) -> Value {
     })
 }
 
+/// Forecast late score (`consensus::forecast_late_score`): the observation
+/// attestation one oracle signs. Negative values and two reading ids, so the
+/// signed integer and list encodings are pinned too.
+fn build_forecast_observation_attestation_case() -> Value {
+    use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+        LateScoreVariable, ObservationAttestation, observation_attestation_message,
+    };
+    let seed = 900_160u64;
+    let (sk, pk) = keypair(seed);
+    let attestation = ObservationAttestation {
+        station_id: "station-golden-1".to_string(),
+        variable: LateScoreVariable::TempCCenti,
+        lead_hours: 6,
+        valid_at: 1_762_650_000,
+        truth: -1_300,
+        reference: 139,
+        mean24: -900,
+        last: -2_000,
+        window_hash: "5a".repeat(32),
+        reading_commit_ids: vec!["a1".repeat(32), "b2".repeat(32)],
+    };
+    let mut tampered = attestation.clone();
+    tampered.truth = -1_299;
+    let preimage =
+        observation_attestation_message(&identity().chain_id, &identity().network_id, &attestation);
+    let signature = sk.sign(&preimage);
+    let input = |a: &ObservationAttestation| {
+        json!({
+            "chain_id": identity().chain_id,
+            "network_id": identity().network_id,
+            "attestation": serde_json::to_value(a).expect("attestation serializes"),
+        })
+    };
+    json!({
+        "kind": "forecast_observation_attestation_v1",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.forecast_observation_attestation.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": input(&attestation),
+        "tampered_input": input(&tampered),
+        "tamper_note": "truth -1300 -> -1299",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
 /// Send allowlist (`accounts::send_allowlist`): one owner-signed action whose
 /// list is non-empty, so the address encoding is pinned too.
 fn build_send_allowlist_action_case() -> Value {
@@ -1625,6 +1673,7 @@ fn build_all_cases() -> Vec<Value> {
             "vote for -> against",
         ));
     }
+    cases.push(build_forecast_observation_attestation_case());
     cases
 }
 

@@ -124,6 +124,8 @@ const MULTIDOMAIN_STORAGE_READY_KEY: &str = "pipeline.storage_providers6_ready";
 /// averaging converts back to f64 against the SAME scale as the quantizer —
 /// two scales would be the drift bug the shared quantizer exists to prevent.
 pub(crate) const SCORE_PRECISION: u64 = 1_000_000;
+/// `ContributionRewardRecord::reason` prefix of a forecast reveal credit.
+pub const FORECAST_REWARD_REASON_PREFIX: &str = "forecast:";
 const BASELINE_FORECAST_SCORE_MULTIPLIER_MU: u64 = 250_000;
 const BASELINE_FORECAST_SKILL_MU: u64 = 100_000;
 /// Quantize an f64 score/confidence to fixed-point millionths
@@ -2253,6 +2255,8 @@ struct BlockTxValidationAccumulators {
     session_key_action_count: usize,
     /// Advisory-governance proposals seen so far (`advisory_governance`).
     advisory_proposal_count: usize,
+    /// Forecast score transactions seen so far (`forecast_late_score`).
+    forecast_score_count: usize,
     node_receipt_batch_count: usize,
     node_fraud_report_count: usize,
     /// Per-worker fee-less transaction counts for the per-block rate limit.
@@ -5698,8 +5702,13 @@ impl ProofOfPublishing {
             );
         }
 
+        // `forecast_late_score`: once it is in force a forecast reveal earns
+        // nothing here (no baseline credit, no receipt credit); forecasts are
+        // paid for skill at bucket close only.
+        let forecast_late_score =
+            crate::crypto::chain_binding::forecast_late_score_active(block.height);
         for tx in &block.transactions {
-            if block.height < FORECAST_MANIFEST_ACTIVATION_HEIGHT {
+            if block.height < FORECAST_MANIFEST_ACTIVATION_HEIGHT || forecast_late_score {
                 break;
             }
             if tx.tx_type != TransactionType::ForecastReveal {
@@ -5917,6 +5926,9 @@ impl ProofOfPublishing {
                 || !record.provenance_class.is_reward_eligible()
                 || record.amount.0 == 0
                 || revealed_commit_ids.contains(commit_id)
+                // `forecast_late_score`: a forecast credit deferred from
+                // before the feature took effect is not settled after it.
+                || (forecast_late_score && record.reason.starts_with(FORECAST_REWARD_REASON_PREFIX))
                 // #3347: a deferred reward of a station that has since been
                 // deactivated (or reported stolen) is not settled while it
                 // stays inactive.
@@ -6559,6 +6571,17 @@ impl ProofOfPublishing {
                     security_key_auth: tx.security_key_spend_proof(),
                 }))
             },
+            // Forecast late score. The SAME parse the P2P/WAL extractor uses,
+            // with the block's own height and timestamp, so producer ==
+            // applier == WAL replay. The apply arm is gated on
+            // `forecast_late_score_active` and fails closed, so the producer
+            // prunes an inapplicable score and a peer rejects a block
+            // carrying one.
+            TransactionType::ForecastScore => {
+                let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(tx)
+                    .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
+                Ok(Some(StateTransition::ApplyForecastScore { payload, block_height, block_timestamp }))
+            },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
                     ConsensusInvariantError::MissingPopPayload {
@@ -6713,6 +6736,18 @@ impl ProofOfPublishing {
         }
     }
 
+    /// The per-block `CloseForecastBuckets` transition, or `None` while
+    /// `forecast_late_score` is not in force at `block_height`. The ONE
+    /// constructor the producer's launch batch and the P2P/WAL extractor both
+    /// call.
+    pub fn forecast_bucket_close_transition(
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Option<StateTransition> {
+        crate::crypto::chain_binding::forecast_late_score_active(block_height)
+            .then_some(StateTransition::CloseForecastBuckets { block_height, block_timestamp })
+    }
+
     fn map_launch_transition_batch_error(
         state_before_batch: &State,
         transitions: &[(usize, TransactionType, StateTransition)],
@@ -6786,6 +6821,16 @@ impl ProofOfPublishing {
                     transitions.push((tx_index, tx.tx_type, StateTransition::ApplyFaucetReward));
                 }
             }
+        }
+
+        // `forecast_late_score`: one bucket close per block, after the
+        // block's transactions, whenever the feature is in force. The
+        // applier's extractor appends the same transition at the same place,
+        // so producer == applier == WAL replay. Never emitted while inactive.
+        if let Some(close) =
+            Self::forecast_bucket_close_transition(block.height, block.timestamp.timestamp())
+        {
+            transitions.push((block.transactions.len(), TransactionType::ForecastScore, close));
         }
 
         let state_before_batch = state.clone();
@@ -9133,6 +9178,33 @@ impl ProofOfPublishing {
                 crate::consensus::node_fraud::verify_authorization(&p, &crate::crypto::chain_binding::ChainIdentity::new(c.chain_id,c.network_id), &genesis).ok()
             })();
             if valid.is_none() { return Some("SP_NODE_FRAUD_AUTHORIZATION".into()); }
+        }
+        // Forecast late score: until the feature is in force a block carrying
+        // the type is invalid on every node (an older binary cannot even
+        // decode it). From then on the payload must be well formed, every
+        // oracle signature must verify, and a block carries at most
+        // `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Stateful rules (oracle set and
+        // quorum, timing, the bucket, the cited readings) are apply's: a
+        // score that fails them is dropped at assembly and fails a peer's
+        // apply.
+        if tx.tx_type == TransactionType::ForecastScore {
+            use crate::consensus::forecast_late_score::{
+                ForecastScorePayload, MAX_FORECAST_SCORE_TXS_PER_BLOCK,
+            };
+            if !crate::crypto::chain_binding::forecast_late_score_active(ctx.height) {
+                return Some("SP_FORECAST_LATE_SCORE_INACTIVE".into());
+            }
+            acc.forecast_score_count += 1;
+            if acc.forecast_score_count > MAX_FORECAST_SCORE_TXS_PER_BLOCK {
+                return Some("SP_FORECAST_LATE_SCORE_BLOCK_CAP".into());
+            }
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            let valid = ForecastScorePayload::parse(tx).is_some_and(|payload| {
+                payload.verify_signatures(&identity.chain_id, &identity.network_id).is_ok()
+            });
+            if !valid {
+                return Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".into());
+            }
         }
         // Send allowlist: below the unscheduled activation a block carrying
         // the type is invalid on every node (an older binary cannot even
@@ -27910,5 +27982,148 @@ mod node_service_reveal_guard_tests {
             run(&state, ACTIVATION + 10, &mut txs, &mut 0, true);
             assert!(txs.iter().all(|t| t.tx_type == TransactionType::ContributionReveal), "{ty:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod forecast_late_score_block_guards {
+    use super::*;
+    use crate::consensus::forecast_late_score::{
+        ForecastScorePayload, LateScoreVariable, MAX_FORECAST_SCORE_TXS_PER_BLOCK, ObservationAttestation,
+        ObservationSignature, observation_attestation_message,
+    };
+    use crate::crypto::chain_binding::{
+        ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, FeatureSchedule, forecast_late_score_active,
+        install_feature_schedule,
+    };
+    use crate::crypto::signature::{PrivateKey, PublicKey};
+
+    fn score_tx(tag: u8, tamper: bool) -> Transaction {
+        let key = PrivateKey::from_bytes(&[7; 32]).unwrap();
+        let mut attestation = ObservationAttestation {
+            station_id: format!("st-{tag}"),
+            variable: LateScoreVariable::TempCCenti,
+            lead_hours: 6,
+            valid_at: 3_600,
+            truth: 2_000,
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            reading_commit_ids: vec!["r1".into()],
+        };
+        let identity = ChainIdentity::active();
+        let message = observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
+        let signatures = vec![ObservationSignature {
+            oracle: PublicKey::from_private_key(&key).to_hex(),
+            ed25519: key.sign(&message).to_hex(),
+        }];
+        if tamper {
+            attestation.truth += 1;
+        }
+        let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids: vec!["f1".into()] };
+        let mut tx = Transaction::new(vec![], vec![]);
+        tx.tx_type = TransactionType::ForecastScore;
+        tx.data = Some(serde_json::to_string(&payload).unwrap());
+        tx.set_id();
+        tx
+    }
+
+    fn classify(pop: &ProofOfPublishing, height: u64, txs: &[Transaction]) -> Vec<Option<String>> {
+        let empty = FxHashSet::default();
+        let ctx = BlockTxValidationCtx {
+            height,
+            block_time: txs.first().map_or(0, |tx| tx.timestamp.timestamp() as u64),
+            check_quality: false,
+            check_privacy: false,
+            check_compute_fee: false,
+            check_disclosure: false,
+            check_tx_signatures: false,
+            low_quality_quorum_commit_ids: &empty,
+            selective_disclosure_verifier_keys: &[],
+        };
+        let mut acc = BlockTxValidationAccumulators::default();
+        txs.iter().enumerate().map(|(i, tx)| pop.classify_block_transaction(&ctx, tx, i + 1, &mut acc)).collect()
+    }
+
+    /// Unscheduled (every chain today): a block carrying the type is invalid
+    /// at every height, and the producer self-screen (the same classifier)
+    /// drops it.
+    #[test]
+    fn dormant_block_carrying_a_forecast_score_is_invalid() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        for height in [1, 2_000, 1_000_000] {
+            assert!(!forecast_late_score_active(height));
+            assert_eq!(
+                classify(&pop, height, &[score_tx(1, false)]),
+                vec![Some("SP_FORECAST_LATE_SCORE_INACTIVE".to_string())]
+            );
+        }
+        let block = Block::new(1, Hash::default(), vec![score_tx(1, false)], 1, 2);
+        assert!(!pop.verify_block_transactions_fused(&block, 1).unwrap());
+        // The transaction has no launch transition a dormant State accepts.
+        let mut state = State::new();
+        let transition = ProofOfPublishing::launch_transition_for_transaction(&score_tx(1, false), 5, 10_000, 1)
+            .unwrap()
+            .expect("a score always maps to its transition");
+        assert!(state.apply_transition(transition).is_err());
+        assert!(state.forecast_late_score.is_empty());
+        assert!(ProofOfPublishing::forecast_bucket_close_transition(5, 10_000).is_none(), "no close is emitted while dormant");
+    }
+
+    /// In force: signatures must verify and a block carries at most
+    /// `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Runs in a child process: the
+    /// feature schedule is process-wide.
+    #[test]
+    fn active_block_checks_signatures_and_the_block_cap() {
+        const CHILD: &str = "WRFCOIN_FORECAST_LATE_SCORE_GUARD_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "consensus::proof_of_publishing::forecast_late_score_block_guards::active_block_checks_signatures_and_the_block_cap",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                ("forecaster_key_binding".into(), 0),
+                ("forecast_late_score".into(), 0),
+            ])
+            .unwrap(),
+        );
+        let active = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS;
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        // Scheduled at 0, but dormant until the key binding has run 2,000 blocks.
+        assert_eq!(
+            classify(&pop, active - 1, &[score_tx(1, false)]),
+            vec![Some("SP_FORECAST_LATE_SCORE_INACTIVE".to_string())]
+        );
+        assert_eq!(classify(&pop, active, &[score_tx(1, false)]), vec![None]);
+        assert_eq!(
+            classify(&pop, active, &[score_tx(1, true)]),
+            vec![Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".to_string())]
+        );
+        let mut malformed = score_tx(1, false);
+        malformed.data = Some("{}".into());
+        assert_eq!(
+            classify(&pop, active, &[malformed]),
+            vec![Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".to_string())]
+        );
+        let many: Vec<Transaction> = (0..=MAX_FORECAST_SCORE_TXS_PER_BLOCK as u8).map(|i| score_tx(i, false)).collect();
+        let verdicts = classify(&pop, active, &many);
+        assert!(verdicts[..MAX_FORECAST_SCORE_TXS_PER_BLOCK].iter().all(Option::is_none));
+        assert_eq!(verdicts[MAX_FORECAST_SCORE_TXS_PER_BLOCK].as_deref(), Some("SP_FORECAST_LATE_SCORE_BLOCK_CAP"));
+        // The per-block close exists exactly from the effective height.
+        assert!(ProofOfPublishing::forecast_bucket_close_transition(active - 1, 0).is_none());
+        assert!(matches!(
+            ProofOfPublishing::forecast_bucket_close_transition(active, 77),
+            Some(StateTransition::CloseForecastBuckets { block_height, block_timestamp: 77 }) if block_height == active
+        ));
     }
 }

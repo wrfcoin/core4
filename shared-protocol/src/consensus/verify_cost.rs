@@ -340,6 +340,13 @@ impl VerifyCost for Transaction {
             // Advisory governance: the signer's ed25519 signature over the
             // action. A new type, so no pre-activation price moves.
             TransactionType::AdvisoryGovernance => 1,
+            // Forecast score: one ed25519 verification per oracle signature
+            // carried. A new type, so no pre-activation price moves.
+            TransactionType::ForecastScore => {
+                crate::consensus::forecast_late_score::ForecastScorePayload::parse(self)
+                    .map(|payload| u32::try_from(payload.signatures.len()).unwrap_or(u32::MAX))
+                    .unwrap_or(crate::consensus::forecast_late_score::MAX_OBSERVATION_SIGNATURES as u32)
+            },
             _ => 0,
         });
 

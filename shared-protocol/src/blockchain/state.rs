@@ -1095,6 +1095,7 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "node_fraud",
     "send_allowlists",
     "advisory_proposals",
+    "forecast_late_score",
 ];
 
 /// Global state of the blockchain.
@@ -1536,6 +1537,16 @@ pub struct State {
     #[serde(default)]
     pub advisory_proposals:
         BTreeMap<String, crate::governance::advisory::AdvisoryProposal>,
+    /// Forecast late score (`consensus::forecast_late_score`): forecast
+    /// commits waiting for a reveal, recorded forecasts, open buckets and the
+    /// per-epoch pool ledger. Written only while
+    /// `forecast_late_score_active(height)`, so it is empty on every chain
+    /// that has not scheduled the feature. While empty it is absent from
+    /// `state_root_material`, from checkpoints (written at the previous
+    /// format) and from snapshots. Appended at checkpoint format 18;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub forecast_late_score: crate::consensus::forecast_late_score::ForecastLateScoreState,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1649,6 +1660,7 @@ impl State {
             node_fraud: None,
             send_allowlists: BTreeMap::new(),
             advisory_proposals: BTreeMap::new(),
+            forecast_late_score: Default::default(),
         }
     }
 
@@ -3899,6 +3911,16 @@ impl State {
         if !self.advisory_proposals.is_empty() {
             crate::governance::advisory::root_material(&self.advisory_proposals, &mut material);
         }
+
+        // --- forecast_late_score (ConsensusFeature::ForecastLateScore) ---
+        //
+        // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
+        // even a tag) while empty, and empty until the unscheduled feature is
+        // in force and a forecast is committed, so every root is
+        // byte-identical to a binary without this field until then.
+        if !self.forecast_late_score.is_empty() {
+            self.forecast_late_score.root_material(&mut material);
+        }
         material
     }
 
@@ -4278,6 +4300,21 @@ impl State {
                 if record.station_id.trim().is_empty() {
                     return Err(StateError::ContributionReward(
                         "station_id is required".to_string(),
+                    ));
+                }
+                // `forecast_late_score`: once it is in force a forecast reveal
+                // earns nothing through this path; forecasts are paid at
+                // bucket close only. The producer emits no such record, so a
+                // block carrying one is refused.
+                if record.amount.0 != 0
+                    && record.reason.starts_with(
+                        crate::consensus::proof_of_publishing::FORECAST_REWARD_REASON_PREFIX,
+                    )
+                    && crate::crypto::chain_binding::forecast_late_score_active(current_block)
+                {
+                    return Err(StateError::ContributionReward(
+                        "forecast reveal credits are off while forecast_late_score is in force"
+                            .to_string(),
                     ));
                 }
                 if !record.provenance_class.is_reward_eligible() && record.amount.0 != 0 {
@@ -4797,6 +4834,34 @@ impl State {
                 self.commit_reveal_state
                     .register_commit_with_provenance(&payload, block_height, provenance_class)
                     .map_err(|e| StateError::CommitReveal(e.to_string()))?;
+                // Forecast late score: remember which key signed a forecast
+                // commit, so the reveal can be recorded for that forecaster.
+                // The key is the one whose signature verifies over the commit;
+                // nothing is taken from the transaction's sender. Inactive:
+                // never reached, the map stays empty.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                    && payload.verify_authorization()
+                {
+                    let forecaster = payload
+                        .auth_pubkey
+                        .as_deref()
+                        .and_then(|key| PublicKey::from_hex(key).ok())
+                        .map(|key| Address::from_public_key(&key));
+                    let expires_at = self
+                        .commit_reveal_state
+                        .pending_commits
+                        .get(&payload.commit_id)
+                        .map(|commit| commit.reveal_expires_at);
+                    if let (Some(forecaster), Some(expires_at)) = (forecaster, expires_at) {
+                        self.forecast_late_score.note_commit(
+                            &payload.commit_id,
+                            forecaster,
+                            block_height,
+                            expires_at,
+                        );
+                    }
+                }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
             },
@@ -5036,6 +5101,23 @@ impl State {
                 if halt_aware_skew && applied.weather_point_recorded {
                     self.station_weather_accepted_block_unix
                         .insert(payload.station_id.clone(), block_timestamp);
+                }
+                // Forecast late score: record the revealed forecast for its
+                // key-bound forecaster. Never changes whether the reveal
+                // applies. Inactive: never reached, nothing is written.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                {
+                    let station_owner = self
+                        .station_registry
+                        .get(&payload.station_id)
+                        .and_then(|station| station.owner_address.parse::<Address>().ok());
+                    self.forecast_late_score.note_reveal(
+                        &payload,
+                        block_height,
+                        block_timestamp,
+                        station_owner,
+                    );
                 }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
@@ -5963,6 +6045,12 @@ impl State {
             }
             StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block } => {
                 self.finalize_advisory_proposal(&proposal_id, current_block)?;
+            },
+            StateTransition::ApplyForecastScore { payload, block_height, block_timestamp } => {
+                self.apply_forecast_score(&payload, block_height, block_timestamp)?;
+            },
+            StateTransition::CloseForecastBuckets { block_height, block_timestamp } => {
+                self.close_forecast_buckets(block_height, block_timestamp)?;
             },
             StateTransition::ApplyStationRegistrarRegistration {
                 station,
@@ -8160,6 +8248,128 @@ impl State {
         Ok(())
     }
 
+    /// `StateTransition::ApplyForecastScore`: every consensus check of a
+    /// forecast score at this block, then the write. Read-only until the last
+    /// step, so a refused score leaves state untouched (assembly drops the
+    /// transaction; a block carrying it fails apply).
+    fn apply_forecast_score(
+        &mut self,
+        payload: &crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        fn refuse(error: late::ForecastLateScoreError) -> StateError {
+            StateError::CommitReveal(format!("SP_FORECAST_LATE_SCORE_REFUSED: {error}"))
+        }
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height) {
+            return Err(StateError::InvalidTransition);
+        }
+        let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        payload
+            .verify_quorum(
+                &identity.chain_id,
+                &identity.network_id,
+                |oracle| self.oracle_set.contains(oracle),
+                self.oracle_quorum,
+            )
+            .map_err(refuse)?;
+        // The truth must come from readings of this station that are on chain
+        // and reached the oracle quorum.
+        let quorum = self.oracle_quorum.max(1);
+        late::check_cited_readings(&payload.attestation, |commit_id| {
+            let reveal = self.commit_reveal_state.applied_reveals.get(commit_id)?;
+            let attested =
+                self.attestations.get(commit_id).is_some_and(|set| set.has_quorum(quorum));
+            Some((reveal.station_id.clone(), attested))
+        })
+        .map_err(refuse)?;
+        let digest =
+            late::observation_digest(&identity.chain_id, &identity.network_id, &payload.attestation);
+        self.forecast_late_score
+            .apply_score(payload, &digest, block_timestamp)
+            .map_err(refuse)?;
+        Ok(())
+    }
+
+    /// `StateTransition::CloseForecastBuckets`: close the buckets due at this
+    /// block and mint what they earned, inside every limit: the per-bucket
+    /// and per-forecaster caps and the epoch budget (in
+    /// `ForecastLateScoreState`), a share of this block's Contribution slice,
+    /// what is left of that slice, and the supply headroom. Whatever does not
+    /// fit is recorded as unissued and never minted.
+    fn close_forecast_buckets(
+        &mut self,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        // The mint is charged to the block being applied; a close for any
+        // other height is a mis-built transition.
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height)
+            || self.emission_ledger.height() != block_height
+        {
+            return Err(StateError::InvalidTransition);
+        }
+        let station_registry = &self.station_registry;
+        let awards = self.forecast_late_score.close_due(block_height, block_timestamp, |station_id| {
+            station_registry
+                .get(station_id)
+                .and_then(|station| station.owner_address.parse::<Address>().ok())
+        });
+        if awards.is_empty() {
+            return Ok(());
+        }
+        // From here on a limit that cannot be computed is a limit of zero:
+        // the buckets are closed and nothing is paid. A bucket close never
+        // stops a block.
+        let slice = self.emission_ledger.partition().slice(EmissionRole::Contribution);
+        let epoch_budget = late::epoch_budget(slice).unwrap_or(0);
+        let block_budget = late::block_share(slice)
+            .unwrap_or(0)
+            .min(self.emission_ledger.remaining(EmissionRole::Contribution))
+            .min(self.mint_headroom());
+        let payments = self
+            .forecast_late_score
+            .settle_awards(block_height, &awards, epoch_budget, block_budget)
+            .unwrap_or_default();
+        for payment in payments {
+            // A bond escrow is never a mint target; a refused slice charge
+            // means this mint does not happen. Either way the amount goes
+            // back to unissued.
+            if self.node_protected_account(&payment.forecaster)
+                || !self.charge_emission_slice(EmissionRole::Contribution, payment.amount)
+            {
+                self.forecast_late_score.mark_unminted(
+                    block_height,
+                    &payment.forecaster,
+                    payment.amount,
+                );
+                continue;
+            }
+            self.supply_authorized_minting = self
+                .supply_authorized_minting
+                .checked_add(payment.amount)
+                .ok_or(StateError::ArithmeticOverflow)?;
+            let amount = Balance::new(payment.amount);
+            let account = self.create_account(payment.forecaster, Balance::new(0));
+            account.earned_balance_total = account
+                .earned_balance_total
+                .checked_add(amount)
+                .ok_or(StateError::ArithmeticOverflow)?;
+            account.balance =
+                account.balance.checked_add(amount).ok_or(StateError::ArithmeticOverflow)?;
+            let lock = min(account.stake_required.saturating_sub(account.stake_locked), amount);
+            account.stake_locked =
+                account.stake_locked.checked_add(lock).ok_or(StateError::ArithmeticOverflow)?;
+            account.spendable_balance = account
+                .spendable_balance
+                .checked_add(amount - lock)
+                .ok_or(StateError::ArithmeticOverflow)?;
+        }
+        Ok(())
+    }
+
     fn apply_protocol_transaction(
         &mut self,
         tx: &Transaction,
@@ -8172,6 +8382,10 @@ impl State {
             // Session-key register/revoke derive only from launch extraction
             // (`StateTransition::ApplySessionKeyAction`), never from this sink.
             TransactionType::SessionKeyAction => Err(StateError::InvalidTransition),
+            // A forecast score derives only from launch extraction
+            // (`StateTransition::ApplyForecastScore`, which carries the block
+            // timestamp), never from this sink.
+            TransactionType::ForecastScore => Err(StateError::InvalidTransition),
             // Owner-signed send-allowlist action. Refused below the
             // unscheduled activation, so `send_allowlists` stays empty there.
             TransactionType::SendAllowlist => {
@@ -11243,6 +11457,26 @@ pub enum StateTransition {
         proposal_id: String,
         current_block: u64,
     },
+    /// `forecast_late_score`: score stored forecasts against an
+    /// oracle-quorum-signed observation
+    /// (`consensus::forecast_late_score`). Derived from a
+    /// `TransactionType::ForecastScore` transaction with the block's own
+    /// height and timestamp. Refused while the feature is not in force.
+    /// APPENDED (bincode is positional).
+    ApplyForecastScore {
+        payload: crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    },
+    /// `forecast_late_score`: close the buckets whose scoring window has
+    /// ended at `block_timestamp`, pay their top forecasters from the
+    /// Contribution slice within the pool limits, and drop expired entries.
+    /// One per block, after the block's transactions, only while the feature
+    /// is in force. APPENDED LAST (bincode is positional).
+    CloseForecastBuckets {
+        block_height: u64,
+        block_timestamp: i64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
@@ -11402,7 +11636,8 @@ mod tests {
     /// state-mutating variant back into silent default-allow behavior.
     fn protocol_dispatch_intent(tx_type: TransactionType) -> ProtocolDispatchIntent {
         match tx_type {
-            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction => ProtocolDispatchIntent::Refused,
+            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction
+            | TransactionType::ForecastScore => ProtocolDispatchIntent::Refused,
             TransactionType::Transfer
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -21731,6 +21966,7 @@ mod tests {
     "node_fraud",
     "send_allowlists",
     "advisory_proposals",
+    "forecast_late_score",
         ];
 
         let actual = State::state_root_material_field_names();
