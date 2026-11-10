@@ -16263,7 +16263,7 @@ mod station_registration_admission_tests {
                     );
                 },
                 ("routes/forecast_late_score.rs", "Some(&signing_keys)") => {
-                    let source = std::fs::read_to_string(root.join("routes/forecast_late_score.rs")).unwrap();
+                    let source = std::fs::read_to_string(root.join("routes/forecast_late_score.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
                     let set_check = source.find("chain.state.oracle_set.contains(&s.oracle)").expect("route: oracle-set check");
                     let forecast_check = source.find("check_admissible_score(&payload)").expect("route: forecast check");
                     let admit = source.find("add_transaction_with_signing_keys_at_height(").unwrap();
