@@ -16284,10 +16284,13 @@ mod station_registration_admission_tests {
     /// oracle-set and forecast checks first; `helpers.rs` passes one only for
     /// `OracleAttestation`; every other caller passes `None`, which fails a
     /// score closed. A new caller must be added here, with its set check.
+    /// The gossip ingest itself has one non-test caller, the live
+    /// `NewTransactions` arm, which runs `admissible_gossip_txs` first.
     #[test]
     fn forecast_score_admission_callers_all_check_the_oracle_set() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/launch_api");
         let mut found: Vec<(String, String)> = Vec::new();
+        let mut ingest_calls: Vec<(String, String)> = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
@@ -16309,7 +16312,40 @@ mod station_registration_admission_tests {
                     let keys_arg = args.split(',').nth(1).unwrap_or("").trim().to_string();
                     found.push((rel.clone(), keys_arg));
                 }
+                // The gossip ingest passes a real registry, so each of its callers
+                // must run `admissible_gossip_txs` first. Pin them.
+                for (at, _) in body.match_indices("ingest_gossiped_transaction_at_height(") {
+                    if body[..at].ends_with("fn ") {
+                        continue;
+                    }
+                    let item_start = body[..at].rfind("\n}\n").map_or(0, |i| i + 3);
+                    let header = &body[item_start..at];
+                    let header = &header[..header.find("fn ").unwrap_or(header.len())];
+                    if header.contains("#[cfg(test)]") {
+                        continue;
+                    }
+                    let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = body[at..].find('\n').map_or(body.len(), |i| at + i);
+                    ingest_calls.push((rel.clone(), body[line_start..line_end].trim().to_string()));
+                }
             }
+        }
+        assert_eq!(
+            ingest_calls,
+            vec![(
+                "p2p_events.rs".to_string(),
+                "let _ = ingest_gossiped_transaction_at_height(&mut mp, tx, &signing_keys, Some(height));".to_string()
+            )],
+            "the only non-test gossip ingest caller is the live NewTransactions arm"
+        );
+        {
+            let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap();
+            let arm = &source[source.find("P2pEvent::NewTransactions(tx_bytes_vec) => {").unwrap()..];
+            let arm = &arm[..arm.find("P2pEvent::PeerConnected(").unwrap()];
+            let filtered = arm.find("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);").unwrap();
+            let looped = arm.find("for tx in admissible {").unwrap();
+            let ingested = arm.find("ingest_gossiped_transaction_at_height(").unwrap();
+            assert!(filtered < looped && looped < ingested, "the live arm ingests only what admissible_gossip_txs kept");
         }
         found.sort();
         for (file, keys_arg) in &found {
