@@ -1424,6 +1424,10 @@ const DEBUG_SEED_API_ENV: &str = "WRFCOIN_ENABLE_DEBUG_SEED_API";
 const MEMPOOL_MAX_SIZE_BYTES_ENV: &str = "WRFCOIN_MEMPOOL_MAX_SIZE_BYTES";
 const MEMPOOL_MAX_TXS_PER_SENDER_ENV: &str = "WRFCOIN_MEMPOOL_MAX_TXS_PER_SENDER";
 const MEMPOOL_MAX_AGE_SECS_ENV: &str = "WRFCOIN_MEMPOOL_MAX_AGE_SECS";
+/// Seconds between two passes that age out pool entries older than the
+/// configured max age (`WRFCOIN_MEMPOOL_MAX_AGE_SECS`, default 4 h).
+const MEMPOOL_AGE_SWEEP_SECS_ENV: &str = "WRFCOIN_MEMPOOL_AGE_SWEEP_SECS";
+const DEFAULT_MEMPOOL_AGE_SWEEP_SECS: u64 = 300;
 const MEMPOOL_MIN_FEE_RATE_ENV: &str = "WRFCOIN_MEMPOOL_MIN_FEE_RATE";
 
 // ── #3095: upgrade-notice run-up ───────────────────────────────────────────
@@ -1804,6 +1808,68 @@ fn mlsag_verify_budget_ms_from_env() -> u64 {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
         .unwrap_or(wrfcoin_privacy::MLSAG_VERIFY_BUDGET_MS_DEFAULT)
+}
+
+/// The age-out interval: a positive whole number of seconds, else the default
+/// (an invalid value is logged and ignored, never fatal).
+fn mempool_age_sweep_secs_from_value(raw: Option<&str>) -> u64 {
+    parse_positive_mempool_override(MEMPOOL_AGE_SWEEP_SECS_ENV, raw, DEFAULT_MEMPOOL_AGE_SWEEP_SECS).unwrap_or_else(
+        |error| {
+            log::warn!("{error}; aging out pool entries every {DEFAULT_MEMPOOL_AGE_SWEEP_SECS} s");
+            DEFAULT_MEMPOOL_AGE_SWEEP_SECS
+        },
+    )
+}
+
+/// One pass: remove pool entries older than the pool's configured max age,
+/// the same criterion the byte-cap path already applies when it makes room.
+/// Returns how many were removed.
+async fn age_out_mempool(mempool: &Arc<RwLock<Mempool>>) -> usize {
+    mempool.write().await.clean_old_transactions()
+}
+
+/// Whether this node runs the timed age-out pass. A producing node does not:
+/// it defers some entries on purpose (extra device reveals, attestation groups,
+/// registrar registrations) to include them in a later block, so it keeps the
+/// lazy byte-cap path. Nodes that never build a block run the timed pass.
+fn mempool_age_sweep_enabled(node_role: NodeRole) -> bool {
+    node_role != NodeRole::Producing
+}
+
+/// Age out old pool entries on a timer on nodes that do not produce blocks.
+/// Local pool housekeeping: never block bytes, state or consensus.
+fn spawn_mempool_age_sweep(state: &web::Data<AppState>, node_role: NodeRole) {
+    // determinism-ok: startup-only node-local housekeeping interval; never enters block bytes, state or consensus decisions
+    let secs = mempool_age_sweep_secs_from_value(std::env::var(MEMPOOL_AGE_SWEEP_SECS_ENV).ok().as_deref());
+    if start_mempool_age_sweep(state.mempool.clone(), node_role, secs).is_none() {
+        log::info!("Pool age-out timer off: this node produces blocks and keeps the byte-cap path");
+    }
+}
+
+/// Start the timed pass for `node_role`, or return `None` for a producing node.
+fn start_mempool_age_sweep(
+    mempool: Arc<RwLock<Mempool>>,
+    node_role: NodeRole,
+    secs: u64,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !mempool_age_sweep_enabled(node_role) {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first tick fires at once; start one interval after boot.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let removed = age_out_mempool(&mempool).await;
+            if removed > 0 {
+                log::info!("Aged out {removed} pool entr{} older than the configured max age", if removed == 1 { "y" } else { "ies" });
+            } else {
+                log::debug!("Pool age-out pass: nothing older than the configured max age");
+            }
+        }
+    }))
 }
 
 #[cfg(feature = "privacy")]
@@ -3420,6 +3486,8 @@ async fn main() -> std::io::Result<()> {
     #[cfg(feature = "privacy")]
     spawn_privacy_key_eviction_task(&state);
 
+    spawn_mempool_age_sweep(&state, node_role);
+
     #[cfg(feature = "p2p")]
     {
         let mut da_failure_rx = state.da_challenge_runtime.subscribe_failures();
@@ -4033,6 +4101,143 @@ async fn serve_until_shutdown_complete<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn mempool_age_sweep_interval_defaults_and_overrides() {
+        assert_eq!(mempool_age_sweep_secs_from_value(None), DEFAULT_MEMPOOL_AGE_SWEEP_SECS);
+        assert_eq!(mempool_age_sweep_secs_from_value(Some("60")), 60);
+        for invalid in ["0", "-5", "abc", "1.5"] {
+            assert_eq!(mempool_age_sweep_secs_from_value(Some(invalid)), DEFAULT_MEMPOOL_AGE_SWEEP_SECS, "{invalid}");
+        }
+    }
+
+    /// The timer's pass removes entries older than the configured max age and
+    /// keeps younger ones.
+    #[tokio::test]
+    async fn the_age_out_pass_removes_old_entries_and_keeps_young_ones() {
+        use wrfcoin_native_chain::blockchain::transaction::{TransactionInput, TransactionOutput};
+        let entry = |tag: &str| {
+            let mut tx = wrfcoin_native_chain::blockchain::transaction::Transaction::new(
+                vec![TransactionInput {
+                    txid: wrfcoin_shared_protocol::crypto::hash::hash_string(tag),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 100,
+                    address: "wrf-age-test".to_string(),
+                    script: "OP_TRUE".to_string(),
+                    nft_data: None,
+                }],
+            );
+            tx.set_id();
+            tx
+        };
+        let mut config = Config::default();
+        config.mempool_max_age_secs = 1;
+        let mempool = Arc::new(RwLock::new(Mempool::new(&config)));
+        let old = entry("age-out-old");
+        mempool.write().await.add_transaction(old.clone()).expect("old entry admitted");
+        assert_eq!(age_out_mempool(&mempool).await, 0, "nothing is older than the max age yet");
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        let young = entry("age-out-young");
+        mempool.write().await.add_transaction(young.clone()).expect("young entry admitted");
+        assert_eq!(age_out_mempool(&mempool).await, 1);
+        let pool = mempool.read().await;
+        assert!(!pool.contains(&old.id.unwrap()), "the old entry is gone");
+        assert!(pool.contains(&young.id.unwrap()), "the young entry stays");
+        assert_eq!(pool.size(), 1);
+    }
+
+    fn age_test_entry(tag: &str) -> Transaction {
+        use wrfcoin_native_chain::blockchain::transaction::{TransactionInput, TransactionOutput};
+        let mut tx = Transaction::new(
+            vec![TransactionInput {
+                txid: wrfcoin_shared_protocol::crypto::hash::hash_string(tag),
+                vout: 0,
+                signature: None,
+                public_key: None,
+                coinbase_data: None,
+            }],
+            vec![TransactionOutput {
+                amount: 100,
+                address: "wrf-age-test".to_string(),
+                script: "OP_TRUE".to_string(),
+                nft_data: None,
+            }],
+        );
+        tx.set_id();
+        tx
+    }
+
+    fn age_test_pool() -> Arc<RwLock<Mempool>> {
+        let mut config = Config::default();
+        config.mempool_max_age_secs = 1;
+        Arc::new(RwLock::new(Mempool::new(&config)))
+    }
+
+    #[tokio::test]
+    async fn only_nodes_that_do_not_produce_run_the_age_out_timer() {
+        assert!(!mempool_age_sweep_enabled(NodeRole::Producing));
+        assert!(mempool_age_sweep_enabled(NodeRole::SyncOnly));
+        assert!(mempool_age_sweep_enabled(NodeRole::ReceiptConsumer));
+    }
+
+    /// A node that does not produce removes old entries on the timer.
+    #[tokio::test]
+    async fn a_non_producing_node_ages_out_old_entries_on_the_timer() {
+        let mempool = age_test_pool();
+        let old = age_test_entry("timer-old");
+        mempool.write().await.add_transaction(old.clone()).expect("entry admitted");
+        let task = start_mempool_age_sweep(mempool.clone(), NodeRole::SyncOnly, 1).expect("timer runs");
+        tokio::time::sleep(std::time::Duration::from_millis(3_200)).await;
+        task.abort();
+        assert!(!mempool.read().await.contains(&old.id.unwrap()), "the old entry is gone");
+    }
+
+    /// A producing node starts no timer, so a reveal it is deferring to a later
+    /// block stays in its pool past the max age.
+    #[tokio::test]
+    async fn a_producing_node_keeps_a_deferred_reveal_past_the_max_age() {
+        let mempool = age_test_pool();
+        let station_id = "station-age-deferred";
+        let nonce = "age-deferred-nonce";
+        let timestamp = chrono::Utc::now().timestamp();
+        let data = json!({ "temperature_c": 12.5 });
+        let commit_id = Transaction::compute_commit_id(&data, nonce, station_id, timestamp, "weather_observation");
+        let mut reveal = age_test_entry("age-deferred-reveal");
+        reveal.tx_type = TransactionType::ContributionReveal;
+        reveal.sender_address = Address::new([0x5a; 20]);
+        reveal.data = Some(
+            json!({
+                "commit_id": commit_id,
+                "station_id": station_id,
+                "timestamp": timestamp,
+                "contribution_type": "weather_observation",
+                "data": data,
+                "nonce": nonce,
+            })
+            .to_string(),
+        );
+        reveal.set_id();
+        mempool.write().await.add_transaction(reveal.clone()).expect("reveal admitted");
+        assert!(
+            start_mempool_age_sweep(mempool.clone(), NodeRole::Producing, 1).is_none(),
+            "a producing node starts no age-out timer"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
+        let pool = mempool.read().await;
+        assert!(pool.contains(&reveal.id.unwrap()), "the deferred reveal stays past the max age");
+        assert_eq!(
+            pool.get_transactions_by_type(TransactionType::ContributionReveal, 10).len(),
+            1,
+            "and is still there for a later block"
+        );
+        drop(pool);
+        assert_eq!(age_out_mempool(&mempool).await, 1, "a timed pass would have removed it");
+    }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
     #[path = "reward_address_index.rs"]
@@ -8967,6 +9172,92 @@ mod tests {
                 .uri("/transactions/oracle/attestation")
                 .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}")))
                 .set_json(&body)
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[actix_web::test]
+    async fn oracle_attestation_requires_the_signer_in_the_current_oracle_set() {
+        use wrfcoin_native_chain::security::key_registry::SigningRole;
+
+        let (outside_sk, outside_id) = keypair(402);
+        let (member_sk, member_id) = keypair(403);
+        let state = test_state(None);
+        {
+            let mut blockchain = state.blockchain.write().await;
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![outside_id.clone(), member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+            for id in [&outside_id, &member_id] {
+                blockchain
+                    .apply_state_transition(StateTransition::RegisterSigningKeyEpoch {
+                        identity: id.clone(),
+                        role: SigningRole::Oracle,
+                        epoch: 1,
+                        public_key: id.clone(),
+                        activated_at: 0,
+                    })
+                    .unwrap();
+            }
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+        }
+        let app = test::init_service(test_app(state.clone())).await;
+
+        let timestamp = chrono::Utc::now().timestamp();
+        let body_for = |sk: &wrfcoin_native_chain::crypto::signature::PrivateKey, id: &str, nonce: &str| {
+            let payload = OracleAttestationPayload {
+                commit_id: "d".repeat(64),
+                oracle_id: id.to_string(),
+                approved: true,
+                signature: None,
+                confidence: None,
+                timestamp,
+                nonce: Some(nonce.to_string()),
+            };
+            let signature = sk.sign(payload.signing_message().as_bytes());
+            json!({
+                "oracle_id": id,
+                "commit_hash": "d".repeat(64),
+                "approved": true,
+                "signature": signature.to_string(),
+                "timestamp": timestamp,
+                "nonce": nonce
+            })
+        };
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&outside_sk, &outside_id, "outside-set"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body.to_string().contains("not in the current oracle set"),
+            "refusal names the oracle set: {body}"
+        );
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enters the pool");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&member_sk, &member_id, "in-set"))
                 .to_request(),
         )
         .await;

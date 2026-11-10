@@ -435,9 +435,12 @@ impl Attester {
     /// producer key material would carry block-production authority into the
     /// oracle quorum.
     pub fn from_env(forbidden: &ForbiddenRoleKeys) -> anyhow::Result<Option<Self>> {
-        let Some(ResolvedSigner { signer, .. }) = load_oracle_signer()? else {
+        let Some(resolved) = load_oracle_signer()? else {
             return Ok(None);
         };
+        // Name the active signer path (HSM / testnet key file / debug) at startup.
+        crate::crypto::signer::log_signer_banner(&resolved);
+        let ResolvedSigner { signer, .. } = resolved;
         let attester = Self::new(signer);
         let resolved = attester.signer.public_key();
 

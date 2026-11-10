@@ -1479,8 +1479,12 @@ where
         }
     }
 
+    // The post-block state root rides on the same line, so an operator (or a
+    // test node comparison) can line up height, block hash and root per block
+    // from the log alone; `/state/snapshot` only reports the current tip.
     log::info!(
-        "Accepted P2P block height={block_height} hash={block_hash} txs={tx_count} transitions={transition_count}",
+        "Accepted P2P block height={block_height} hash={block_hash} txs={tx_count} transitions={transition_count} state_root={}",
+        hex::encode(current_state_root),
     );
     P2pBlockApplyOutcome::Applied
 }
@@ -3260,12 +3264,36 @@ pub(crate) fn admissible_gossip_txs(
                 false
             },
         })
+        .filter(|tx| oracle_attestation_admissible(state, tx))
         .collect()
 }
 
+/// An oracle attestation is offered to this node's pool only while its signer is in the current oracle set.
+/// The mempool checks the signing-key registry; the oracle set is chain state,
+/// so membership is checked here.
+pub(crate) fn oracle_attestation_admissible(
+    state: &wrfcoin_native_chain::blockchain::state::State,
+    tx: &Transaction,
+) -> bool {
+    if tx.tx_type != TransactionType::OracleAttestation {
+        return true;
+    }
+    match tx.parse_oracle_attestation_payload() {
+        Some(payload) if state.oracle_set.contains(&payload.oracle_id) => true,
+        Some(_) => {
+            log::debug!("P2P oracle attestation not admitted: signer is not in the current oracle set");
+            false
+        },
+        // Malformed payloads are left to the mempool, which refuses them.
+        None => true,
+    }
+}
+
 /// Clear node-service copies that can never be mined. A producer learns this at assembly, but a
-/// node that never assembles a block would hold them. Ordinary kinds are left alone on purpose:
-/// this is not a general age limit, which would change what producers can still include.
+/// node that never assembles a block would hold them. Ordinary kinds are left alone here. The
+/// general age limit is a separate timer that runs only on nodes that do not produce
+/// (`spawn_mempool_age_sweep` in main.rs); producers keep the lazy byte-cap path, so entries they
+/// defer to a later block stay includable.
 async fn sweep_stale_node_txs(blockchain: &Arc<RwLock<Blockchain>>, mempool: &Arc<RwLock<Mempool>>) {
     let pending = mempool.read().await.pending_node_txs();
     if pending.is_empty() {
@@ -5381,6 +5409,54 @@ mod tests {
             1,
             "P2P admission must accept registered operator-key oracle attestations"
         );
+    }
+
+    #[test]
+    fn gossip_admits_oracle_attestations_only_from_the_current_oracle_set() {
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+        use wrfcoin_native_chain::security::key_registry::SigningRole;
+
+        let (outside_sk, outside_id) = seeded_keypair(741);
+        let (member_sk, member_id) = seeded_keypair(742);
+        let mut chain = Blockchain::default();
+        chain
+            .apply_state_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![outside_id.clone(), member_id.clone()],
+                oracle_quorum: 1,
+            })
+            .expect("oracle config should initialize");
+        for id in [&outside_id, &member_id] {
+            chain
+                .apply_state_transition(StateTransition::RegisterSigningKeyEpoch {
+                    identity: id.clone(),
+                    role: SigningRole::Oracle,
+                    epoch: 1,
+                    public_key: id.clone(),
+                    activated_at: 0,
+                })
+                .expect("signing key should register");
+        }
+        chain
+            .apply_state_transition(StateTransition::SetOracleConfig {
+                oracle_set: vec![member_id.clone()],
+                oracle_quorum: 1,
+            })
+            .expect("oracle config should update");
+
+        let outside = oracle_attestation_tx(&outside_id, &outside_sk, "outside-set", 10);
+        let member = oracle_attestation_tx(&member_id, &member_sk, "in-set", 10);
+        let admitted = super::admissible_gossip_txs(&chain.state, chain.height, vec![outside, member.clone()]);
+        assert_eq!(
+            admitted.iter().map(|tx| tx.id.clone()).collect::<Vec<_>>(),
+            vec![member.id.clone()],
+            "only the attestation from a current oracle set member is relayed"
+        );
+
+        // The pool checks signatures against the registry only.
+        let mut pool = Mempool::new(&Config::default());
+        let outside = oracle_attestation_tx(&outside_id, &outside_sk, "outside-set", 10);
+        pool.add_transaction_with_signing_keys(outside, Some(&chain.state.signing_keys))
+            .expect("the pool alone cannot see the oracle set");
     }
 
     #[tokio::test]
