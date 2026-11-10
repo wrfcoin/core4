@@ -65,6 +65,7 @@ Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "launch_api.exe"; Flags: ign
 Source: "{#SourceCli}"; DestDir: "{app}"; DestName: "wrfcoin.exe"; Flags: ignoreversion
 Source: "{#SourceAttester}"; DestDir: "{app}"; DestName: "oracle_attester.exe"; Flags: ignoreversion
 Source: "chain-888.conf"; DestDir: "{app}"; Flags: ignoreversion
+Source: "attester-888.conf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "wrfcoin-node.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [INI]
@@ -76,6 +77,9 @@ Name: "startup"; Description: "Start the WRFCoin node when I sign in to Windows"
 [Icons]
 Name: "{group}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Start the WRFCoin sync node (chain 888) and open its status page"
 Name: "{group}\Stop WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Stop the WRFCoin node cleanly"
+Name: "{group}\Create Attester Key"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action NewOracleKey"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Create the testnet oracle attester key (shows only its public key)"
+Name: "{group}\Start WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StartAttester"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Start the oracle attester against the running node"
+Name: "{group}\Stop WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAttester"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Stop the oracle attester cleanly"
 Name: "{group}\WRFCoin Node Status"; Filename: "{app}\WRFCoin Node Status.url"; Comment: "Open the node's status page in your browser"
 Name: "{group}\WRFCoin Node Data Folder"; Filename: "{localappdata}\WRFCoin"; Comment: "Chain data, identity key and logs"
 Name: "{group}\Uninstall WRFCoin Node"; Filename: "{uninstallexe}"
