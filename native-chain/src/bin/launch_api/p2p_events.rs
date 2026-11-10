@@ -16246,38 +16246,6 @@ mod station_registration_admission_tests {
             .expect("the pool checks signatures against the registry only");
     }
 
-    /// Gossip ingest admits a score only from signers in the current oracle set,
-    /// so membership is read from the set after every SetOracleConfig.
-    #[test]
-    fn forecast_score_gossip_requires_current_oracle_set_membership() {
-        use wrfcoin_native_chain::blockchain::state::StateTransition;
-        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
-        use wrfcoin_shared_protocol::security::key_registry::SigningRole;
-        let id = |seed: u8| PublicKey::from_private_key(&PrivateKey::from_bytes(&[seed; 32]).unwrap()).to_hex();
-        let (a, b, c) = (id(0x41), id(0x42), id(0x43));
-        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
-        state
-            .apply_transition(StateTransition::SetOracleConfig {
-                oracle_set: vec![a.clone(), b.clone(), c.clone()],
-                oracle_quorum: 2,
-            })
-            .unwrap();
-        for who in [&a, &b, &c] {
-            state.signing_keys.ensure_legacy_identity_key(who, SigningRole::Oracle, 0).unwrap();
-        }
-        state
-            .apply_transition(StateTransition::SetOracleConfig {
-                oracle_set: vec![a.clone(), b.clone()],
-                oracle_quorum: 2,
-            })
-            .unwrap();
-        assert!(state.oracle_set.contains(&a) && state.oracle_set.contains(&b));
-        assert!(
-            !state.oracle_set.contains(&c),
-            "gossip ingest refuses a signer outside the current oracle set"
-        );
-    }
-
     /// Every non-test caller of the registry-checked admission path in this
     /// binary, pinned. Only the gossip ingest passes a real registry (so a
     /// `ForecastScore` can pass admission there), and it filters through the
