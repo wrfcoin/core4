@@ -2664,7 +2664,7 @@ async function run() {
         consentStatus: 'approved',
         coarseMetadataStatus: 'approved',
         bindingRef: `backend:website-station:pws-00000000000000${n}`,
-        apiKey: `APIKEYSECRET-${n}`,
+        apiKey: `APIKEYSECRET-${n}`, // pragma: allowlist secret -- made-up key in a unit-test fixture
         appKey: `APPKEYSECRET-${n}`,
         latitude: 10.3,
         longitude: -20.7,
@@ -2674,7 +2674,7 @@ async function run() {
     const fileEntry = (id, mac, owner) => multi.normalizeRosterEntry({
         stationId: id, ownerAddress: owner, mac, model: 'WS-5000',
         consentStatus: 'approved', coarseMetadataStatus: 'approved', bindingRef: `file:${id}`,
-        apiKey: 'FILEKEYSECRET', appKey: 'FILEAPPSECRET',
+        apiKey: 'FILEKEYSECRET', appKey: 'FILEAPPSECRET', // pragma: allowlist secret -- made-up keys in a unit-test fixture
     }, 0);
     // Everything the script prints while `fn` runs, so tests can prove what is NOT printed.
     async function capturing(fn) {
