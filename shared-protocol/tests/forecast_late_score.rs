@@ -32,6 +32,7 @@ use wrfcoin_shared_protocol::crypto::chain_binding::{
 use wrfcoin_shared_protocol::crypto::hash::hash_string;
 use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
 use wrfcoin_shared_protocol::mempool::pool::Mempool;
+use wrfcoin_shared_protocol::security::key_registry::{SigningKeyRegistry, SigningRole};
 use wrfcoin_shared_protocol::station_registry::{
     ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation,
 };
@@ -243,13 +244,27 @@ fn score_payload(
     signers: &[&PrivateKey],
     forecasts: &[&str],
 ) -> ForecastScorePayload {
+    let named: Vec<(String, &PrivateKey)> = signers
+        .iter()
+        .map(|signer| (oracle_id(signer), *signer))
+        .collect();
+    score_payload_as(attestation, &named, forecasts)
+}
+
+/// A score whose signers are (oracle identity, the key that signs for it):
+/// after a key rotation the two differ.
+fn score_payload_as(
+    attestation: ObservationAttestation,
+    signers: &[(String, &PrivateKey)],
+    forecasts: &[&str],
+) -> ForecastScorePayload {
     let identity = ChainIdentity::active();
     let message =
         observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
     let mut signatures: Vec<ObservationSignature> = signers
         .iter()
-        .map(|signer| ObservationSignature {
-            oracle: oracle_id(signer),
+        .map(|(oracle, signer)| ObservationSignature {
+            oracle: oracle.clone(),
             ed25519: signer.sign(&message).to_hex(),
         })
         .collect();
@@ -373,12 +388,21 @@ fn forecast_late_score_end_to_end() {
         &[&key(0x21), &key(0x22)],
         &["f"],
     );
-    let admit = |tx: Transaction, tip: u64| {
+    // Admission is given the node's signing-key registry: here the two
+    // signers are registered oracles.
+    let mut admission_keys = SigningKeyRegistry::default();
+    for seed in [0x21, 0x22] {
+        admission_keys
+            .ensure_legacy_identity_key(&oracle_id(&key(seed)), SigningRole::Oracle, 0)
+            .unwrap();
+    }
+    let admit_with = |tx: Transaction, tip: u64, keys: Option<&SigningKeyRegistry>| {
         Mempool::new(&Config::default())
-            .add_transaction_with_signing_keys_at_height(tx, None, Some(tip))
+            .add_transaction_with_signing_keys_at_height(tx, keys, Some(tip))
             .map(|_| ())
             .map_err(|e| e.to_string())
     };
+    let admit = |tx: Transaction, tip: u64| admit_with(tx, tip, Some(&admission_keys));
     let err = admit(relay_tx(&admission_probe), 1_000_000).unwrap_err();
     assert!(err.contains("SP_FORECAST_LATE_SCORE_INACTIVE"), "{err}");
 
@@ -408,6 +432,28 @@ fn forecast_late_score_end_to_end() {
         err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"),
         "{err}"
     );
+    // Fail closed without a registry, and for a signer that is not a
+    // registered oracle identity, however valid its own signature: a key
+    // anyone can mint must not buy pool space.
+    let err = admit_with(relay_tx(&admission_probe), ACTIVE, None).unwrap_err();
+    assert!(
+        err.contains("SP_FORECAST_LATE_SCORE_AUTHORIZATION"),
+        "{err}"
+    );
+    let self_made = score_payload(
+        attestation(5, T0, "t", "r"),
+        &[&key(0x21), &key(0x29)],
+        &["f"],
+    );
+    let err = admit(relay_tx(&self_made), ACTIVE).unwrap_err();
+    assert!(err.contains("not an authorized oracle"), "{err}");
+    let err = admit_with(
+        relay_tx(&admission_probe),
+        ACTIVE,
+        Some(&SigningKeyRegistry::default()),
+    )
+    .unwrap_err();
+    assert!(err.contains("not an authorized oracle"), "{err}");
     let mut junk = relay_tx(&admission_probe);
     junk.data = Some("{\"attestation\":1}".to_string());
     let err = admit(junk, ACTIVE).unwrap_err();
@@ -730,7 +776,7 @@ fn forecast_late_score_end_to_end() {
         35 * 60,
         "15 minutes of readings plus 20 to land and reach quorum"
     );
-    let closes_at = bucket_closes_at(hour).unwrap();
+    let closes_at = bucket_closes_at(hour);
     assert_eq!(closes_at, hour + HOUR + SCORE_WINDOW_SECS);
     let group_a = [f_alice.as_str(), f_bob.as_str()];
     let att_a = || attestation(ACTIVE, t_a, &truth, &reading);
@@ -775,6 +821,92 @@ fn forecast_late_score_end_to_end() {
         score_at(&mut state, &duplicated, h, opens_at),
         "strictly ascending",
     );
+    // Oracle keys are the chain's signing-key registry at the block's time.
+    // Oracle A rotates to a new key from `opens_at + 100`: the new key signs
+    // for A's identity from then on and not before; once that key epoch is
+    // revoked it no longer signs. One identity counts once, whichever of its
+    // keys signed. (On clones: the main state stays untouched.)
+    {
+        let rotated_key = key(0x2a);
+        let a_id = oracle_id(&oracle_a);
+        let as_a_rotated = score_payload_as(
+            att_a(),
+            &[
+                (a_id.clone(), &rotated_key),
+                (oracle_id(&oracle_b), &oracle_b),
+            ],
+            &group_a,
+        );
+        refused(
+            score_at(&mut state.clone(), &as_a_rotated, h, opens_at + 100),
+            "does not verify",
+        );
+        let mut rotated = state.clone();
+        rotated
+            .apply_transition(StateTransition::RegisterSigningKeyEpoch {
+                identity: a_id.clone(),
+                role: SigningRole::Oracle,
+                epoch: 1,
+                public_key: oracle_id(&rotated_key),
+                activated_at: opens_at + 100,
+            })
+            .expect("rotation applies");
+        refused(
+            score_at(&mut rotated.clone(), &as_a_rotated, h, opens_at + 99),
+            "does not verify",
+        );
+        score_at(&mut rotated.clone(), &as_a_rotated, h, opens_at + 100)
+            .expect("the rotated-in key signs for the oracle identity");
+        // The rotated key under its own name is nobody.
+        refused(
+            score_at(
+                &mut rotated.clone(),
+                &score_payload(att_a(), &[&rotated_key, &oracle_b], &group_a),
+                h,
+                opens_at + 100,
+            ),
+            "not an authorized oracle",
+        );
+        // Both of A's keys do not make two oracles.
+        let mut both_keys = as_a_rotated.clone();
+        both_keys.signatures = score_payload_as(
+            att_a(),
+            &[(a_id.clone(), &rotated_key), (a_id.clone(), &oracle_a)],
+            &group_a,
+        )
+        .signatures;
+        refused(
+            score_at(&mut rotated.clone(), &both_keys, h, opens_at + 100),
+            "strictly ascending",
+        );
+        rotated
+            .apply_transition(StateTransition::RevokeSigningKeyEpoch {
+                identity: a_id.clone(),
+                role: SigningRole::Oracle,
+                epoch: 1,
+                revoked_at: opens_at + 200,
+            })
+            .expect("revocation applies");
+        score_at(&mut rotated.clone(), &as_a_rotated, h, opens_at + 199)
+            .expect("still valid one second before the revocation");
+        refused(
+            score_at(&mut rotated.clone(), &as_a_rotated, h, opens_at + 200),
+            "does not verify",
+        );
+        // Revoke A's first key too: A cannot sign at all, though still in the set.
+        rotated
+            .apply_transition(StateTransition::RevokeSigningKeyEpoch {
+                identity: a_id,
+                role: SigningRole::Oracle,
+                epoch: 0,
+                revoked_at: opens_at + 200,
+            })
+            .expect("revocation applies");
+        refused(
+            score_at(&mut rotated, &good, h, opens_at + 200),
+            "does not verify",
+        );
+    }
     // Cited readings: the truth and every window reading must be attested
     // readings of this station.
     for bad in [
@@ -811,19 +943,35 @@ fn forecast_late_score_end_to_end() {
     }
     // A reading that landed at or after the commit height can never be in the
     // window, even fully attested.
-    for after_commit in [late_reading.as_str(), truth.as_str()] {
+    refused(
+        score_at(
+            &mut state,
+            &score_payload(
+                attestation(ACTIVE, t_a, &truth, &late_reading),
+                &[&oracle_a, &oracle_b],
+                &group_a,
+            ),
+            h,
+            opens_at,
+        ),
+        "landed at or after",
+    );
+    // The truth is observed after the forecast: a reading that landed at or
+    // below the commit height is not a truth, and the truth is never also a
+    // window reading.
+    for (early_truth, window) in [(&reading, &reading), (&truth, &truth)] {
         refused(
             score_at(
                 &mut state,
                 &score_payload(
-                    attestation(ACTIVE, t_a, &truth, after_commit),
+                    attestation(ACTIVE, t_a, early_truth, window),
                     &[&oracle_a, &oracle_b],
                     &group_a,
                 ),
                 h,
                 opens_at,
             ),
-            "landed at or after",
+            "did not land after",
         );
     }
     // Out of range, a target that is not commit time + lead, another hour.
@@ -1044,6 +1192,33 @@ fn forecast_late_score_end_to_end() {
         Err(StateError::InvalidTransition)
     ));
 
+    // A credit that cannot be made never stops the block: with Bob's
+    // earned total at the ceiling the close still applies, the others are
+    // paid, and Bob's amount goes back to unissued, unminted.
+    {
+        let mut full = state.clone();
+        let bob_address = address_of(&bob);
+        full.create_account(bob_address, Balance::new(0))
+            .earned_balance_total = Balance::new(u128::MAX);
+        close_at(&mut full, close_height, closes_at)
+            .expect("the close applies and the block goes on");
+        assert_eq!(balance(&full, &bob_address), 0);
+        assert_eq!(balance(&full, &address_of(&alice)), 86_666_700);
+        assert_eq!(balance(&full, &address_of(&carol)), 30_000_000);
+        assert_eq!(full.total_minted_supply(), supply_before + 116_666_700);
+        assert_eq!(
+            full.emission_ledger.spent(EmissionRole::Contribution),
+            116_666_700
+        );
+        let ledger = &full.forecast_late_score.pool[&(close_height / POOL_EPOCH_BLOCKS)];
+        assert_eq!(ledger.paid, Balance::new(116_666_700));
+        assert_eq!(ledger.unissued, Balance::new(50_000_000));
+        assert_eq!(
+            ledger.paid_by_forecaster[&forecaster_key(&bob_address)],
+            Balance::new(0)
+        );
+        assert!(full.forecast_late_score.buckets.get(&bucket).is_none());
+    }
     close_at(&mut state, close_height, closes_at).expect("close applies");
     // Top three by skill among non-copiers: Alice, Bob, Carol. Dave (a copy)
     // and Erin (fourth) earn nothing.
@@ -1110,7 +1285,7 @@ fn forecast_late_score_end_to_end() {
     close_at(
         &mut state,
         close_height + 2,
-        bucket_closes_at(T0 + 24 * HOUR).unwrap(),
+        bucket_closes_at(T0 + 24 * HOUR),
     )
     .expect("unscored close");
     assert!(state.forecast_late_score.buckets.is_empty());
@@ -1196,7 +1371,7 @@ fn reorg_and_rejection_atomicity() {
         }
     };
     let hour = T0 + 6 * HOUR;
-    let closes_at = bucket_closes_at(hour).unwrap();
+    let closes_at = bucket_closes_at(hour);
     let observation = |common: &Common, truth_id: &str, truth: i64| {
         let mut a = attestation(fork_height - 1, t_x, truth_id, &common.reading);
         a.truth = truth;

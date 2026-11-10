@@ -53,7 +53,7 @@ use wrfcoin_forecast_score::late_score::{
 use crate::blockchain::transaction::{RevealPayload, Transaction, TransactionType};
 use crate::common::constants::WRF_UNITS_PER_COIN;
 use crate::common::types::{Address, Balance};
-use crate::crypto::signature::{PublicKey, Signature};
+use crate::security::key_registry::{SigningKeyRegistry, SigningRole};
 
 /// Domain tag of the observation attestation oracles sign.
 pub const OBSERVATION_ATTESTATION_DOMAIN_TAG: &[u8] =
@@ -177,7 +177,9 @@ pub struct ObservationAttestation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationSignature {
-    /// Lowercase hex ed25519 public key of the oracle.
+    /// The oracle's identity, exactly as the chain's oracle set and signing-key
+    /// registry hold it. The key is looked up in the registry; this string is
+    /// never used as a key.
     pub oracle: String,
     /// Hex ed25519 signature.
     pub ed25519: String,
@@ -221,6 +223,10 @@ pub enum ForecastLateScoreError {
     ReadingAfterCommit,
     #[error("a cited reading is of the synthetic provenance class")]
     SyntheticReading,
+    #[error(
+        "the truth reading did not land after the forecast's commit height, or is also cited in the window"
+    )]
+    TruthNotAfterCommit,
     #[error(
         "forecast {0} does not belong to the attested station, variable, lead and commit block"
     )]
@@ -389,21 +395,26 @@ impl ForecastScorePayload {
         serde_json::from_str(data).ok()
     }
 
-    /// Stateless shape and range checks of the whole payload.
+    /// Stateless shape and range checks of the whole payload. No signature is
+    /// checked here: an oracle's key is whatever the chain's signing-key
+    /// registry says it is at the time, which is a state question.
     pub fn validate(&self) -> Result<(), ForecastLateScoreError> {
         use ForecastLateScoreError::Malformed;
         self.attestation.validate()?;
         if self.signatures.is_empty() || self.signatures.len() > MAX_OBSERVATION_SIGNATURES {
             return Err(Malformed("signature count"));
         }
-        if !self.signatures.iter().all(|s| is_lower_hex(&s.oracle, 64))
+        // Signers are oracle identities exactly as the oracle set and the key
+        // registry hold them (byte for byte), strictly ascending, so each
+        // identity signs at most once.
+        if !self.signatures.iter().all(|s| is_plain_id(&s.oracle))
             || !self
                 .signatures
                 .windows(2)
-                .all(|pair| pair[0].oracle < pair[1].oracle)
+                .all(|pair| pair[0].oracle.as_bytes() < pair[1].oracle.as_bytes())
         {
             return Err(Malformed(
-                "signers must be lowercase hex keys, strictly ascending",
+                "signers must be oracle identities, strictly ascending",
             ));
         }
         if self.forecast_commit_ids.is_empty()
@@ -424,46 +435,60 @@ impl ForecastScorePayload {
         Ok(())
     }
 
-    /// Stateless: the payload is well formed and EVERY signature verifies over
-    /// the attestation for this chain. Mempool admission and the block
-    /// classifier run this; whether the signers are authorized oracles is a
-    /// state question ([`Self::verify_quorum`]).
-    pub fn verify_signatures(
+    /// Every signer is an explicitly registered oracle identity, and every
+    /// signature verifies against a key the registry holds active for that
+    /// identity at `signed_at` (so a rotated-in key signs and a revoked key
+    /// does not). Membership is checked for ALL signers before the first
+    /// signature is verified. Mempool admission runs this; consensus runs
+    /// [`Self::verify_quorum`].
+    pub fn verify_registered_signers(
         &self,
         chain_id: &str,
         network_id: &str,
+        registry: &SigningKeyRegistry,
+        signed_at: i64,
     ) -> Result<(), ForecastLateScoreError> {
         self.validate()?;
+        if !self
+            .signatures
+            .iter()
+            .all(|s| registry.has_identity_role(&s.oracle, SigningRole::Oracle))
+        {
+            return Err(ForecastLateScoreError::UnauthorizedOracle);
+        }
         let message = observation_attestation_message(chain_id, network_id, &self.attestation);
         for signer in &self.signatures {
-            let key = PublicKey::from_hex(&signer.oracle)
-                .map_err(|_| ForecastLateScoreError::Malformed("oracle key is not hex ed25519"))?;
-            let signature = Signature::from_hex(signer.ed25519.trim())
-                .map_err(|_| ForecastLateScoreError::Malformed("signature is not hex ed25519"))?;
-            if !key.verify(&message, &signature) {
+            if !registry.verify_signature_for_identity_role(
+                &signer.oracle,
+                SigningRole::Oracle,
+                signed_at,
+                &message,
+                signer.ed25519.trim(),
+            ) {
                 return Err(ForecastLateScoreError::BadSignature);
             }
         }
         Ok(())
     }
 
-    /// [`Self::verify_signatures`], and EVERY signer is in the chain's oracle
-    /// set, and there are at least `quorum` of them (signers are distinct by
-    /// the ascending-order rule). A payload padded with an unauthorized signer
-    /// is refused rather than counted around.
+    /// The consensus check. In this order: shape; EVERY signer is in the
+    /// chain's oracle set and a registered oracle identity (a payload padded
+    /// with an unauthorized signer is refused, not counted around); there are
+    /// at least `quorum` of them (distinct by the ascending-order rule; a
+    /// quorum above [`MAX_OBSERVATION_SIGNATURES`] can never be met and is
+    /// refused here); and only then every signature verifies through the
+    /// registry at `signed_at`, the block's time.
     pub fn verify_quorum(
         &self,
         chain_id: &str,
         network_id: &str,
-        is_authorized_oracle: impl Fn(&str) -> bool,
+        registry: &SigningKeyRegistry,
+        in_oracle_set: impl Fn(&str) -> bool,
         quorum: usize,
+        signed_at: i64,
     ) -> Result<(), ForecastLateScoreError> {
-        self.verify_signatures(chain_id, network_id)?;
-        if !self
-            .signatures
-            .iter()
-            .all(|s| is_authorized_oracle(&s.oracle))
-        {
+        self.validate()?;
+        if !self.signatures.iter().all(|s| in_oracle_set(&s.oracle)) {
             return Err(ForecastLateScoreError::UnauthorizedOracle);
         }
         let need = quorum.max(1);
@@ -473,7 +498,7 @@ impl ForecastScorePayload {
                 need,
             });
         }
-        Ok(())
+        self.verify_registered_signers(chain_id, network_id, registry, signed_at)
     }
 }
 
@@ -640,6 +665,9 @@ pub struct CitedReading {
     pub has_quorum: bool,
     /// Whether its recorded provenance class is `synthetic`.
     pub synthetic: bool,
+    /// Whether the reveal carried a weather observation (a station reading),
+    /// as opposed to a forecast or any other reveal.
+    pub is_weather_reading: bool,
 }
 
 /// The readings an attestation cites must be on-chain readings of the
@@ -653,11 +681,23 @@ pub fn check_cited_readings(
     reading: impl Fn(&str) -> Option<CitedReading>,
 ) -> Result<(), ForecastLateScoreError> {
     let counts = |commit_id: &str| {
-        reading(commit_id).filter(|r| r.has_quorum && r.station_id == attestation.station_id)
+        reading(commit_id).filter(|r| {
+            r.has_quorum && r.is_weather_reading && r.station_id == attestation.station_id
+        })
     };
-    let truth = counts(&attestation.truth_commit_id).ok_or(ForecastLateScoreError::TruthNotAttested)?;
+    let truth =
+        counts(&attestation.truth_commit_id).ok_or(ForecastLateScoreError::TruthNotAttested)?;
     if truth.synthetic {
         return Err(ForecastLateScoreError::SyntheticReading);
+    }
+    // The truth is observed after the forecast: it landed above the commit
+    // height, and so can never also be a window reading.
+    if truth.landed_at_height <= attestation.commit_height
+        || attestation
+            .window_commit_ids
+            .contains(&attestation.truth_commit_id)
+    {
+        return Err(ForecastLateScoreError::TruthNotAfterCommit);
     }
     for commit_id in &attestation.window_commit_ids {
         let cited = counts(commit_id).ok_or(ForecastLateScoreError::ReadingNotAttested)?;
@@ -740,7 +780,10 @@ impl ForecastLateScoreState {
         let Some(target) = target_for(commit_time, lead_hours) else {
             return false;
         };
-        let Some(hour) = bucket_hour(target) else {
+        // No bucket whose close time does not fit an i64 (absurd timestamps).
+        let Some(hour) = bucket_hour(target)
+            .filter(|hour| *hour <= i64::MAX - SECS_PER_HOUR - SCORE_WINDOW_SECS)
+        else {
             return false;
         };
         let Some(id) = bucket_id(&payload.station_id, variable, lead_hours, hour) else {
@@ -813,7 +856,7 @@ impl ForecastLateScoreState {
         }
         let hour =
             bucket_hour(attestation.target).ok_or(ForecastLateScoreError::Malformed("target"))?;
-        let closes_at = bucket_closes_at(hour).ok_or(Overflow)?;
+        let closes_at = bucket_closes_at(hour);
         if block_timestamp >= closes_at {
             return Err(ForecastLateScoreError::Closed { closes_at });
         }
@@ -971,6 +1014,11 @@ impl ForecastLateScoreState {
                 budget: Balance::new(epoch_budget),
                 ..ForecastPoolEpoch::default()
             });
+        // The budget is fixed by the first settlement of the epoch that sees
+        // a non-zero slice; a zero first slice does not zero the epoch.
+        if ledger.budget.into_inner() == 0 {
+            ledger.budget = Balance::new(epoch_budget);
+        }
         let budget = ledger.budget.into_inner();
         let forecaster_cap = budget
             .checked_mul(FORECASTER_EPOCH_SHARE_BPS)
@@ -1137,15 +1185,14 @@ impl ForecastLateScoreState {
 
 /// When the bucket of `hour` closes: 24 h after the end of the hour, so every
 /// forecast in it has had at least 24 h after its target to be scored.
-pub fn bucket_closes_at(hour: i64) -> Option<i64> {
-    hour.checked_add(SECS_PER_HOUR)?
-        .checked_add(SCORE_WINDOW_SECS)
+/// Saturating: [`ForecastLateScoreState::note_reveal`] never creates a bucket
+/// whose close time would not fit.
+pub const fn bucket_closes_at(hour: i64) -> i64 {
+    hour.saturating_add(SECS_PER_HOUR + SCORE_WINDOW_SECS)
 }
 
 fn bucket_is_due(bucket: &ForecastBucket, block_timestamp: i64) -> bool {
-    // An overflowing close time can never be reached; such a bucket closes at
-    // once rather than living forever.
-    bucket_closes_at(bucket.hour).is_none_or(|closes_at| block_timestamp >= closes_at)
+    block_timestamp >= bucket_closes_at(bucket.hour)
 }
 
 fn pool_epoch_expired(epoch: u64, block_height: u64) -> bool {
@@ -1453,6 +1500,26 @@ mod tests {
         assert_eq!(ledger.paid, Balance::new(190));
         assert_eq!(ledger.unissued, Balance::new(160));
 
+        // A zero first slice does not zero the epoch: the budget is taken from
+        // the first settlement that sees a non-zero one, then stays fixed.
+        let mut state = ForecastLateScoreState::default();
+        assert!(
+            state
+                .settle_awards(7, &[award(1, "a", 50)], 0, u128::MAX)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(state.pool[&0].budget, Balance::new(0));
+        let payments = state
+            .settle_awards(8, &[award(2, "b", 50)], 1_000, u128::MAX)
+            .unwrap();
+        assert_eq!(payments.iter().map(|p| p.amount).sum::<u128>(), 50);
+        assert_eq!(state.pool[&0].budget, Balance::new(1_000));
+        state
+            .settle_awards(9, &[award(3, "c", 50)], 9_999, u128::MAX)
+            .unwrap();
+        assert_eq!(state.pool[&0].budget, Balance::new(1_000));
+
         // The epoch budget is the outer limit.
         let mut state = ForecastLateScoreState::default();
         let many: Vec<BucketAward> = (0..20u8).map(|i| award(i, "x", 100)).collect();
@@ -1508,8 +1575,8 @@ mod tests {
         assert_eq!(bucket_hour(1_762_732_861), Some(1_762_732_800));
         assert_eq!(bucket_hour(-1), None);
         // Every forecast of an hour has at least 24 h after its target.
-        assert_eq!(bucket_closes_at(3_600), Some(3_600 + 3_600 + 86_400));
-        assert_eq!(bucket_closes_at(i64::MAX - 10), None);
+        assert_eq!(bucket_closes_at(3_600), 3_600 + 3_600 + 86_400);
+        assert_eq!(bucket_closes_at(i64::MAX - 10), i64::MAX);
         assert_eq!(SCORE_OPENS_AFTER_SECS, 35 * 60);
     }
 
@@ -1627,19 +1694,103 @@ mod tests {
         assert!(bad(|a| a.station_id = "has space".into()));
     }
 
+    /// Signers are checked in a fixed order: shape, membership of every
+    /// signer, the count, and only then signatures, through the registry.
+    #[test]
+    fn quorum_is_membership_then_count_then_registry_signatures() {
+        use crate::crypto::signature::{PrivateKey, PublicKey};
+        let keys: Vec<PrivateKey> = (1..=3u8)
+            .map(|s| PrivateKey::from_bytes(&[s; 32]).unwrap())
+            .collect();
+        let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
+        let a = attestation();
+        let message = observation_attestation_message("888", "testnet", &a);
+        let mut signatures: Vec<ObservationSignature> = keys[..2]
+            .iter()
+            .map(|k| ObservationSignature {
+                oracle: id(k),
+                ed25519: k.sign(&message).to_hex(),
+            })
+            .collect();
+        signatures.sort_by(|x, y| x.oracle.cmp(&y.oracle));
+        let payload = ForecastScorePayload {
+            attestation: a,
+            signatures,
+            forecast_commit_ids: vec!["f1".into()],
+        };
+        let mut registry = SigningKeyRegistry::default();
+        for k in &keys[..2] {
+            registry
+                .ensure_legacy_identity_key(&id(k), SigningRole::Oracle, 0)
+                .unwrap();
+        }
+        let check =
+            |p: &ForecastScorePayload,
+             r: &SigningKeyRegistry,
+             member: &dyn Fn(&str) -> bool,
+             quorum| { p.verify_quorum("888", "testnet", r, member, quorum, 10) };
+        assert_eq!(check(&payload, &registry, &|_| true, 2), Ok(()));
+        // Quorum 0 is treated as 1; a quorum nobody can reach is a clean refusal.
+        assert_eq!(check(&payload, &registry, &|_| true, 0), Ok(()));
+        for need in [3, MAX_OBSERVATION_SIGNATURES + 1, usize::MAX] {
+            assert_eq!(
+                check(&payload, &registry, &|_| true, need),
+                Err(ForecastLateScoreError::BelowQuorum { have: 2, need })
+            );
+        }
+        // One signer outside the oracle set refuses the payload before the
+        // count, and before any signature is looked at.
+        let outsider = payload.signatures[1].oracle.clone();
+        let mut garbage = payload.clone();
+        garbage.signatures[0].ed25519 = "00".repeat(64);
+        assert_eq!(
+            check(&garbage, &registry, &|o| o != outsider, 5),
+            Err(ForecastLateScoreError::UnauthorizedOracle)
+        );
+        // In the set but with no registered key lifecycle: not an oracle. The
+        // identity is never its own key here.
+        assert_eq!(
+            check(&payload, &SigningKeyRegistry::default(), &|_| true, 2),
+            Err(ForecastLateScoreError::UnauthorizedOracle)
+        );
+        assert_eq!(
+            payload.verify_registered_signers("888", "testnet", &SigningKeyRegistry::default(), 10),
+            Err(ForecastLateScoreError::UnauthorizedOracle)
+        );
+        assert_eq!(
+            check(&garbage, &registry, &|_| true, 2),
+            Err(ForecastLateScoreError::BadSignature)
+        );
+        // Another chain's signature does not verify here.
+        assert_eq!(
+            payload.verify_quorum("889", "testnet", &registry, |_| true, 2, 10),
+            Err(ForecastLateScoreError::BadSignature)
+        );
+        // The identity is matched byte for byte: another spelling of the same
+        // key is a different, unknown identity.
+        let mut upper = payload.clone();
+        upper.signatures.truncate(1);
+        upper.signatures[0].oracle = upper.signatures[0].oracle.to_uppercase();
+        assert_eq!(
+            check(&upper, &registry, &|_| true, 1),
+            Err(ForecastLateScoreError::UnauthorizedOracle)
+        );
+    }
+
     #[test]
     fn cited_readings_must_be_attested_station_readings_landed_before_the_commit() {
         let a = attestation();
         let chain = |id: &str| -> Option<CitedReading> {
-            let (station, height, quorum, synthetic) = match id {
-                "truth" => ("st-1", 400, true, false),
-                "w1" => ("st-1", 98, true, false),
-                "w2" => ("st-1", 99, true, false),
-                "at-commit" => ("st-1", 100, true, false),
-                "after-commit" => ("st-1", 101, true, false),
-                "no-quorum" => ("st-1", 50, false, false),
-                "other-station" => ("st-2", 50, true, false),
-                "synthetic" => ("st-1", 50, true, true),
+            let (station, height, quorum, synthetic, weather) = match id {
+                "truth" => ("st-1", 400, true, false, true),
+                "w1" => ("st-1", 98, true, false, true),
+                "w2" => ("st-1", 99, true, false, true),
+                "at-commit" => ("st-1", 100, true, false, true),
+                "after-commit" => ("st-1", 101, true, false, true),
+                "no-quorum" => ("st-1", 50, false, false, true),
+                "other-station" => ("st-2", 50, true, false, true),
+                "synthetic" => ("st-1", 50, true, true, true),
+                "forecast-reveal" => ("st-1", 50, true, false, false),
                 _ => return None,
             };
             Some(CitedReading {
@@ -1647,6 +1798,7 @@ mod tests {
                 landed_at_height: height,
                 has_quorum: quorum,
                 synthetic,
+                is_weather_reading: weather,
             })
         };
         assert_eq!(check_cited_readings(&a, chain), Ok(()));
@@ -1677,15 +1829,41 @@ mod tests {
             with_window("unknown"),
             Err(ForecastLateScoreError::ReadingNotAttested)
         );
+        // A reveal that is not a station reading (a forecast reveal, say) is
+        // not a reading, as window or as truth.
+        assert_eq!(
+            with_window("forecast-reveal"),
+            Err(ForecastLateScoreError::ReadingNotAttested)
+        );
+        // The truth must have landed after the commit, and cannot also be a
+        // window reading.
+        for early_truth in ["w1", "at-commit"] {
+            let mut a = attestation();
+            a.truth_commit_id = early_truth.into();
+            a.window_commit_ids = vec!["w2".into()];
+            assert_eq!(
+                check_cited_readings(&a, chain),
+                Err(ForecastLateScoreError::TruthNotAfterCommit)
+            );
+        }
+        let mut both = attestation();
+        both.window_commit_ids = vec!["truth".into()];
+        assert_eq!(
+            check_cited_readings(&both, chain),
+            Err(ForecastLateScoreError::TruthNotAfterCommit)
+        );
         // A synthetic reading is refused as a window reading and as the truth.
-        assert_eq!(with_window("synthetic"), Err(ForecastLateScoreError::SyntheticReading));
+        assert_eq!(
+            with_window("synthetic"),
+            Err(ForecastLateScoreError::SyntheticReading)
+        );
         let mut synthetic_truth = attestation();
         synthetic_truth.truth_commit_id = "synthetic".into();
         assert_eq!(
             check_cited_readings(&synthetic_truth, chain),
             Err(ForecastLateScoreError::SyntheticReading)
         );
-        for truth in ["no-quorum", "other-station", "unknown"] {
+        for truth in ["no-quorum", "other-station", "unknown", "forecast-reveal"] {
             let mut a = attestation();
             a.truth_commit_id = truth.into();
             assert_eq!(

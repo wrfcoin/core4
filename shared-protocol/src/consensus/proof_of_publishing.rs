@@ -7924,6 +7924,25 @@ impl ProofOfPublishing {
         if replay_state.begin_node_service_block(block_height, parent_hash).is_err() {
             return transactions.drain(..).filter_map(|tx| tx.id).collect();
         }
+        // The block applies its governance transitions BEFORE this batch
+        // (`create_next_block`), and a forecast score reads what governance
+        // can change in the same block: the oracle set, the quorum, the
+        // signing keys. So from `forecast_late_score` the trial apply runs on
+        // the state the batch will really run on. Otherwise a score that was
+        // valid before the block's governance and is not after it would
+        // survive this screen and then fail the block's own apply, and this
+        // producer would refuse its own block for as long as that score sat
+        // in its mempool. Below the feature the screen is unchanged.
+        if crate::crypto::chain_binding::forecast_late_score_active(block_height) {
+            let governance =
+                replay_state.governance_transitions_for_block(transactions, block_height, block_timestamp);
+            let mut governed = replay_state.clone();
+            // A governance batch that does not apply fails the block on its
+            // own account; the screen then keeps the pre-governance view.
+            if governed.apply_transitions_batch(governance).is_ok() {
+                replay_state = governed;
+            }
+        }
         let mut skipped = Vec::new();
         let mut retained = Vec::with_capacity(transactions.len());
 
@@ -9181,12 +9200,13 @@ impl ProofOfPublishing {
         }
         // Forecast late score: until the feature is in force a block carrying
         // the type is invalid on every node (an older binary cannot even
-        // decode it). From then on the payload must be well formed, every
-        // oracle signature must verify, and a block carries at most
-        // `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Stateful rules (oracle set and
-        // quorum, timing, the bucket, the cited readings) are apply's: a
-        // score that fails them is dropped at assembly and fails a peer's
-        // apply.
+        // decode it). From then on the payload must be well formed and a
+        // block carries at most `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Every
+        // stateful rule is apply's, the oracle signatures included (an
+        // oracle's key is what the signing-key registry holds at the block's
+        // time, with the oracle set and quorum, timing, the bucket and the
+        // cited readings): a score that fails them is dropped at assembly and
+        // fails a peer's apply.
         if tx.tx_type == TransactionType::ForecastScore {
             use crate::consensus::forecast_late_score::{
                 ForecastScorePayload, MAX_FORECAST_SCORE_TXS_PER_BLOCK,
@@ -9198,12 +9218,8 @@ impl ProofOfPublishing {
             if acc.forecast_score_count > MAX_FORECAST_SCORE_TXS_PER_BLOCK {
                 return Some("SP_FORECAST_LATE_SCORE_BLOCK_CAP".into());
             }
-            let identity = crate::crypto::chain_binding::ChainIdentity::active();
-            let valid = ForecastScorePayload::parse(tx).is_some_and(|payload| {
-                payload.verify_signatures(&identity.chain_id, &identity.network_id).is_ok()
-            });
-            if !valid {
-                return Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".into());
+            if !ForecastScorePayload::parse(tx).is_some_and(|payload| payload.validate().is_ok()) {
+                return Some("SP_FORECAST_LATE_SCORE_PAYLOAD".into());
             }
         }
         // Send allowlist: below the unscheduled activation a block carrying
@@ -28074,17 +28090,20 @@ mod forecast_late_score_block_guards {
         assert!(ProofOfPublishing::forecast_bucket_close_transition(5, 10_000).is_none(), "no close is emitted while dormant");
     }
 
-    /// In force: signatures must verify and a block carries at most
-    /// `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Runs in a child process: the
-    /// feature schedule is process-wide.
+    /// In force: the payload must be well formed and a block carries at most
+    /// `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Signatures are not this
+    /// classifier's: an oracle's key is what the signing-key registry in
+    /// state holds at the block's time, so apply checks them (covered through
+    /// `State` in `tests/forecast_late_score.rs`). Runs in a child process:
+    /// the feature schedule is process-wide.
     #[test]
-    fn active_block_checks_signatures_and_the_block_cap() {
+    fn active_block_checks_the_payload_shape_and_the_block_cap() {
         const CHILD: &str = "WRFCOIN_FORECAST_LATE_SCORE_GUARD_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "consensus::proof_of_publishing::forecast_late_score_block_guards::active_block_checks_signatures_and_the_block_cap",
+                    "consensus::proof_of_publishing::forecast_late_score_block_guards::active_block_checks_the_payload_shape_and_the_block_cap",
                     "--nocapture",
                 ])
                 .env(CHILD, "1")
@@ -28108,15 +28127,23 @@ mod forecast_late_score_block_guards {
             vec![Some("SP_FORECAST_LATE_SCORE_INACTIVE".to_string())]
         );
         assert_eq!(classify(&pop, active, &[score_tx(1, false)]), vec![None]);
-        assert_eq!(
-            classify(&pop, active, &[score_tx(1, true)]),
-            vec![Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".to_string())]
-        );
+        // A signature that does not verify is well formed: the classifier
+        // has no key registry, so it passes here and apply refuses it.
+        assert_eq!(classify(&pop, active, &[score_tx(1, true)]), vec![None]);
         let mut malformed = score_tx(1, false);
         malformed.data = Some("{}".into());
         assert_eq!(
             classify(&pop, active, &[malformed]),
-            vec![Some("SP_FORECAST_LATE_SCORE_AUTHORIZATION".to_string())]
+            vec![Some("SP_FORECAST_LATE_SCORE_PAYLOAD".to_string())]
+        );
+        // The same oracle identity twice is a shape error.
+        let mut twice = ForecastScorePayload::parse(&score_tx(1, false)).unwrap();
+        twice.signatures.push(twice.signatures[0].clone());
+        let mut doubled = score_tx(1, false);
+        doubled.data = Some(serde_json::to_string(&twice).unwrap());
+        assert_eq!(
+            classify(&pop, active, &[doubled]),
+            vec![Some("SP_FORECAST_LATE_SCORE_PAYLOAD".to_string())]
         );
         let many: Vec<Transaction> = (0..=MAX_FORECAST_SCORE_TXS_PER_BLOCK as u8).map(|i| score_tx(i, false)).collect();
         let verdicts = classify(&pop, active, &many);

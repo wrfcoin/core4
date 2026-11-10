@@ -560,23 +560,6 @@ impl Mempool {
         if tx.tx_type == TransactionType::SlashEvidenceReport {
             return Err(anyhow!("SP_SLASH_EVIDENCE_NOT_SUPPORTED"));
         }
-        // Forecast late score: refused until the feature is in force at the
-        // next height; then only a well-formed payload whose oracle
-        // signatures all verify is admitted. The oracle set, quorum, timing
-        // and bucket rules are state's (apply refuses, assembly drops).
-        if tx.tx_type == TransactionType::ForecastScore {
-            let height =
-                current_height.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_HEIGHT_REQUIRED"))?;
-            if !crate::crypto::chain_binding::forecast_late_score_active(height.saturating_add(1)) {
-                return Err(anyhow!("SP_FORECAST_LATE_SCORE_INACTIVE"));
-            }
-            let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(&tx)
-                .ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_PAYLOAD"))?;
-            let identity = crate::crypto::chain_binding::ChainIdentity::active();
-            payload
-                .verify_signatures(&identity.chain_id, &identity.network_id)
-                .map_err(|e| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: {e}"))?;
-        }
         // Send allowlist: refused until the feature is active at the next
         // height; then only a well-formed, owner-signed action is admitted.
         // Nonce and time-lock rules are state's (apply refuses, assembly drops).
@@ -676,6 +659,31 @@ impl Mempool {
                 "transaction rejected: sender has reached the mempool per-sender limit ({})",
                 self.config.mempool_max_txs_per_sender
             ));
+        }
+
+        // Forecast late score: refused until the feature is in force at the
+        // next height. Checked after the occupancy caps above, so a full pool
+        // or a sender at its limit costs no signature work. Fail closed
+        // without the signing-key registry: every signer must be an
+        // explicitly registered oracle identity (checked for all signers
+        // before the first signature), and every signature must verify
+        // against a key the registry holds for that identity. The oracle set
+        // and quorum, timing and bucket rules are state's (apply refuses,
+        // assembly drops).
+        if tx.tx_type == TransactionType::ForecastScore {
+            let height =
+                current_height.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::forecast_late_score_active(height.saturating_add(1)) {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_INACTIVE"));
+            }
+            let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_PAYLOAD"))?;
+            let registry =
+                signing_keys.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: no key registry"))?;
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            payload
+                .verify_registered_signers(&identity.chain_id, &identity.network_id, registry, tx.timestamp.timestamp())
+                .map_err(|e| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: {e}"))?;
         }
 
         // Commit/reveal payloads are constrained separately from full transaction size.

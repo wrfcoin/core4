@@ -6,10 +6,35 @@
 //! the lane is dormant for heights 2..=1999 and in force from 2000.
 //!
 //! - Heights 2..=2000: empty blocks. The lane state stays empty.
-//! - Then, on a manual clock: a station reading lands and reaches quorum; two
-//!   forecasts are committed and revealed; the truth reading lands near the
-//!   target; a `ForecastScore` transaction scores both forecasts at
-//!   target + 35 min; the bucket closes a day later and pays.
+//! - Then, on a manual clock: a station reading lands and is attested; three
+//!   forecasters each commit and reveal a temperature and a pressure forecast
+//!   (two buckets); the truth reading lands near the target; two
+//!   `ForecastScore` transactions score them at target + 35 min; both buckets
+//!   close a day later and pay, each at its cap.
+//! - Governance in the same block as the lane. Every score carries two
+//!   oracle signatures, and the quorum moves under them, by proposals due at
+//!   exact heights:
+//!   - 3 → 2 in the block of the temperature score: valid only if governance
+//!     is applied BEFORE the score, which is the producer's order;
+//!   - 2 → 3 in the next block, which is offered the pressure score: valid
+//!     before that block's governance and not after it, so the producer must
+//!     leave it out and still produce the block;
+//!   - 3 → 2 again in the block after, where the pressure score lands;
+//!   - a forecaster's `stake_required` set in the closing block: the close
+//!     locks part of her payment only if governance came first.
+//!
+//!   A follower that applied governance after the launch batch would fail the
+//!   score blocks and diverge on the closing one.
+//! - After the first score block the follower's state is thrown away and
+//!   rebuilt from the store (WAL replay from an empty state), and the run
+//!   continues on the rebuilt state. The checkpoint encoding of a populated
+//!   lane is covered in `native-chain/src/storage.rs` (format 18 golden and
+//!   migration tests).
+//!
+//! What this is not: the follower here calls `verify_block`,
+//! `extract_transitions` and `apply_transitions_batch_at_height` directly. It
+//! does not go through the node's P2P receive path (`p2p_events`), which
+//! wraps the same three calls with networking, fork choice and persistence.
 //!
 //! At EVERY height the block the producer built (`create_next_block`) is
 //! verified by a separate follower (`verify_block`), applied by the follower
@@ -41,15 +66,18 @@ use wrfcoin_native_chain::consensus::proof_of_publishing::{Clock, ProofOfPublish
 use wrfcoin_native_chain::mempool::pool::Mempool;
 use wrfcoin_native_chain::storage::Storage;
 use wrfcoin_shared_protocol::blockchain::block::Block;
-use wrfcoin_shared_protocol::blockchain::state::{State, StateTransition};
+use wrfcoin_shared_protocol::blockchain::state::{
+    GovernanceParameterUpdate, GovernanceProposalStatus, State, StateTransition,
+};
 use wrfcoin_shared_protocol::blockchain::transaction::{
     CommitPayload, ForecastArtifactManifest, OracleAttestationPayload, RevealPayload, Transaction,
     TransactionInput, TransactionOutput, TransactionType,
 };
-use wrfcoin_shared_protocol::common::types::Address;
+use wrfcoin_shared_protocol::common::types::{Address, Balance};
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
-    ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
-    SCORE_OPENS_AFTER_SECS, bucket_closes_at, bucket_hour, observation_attestation_message,
+    BUCKET_CAP, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+    ObservationSignature, SCORE_OPENS_AFTER_SECS, bucket_closes_at, bucket_hour,
+    observation_attestation_message,
 };
 use wrfcoin_shared_protocol::crypto::chain_binding::{
     ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, GENESIS_CHAIN_ID_KEY,
@@ -62,6 +90,16 @@ use wrfcoin_shared_protocol::station_registry::{
 };
 
 const ACTIVE: u64 = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS;
+/// The block that carries the temperature score and lowers the quorum to 2.
+const SCORE_HEIGHT: u64 = ACTIVE + 7;
+/// The block that raises the quorum back to 3 and is offered the pressure score.
+const RAISE_HEIGHT: u64 = ACTIVE + 8;
+/// The block that lowers the quorum to 2 again and carries the pressure score.
+const RESCORE_HEIGHT: u64 = ACTIVE + 9;
+/// The block that closes the buckets, and the stake change the close meets.
+const CLOSE_HEIGHT: u64 = ACTIVE + 10;
+/// What Alice must lock from the closing block on.
+const ALICE_STAKE_REQUIRED: u128 = 10_000_000;
 const CHILD_ENV: &str = "WRFCOIN_FORECAST_LATE_SCORE_PARITY_CHILD";
 const TEST_NAME: &str = "forecast_late_score_producer_follower_wal";
 const STATION: &str = "st-parity-1";
@@ -269,11 +307,13 @@ fn forecast_late_score_producer_follower_wal() {
 
 async fn run() {
     let owner = key(0x01);
-    let (alice, bob) = (key(0x11), key(0x12));
-    let (oracle_a, oracle_b) = (key(0x21), key(0x22));
-    let oracle_set: FxHashSet<String> = [oracle_id(&oracle_a), oracle_id(&oracle_b)]
+    let (alice, bob, carol) = (key(0x11), key(0x12), key(0x13));
+    let (oracle_a, oracle_b, oracle_c) = (key(0x21), key(0x22), key(0x23));
+    let oracle_set: FxHashSet<String> = [&oracle_a, &oracle_b, &oracle_c]
         .into_iter()
+        .map(oracle_id)
         .collect();
+    let (proposer, voter) = (Address([0x51; 20]), Address([0x52; 20]));
 
     // Genesis, with the station and the oracle set as WAL transitions.
     let mut genesis = Block::new(1, Hash::default(), Vec::new(), 1, 1);
@@ -302,10 +342,71 @@ async fn run() {
             ring_public_key: None,
         },
     });
+    // Three oracles and a quorum of 3, until governance lowers it to 2 in
+    // the score block.
     genesis_transitions.push(StateTransition::SetOracleConfig {
         oracle_set: oracle_set.iter().cloned().collect(),
-        oracle_quorum: 2,
+        oracle_quorum: 3,
     });
+    // A funded proposer, a staked voter, and the two proposals, voted.
+    genesis_transitions.extend([
+        StateTransition::ApplyReward {
+            address: proposer,
+            amount: Balance::new(10_000),
+            reason: "parity-genesis".to_string(),
+        },
+        StateTransition::ApplyReward {
+            address: voter,
+            amount: Balance::new(100),
+            reason: "parity-genesis".to_string(),
+        },
+        StateTransition::LockToStake {
+            address: voter,
+            amount: Balance::new(100),
+        },
+    ]);
+    for (proposal_id, update, voting_deadline) in [
+        (
+            "quorum-to-2",
+            GovernanceParameterUpdate::OracleQuorum(2),
+            SCORE_HEIGHT,
+        ),
+        (
+            "quorum-to-3",
+            GovernanceParameterUpdate::OracleQuorum(3),
+            RAISE_HEIGHT,
+        ),
+        (
+            "quorum-to-2-again",
+            GovernanceParameterUpdate::OracleQuorum(2),
+            RESCORE_HEIGHT,
+        ),
+        (
+            "alice-stake",
+            GovernanceParameterUpdate::StakeRequired {
+                address: address_of(&alice),
+                amount: Balance::new(ALICE_STAKE_REQUIRED),
+            },
+            CLOSE_HEIGHT,
+        ),
+    ] {
+        genesis_transitions.push(StateTransition::CreateGovernanceProposal {
+            proposer,
+            proposal_id: proposal_id.to_string(),
+            update,
+            voting_deadline,
+            deposit: Balance::new(1_000),
+            created_at_block: 1,
+            current_timestamp: 0,
+        });
+        genesis_transitions.push(StateTransition::VoteGovernanceProposal {
+            proposal_id: proposal_id.to_string(),
+            voter,
+            approve: true,
+            voting_power: 100,
+            current_block: 1,
+        });
+    }
     let mut follower = State::new();
     follower
         .apply_transitions_batch_at_height(1, genesis_transitions.clone())
@@ -341,6 +442,10 @@ async fn run() {
     // One block: admit `txs`, produce, verify as a follower, apply as a
     // follower, persist, compare. Returns the block's own timestamp.
     let mut height = 1u64;
+    // The oracle quorum in force for the next block.
+    let mut quorum_now = 3usize;
+    // How many offered transactions the producer must leave out of the next block.
+    let expect_left_out = std::cell::Cell::new(0usize);
     macro_rules! block {
         ($now:expr, $txs:expr) => {{
             height += 1;
@@ -368,16 +473,17 @@ async fn run() {
                 .await
                 .unwrap_or_else(|e| panic!("producer failed at {height}: {e}"));
             assert_eq!(block.height, height);
-            // Coinbase plus every transaction offered: nothing was dropped.
+            // Coinbase plus every transaction offered, less the ones this
+            // block must leave out.
             assert_eq!(
                 block.transactions.len(),
-                carried + 1,
-                "the producer dropped a transaction at {height}"
+                carried + 1 - expect_left_out.replace(0),
+                "transactions carried at {height}"
             );
             let block_time = block.timestamp.timestamp();
             assert!(
                 verifier_pop
-                    .verify_block(&block, &oracle_set, 2, &[])
+                    .verify_block(&block, &oracle_set, quorum_now, &[])
                     .await
                     .expect("verdict"),
                 "a follower rejects the producer's block at {height}"
@@ -399,8 +505,11 @@ async fn run() {
                 follower.state_root, producer.state_root,
                 "follower root at {height}"
             );
-            for who in [&alice, &bob, &owner] {
-                let balance = |s: &State| s.get_account(&address_of(who)).map(|a| a.balance);
+            for who in [&alice, &bob, &carol, &owner] {
+                let balance = |s: &State| {
+                    s.get_account(&address_of(who))
+                        .map(|a| (a.balance, a.stake_locked, a.spendable_balance))
+                };
                 assert_eq!(
                     balance(&follower),
                     balance(&producer),
@@ -444,30 +553,25 @@ async fn run() {
         ]
     );
 
-    // ---- Two forecasts, 1 h lead, committed in one block. ----
+    // ---- Three forecasters, 1 h lead, temperature and pressure: two
+    // buckets, all six commits in one block. ----
     now += 60;
-    let f_alice = commit_reveal(
-        &alice,
-        "forecast",
-        serde_json::json!({"temp_c_centi": 2_040}),
-        Some(1),
-        now,
-        "alice",
-    );
-    let f_bob = commit_reveal(
-        &bob,
-        "forecast",
-        serde_json::json!({"temp_c_centi": 2_150}),
-        Some(1),
-        now,
-        "bob",
-    );
+    let forecast = |who: &PrivateKey, data: serde_json::Value, tag: &str| {
+        commit_reveal(who, "forecast", data, Some(1), now, tag)
+    };
+    let f_alice = forecast(&alice, serde_json::json!({"temp_c_centi": 2_040}), "alice");
+    let f_bob = forecast(&bob, serde_json::json!({"temp_c_centi": 2_150}), "bob");
+    let f_carol = forecast(&carol, serde_json::json!({"temp_c_centi": 2_010}), "carol");
+    let p_alice = forecast(&alice, serde_json::json!({"pressure_pa": 101_440}), "alice-p");
+    let p_bob = forecast(&bob, serde_json::json!({"pressure_pa": 101_550}), "bob-p");
+    let p_carol = forecast(&carol, serde_json::json!({"pressure_pa": 101_410}), "carol-p");
+    let forecasts = [&f_alice, &f_bob, &f_carol, &p_alice, &p_bob, &p_carol];
     let commit_time = block!(
         now,
-        vec![
-            ("alice commit", f_alice.commit.clone()),
-            ("bob commit", f_bob.commit.clone())
-        ]
+        forecasts
+            .iter()
+            .map(|f| ("forecast commit", f.commit.clone()))
+            .collect()
     );
     let commit_height = height;
     assert_eq!(
@@ -478,15 +582,16 @@ async fn run() {
     now += 60;
     block!(
         now,
-        vec![
-            ("alice reveal", f_alice.reveal.clone()),
-            ("bob reveal", f_bob.reveal.clone())
-        ]
+        forecasts
+            .iter()
+            .map(|f| ("forecast reveal", f.reveal.clone()))
+            .collect()
     );
     let target = commit_time + HOUR;
     {
         let lane = &follower.forecast_late_score;
-        assert_eq!(lane.records.len(), 2);
+        assert_eq!(lane.records.len(), 6);
+        assert_eq!(lane.buckets.len(), 2);
         let record = &lane.records[&f_alice.commit_id];
         assert_eq!(record.forecaster, address_of(&alice));
         assert_eq!(
@@ -516,77 +621,161 @@ async fn run() {
         ]
     );
 
-    // ---- Score at target + 35 min. ----
-    let attestation = ObservationAttestation {
-        station_id: STATION.to_string(),
-        variable: LateScoreVariable::TemperatureC,
-        lead_hours: 1,
-        commit_height,
-        commit_time,
-        target,
-        truth: 2_000,
-        truth_commit_id: truth.commit_id.clone(),
-        reference: 300,
-        mean24: 1_900,
-        last: 2_100,
-        window_hash: "5a".repeat(32),
-        window_commit_ids: vec![window.commit_id.clone()],
+    // ---- Score at target + 35 min. Each score carries two signatures. The
+    // temperature score goes in the block where governance lowers the quorum
+    // from 3 to 2. ----
+    let score = |variable, truth_value: i64, ids: [&Pair; 3]| {
+        let attestation = ObservationAttestation {
+            station_id: STATION.to_string(),
+            variable,
+            lead_hours: 1,
+            commit_height,
+            commit_time,
+            target,
+            truth: truth_value,
+            truth_commit_id: truth.commit_id.clone(),
+            reference: 300,
+            mean24: truth_value - 100,
+            last: truth_value + 100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec![window.commit_id.clone()],
+        };
+        let identity = ChainIdentity::active();
+        let message =
+            observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
+        let mut signatures: Vec<ObservationSignature> = [&oracle_a, &oracle_b]
+            .into_iter()
+            .map(|oracle| ObservationSignature {
+                oracle: oracle_id(oracle),
+                ed25519: oracle.sign(&message).to_hex(),
+            })
+            .collect();
+        signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
+        let mut forecast_commit_ids: Vec<String> =
+            ids.iter().map(|f| f.commit_id.clone()).collect();
+        forecast_commit_ids.sort();
+        ForecastScorePayload {
+            attestation,
+            signatures,
+            forecast_commit_ids,
+        }
     };
-    let identity = ChainIdentity::active();
-    let message =
-        observation_attestation_message(&identity.chain_id, &identity.network_id, &attestation);
-    let mut signatures: Vec<ObservationSignature> = [&oracle_a, &oracle_b]
-        .into_iter()
-        .map(|oracle| ObservationSignature {
-            oracle: oracle_id(oracle),
-            ed25519: oracle.sign(&message).to_hex(),
-        })
-        .collect();
-    signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
-    let mut forecast_commit_ids = vec![f_alice.commit_id.clone(), f_bob.commit_id.clone()];
-    forecast_commit_ids.sort();
-    let payload = ForecastScorePayload {
-        attestation,
-        signatures,
-        forecast_commit_ids,
-    };
+    let temperature = score(
+        LateScoreVariable::TemperatureC,
+        2_000,
+        [&f_alice, &f_bob, &f_carol],
+    );
+    let pressure = score(
+        LateScoreVariable::PressureHpa,
+        101_400,
+        [&p_alice, &p_bob, &p_carol],
+    );
     now = target + SCORE_OPENS_AFTER_SECS;
     let relay = Address([0x77; 20]);
+    assert_eq!(height + 1, SCORE_HEIGHT);
+    assert_eq!(follower.oracle_quorum, 3, "two signatures are below the quorum before this block");
+    // The quorum the block is verified under is the one its own governance
+    // transition puts in force.
+    quorum_now = 2;
     block!(
         now,
         vec![(
-            "score",
+            "temperature score",
             with_data(
-                shell(TransactionType::ForecastScore, relay, now, "score"),
-                &payload,
+                shell(TransactionType::ForecastScore, relay, now, "score-t"),
+                &temperature,
                 0
             )
         )]
     );
+    assert_eq!(follower.oracle_quorum, 2);
+    assert_eq!(
+        follower.governance.proposals["quorum-to-2"].status,
+        GovernanceProposalStatus::Executed
+    );
+    assert!(follower.forecast_late_score.records[&p_alice.commit_id].skill.is_none());
+
+    // ---- Restore: the follower's state is thrown away and rebuilt from the
+    // store (WAL replay from an empty state, as a restarting node does), and
+    // the run continues on the rebuilt state. ----
     {
-        let lane = &follower.forecast_late_score;
-        assert_eq!(lane.records[&f_alice.commit_id].skill, Some(866_667));
-        assert_eq!(lane.records[&f_bob.commit_id].skill, Some(500_000));
+        let rows = storage.load_wal_transitions_range(1, height).unwrap();
+        let mut restored = State::new();
+        for h in 1..=height {
+            restored
+                .apply_transitions_batch_at_height(
+                    h,
+                    rows.iter()
+                        .filter(|(row_height, _)| *row_height == h)
+                        .map(|(_, t)| t.clone()),
+                )
+                .unwrap_or_else(|e| panic!("mid-run restore failed at {h}: {e}"));
+        }
+        assert_eq!(restored.state_root, follower.state_root);
+        assert_eq!(restored.forecast_late_score, follower.forecast_late_score);
+        assert!(!restored.forecast_late_score.is_empty());
+        follower = restored;
     }
 
-    // ---- The bucket closes a day after the end of its hour, and pays. ----
-    let closes_at = bucket_closes_at(bucket_hour(target).unwrap()).unwrap();
-    now = closes_at - 60;
-    block!(now, Vec::new());
+    // ---- The pressure score is offered to the block that raises the quorum
+    // back to 3. It passes admission and is valid against the state before
+    // the block (quorum 2), but not after the block's governance: the
+    // producer leaves it out and still produces the block. ----
+    let pressure_tx = |now: i64, tag: &str| {
+        with_data(
+            shell(TransactionType::ForecastScore, relay, now, tag),
+            &pressure,
+            0,
+        )
+    };
+    now += 60;
+    assert_eq!(height + 1, RAISE_HEIGHT);
+    quorum_now = 3;
+    expect_left_out.set(1);
+    block!(now, vec![("pressure score", pressure_tx(now, "score-p1"))]);
+    assert_eq!(follower.oracle_quorum, 3);
+    assert!(follower.forecast_late_score.records[&p_alice.commit_id].skill.is_none());
+    // ---- Offered again to the block that lowers it to 2: it lands. ----
+    now += 60;
+    assert_eq!(height + 1, RESCORE_HEIGHT);
+    quorum_now = 2;
+    block!(now, vec![("pressure score", pressure_tx(now, "score-p2"))]);
+    assert_eq!(follower.oracle_quorum, 2);
+    {
+        let lane = &follower.forecast_late_score;
+        for (temp, pres) in [(&f_alice, &p_alice), (&f_bob, &p_bob), (&f_carol, &p_carol)] {
+            assert!(lane.records[&temp.commit_id].skill.is_some());
+            assert_eq!(
+                lane.records[&temp.commit_id].skill,
+                lane.records[&pres.commit_id].skill,
+                "the same error against the same reference"
+            );
+        }
+        assert_eq!(lane.records[&f_alice.commit_id].skill, Some(866_667));
+        assert_eq!(lane.records[&f_bob.commit_id].skill, Some(500_000));
+        assert_eq!(lane.records[&f_carol.commit_id].skill, Some(966_667));
+    }
+
+    // ---- The buckets close a day after the end of their hour, in the block
+    // where governance sets Alice's stake requirement, and pay at the cap. ----
+    let closes_at = bucket_closes_at(bucket_hour(target).unwrap());
     assert_eq!(
         follower.forecast_late_score.buckets.len(),
-        1,
-        "not closed one minute early"
+        2,
+        "open until the day is up"
     );
-    let before_close = |who: &PrivateKey, s: &State| {
-        s.get_account(&address_of(who))
-            .map_or(0, |a| a.balance.into_inner())
+    let account = |who: &PrivateKey, s: &State| {
+        s.get_account(&address_of(who)).map_or((0, 0), |a| {
+            (a.balance.into_inner(), a.stake_locked.into_inner())
+        })
     };
-    let (alice_before, bob_before) = (
-        before_close(&alice, &follower),
-        before_close(&bob, &follower),
-    );
+    let before: Vec<(u128, u128)> = [&alice, &bob, &carol]
+        .iter()
+        .map(|who| account(who, &follower))
+        .collect();
+    assert!(before.iter().all(|(_, locked)| *locked == 0));
     now = closes_at;
+    assert_eq!(height + 1, CLOSE_HEIGHT);
     block!(now, Vec::new());
     {
         let lane = &follower.forecast_late_score;
@@ -595,12 +784,27 @@ async fn run() {
             "closed and deleted"
         );
         assert_eq!(lane.pool.len(), 1, "the epoch ledger records the payments");
-        assert_eq!(before_close(&alice, &follower) - alice_before, 86_666_700);
-        assert_eq!(before_close(&bob, &follower) - bob_before, 50_000_000);
+        let after: Vec<(u128, u128)> = [&alice, &bob, &carol]
+            .iter()
+            .map(|who| account(who, &follower))
+            .collect();
+        let paid: Vec<u128> = after.iter().zip(&before).map(|(a, b)| a.0 - b.0).collect();
+        // Nominal skill pay is 0.866667 + 0.5 + 0.966667 = 2.333334 WRF per
+        // bucket: over the 2 WRF bucket cap, so each of the two buckets is
+        // scaled down to exactly the cap, pro rata.
+        let ledger = lane.pool.values().next().unwrap();
+        assert_eq!(paid, [148_571_444, 85_714_262, 165_714_294]);
+        assert_eq!(paid.iter().sum::<u128>(), 2 * BUCKET_CAP);
+        assert_eq!(ledger.paid.into_inner(), 2 * BUCKET_CAP);
+        assert_eq!(ledger.unissued.into_inner(), 0);
+        // Governance came first: the stake requirement was in force when the
+        // close credited Alice, so part of her payment is locked.
         assert_eq!(
-            lane.pool.values().next().unwrap().paid.into_inner(),
-            136_666_700
+            follower.governance.proposals["alice-stake"].status,
+            GovernanceProposalStatus::Executed
         );
+        assert_eq!(after[0].1, ALICE_STAKE_REQUIRED);
+        assert_eq!(after[1].1, 0);
     }
     now += 60;
     block!(now, Vec::new());

@@ -8266,12 +8266,16 @@ impl State {
             return Err(StateError::InvalidTransition);
         }
         let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        // Oracle keys come from the chain's signing-key registry at the
+        // block's time, so a rotated-in key signs and a revoked key does not.
         payload
             .verify_quorum(
                 &identity.chain_id,
                 &identity.network_id,
+                &self.signing_keys,
                 |oracle| self.oracle_set.contains(oracle),
                 self.oracle_quorum,
+                block_timestamp,
             )
             .map_err(refuse)?;
         // The truth and every window reading must be readings of this station
@@ -8284,6 +8288,10 @@ impl State {
                 station_id: reveal.station_id.clone(),
                 landed_at_height: reveal.revealed_at,
                 synthetic: reveal.provenance_class == ContributionProvenanceClass::Synthetic,
+                // A station reading is a reveal that carried a weather
+                // observation; only those get a quality score. A forecast
+                // reveal never does.
+                is_weather_reading: reveal.quality_score.is_some(),
                 has_quorum: self
                     .attestations
                     .get(commit_id)
@@ -8297,6 +8305,32 @@ impl State {
             .apply_score(payload, &digest, block_timestamp)
             .map_err(refuse)?;
         Ok(())
+    }
+
+    /// What crediting a forecast payment of `amount` to `forecaster` would
+    /// leave: (minted supply, earned total, balance, stake locked, spendable),
+    /// with the same stake-first rule as any earned credit. `None` when any
+    /// of them does not fit; nothing is written here.
+    fn forecast_payment_credit(
+        &self,
+        forecaster: &Address,
+        amount: u128,
+    ) -> Option<(u128, Balance, Balance, Balance, Balance)> {
+        let supply = self.supply_authorized_minting.checked_add(amount)?;
+        let amount = Balance::new(amount);
+        let zero = Balance::new(0);
+        let (earned, balance, locked, spendable, required) =
+            self.accounts.get(forecaster).map_or((zero, zero, zero, zero, zero), |a| {
+                (a.earned_balance_total, a.balance, a.stake_locked, a.spendable_balance, a.stake_required)
+            });
+        let lock = min(required.saturating_sub(locked), amount);
+        Some((
+            supply,
+            earned.checked_add(amount)?,
+            balance.checked_add(amount)?,
+            locked.checked_add(lock)?,
+            spendable.checked_add(amount.checked_sub(lock)?)?,
+        ))
     }
 
     /// `StateTransition::CloseForecastBuckets`: close the buckets due at this
@@ -8341,38 +8375,31 @@ impl State {
             .settle_awards(block_height, &awards, epoch_budget, block_budget)
             .unwrap_or_default();
         for payment in payments {
-            // A bond escrow is never a mint target; a refused slice charge
-            // means this mint does not happen. Either way the amount goes
-            // back to unissued.
-            if self.node_protected_account(&payment.forecaster)
-                || !self.charge_emission_slice(EmissionRole::Contribution, payment.amount)
-            {
-                self.forecast_late_score.mark_unminted(
-                    block_height,
-                    &payment.forecaster,
-                    payment.amount,
-                );
+            // Everything the credit needs is computed first with checked
+            // arithmetic. A bond escrow is never a mint target; a result that
+            // does not fit, or a refused slice charge, means this mint does
+            // not happen. In each case the amount goes back to unissued and
+            // the block goes on: a bucket close never stops a block.
+            let credit = self.forecast_payment_credit(&payment.forecaster, payment.amount);
+            let minted = match credit {
+                Some(credit)
+                    if !self.node_protected_account(&payment.forecaster)
+                        && self.charge_emission_slice(EmissionRole::Contribution, payment.amount) =>
+                {
+                    Some(credit)
+                },
+                _ => None,
+            };
+            let Some((supply, earned, balance, locked, spendable)) = minted else {
+                self.forecast_late_score.mark_unminted(block_height, &payment.forecaster, payment.amount);
                 continue;
-            }
-            self.supply_authorized_minting = self
-                .supply_authorized_minting
-                .checked_add(payment.amount)
-                .ok_or(StateError::ArithmeticOverflow)?;
-            let amount = Balance::new(payment.amount);
+            };
+            self.supply_authorized_minting = supply;
             let account = self.create_account(payment.forecaster, Balance::new(0));
-            account.earned_balance_total = account
-                .earned_balance_total
-                .checked_add(amount)
-                .ok_or(StateError::ArithmeticOverflow)?;
-            account.balance =
-                account.balance.checked_add(amount).ok_or(StateError::ArithmeticOverflow)?;
-            let lock = min(account.stake_required.saturating_sub(account.stake_locked), amount);
-            account.stake_locked =
-                account.stake_locked.checked_add(lock).ok_or(StateError::ArithmeticOverflow)?;
-            account.spendable_balance = account
-                .spendable_balance
-                .checked_add(amount - lock)
-                .ok_or(StateError::ArithmeticOverflow)?;
+            account.earned_balance_total = earned;
+            account.balance = balance;
+            account.stake_locked = locked;
+            account.spendable_balance = spendable;
         }
         Ok(())
     }
