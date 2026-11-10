@@ -16261,7 +16261,7 @@ mod station_registration_admission_tests {
         let mut ingest_calls: Vec<(String, String)> = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
+            for entry in std::fs::read_dir(&dir).unwrap() { // key-file-exempt: reads Rust source for a guard test
                 let path = entry.unwrap().path();
                 if path.is_dir() {
                     if path.file_name().is_some_and(|n| n != "tests") {
@@ -16272,7 +16272,7 @@ mod station_registration_admission_tests {
                 if path.extension().is_none_or(|e| e != "rs") {
                     continue;
                 }
-                let source = std::fs::read_to_string(&path).unwrap();
+                let source = std::fs::read_to_string(&path).unwrap(); // key-file-exempt: reads Rust source for a guard test
                 let body = source.find("\n#[cfg(test)]\nmod ").map_or(source.as_str(), |cut| &source[..cut]);
                 let rel = path.strip_prefix(&root).unwrap().display().to_string();
                 for (at, _) in body.match_indices("add_transaction_with_signing_keys_at_height(") {
@@ -16307,7 +16307,7 @@ mod station_registration_admission_tests {
             "the only non-test gossip ingest caller is the live NewTransactions arm"
         );
         {
-            let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap();
+            let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
             let arm = &source[source.find("P2pEvent::NewTransactions(tx_bytes_vec) => {").unwrap()..];
             let arm = &arm[..arm.find("P2pEvent::PeerConnected(").unwrap()];
             let filtered = arm.find("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);").unwrap();
@@ -16320,7 +16320,7 @@ mod station_registration_admission_tests {
             match (file.as_str(), keys_arg.as_str()) {
                 (_, "None") => {},
                 ("p2p_events.rs", "Some(signing_keys)") => {
-                    let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap();
+                    let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
                     let filter = &source[source.find("pub(crate) fn forecast_score_admissible(").unwrap()..];
                     let filter = &filter[..filter.find("\n}\n").unwrap()];
                     assert!(filter.contains("state.oracle_set.contains(&signer.oracle)"), "gossip: oracle-set check");
@@ -16335,7 +16335,7 @@ mod station_registration_admission_tests {
                     );
                 },
                 ("helpers.rs", "signing_keys.as_ref()") => {
-                    let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap();
+                    let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
                     assert!(
                         source.contains("== wrfcoin_native_chain::blockchain::transaction::TransactionType::OracleAttestation"),
                         "helpers.rs passes a registry only for OracleAttestation"
