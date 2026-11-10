@@ -208,8 +208,11 @@ that exploitation is currently demonstrated.
 ## Response-field note: `GET /transactions/oracle/pending` (#3240)
 
 Each pending entry may carry `station_location: {latitude, longitude}`, the
-station's registry location **rounded to 0.01° (~1.1 km)**, omitted when the
-station has no registry entry. It exists so a service-side attester can pick the
+station's registry location **at 0.1° (~11 km) for every token except the
+node operator's**, and at full precision for the Operator token; omitted when
+the station has no registry entry. Rounding: whole tenths of a degree computed
+on the 1e-7 degree integer form, a tie going up (towards +infinity), the same
+rule as the website API, so site and node agree. It exists so a service-side attester can pick the
 nearest NWS reference station. The exact coordinates are already chain data:
 they are in the `StationRegistration` transaction body in its block, and in the
 `station_registry` state that peers exchange. This surface serves a deliberately
@@ -259,11 +262,11 @@ See [snapshot join](../operator/snapshot-join.md) for the export/admission bound
 
 The station registry list returns each station's **exact** registered
 `latitude`/`longitude` (plus `elevation_meters`), unlike the Reader-level
-`GET /transactions/oracle/pending` note above, which rounds to 0.01°. It is
+`GET /transactions/oracle/pending` note above, which gives non-operators 0.1°. It is
 therefore classified `admin`: `ApiRole::Operator` only, because every
 Contributor and Oracle bearer satisfies Reader. Its consumer is the node
 operator's own backend, which syncs the rows into `weather_stations` and serves
-anonymous readers only a 0.01° projection (backend#1237). The node API is never
+anonymous readers only a 0.1° projection (backend#1237). The node API is never
 proxied publicly (#658). The route is read-only over existing `station_registry`
 state under one read lock. It returns a deterministic `station_id` order with a
 `limit` (default 200, clamped to 500; `0` → 422) and a strictly-after `after`
