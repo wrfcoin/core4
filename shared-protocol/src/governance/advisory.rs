@@ -136,19 +136,21 @@ pub struct SignedAdvisoryAction {
     /// Must equal the transaction's `nonce`, which must equal the account's
     /// nonce when the action applies.
     pub nonce: u64,
-    /// Lowercase hex ed25519 public key; must hash to `account`. Empty (and
-    /// not serialized) when `passkey` authorizes the action.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// Lowercase hex ed25519 public key; must hash to `account`. Absent (empty
+    /// here, never serialized) when `passkey` authorizes the action; an
+    /// explicit `""` is refused, so each action has one encoding.
+    #[serde(default, deserialize_with = "deserialize_present_nonempty", skip_serializing_if = "String::is_empty")]
     pub public_key: String,
-    /// Hex ed25519 signature over [`advisory_action_message`]. Empty (and not
-    /// serialized) when `passkey` authorizes the action.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// Lowercase hex ed25519 signature over [`advisory_action_message`].
+    /// Absent when `passkey` authorizes the action; an explicit `""` is refused.
+    #[serde(default, deserialize_with = "deserialize_present_nonempty", skip_serializing_if = "String::is_empty")]
     pub signature: String,
     /// Passkey (P-256 WebAuthn) authorization instead of the ed25519 key and
     /// signature: an assertion over [`advisory_passkey_challenge`] from the
     /// credential that derives `account`. Absent members are never
     /// serialized, so ed25519 payloads are unchanged. Parsed strictly:
-    /// unknown members inside it are refused, like everywhere in this payload.
+    /// unknown members inside it are refused, like everywhere in this payload,
+    /// and so is an explicit `null` (absent is the only "no passkey").
     #[serde(
         default,
         deserialize_with = "deserialize_strict_passkey",
@@ -170,19 +172,39 @@ struct StrictPasskeyAuthorization {
     signature: String,
 }
 
+/// Only called when the member is present (`default` covers absence), so
+/// `"passkey": null` fails here: a `StrictPasskeyAuthorization` is an object.
 fn deserialize_strict_passkey<'de, D>(deserializer: D) -> Result<Option<PasskeyAuthorization>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Ok(
-        Option::<StrictPasskeyAuthorization>::deserialize(deserializer)?.map(|p| PasskeyAuthorization {
-            public_key_p256: p.public_key_p256,
-            rp_id_hash: p.rp_id_hash,
-            authenticator_data: p.authenticator_data,
-            client_data_json: p.client_data_json,
-            signature: p.signature,
-        }),
-    )
+    let p = StrictPasskeyAuthorization::deserialize(deserializer)?;
+    Ok(Some(PasskeyAuthorization {
+        public_key_p256: p.public_key_p256,
+        rp_id_hash: p.rp_id_hash,
+        authenticator_data: p.authenticator_data,
+        client_data_json: p.client_data_json,
+        signature: p.signature,
+    }))
+}
+
+/// A present `public_key`/`signature` member must not be `""` (absent is the
+/// only "not this form").
+fn deserialize_present_nonempty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(serde::de::Error::custom("an authorization member, when present, must not be empty"));
+    }
+    Ok(value)
+}
+
+/// Non-empty, even-length, lowercase hex: the one accepted spelling of every
+/// hex member (ed25519 key and signature, each passkey field).
+fn is_canonical_hex(value: &str) -> bool {
+    !value.is_empty() && value.len() % 2 == 0 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// How a proposal ended.
@@ -486,10 +508,16 @@ impl SignedAdvisoryAction {
             if !self.public_key.is_empty() || !self.signature.is_empty() {
                 return Err(AdvisoryError::AuthorizationForm);
             }
+            if !self.has_canonical_hex() {
+                return Err(AdvisoryError::Malformed("passkey fields must be lowercase hex"));
+            }
             return self.verify_passkey(passkey, chain_id, network_id);
         }
         if self.public_key.is_empty() || self.signature.is_empty() {
             return Err(AdvisoryError::AuthorizationForm);
+        }
+        if !self.has_canonical_hex() {
+            return Err(AdvisoryError::Malformed("public key and signature must be lowercase hex"));
         }
         let public_key = PublicKey::from_hex(self.public_key.trim())
             .map_err(|_| AdvisoryError::Malformed("public key is not hex ed25519"))?;
@@ -509,6 +537,17 @@ impl SignedAdvisoryAction {
             return Err(AdvisoryError::BadSignature);
         }
         Ok(())
+    }
+
+    /// Every hex member present is in its one accepted spelling (lowercase,
+    /// no whitespace, even length), so each action has one encoding.
+    fn has_canonical_hex(&self) -> bool {
+        match &self.passkey {
+            Some(p) => [&p.public_key_p256, &p.rp_id_hash, &p.authenticator_data, &p.client_data_json, &p.signature]
+                .into_iter()
+                .all(|v| is_canonical_hex(v)),
+            None => is_canonical_hex(&self.public_key) && is_canonical_hex(&self.signature),
+        }
     }
 
     /// The passkey arm of [`Self::verify`], built from the same pieces as
@@ -550,12 +589,14 @@ impl SignedAdvisoryAction {
             return None;
         }
         let parsed: Self = serde_json::from_str(data).ok()?;
-        // An ed25519 payload still needs both members (as before the passkey
-        // option existed); a passkey payload must carry neither.
+        // One encoding per action: an ed25519 payload needs both members (as
+        // before the passkey option existed), a passkey payload carries
+        // neither, and every hex member is lowercase (`"passkey": null` and
+        // explicit `""` members already failed deserialization).
         let form_ok = match parsed.passkey {
             None => !parsed.public_key.is_empty() && !parsed.signature.is_empty(),
             Some(_) => parsed.public_key.is_empty() && parsed.signature.is_empty(),
-        };
+        } && parsed.has_canonical_hex();
         (form_ok && parsed.account == tx.sender_address && parsed.nonce == tx.nonce).then_some(parsed)
     }
 
@@ -1138,6 +1179,58 @@ mod tests {
             let only = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
             let parsed = SignedAdvisoryAction::parse(&tx_with(serde_json::to_string(&only).unwrap(), account, 0));
             assert_eq!(parsed, Some(only));
+        }
+
+        #[test]
+        fn one_encoding_per_action() {
+            let a = authenticator(7);
+            let pk = SignedAdvisoryAction::sign_passkey(CHAIN, NET, &a, propose("T", "S"), 0);
+            let ed = SignedAdvisoryAction::sign(CHAIN, NET, &key(1), propose("T", "S"), 0);
+            let parses = |v: &serde_json::Value, account: Address| {
+                SignedAdvisoryAction::parse(&tx_with(v.to_string(), account, 0)).is_some()
+            };
+            let pk_json = serde_json::to_value(&pk).unwrap();
+            let ed_json = serde_json::to_value(&ed).unwrap();
+            assert!(parses(&pk_json, pk.account) && parses(&ed_json, ed.account), "canonical forms parse");
+            // Explicit `"passkey": null` on an ed25519 payload.
+            let mut v = ed_json.clone();
+            v["passkey"] = serde_json::Value::Null;
+            assert!(!parses(&v, ed.account));
+            // Explicit empty ed25519 members on a passkey payload.
+            for member in ["public_key", "signature"] {
+                let mut v = pk_json.clone();
+                v[member] = serde_json::json!("");
+                assert!(!parses(&v, pk.account), "{member}: \"\"");
+            }
+            // Uppercase hex anywhere: refused by parse and by verify.
+            for field in ["public_key_p256", "rp_id_hash", "authenticator_data", "client_data_json", "signature"] {
+                let mut v = pk_json.clone();
+                let upper = v["passkey"][field].as_str().unwrap().to_uppercase();
+                v["passkey"][field] = serde_json::json!(upper);
+                assert!(!parses(&v, pk.account), "passkey.{field} uppercase");
+                let mut s = pk.clone();
+                let p = s.passkey.as_mut().unwrap();
+                match field {
+                    "public_key_p256" => p.public_key_p256 = upper,
+                    "rp_id_hash" => p.rp_id_hash = upper,
+                    "authenticator_data" => p.authenticator_data = upper,
+                    "client_data_json" => p.client_data_json = upper,
+                    _ => p.signature = upper,
+                }
+                assert!(matches!(s.verify(CHAIN, NET), Err(AdvisoryError::Malformed(_))), "verify passkey.{field}");
+            }
+            for member in ["public_key", "signature"] {
+                let mut v = ed_json.clone();
+                let upper = v[member].as_str().unwrap().to_uppercase();
+                v[member] = serde_json::json!(upper.clone());
+                assert!(!parses(&v, ed.account), "{member} uppercase");
+                let mut v = ed_json.clone();
+                v[member] = serde_json::json!(format!(" {}", ed_json[member].as_str().unwrap()));
+                assert!(!parses(&v, ed.account), "{member} with whitespace");
+            }
+            let mut s = ed.clone();
+            s.signature = s.signature.to_uppercase();
+            assert!(matches!(s.verify(CHAIN, NET), Err(AdvisoryError::Malformed(_))));
         }
 
         #[test]

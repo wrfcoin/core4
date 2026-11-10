@@ -207,8 +207,17 @@ async fn passkey_advisory_governance_end_to_end() {
     let block = packed(H, &funded, std::slice::from_ref(&welcome)).await;
     assert!(block.iter().any(|t| t.id == welcome.id), "a block at H carries a passkey proposal");
 
-    // Pricing: one P-256 verification on top of the flat charge.
+    // Pricing: one P-256 verification on top of the flat charge, from
+    // activation only; below H it is exactly `verify_work`.
     assert_eq!(welcome.verify_work().ecdsa, 0);
+    assert_eq!(
+        wrfcoin_shared_protocol::consensus::verify_cost::block_verify_work_at_height(std::slice::from_ref(&welcome), H - 1),
+        wrfcoin_shared_protocol::consensus::verify_cost::block_verify_work_at_height(std::slice::from_ref(&welcome), 0),
+    );
+    assert_eq!(
+        wrfcoin_shared_protocol::consensus::verify_cost::block_verify_work_at_height(std::slice::from_ref(&welcome), H - 1).ecdsa,
+        0
+    );
     let ed_welcome = ed_tx(&dave, propose("ed25519 one"), 0, "price");
     assert_eq!(
         wrfcoin_shared_protocol::consensus::verify_cost::block_verify_work_at_height(std::slice::from_ref(&welcome), H).ecdsa,
