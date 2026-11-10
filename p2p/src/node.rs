@@ -2619,6 +2619,9 @@ mod tests {
         did_bootstrap: bool,
         /// Production default: filter non-global addresses (crate::announce).
         announce_policy: crate::announce::AnnouncePolicy,
+        /// The per-peer inbound ceiling handed to the handler. Disabled unless
+        /// a test sets it.
+        inbound_rate_limit: InboundRateLimit,
     }
 
     impl BehaviourHarness {
@@ -2666,6 +2669,10 @@ mod tests {
                 discovered: DiscoveredPeers::new(),
                 did_bootstrap: false,
                 announce_policy: crate::announce::AnnouncePolicy::filtering(Vec::new()),
+                inbound_rate_limit: InboundRateLimit {
+                    max_bytes: 0,
+                    window: std::time::Duration::ZERO,
+                },
             };
             (h, rx)
         }
@@ -2689,7 +2696,7 @@ mod tests {
                 &mut self.swarm,
                 &mut self.peer_inbound_bytes,
                 &mut self.rate_windows,
-                InboundRateLimit { max_bytes: 0, window: std::time::Duration::ZERO },
+                self.inbound_rate_limit,
                 &mut self.weather_peer_scores,
                 &mut self.persistent_scores,
                 self.persistent_now,
@@ -2710,6 +2717,8 @@ mod tests {
     }
 
     mod privacy_admission_tests;
+    mod inbound_budget_verdict_tests;
+    mod raw_peer_net;
 
     // --- Branches newly reachable via the harness ------------------------
     //
@@ -5458,13 +5467,17 @@ async fn handle_behaviour_event(
                 metrics
                     .messages_rejected
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Ignore, not Reject. This ceiling is a sum over every peer,
+                // so the message that arrives once it is used up says nothing
+                // about the peer that delivered it. The per-peer ceiling below
+                // is the one that names a peer at fault.
                 let _ = swarm
                     .behaviour_mut()
                     .gossipsub
                     .report_message_validation_result(
                         &message_id,
                         &propagation_source,
-                        gossipsub::MessageAcceptance::Reject,
+                        gossipsub::MessageAcceptance::Ignore,
                     );
                 return;
             }
