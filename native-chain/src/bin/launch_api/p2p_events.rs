@@ -3290,8 +3290,10 @@ pub(crate) fn oracle_attestation_admissible(
 }
 
 /// Clear node-service copies that can never be mined. A producer learns this at assembly, but a
-/// node that never assembles a block would hold them. Ordinary kinds are left alone on purpose:
-/// this is not a general age limit, which would change what producers can still include.
+/// node that never assembles a block would hold them. Ordinary kinds are left alone here. The
+/// general age limit is a separate timer that runs only on nodes that do not produce
+/// (`spawn_mempool_age_sweep` in main.rs); producers keep the lazy byte-cap path, so entries they
+/// defer to a later block stay includable.
 async fn sweep_stale_node_txs(blockchain: &Arc<RwLock<Blockchain>>, mempool: &Arc<RwLock<Mempool>>) {
     let pending = mempool.read().await.pending_node_txs();
     if pending.is_empty() {
