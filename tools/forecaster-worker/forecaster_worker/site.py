@@ -163,10 +163,11 @@ class Site:
         """Forget the login token. Tokens are short-lived, so each cycle logs in afresh when it has work."""
         self._token = None
 
-    def draft(self, alias: str, variable: str, lead_hours: int, value: float) -> dict:
-        return _dict(self._call("POST", "/forecasts/draft",
-                                {"stationAlias": alias, "variable": variable, "leadHours": lead_hours, "value": value},
-                                auth=True))
+    def draft(self, alias: str, variable: str, lead_hours: int, value: float, model_id: str | None = None) -> dict:
+        body = {"stationAlias": alias, "variable": variable, "leadHours": lead_hours, "value": value}
+        if model_id is not None:
+            body["modelId"] = model_id   # a site that does not know modelId yet ignores it
+        return _dict(self._call("POST", "/forecasts/draft", body, auth=True))
 
     def submit(self, body: dict) -> dict:
         return _dict(self._call("POST", "/forecasts/submit", body, auth=True))

@@ -100,6 +100,9 @@ Change them in `compose.yml` under `environment:`. The defaults are fine to star
   station position.
 - The forecast is signed on your computer. The site relays it to the chain and reveals it; the
   worker checks every draft the site returns before signing it.
+- Each forecast carries the worker's own model name, `gfs-station-bias/v0`, so the site and the
+  chain can tell it from a forecast typed on the website (`website-manual/v1`). A site that does not
+  take the name yet writes `website-manual/v1`; the worker accepts either and signs nothing else.
 
 ## Data credit
 
