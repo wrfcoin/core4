@@ -2228,6 +2228,19 @@ mod tests {
         forecasts: &[(u8, i64)],
         truth: i64,
     ) -> Vec<(u8, u128)> {
+        let all: Vec<u8> = forecasts.iter().map(|(f, _)| *f).collect();
+        play_round_scoring(state, round, forecasts, truth, &all)
+    }
+
+    /// [`play_round`], but the score lists only the forecasts of `scored`
+    /// (none: no observation at all, no score transaction).
+    fn play_round_scoring(
+        state: &mut ForecastLateScoreState,
+        round: u64,
+        forecasts: &[(u8, i64)],
+        truth: i64,
+        scored: &[u8],
+    ) -> Vec<(u8, u128)> {
         let height = 10 + round * 10;
         let commit_time = 1_000_000 + i64::try_from(round).unwrap() * 200_000;
         let ids: Vec<String> = forecasts
@@ -2262,7 +2275,12 @@ mod tests {
             assert!(state.note_reveal(&payload, height + 1, commit_time + 77, Some(addr(OWNER))));
         }
         let target = commit_time + 6 * SECS_PER_HOUR;
-        let mut sorted = ids.clone();
+        let mut sorted: Vec<String> = forecasts
+            .iter()
+            .zip(&ids)
+            .filter(|((f, _), _)| scored.contains(f))
+            .map(|(_, id)| id.clone())
+            .collect();
         sorted.sort();
         let payload = ForecastScorePayload {
             attestation: ObservationAttestation {
@@ -2283,9 +2301,11 @@ mod tests {
             signatures: Vec::new(),
             forecast_commit_ids: sorted,
         };
-        state
-            .apply_score(&payload, "digest", target + SECS_PER_HOUR)
-            .expect("scored");
+        if !scored.is_empty() {
+            state
+                .apply_score(&payload, "digest", target + SECS_PER_HOUR)
+                .expect("scored");
+        }
         let hour = bucket_hour(target).unwrap();
         state
             .close_due(height + 3, bucket_closes_at(hour), |_| Some(addr(OWNER)))
@@ -2560,5 +2580,50 @@ mod tests {
         seen.push(root(&state));
         let distinct: std::collections::BTreeSet<&Vec<u8>> = seen.iter().collect();
         assert_eq!(distinct.len(), seen.len());
+    }
+
+    #[test]
+    fn forecasts_that_could_have_been_scored_but_were_not_count_at_the_minimum() {
+        // Forecaster 8 forecasts every round next to forecaster 9. In even
+        // rounds its forecast is good (+400_000) and scored; in odd rounds
+        // it misses by three references and the score lists only 9's
+        // forecast. The observation is on chain for that commit block, so
+        // 8's forecast could have been scored: it counts at the minimum.
+        let mut state = ForecastLateScoreState::default();
+        let mut paid_rounds = Vec::new();
+        for round in 0..44 {
+            let (truth, scored): (i64, &[u8]) = if round % 2 == 0 {
+                (LAST + 70, &[8, 9])
+            } else {
+                (LAST + 310, &[9])
+            };
+            let paid = play_round_scoring(&mut state, round, &[(8, LAST + 10), (9, LAST + 60)], truth, scored);
+            if paid.iter().any(|(f, _)| *f == 8) {
+                paid_rounds.push(round);
+            }
+        }
+        assert_eq!(paid_rounds, Vec::<u64>::new(), "a record of only the chosen forecasts is never built");
+        let record = &state.track_records[&track_key(addr(8))];
+        assert_eq!(record.skills.len(), TRACK_RECORD_LEN);
+        assert_eq!(
+            record.skills.iter().filter(|s| **s == SIGNED_SKILL_FLOOR).count(),
+            TRACK_RECORD_LEN / 2,
+            "every unscored forecast with an observation is in the record at the minimum"
+        );
+        assert!(!record.is_eligible());
+    }
+
+    #[test]
+    fn a_forecast_with_no_observation_adds_nothing() {
+        // An outage: no score for the commit block at all. Nothing could
+        // have been scored, so the record does not move.
+        let mut state = ForecastLateScoreState::default();
+        for round in 0..20 {
+            play_round(&mut state, round, &[(10, LAST + 10)], LAST + 30);
+        }
+        let before = state.track_records[&track_key(addr(10))].clone();
+        assert!(play_round_scoring(&mut state, 20, &[(10, LAST + 10)], LAST + 30, &[]).is_empty());
+        assert_eq!(state.track_records[&track_key(addr(10))], before);
+        assert_eq!(play_round(&mut state, 21, &[(10, LAST + 10)], LAST + 30).len(), 1);
     }
 }
