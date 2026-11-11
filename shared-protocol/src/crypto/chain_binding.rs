@@ -1414,8 +1414,6 @@ impl ConsensusFeature {
             | Self::StakeSubmissionNonce
             // Refusal behaviour exists, but evidence apply is not implemented.
             | Self::SlashEvidenceReports
-            // #3565: behaviour is wired, but activation is an owner decision.
-            | Self::DeviceSubmissionLimit
             // #3591: wired and tested; scheduling is a separate owner step.
             | Self::StreakReplayNodeService
             // #3336: wired and tested; scheduling is a separate owner step.
@@ -1454,7 +1452,11 @@ impl ConsensusFeature {
             // Wired end to end (admission, block classifier, apply, finalize,
             // pricing, checkpoint/snapshot layout); scheduling is the owner's
             // signature, after review and the determinism differential.
-            | Self::AdvisoryGovernance => true,
+            | Self::AdvisoryGovernance
+            // #3565: wired end to end (shared block classifier, producer
+            // deferral, owner-bound station commits, late-data pay); the
+            // binary accepts a schedule, the owner signs it.
+            | Self::DeviceSubmissionLimit => true,
         }
     }
 
@@ -3055,6 +3057,8 @@ mod tests {
         expected.push("node_share_settlement");
         // #3290: the binary accepts a schedule; the owner signs it.
         expected.push("forecaster_key_binding");
+        // #3565: follows it in `ALL`; the binary accepts a schedule, the owner signs it.
+        expected.push("device_submission_limit");
         // Security-key wallets: the binary accepts a schedule; the owner signs it.
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
@@ -3078,7 +3082,6 @@ mod tests {
             ConsensusFeature::FaucetSinkBinding,
             ConsensusFeature::ScheduleExtension,
             ConsensusFeature::StakeSubmissionNonce,
-            ConsensusFeature::DeviceSubmissionLimit,
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
@@ -3099,6 +3102,7 @@ mod tests {
         expected.insert(7, "faucet_sink_binding");
         expected.push("node_share_settlement");
         expected.push("forecaster_key_binding");
+        expected.push("device_submission_limit");
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
