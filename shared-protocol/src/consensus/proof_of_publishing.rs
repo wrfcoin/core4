@@ -2927,6 +2927,59 @@ impl ProofOfPublishing {
             || self.is_contribution_quality_acceptable(tx)
     }
 
+    /// Producer-only selection. A block applies its governance-routed
+    /// transactions before its node-service transactions (`apply_governance_transitions`
+    /// runs before the launch-state pass), so for an account with a node-service
+    /// transaction at nonce `n` in the candidate, any of that account's other
+    /// nonce-spending transactions at a nonce above `n` would fail its nonce check
+    /// and be lost. Remove those from the candidate WITHOUT marking them skipped,
+    /// so they stay in the mempool and land in a later block. Commit/reveal,
+    /// attestation and coinbase transactions are never touched.
+    ///
+    /// Selection policy only: no validation, apply or extraction rule changes.
+    /// Run before the separation guard, so a node-service transaction the guard
+    /// then holds back keeps its owner's later nonces back with it.
+    pub(crate) fn hold_nonces_behind_node_service(transactions: &mut Vec<Transaction>) -> usize {
+        let is_node_service = |tx: &Transaction| {
+            matches!(
+                tx.tx_type,
+                TransactionType::NodeBondLifecycle
+                    | TransactionType::NodeServiceBatch
+                    | TransactionType::NodeFraudReport
+            )
+        };
+        let mut lowest: FxHashMap<Address, u64> = FxHashMap::default();
+        for tx in transactions.iter().filter(|tx| is_node_service(tx)) {
+            let entry = lowest
+                .entry(crate::mempool::node_admission::nonce_account(tx))
+                .or_insert(tx.nonce);
+            *entry = (*entry).min(tx.nonce);
+        }
+        if lowest.is_empty() {
+            return 0;
+        }
+        let before = transactions.len();
+        transactions.retain(|tx| {
+            if is_node_service(tx)
+                || matches!(
+                    tx.tx_type,
+                    TransactionType::Coinbase
+                        | TransactionType::ContributionCommit
+                        | TransactionType::ContributionReveal
+                        | TransactionType::ForecastCommit
+                        | TransactionType::ForecastReveal
+                        | TransactionType::OracleAttestation
+                )
+            {
+                return true;
+            }
+            !lowest
+                .get(&crate::mempool::node_admission::nonce_account(tx))
+                .is_some_and(|&n| tx.nonce > n)
+        });
+        before - transactions.len()
+    }
+
     /// Producer-only block-template guard (interim, non-forking).
     ///
     /// Keeps node-service transactions (`NodeBondLifecycle`, `NodeServiceBatch`,
@@ -4007,6 +4060,19 @@ impl ProofOfPublishing {
             next_height,
             &mut transactions,
         ));
+
+        // Producer selection: a block applies its governance-routed
+        // transactions (transfers, stakes, ...) BEFORE its node-service ones, so
+        // an owner's transfer at nonce n+1 next to their node tx at n fails its
+        // nonce check, does nothing, and still leaves the pool as mined. Hold
+        // such later nonces for the next block (they stay pending, not skipped).
+        let held_behind_node_service = Self::hold_nonces_behind_node_service(&mut transactions);
+        if held_behind_node_service > 0 {
+            debug!(
+                "held {held_behind_node_service} transaction(s) behind a same-account node-service nonce at height {next_height}"
+            );
+        }
+
         // Producer-only separation guard: never place a node-service transaction
         // and a contribution reveal in the same block. Selection policy only;
         // the held-back side stays in the mempool for the next block.
@@ -27710,6 +27776,48 @@ mod node_service_reveal_guard_tests {
     }
     fn run(state: &State, height: u64, txs: &mut Vec<Transaction>, n: &mut u32, can_wait: bool) -> NodeServiceRevealGuard {
         ProofOfPublishing::separate_node_service_from_reveals(state, height, txs, n, |_| can_wait)
+    }
+
+    /// An account's node-service tx at nonce n holds that account's later
+    /// non-node nonces; its lower nonces, other accounts, reveals and the node tx
+    /// itself stay. The guard then holds the node tx as before.
+    #[test]
+    fn node_service_nonce_holds_only_the_same_accounts_later_nonces() {
+        let height = ACTIVATION + 10;
+        let state = state_with(&[("c1", height + 2)]);
+        let owner = Address([7; 20]);
+        let other = Address([8; 20]);
+        let from = |ty, tag: &str, sender, nonce| {
+            let mut t = tx(ty, tag, None);
+            t.sender_address = sender;
+            t.nonce = nonce;
+            t.set_id();
+            t
+        };
+        let b = from(TransactionType::NodeServiceBatch, "b", owner, 5);
+        let lower = from(TransactionType::Regular, "lower", owner, 4);
+        let later = from(TransactionType::Regular, "later", owner, 6);
+        let later2 = from(TransactionType::Regular, "later2", owner, 7);
+        let others = from(TransactionType::Regular, "others", other, 6);
+        let mut owners_reveal = reveal("c1");
+        owners_reveal.sender_address = owner;
+        owners_reveal.nonce = 9;
+        owners_reveal.set_id();
+        let mut txs = vec![lower.clone(), b.clone(), later.clone(), later2.clone(), others.clone(), owners_reveal.clone()];
+        assert_eq!(ProofOfPublishing::hold_nonces_behind_node_service(&mut txs), 2);
+        let ids: Vec<_> = txs.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&lower.id), "a lower nonce of the owner stays");
+        assert!(ids.contains(&others.id), "another account is untouched");
+        assert!(ids.contains(&b.id), "the node tx itself stays");
+        assert!(ids.contains(&owners_reveal.id), "reveals are never held here");
+        assert!(!ids.contains(&later.id) && !ids.contains(&later2.id), "the owner's later nonces wait");
+        // No node-service tx: nothing changes.
+        let mut plain = vec![lower, later, others];
+        assert_eq!(ProofOfPublishing::hold_nonces_behind_node_service(&mut plain), 0);
+        assert_eq!(plain.len(), 3);
+        let mut n = 0;
+        let r = run(&state, height, &mut txs, &mut n, true);
+        assert_eq!(r, NodeServiceRevealGuard::Mixed { deferred_reveals: 0, deferred_node_service: 1 });
     }
 
     #[test]
