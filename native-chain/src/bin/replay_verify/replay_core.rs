@@ -166,7 +166,7 @@ pub fn probe_governance_order(state: &State, block: &Block) -> Option<Governance
         })
         .count();
     let Some(start) = (opening..=extracted.len().saturating_sub(governance.len()))
-        .find(|&i| extracted_json[i..i + governance.len()] == governance_json[..])
+        .find(|&i| extracted_json.get(i..i + governance.len()) == Some(&governance_json[..]))
     else {
         let missing = Err("the governance batch was not found among the extracted transitions"
             .to_string());

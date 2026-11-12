@@ -5539,6 +5539,15 @@ impl ProofOfPublishing {
             // Multiply class-based weight by a reputation factor derived from the oracle's
             // fixed-point score in the registry. Clamped to [0.1, 2.0] so a poisoned
             // reputation can't zero out rewards and an exemplary oracle can earn up to 2×.
+            //
+            // The registry is NOT state-root material, and followers recompute
+            // this reward from their own copy of it. The key is the reveal
+            // sender's address (40 hex); every chain writer of reputation keys
+            // by oracle id (a 64-hex public key on 888), so today this always
+            // reads the default score on every node. Keep it that way, or put
+            // the registry's scores into the root in a flagged change first:
+            // a score that could differ between nodes here would split them.
+            // Pinned by `reward_pass_sees_default_reputation_for_an_address_key`.
             let oracle_id = hex::encode(tx.sender_address.0);
             let raw_rep = reward_state.oracle_registry().reputation_score(&oracle_id);
             let rep_factor = (raw_rep as f64 / SCORE_SCALE as f64).clamp(0.1, 2.0);
@@ -20198,6 +20207,82 @@ mod tests {
             "expected high-reputation ({high_score}) to earn more than low-reputation ({low_score}): \
              high={high_reward}, low={low_reward}"
         );
+    }
+
+    /// The reward pass looks reputation up under the reveal sender's address
+    /// (40 hex characters). Every chain writer of `reputation_scores` keys by
+    /// oracle id, a 64-hex public key on chain 888 (attestation and receipt
+    /// signals), so on a real chain the lookup sees the default score. The
+    /// registry is not state-root material, so this test pins that scores
+    /// written under oracle ids never reach the reward: the reward equals the
+    /// one with nothing written and the one with the default written under the
+    /// address key.
+    #[test]
+    fn reward_pass_sees_default_reputation_for_an_address_key() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let (oracle_a_sk, oracle_a_id) = oracle_identity(811);
+        let (oracle_b_sk, oracle_b_id) = oracle_identity(812);
+        let contributor_addr = addr(33);
+        assert_eq!(hex::encode(contributor_addr.0).len(), 40, "address key: 40 hex characters");
+        assert_eq!(oracle_a_id.len(), 64, "oracle id key: 64 hex characters, so the two never collide");
+
+        let run = |seed: &dyn Fn(&mut Blockchain), tag: &str| -> Balance {
+            let station_id = format!("station-rep-default-{tag}");
+            let mut chain = Blockchain::default();
+            chain
+                .state
+                .governance
+                .params
+                .contributor_tier_policy
+                .trusted_provider_station_ids
+                .insert(station_id.clone());
+            chain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![oracle_a_id.clone(), oracle_b_id.clone()],
+                    oracle_quorum: 2,
+                })
+                .unwrap();
+            seed(&mut chain);
+            chain.state.create_account(contributor_addr, Balance::new(0));
+            register_real_test_station(&mut chain, &station_id, contributor_addr);
+            let timestamp = 1_700_330_000i64;
+            let (commit, mut reveal, commit_id) = build_commit_and_reveal(
+                TransactionType::ContributionReveal,
+                &station_id,
+                "contribution",
+                timestamp,
+                serde_json::json!({"quality":1.0,"volume":1.0,"uniqueness":1.0}),
+                tag,
+            );
+            reveal.sender_address = contributor_addr;
+            let att_a = signed_attestation_tx(&commit_id, &oracle_a_sk, &oracle_a_id, true, timestamp + 1, &format!("{tag}-a"));
+            let att_b = signed_attestation_tx(&commit_id, &oracle_b_sk, &oracle_b_id, true, timestamp + 2, &format!("{tag}-b"));
+            let mut block = Block::new(3, chain.tip, vec![commit, reveal, att_a, att_b], 1, 1);
+            pop.apply_contribution_rewards(&mut chain, &mut block).unwrap();
+            decided_reward_with_clamped_credit(&chain, &block, &commit_id, &contributor_addr)
+        };
+
+        let untouched = run(&|_| {}, "untouched");
+        let oracle_keyed = run(
+            &|chain: &mut Blockchain| {
+                let registry = chain.state.oracle_registry_mut();
+                registry.set_reputation_score(&oracle_a_id, SCORE_SCALE * 95 / 100);
+                registry.set_reputation_score(&oracle_b_id, SCORE_SCALE * 5 / 100);
+            },
+            "oracle-keyed",
+        );
+        let default_under_address = run(
+            &|chain: &mut Blockchain| {
+                chain
+                    .state
+                    .oracle_registry_mut()
+                    .set_reputation_score(&hex::encode(contributor_addr.0), SCORE_SCALE * 50 / 100);
+            },
+            "address-default",
+        );
+        assert!(untouched > Balance::new(0), "vacuity guard: the reveal is paid");
+        assert_eq!(oracle_keyed, untouched, "scores under oracle ids must not reach the reward");
+        assert_eq!(default_under_address, untouched, "the untouched lookup is the default score");
     }
 
     #[test]

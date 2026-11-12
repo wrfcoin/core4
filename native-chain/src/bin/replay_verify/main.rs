@@ -62,6 +62,7 @@ use replay_core::{
     ReplayVerdict, probe_governance_order, replay_persisted_chain_with_block_precheck,
 };
 use wrfcoin_native_chain::storage::Storage;
+use wrfcoin_shared_protocol::consensus::proof_of_publishing::RECOMPUTED_METADATA_KEYS;
 
 fn main() {
     let mut compare_metadata = false;
@@ -118,6 +119,7 @@ fn main() {
     let mut order_agree = 0u64;
     let mut order_disagree_heights: Vec<u64> = Vec::new();
     let mut order_committed_mismatch_heights: Vec<u64> = Vec::new();
+    // determinism-ok: offline replay tool; the elapsed time is printed only (replay_wall_seconds), never fed into state, roots or any verdict
     let started = std::time::Instant::now();
 
     let mut checkpoint_assertions = 0u64;
@@ -140,7 +142,7 @@ fn main() {
                     block.height, mismatch.code, mismatch.key, mismatch.detail
                 );
             }
-            for key in ["governance_transitions", "reward_entries", "oracle_local_accuracy_entries"] {
+            for key in RECOMPUTED_METADATA_KEYS.iter().map(|(key, _)| *key) {
                 if block.metadata.get(key).is_some_and(|raw| raw != "[]") {
                     *blocks_with_key.entry(key).or_default() += 1;
                 }
@@ -206,7 +208,7 @@ fn main() {
         for (code, count) in &metadata_differences {
             println!("metadata_differences code={code} count={count}");
         }
-        for key in ["governance_transitions", "reward_entries", "oracle_local_accuracy_entries"] {
+        for key in RECOMPUTED_METADATA_KEYS.iter().map(|(key, _)| *key) {
             println!(
                 "metadata_blocks_with_key key={key} count={}",
                 blocks_with_key.get(key).copied().unwrap_or(0)
