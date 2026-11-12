@@ -5,7 +5,7 @@ use super::{GovernanceParameterUpdate, State, StateError, StateTransition};
 use crate::{common::types::Address, crypto::signature::PublicKey};
 
 impl State {
-    fn node_protected_account(&self, address: &Address) -> bool {
+    pub(super) fn node_protected_account(&self, address: &Address) -> bool {
         (self.node_fraud.is_some()
             && *address == crate::consensus::node_fraud::forfeiture_address())
             || self
@@ -175,6 +175,11 @@ impl State {
             | LeaveMiningPool { .. }
             | SetLowQualityStreak { .. }
             | ApplySessionKeyAction { .. }
+            // A score writes no account. A bucket close mints to forecasters
+            // it reads from state; it refuses a protected account itself
+            // (`State::close_forecast_buckets`).
+            | ApplyForecastScore { .. }
+            | CloseForecastBuckets { .. }
             | ApplyStationOwnerAction { .. }
             | ApplyStationOwnerRecoveryCancel { .. }
             | BeginNodeServiceBlock { .. }

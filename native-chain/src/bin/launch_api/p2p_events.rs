@@ -3124,6 +3124,7 @@ pub(crate) fn admissible_gossip_txs(
             },
         })
         .filter(|tx| oracle_attestation_admissible(state, tx))
+        .filter(|tx| forecast_score_admissible(state, tx))
         .collect()
 }
 
@@ -3145,6 +3146,38 @@ pub(crate) fn oracle_attestation_admissible(
         },
         // Malformed payloads are left to the mempool, which refuses them.
         None => true,
+    }
+}
+
+/// `forecast_late_score` (node policy, no consensus effect): a gossiped
+/// score is offered to the pool only if every signer is in the chain's oracle
+/// set and every forecast it lists is recorded, unscored and of the attested
+/// commit block in this node's state: the same read-only checks the submit
+/// route runs before admission. Apply stays the authority (it
+/// skips unknown and scored forecasts so racing relays do not fail each
+/// other). Other transaction types pass through.
+pub(crate) fn forecast_score_admissible(
+    state: &wrfcoin_native_chain::blockchain::state::State,
+    tx: &Transaction,
+) -> bool {
+    use wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload;
+    if tx.tx_type != TransactionType::ForecastScore {
+        return true;
+    }
+    // A malformed payload is the mempool's to refuse, with its own code.
+    let Some(payload) = ForecastScorePayload::parse(tx) else {
+        return true;
+    };
+    if !payload.signatures.iter().all(|signer| state.oracle_set.contains(&signer.oracle)) {
+        log::debug!("P2P forecast score not admitted: a signer is not in the oracle set");
+        return false;
+    }
+    match state.forecast_late_score.check_admissible_score(&payload) {
+        Ok(()) => true,
+        Err(error) => {
+            log::debug!("P2P forecast score not admitted: {error}");
+            false
+        },
     }
 }
 
@@ -7634,6 +7667,8 @@ mod tests {
             field!("advisory_proposals", |s| field_json(
                 &s.advisory_proposals.iter().collect::<Vec<_>>()
             )),
+            // BTreeMaps throughout: compared as one ordered value.
+            field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
         ]
     }
 
@@ -11415,6 +11450,9 @@ mod tests {
             // Producer/applier/WAL parity with populated proposals:
             // native-chain/tests/advisory_governance_parity.rs.
             "advisory_proposals",
+            // Apply-path coverage with recorded, scored and paid forecasts:
+            // shared-protocol/tests/forecast_late_score.rs.
+            "forecast_late_score",
         ]
         .into_iter()
         .collect();
@@ -15940,6 +15978,301 @@ mod station_registration_admission_tests {
             ingest_gossiped_transaction(&mut pool, registration_tx("r"), &keys),
             GossipIngest::RefusedByPolicy("station_registration_gossip")
         );
+    }
+
+    /// `forecast_late_score`: a gossiped score naming an unknown or an
+    /// already-scored forecast is not offered to the pool; one naming a
+    /// recorded, unscored forecast of the attested block is. Other types pass.
+    #[test]
+    fn gossiped_scores_must_name_recorded_unscored_forecasts() {
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+        };
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        for (commit_id, skill) in [("f", None), ("s", Some(10))] {
+            state.forecast_late_score.records.insert(
+                commit_id.to_string(),
+                ForecastRecord {
+                    forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                    station_id: attestation.station_id.clone(),
+                    variable: attestation.variable,
+                    value: 1_950,
+                    lead_hours: attestation.lead_hours,
+                    commit_height: attestation.commit_height,
+                    commit_time: attestation.commit_time,
+                    target: attestation.target,
+                    reveal_height: attestation.commit_height + 1,
+                    skill,
+                },
+            );
+        }
+        let score = |ids: &[&str]| {
+            let payload = ForecastScorePayload {
+                attestation: attestation.clone(),
+                signatures: Vec::new(),
+                forecast_commit_ids: ids.iter().map(|id| id.to_string()).collect(),
+            };
+            let mut tx = Transaction::new(Vec::new(), Vec::new());
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &score(&["f"])), "recorded and unscored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["unknown"])), "never recorded");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["s"])), "already scored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["f", "unknown"])), "one bad id refuses the score");
+        // Through the live ingress filter: only the admissible score survives.
+        let survivors = crate::p2p_events::admissible_gossip_txs(
+            &state,
+            10,
+            vec![score(&["unknown"]), score(&["s"]), score(&["f"])],
+        );
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].id, score(&["f"]).id);
+        // Another type is not affected.
+        let mut other = Transaction::new(Vec::new(), Vec::new());
+        other.tx_type = TransactionType::Transfer;
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &other));
+    }
+
+    /// A gossiped score whose signers include an identity outside the chain's
+    /// oracle set is not offered to the pool, even when that identity still
+    /// holds an Oracle key in the registry; the pending score stays.
+    #[tokio::test]
+    async fn gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered() {
+        const NAME: &str = "p2p_events::station_registration_admission_tests::gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered";
+        if crate::helpers::test_env::isolated_chain_domain(NAME, "777", "testnet", "0x2727272727272727272727272727272727272727", "none") {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
+            forecast_score_message, score_outpoint,
+        };
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ChainIdentity, ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::security::key_registry::{SigningKeyRegistry, SigningRole};
+        refresh_feature_schedule_extensions(vec![
+            (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 0),
+            (ConsensusFeature::ForecastLateScore.name().to_string(), 0),
+        ]);
+        const HEIGHT: u64 = 3_000;
+        let key = |seed: u8| PrivateKey::from_bytes(&[seed; 32]).unwrap();
+        let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
+        let (o1, o2, outsider) = (key(0x31), key(0x32), key(0x39));
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let identity = ChainIdentity::active();
+        let ids = vec!["f".to_string()];
+        let score = |signers: &[&PrivateKey]| {
+            let message = forecast_score_message(&identity.chain_id, &identity.network_id, &attestation, &ids);
+            let mut signatures: Vec<ObservationSignature> = signers
+                .iter()
+                .map(|k| ObservationSignature { oracle: id(k), ed25519: k.sign(&message).to_hex() })
+                .collect();
+            signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
+            let payload = ForecastScorePayload { attestation: attestation.clone(), signatures, forecast_commit_ids: ids.clone() };
+            let mut tx = Transaction::new(
+                vec![TransactionInput {
+                    txid: score_outpoint(&identity.chain_id, &identity.network_id, &payload),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 0,
+                    address: wrfcoin_shared_protocol::common::types::Address([0x77; 20]).to_string(),
+                    script: "OP_TRUE".into(),
+                    nft_data: None,
+                }],
+            );
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.sender_address = wrfcoin_shared_protocol::common::types::Address([0x77; 20]);
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        // All three keys are registered; only o1 and o2 are in the oracle set.
+        let mut keys = SigningKeyRegistry::default();
+        for k in [&o1, &o2, &outsider] {
+            keys.ensure_legacy_identity_key(&id(k), SigningRole::Oracle, 0).unwrap();
+        }
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        state.oracle_set = [id(&o1), id(&o2)].into_iter().collect();
+        state.forecast_late_score.records.insert(
+            "f".into(),
+            ForecastRecord {
+                forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                station_id: attestation.station_id.clone(),
+                variable: attestation.variable,
+                value: 1_950,
+                lead_hours: attestation.lead_hours,
+                commit_height: attestation.commit_height,
+                commit_time: attestation.commit_time,
+                target: attestation.target,
+                reveal_height: attestation.commit_height + 1,
+                skill: None,
+            },
+        );
+        let pending = score(&[&o1, &o2]);
+        let superset = score(&[&o1, &o2, &outsider]);
+        let mut pool = Mempool::new(&Config::default());
+        if let Err(e) = Mempool::new(&Config::default())
+            .add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT))
+        {
+            panic!("the base score must be admissible: {e}");
+        }
+        for tx in crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![pending.clone()]) {
+            assert_eq!(
+                crate::p2p_events::ingest_gossiped_transaction_at_height(&mut pool, tx, &keys, Some(HEIGHT)),
+                GossipIngest::Admitted
+            );
+        }
+        assert!(pool.contains(&pending.id.unwrap()));
+        // The live ingress: the superset never reaches the pool.
+        let offered = crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![superset.clone()]);
+        assert!(offered.is_empty(), "a signer outside the oracle set is not offered");
+        assert!(pool.contains(&pending.id.unwrap()), "the pending score stays");
+        assert!(!pool.contains(&superset.id.unwrap()));
+        assert_eq!(pool.size(), 1);
+        // The pool checks signatures against the registry only; the oracle-set
+        // requirement is enforced by the gossip filter.
+        let mut bare = Mempool::new(&Config::default());
+        bare.add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT)).unwrap();
+        bare.add_transaction_with_signing_keys_at_height(superset.clone(), Some(&keys), Some(HEIGHT))
+            .expect("the pool checks signatures against the registry only");
+    }
+
+    /// Every non-test caller of the registry-checked admission path in this
+    /// binary, pinned. Only the gossip ingest passes a real registry (so a
+    /// `ForecastScore` can pass admission there), and it filters through the
+    /// oracle-set and forecast checks first; `helpers.rs` passes one only for
+    /// `OracleAttestation`; every other caller passes `None`, which fails a
+    /// score closed. A new caller must be added here, with its set check.
+    /// The gossip ingest itself has one non-test caller, the live
+    /// `NewTransactions` arm, which runs `admissible_gossip_txs` first.
+    #[test]
+    fn forecast_score_admission_callers_all_check_the_oracle_set() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/launch_api");
+        let mut found: Vec<(String, String)> = Vec::new();
+        let mut ingest_calls: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() { // key-file-exempt: reads Rust source for a guard test
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != "tests") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                let body = source.find("\n#[cfg(test)]\nmod ").map_or(source.as_str(), |cut| &source[..cut]);
+                let rel = path.strip_prefix(&root).unwrap().display().to_string();
+                for (at, _) in body.match_indices("add_transaction_with_signing_keys_at_height(") {
+                    let args: String = body[at..].chars().skip(44).take(120).collect();
+                    let keys_arg = args.split(',').nth(1).unwrap_or("").trim().to_string();
+                    found.push((rel.clone(), keys_arg));
+                }
+                // The gossip ingest passes a real registry, so each of its callers
+                // must run `admissible_gossip_txs` first. Pin them.
+                for (at, _) in body.match_indices("ingest_gossiped_transaction_at_height(") {
+                    if body[..at].ends_with("fn ") {
+                        continue;
+                    }
+                    let item_start = body[..at].rfind("\n}\n").map_or(0, |i| i + 3);
+                    let header = &body[item_start..at];
+                    let header = &header[..header.find("fn ").unwrap_or(header.len())];
+                    if header.contains("#[cfg(test)]") {
+                        continue;
+                    }
+                    let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = body[at..].find('\n').map_or(body.len(), |i| at + i);
+                    ingest_calls.push((rel.clone(), body[line_start..line_end].trim().to_string()));
+                }
+            }
+        }
+        assert_eq!(
+            ingest_calls,
+            vec![(
+                "p2p_events.rs".to_string(),
+                "let _ = ingest_gossiped_transaction_at_height(&mut mp, tx, &signing_keys, Some(height));".to_string()
+            )],
+            "the only non-test gossip ingest caller is the live NewTransactions arm"
+        );
+        {
+            let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+            let arm = &source[source.find("P2pEvent::NewTransactions(tx_bytes_vec) => {").unwrap()..];
+            let arm = &arm[..arm.find("P2pEvent::PeerConnected(").unwrap()];
+            let filtered = arm.find("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);").unwrap();
+            let looped = arm.find("for tx in admissible {").unwrap();
+            let ingested = arm.find("ingest_gossiped_transaction_at_height(").unwrap();
+            assert!(filtered < looped && looped < ingested, "the live arm ingests only what admissible_gossip_txs kept");
+        }
+        found.sort();
+        for (file, keys_arg) in &found {
+            match (file.as_str(), keys_arg.as_str()) {
+                (_, "None") => {},
+                ("p2p_events.rs", "Some(signing_keys)") => {
+                    let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    let filter = &source[source.find("pub(crate) fn forecast_score_admissible(").unwrap()..];
+                    let filter = &filter[..filter.find("\n}\n").unwrap()];
+                    assert!(filter.contains("state.oracle_set.contains(&signer.oracle)"), "gossip: oracle-set check");
+                    assert!(filter.contains("check_admissible_score"), "gossip: forecast check");
+                    assert!(
+                        source.contains(".filter(|tx| forecast_score_admissible(state, tx))"),
+                        "the ingress filter runs the check"
+                    );
+                    assert!(
+                        source.contains("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);"),
+                        "the live arm filters before ingest"
+                    );
+                },
+                ("helpers.rs", "signing_keys.as_ref()") => {
+                    let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    assert!(
+                        source.contains("== wrfcoin_native_chain::blockchain::transaction::TransactionType::OracleAttestation"),
+                        "helpers.rs passes a registry only for OracleAttestation"
+                    );
+                },
+                other => panic!("unreviewed registry-checked admission caller {other:?}: add it here with its oracle-set check"),
+            }
+        }
+        assert!(found.iter().any(|(f, _)| f == "p2p_events.rs"), "{found:?}");
     }
 
     /// The decision does not depend on the node's role: the ingress has no

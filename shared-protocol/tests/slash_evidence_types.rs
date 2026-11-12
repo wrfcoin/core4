@@ -32,7 +32,9 @@ fn appended_evidence_transaction_discriminant_is_36() {
     assert_eq!(bincode::deserialize::<TransactionType>(&42u32.to_le_bytes()).unwrap(), TransactionType::SendAllowlist);
     // Advisory governance appends 43.
     assert_eq!(bincode::deserialize::<TransactionType>(&43u32.to_le_bytes()).unwrap(), TransactionType::AdvisoryGovernance);
-    assert!(bincode::deserialize::<TransactionType>(&44u32.to_le_bytes()).is_err());
+    // The forecast score appends 44.
+    assert_eq!(bincode::deserialize::<TransactionType>(&44u32.to_le_bytes()).unwrap(), TransactionType::ForecastScore);
+    assert!(bincode::deserialize::<TransactionType>(&45u32.to_le_bytes()).is_err());
 }
 
 #[test]

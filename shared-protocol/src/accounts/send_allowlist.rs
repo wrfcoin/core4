@@ -663,7 +663,10 @@ pub const fn value_movement(tx_type: TransactionType) -> ValueMovement {
         | T::SlashEvidenceReport
         | T::NodeServiceBatch
         | T::NodeFraudReport
-        | T::SendAllowlist => V::NotADebit,
+        | T::SendAllowlist
+        // Relayed by anyone, fee-less, debits no account: the lane mints to
+        // forecasters at bucket close.
+        | T::ForecastScore => V::NotADebit,
     }
 }
 

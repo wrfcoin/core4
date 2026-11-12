@@ -107,6 +107,7 @@ pub static MIGRATIONS: &[&dyn CheckpointMigration] = &[
     &MigrationV14ToV15,
     &MigrationV15ToV16,
     &MigrationV16ToV17,
+    &MigrationV17ToV18,
 ];
 
 /// The registered migration that reads `version`, if any.
@@ -573,8 +574,30 @@ impl CheckpointMigration for MigrationV16ToV17 {
         let _: legacy::state_v16::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 16, error: e.to_string() })?;
         let mut migrated = body.to_vec();
         migrated.extend_from_slice(&0u64.to_le_bytes());
-        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 17, error: e.to_string() })?;
-        debug_assert!(current.advisory_proposals.is_empty());
+        let _: legacy::state_v17::State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 17, error: e.to_string() })?;
+        Ok(migrated)
+    }
+}
+
+/// Bytes of an empty forecast late-score state in the checkpoint codec: five
+/// empty maps (pending, records, buckets, pool, track records), each a u64
+/// zero length.
+pub(super) const EMPTY_FORECAST_LATE_SCORE_BYTES: usize = 5 * 8;
+
+/// Format 18 appends the forecast late-score state
+/// (`ConsensusFeature::ForecastLateScore`). A format-17 checkpoint predates
+/// the feature, so the state is empty: append exactly its five u64 zero
+/// lengths. No forecast, bucket, pool or track-record entry is invented.
+pub struct MigrationV17ToV18;
+impl CheckpointMigration for MigrationV17ToV18 {
+    fn from_version(&self) -> u32 { 17 }
+    fn to_version(&self) -> u32 { 18 }
+    fn migrate(&self, body: &[u8]) -> Result<Vec<u8>, MigrationError> {
+        let _: legacy::state_v17::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 17, error: e.to_string() })?;
+        let mut migrated = body.to_vec();
+        migrated.extend_from_slice(&[0u8; EMPTY_FORECAST_LATE_SCORE_BYTES]);
+        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 18, error: e.to_string() })?;
+        debug_assert!(current.forecast_late_score.is_empty());
         Ok(migrated)
     }
 }
@@ -584,9 +607,19 @@ impl CheckpointMigration for MigrationV16ToV17 {
 /// validation prevents an accidental field reorder from silently truncating.
 pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error> {
     let mut payload = bincode::serialize(state)?;
-    // Format 17: any advisory proposal needs the full current layout.
-    if !state.advisory_proposals.is_empty() {
+    // Format 18: any forecast late-score entry needs the full current layout.
+    if !state.forecast_late_score.is_empty() {
         return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
+    }
+    // Empty (always, until `forecast_late_score` is in force): drop its five
+    // u64 zero lengths and continue with the format-17 writer.
+    let suffix = [0u8; EMPTY_FORECAST_LATE_SCORE_BYTES];
+    assert!(payload.ends_with(&suffix), "empty forecast late-score state must be the final field");
+    payload.truncate(payload.len() - suffix.len());
+    let _: legacy::state_v17::State = decode_exact(&payload)?;
+    // Format 17: any advisory proposal needs the format-17 layout.
+    if !state.advisory_proposals.is_empty() {
+        return Ok(envelope(17, &payload));
     }
     // Empty (always, before `advisory_governance` activates): drop the map's
     // u64 zero length and continue with the format-16 writer.
@@ -676,6 +709,7 @@ mod tests {
             vec![0, 0, 0, 0],
             vec![0; 8],
             vec![0; 8],
+            vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES],
         ]
         .concat()
     }
@@ -856,6 +890,7 @@ mod tests {
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
+                &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
             ].concat()
         );
     }
@@ -894,6 +929,7 @@ mod tests {
                 &[0, 0, 0, 0], // absent bond, receipt, settlement and fraud stores
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
+                &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
             ]
             .concat()
         );
@@ -973,7 +1009,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES]]
                 .concat()
                 .as_slice()
         );
@@ -1000,7 +1036,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -1030,14 +1066,14 @@ mod tests {
         assert_eq!(&body(&v11)[..body(&v10).len()], body(&v10));
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
-        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(17));
-        assert_eq!(&body(&golden(17))[body(&v11).len()..], &[0; 20]);
+        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(18));
+        assert_eq!(&body(&golden(18))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
     }
 
     #[test]
     fn v13_off_migrates_exactly_and_prior_node_activation_is_refused() {
         let v13=golden(13);
-        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(17));
+        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(18));
         for receipt_marker in [false,true] {
             // Independent frozen suffix: bond Option tag/body, then the S3
             // receipt Option tag and its original three-field empty body.
@@ -1069,7 +1105,7 @@ mod tests {
         assert_eq!(&body(&v16)[..body(&v15).len()], body(&v15));
         assert_eq!(&body(&v16)[body(&v15).len()..], &[0; 8]);
         let migrated = migrate_to_current(15, body(&v15)).unwrap();
-        assert_eq!(migrated, golden(17));
+        assert_eq!(migrated, golden(18));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.send_allowlists.is_empty());
         // Empty maps: the writer never emits format 16 or 17 (byte-identical
@@ -1095,10 +1131,12 @@ mod tests {
     fn v16_golden_appends_only_the_empty_advisory_proposal_map() {
         let v16 = golden(16);
         let _: legacy::state_v16::State = decode_exact(body(&v16)).unwrap();
+        let v17 = golden(17);
+        assert_eq!(MigrationV16ToV17.migrate(body(&v16)).unwrap(), body(&v17));
+        assert_eq!(&body(&v17)[..body(&v16).len()], body(&v16));
+        assert_eq!(&body(&v17)[body(&v16).len()..], &[0; 8]);
         let migrated = migrate_to_current(16, body(&v16)).unwrap();
-        assert_eq!(migrated, golden(17));
-        assert_eq!(&body(&migrated)[..body(&v16).len()], body(&v16));
-        assert_eq!(&body(&migrated)[body(&v16).len()..], &[0; 8]);
+        assert_eq!(migrated, golden(18));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.advisory_proposals.is_empty());
         let mut with_proposal = state.clone();
@@ -1122,12 +1160,58 @@ mod tests {
                 finalized_at_block: None,
             },
         );
+        // An advisory proposal alone: format 17, the frozen layout.
         let written = encode_compatible(&with_proposal).unwrap();
-        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
-        let back: State = decode_exact(body(&written)).unwrap();
+        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), 17);
+        let frozen: legacy::state_v17::State = decode_exact(body(&written)).unwrap();
+        assert_eq!(frozen.advisory_proposals, with_proposal.advisory_proposals);
+        let back: State = decode_exact(body(&migrate_to_current(17, body(&written)).unwrap())).unwrap();
         assert_eq!(back.advisory_proposals, with_proposal.advisory_proposals);
         // A format-16 body cannot be mislabelled as 17 or vice versa.
-        assert!(migrate_to_current(16, body(&migrated)).is_err());
+        assert!(migrate_to_current(16, body(&v17)).is_err());
+    }
+
+    #[test]
+    fn v17_golden_appends_only_the_empty_forecast_late_score_state() {
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastLateScoreState;
+        let v17 = golden(17);
+        let _: legacy::state_v17::State = decode_exact(body(&v17)).unwrap();
+        let migrated = migrate_to_current(17, body(&v17)).unwrap();
+        assert_eq!(migrated, golden(18));
+        assert_eq!(&body(&migrated)[..body(&v17).len()], body(&v17));
+        assert_eq!(&body(&migrated)[body(&v17).len()..], &[0; EMPTY_FORECAST_LATE_SCORE_BYTES]);
+        assert_eq!(
+            bincode::serialize(&ForecastLateScoreState::default()).unwrap(),
+            vec![0u8; EMPTY_FORECAST_LATE_SCORE_BYTES],
+            "the empty state must be exactly the bytes the migration appends"
+        );
+        let state: State = decode_exact(body(&migrated)).unwrap();
+        assert!(state.forecast_late_score.is_empty());
+        // Empty: the writer keeps the deployed format.
+        let written = encode_compatible(&state).unwrap();
+        assert!(u32::from_le_bytes(written[8..12].try_into().unwrap()) < 16);
+        // Any entry in any of its maps: format 18, full layout, exact round trip.
+        let mut pending = state.clone();
+        pending.forecast_late_score.note_commit("c1", Address([7; 20]), 5, 8);
+        let mut pooled = state.clone();
+        pooled.forecast_late_score.pool.insert(3, Default::default());
+        let mut tracked = state.clone();
+        tracked.forecast_late_score.track_records.insert(
+            "k".into(),
+            wrfcoin_shared_protocol::consensus::forecast_late_score::TrackRecord {
+                skills: vec![-1_000_000, 0, 640_000],
+                last_scored_at: 1_700_000_000,
+            },
+        );
+        for with_entry in [pending, pooled, tracked] {
+            let written = encode_compatible(&with_entry).unwrap();
+            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+            let back: State = decode_exact(body(&written)).unwrap();
+            assert_eq!(back.forecast_late_score, with_entry.forecast_late_score);
+        }
+        // A format-17 body cannot be mislabelled as 18 or vice versa.
+        assert!(migrate_to_current(17, body(&migrated)).is_err());
+        assert!(decode_exact::<State>(body(&v17)).is_err());
     }
 
     #[test]

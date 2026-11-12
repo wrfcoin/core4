@@ -87,6 +87,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "streak_replay_recipient_parity",
     "station_registrar_key",
     "advisory_governance",
+    "forecast_late_score",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -341,7 +342,8 @@ mod tests {
                 "bond_admission_key",
                 "streak_replay_recipient_parity",
                 "station_registrar_key",
-                "advisory_governance"
+                "advisory_governance",
+                "forecast_late_score"
             ]
         );
     }

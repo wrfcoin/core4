@@ -429,6 +429,11 @@ pub enum ScheduleExtensionError {
     /// ADMISSION POLICY, not validity: a feature this binary implements but
     /// marks not schedulable ([`ConsensusFeature::schedulable`]).
     FeatureNotSchedulable { feature: String },
+    /// ADMISSION POLICY, not validity: `forecast_late_score` named before
+    /// `forecaster_key_binding` has been (or will have been) active for
+    /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks, or without the
+    /// key binding scheduled at all.
+    ForecastLateScoreTooEarly { activation_height: u64, key_binding_activation: Option<u64> },
     /// SIGNING policy: a name held by [`HELD_FEATURE_PREFIXES`] is refused by
     /// every library signer that takes no faucet proof of possession
     /// ([`sign_feature_schedule_extension`] and `…_with_key`); it is signed
@@ -568,6 +573,14 @@ impl std::fmt::Display for ScheduleExtensionError {
             Self::FeatureNotSchedulable { feature } => write!(
                 f,
                 "feature {feature} is not schedulable by this binary"
+            ),
+            Self::ForecastLateScoreTooEarly { activation_height, key_binding_activation } => write!(
+                f,
+                "forecast_late_score at height {activation_height} is too early: it must activate at \
+                 least {} blocks after forecaster_key_binding ({})",
+                crate::crypto::chain_binding::FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
+                key_binding_activation
+                    .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
             ),
             Self::FeatureHeld { feature, until } => write!(
                 f,
@@ -1057,10 +1070,51 @@ pub fn check_admission_policy(
             Some(_) => {},
         }
     }
+    check_forecast_late_score_dependency(
+        extension,
+        crate::crypto::chain_binding::effective_feature_schedule()
+            .activation_height(ConsensusFeature::ForecasterKeyBinding.name()),
+    )?;
     if !extension.version_steps.is_empty() {
         return Err(ScheduleExtensionError::VersionStepsNotSupported);
     }
     Ok(())
+}
+
+/// `forecast_late_score` pays the key-bound forecaster, so an extension naming
+/// it is admitted only when `forecaster_key_binding` activates at least
+/// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks earlier.
+/// `scheduled_key_binding` is the key binding's activation on this node, if
+/// any; the same extension may also carry it. ADMISSION POLICY; the consensus
+/// half is [`crate::crypto::chain_binding::forecast_late_score_active`],
+/// which keeps the lane dormant under a schedule this would have refused.
+pub fn check_forecast_late_score_dependency(
+    extension: &FeatureScheduleExtension,
+    scheduled_key_binding: Option<u64>,
+) -> Result<(), ScheduleExtensionError> {
+    let height_of = |feature: ConsensusFeature| {
+        extension
+            .entries
+            .iter()
+            .find(|entry| entry.feature == feature.name())
+            .map(|entry| entry.activation_height)
+    };
+    let Some(activation_height) = height_of(ConsensusFeature::ForecastLateScore) else {
+        return Ok(());
+    };
+    let key_binding_activation =
+        scheduled_key_binding.or_else(|| height_of(ConsensusFeature::ForecasterKeyBinding));
+    if crate::crypto::chain_binding::forecast_late_score_schedule_allowed(
+        activation_height,
+        key_binding_activation,
+    ) {
+        Ok(())
+    } else {
+        Err(ScheduleExtensionError::ForecastLateScoreTooEarly {
+            activation_height,
+            key_binding_activation,
+        })
+    }
 }
 
 /// The name of the feature that gates the extension transaction itself (V1).

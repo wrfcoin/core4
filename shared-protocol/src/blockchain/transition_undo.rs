@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 79],
+    records: [Option<Undo>; 80],
 }
 
 impl TransitionUndo {
@@ -96,6 +96,7 @@ impl TransitionUndo {
             node_fraud: _,
             send_allowlists: _,
             advisory_proposals: _,
+            forecast_late_score: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -188,6 +189,7 @@ impl TransitionUndo {
             capture!(node_fraud),
             capture!(send_allowlists),
             capture!(advisory_proposals),
+            capture!(forecast_late_score),
         ];
         Self { records }
     }
@@ -311,7 +313,14 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         ApplyGamificationReward { .. } => &["gamification_claims_seen"],
         ApplyProducerSettlement { .. } => &["last_producer_settlement"],
         ApplyAttesterSettlements { .. } => &["attester_settlements", "attester_settlement_due"],
-        RegisterCommit { .. } => &["commit_reveal_state", "pending_commits", "pending_reveals"],
+        // `forecast_late_score`: a forecast commit notes its signer; a
+        // forecast reveal stores a record.
+        RegisterCommit { .. } => &[
+            "commit_reveal_state",
+            "pending_commits",
+            "pending_reveals",
+            "forecast_late_score",
+        ],
         ApplyReveal { .. } => &[
             "commit_reveal_state",
             "pending_commits",
@@ -326,6 +335,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             "slashing_engine",
             "slashing_reason_counts",
             "zk_verified_proofs",
+            "forecast_late_score",
         ],
         ApplyConfidentialTransfer { .. }
         | ApplyShieldedDeposit { .. }
@@ -384,6 +394,9 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         | ApplyNodeFraudReport { .. } => NODE,
         // Writes the record; the deposit refund is a balance (COMMON).
         FinalizeAdvisoryProposal { .. } => &["advisory_proposals"],
+        // Scores and bucket closes write only the lane's own state; the
+        // close's mints are balances and the emission ledger (COMMON).
+        ApplyForecastScore { .. } | CloseForecastBuckets { .. } => &["forecast_late_score"],
     }
 }
 
@@ -494,5 +507,7 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
+        StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
+        StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
     }
 }
