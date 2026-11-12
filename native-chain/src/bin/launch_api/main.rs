@@ -4240,6 +4240,8 @@ mod tests {
     }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
+    #[cfg(feature = "p2p")]
+    mod producer_persist_3544;
     #[path = "reward_address_index.rs"]
     mod reward_address_index;
     #[path = "reward_history_newest.rs"]
