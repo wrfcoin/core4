@@ -680,7 +680,7 @@ fn authoritative_rejection_does_not_strand_open_backtrack() {
                 assert_eq!(local.height, 3, "shadow accepted the junk extension");
                 // launch_api: authoritative apply rejects it (rule rejection).
                 mgr.note_authoritative_rejection(&empty_peer, 2, AuthoritativeSyncRejectionAttribution::LocalRuleRejection);
-                mgr.note_rule_rejection_at(&empty_peer, 3, now);
+                mgr.note_rule_rejection_at(&empty_peer, 3, [0xEE; 32], now);
                 local = pristine.clone();
                 continue;
             }

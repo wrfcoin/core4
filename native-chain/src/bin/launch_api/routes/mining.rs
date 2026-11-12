@@ -39,6 +39,31 @@ pub async fn mine_block(
     state: web::Data<AppState>,
     request: web::Json<MineBlockRequest>,
 ) -> impl Responder {
+    mine_block_with_persist_control(
+        req,
+        state,
+        request,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+// Per-call controls mirror the checkpoint fault and durability barrier.
+// They are absent from production and cannot affect a concurrent request.
+#[cfg(test)]
+pub(crate) struct ProducerPersistTestControl {
+    pub omit_checkpoint: bool,
+    pub barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    pub candidate_bytes: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+pub(crate) async fn mine_block_with_persist_control(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    request: web::Json<MineBlockRequest>,
+    #[cfg(test)] persist_control: Option<&ProducerPersistTestControl>,
+) -> HttpResponse {
     if let Err(resp) = require_role(&req, &state, ApiRole::Operator) {
         return resp;
     }
@@ -91,7 +116,12 @@ pub async fn mine_block(
                 next_height,
                 "block production (/blocks/mine)",
             );
-            return envelope_error(&req, StatusCode::SERVICE_UNAVAILABLE, "UPGRADE_REQUIRED", message);
+            return envelope_error(
+                &req,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "UPGRADE_REQUIRED",
+                message,
+            );
         }
     }
 
@@ -195,7 +225,10 @@ pub async fn mine_block(
             } else if is_block_one_no_oracle_set {
                 (StatusCode::UNPROCESSABLE_ENTITY, "BLOCK_ONE_NO_ORACLE_SET")
             } else if is_block_one_no_faucet_address {
-                (StatusCode::UNPROCESSABLE_ENTITY, "BLOCK_ONE_NO_FAUCET_ADDRESS")
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "BLOCK_ONE_NO_FAUCET_ADDRESS",
+                )
             } else if is_stale_tip {
                 (StatusCode::CONFLICT, "CONFLICT")
             } else {
@@ -209,7 +242,12 @@ pub async fn mine_block(
                     ),
                 );
             };
-            return envelope_error(&req, status, code, format!("Consensus stateful block creation failed: {e}"));
+            return envelope_error(
+                &req,
+                status,
+                code,
+                format!("Consensus stateful block creation failed: {e}"),
+            );
         },
     };
     // #2290 PRODUCER-AUTH GATE ON THE LOCAL PRODUCTION PATH.
@@ -273,6 +311,17 @@ pub async fn mine_block(
     // engine performed on the staging pool are diffed out and replayed against
     // the live pool, so concurrently admitted transactions survive.
     // ---------------------------------------------------------------------
+    let hash = block.hash.unwrap_or_else(|| block.calculate_hash());
+    let state_transitions = extract_transitions(
+        &pre_block_state,
+        &block,
+        block.height,
+        block.timestamp.timestamp(),
+    );
+
+    #[cfg(feature = "p2p")]
+    let committed_state_root = staged_blockchain.read().await.state.state_root.0;
+
     let removed_mempool_ids: Vec<_> = {
         let staged = staged_mempool.read().await;
         mempool_ids_before
@@ -301,6 +350,60 @@ pub async fn mine_block(
                  the block was being built. Retry.",
             );
         }
+        // Keep the live chain guard through the durable boundary. API readers
+        // cannot observe the candidate, and failure leaves the original chain,
+        // mempool and process-wide upgrade schedule completely untouched.
+        let (checkpoint_state, finalized_height) = {
+            let staged = staged_blockchain.read().await;
+            let storage = state.storage.read().await;
+            (
+                storage.checkpoint_state_bytes(block.height, &staged.state),
+                staged.finalized_height(),
+            )
+        };
+        #[cfg(test)]
+        let checkpoint_state = if let Some(control) = persist_control {
+            control.capture_candidate(&block);
+            if let Some((reached, resume)) = &control.barrier {
+                reached.notify_one();
+                resume.notified().await;
+            }
+            if control.omit_checkpoint {
+                Ok(None)
+            } else {
+                checkpoint_state
+            }
+        } else {
+            checkpoint_state
+        };
+        let persisted = match checkpoint_state {
+            Ok(checkpoint_state) => {
+                state
+                    .storage
+                    .write()
+                    .await
+                    .persist_block_with_finalized(
+                        block.clone(),
+                        state_transitions.clone(),
+                        checkpoint_state,
+                        finalized_height,
+                    )
+                    .await
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = persisted {
+            return crate::helpers::envelope_redacted(
+                &req,
+                wrfcoin_native_chain::security::error_redaction::InternalError::new(
+                    wrfcoin_native_chain::security::error_redaction::ErrorKind::Storage,
+                    format!(
+                        "producer persistence failed height={} hash={}: {error}",
+                        block.height, hash
+                    ),
+                ),
+            );
+        }
         // Cheap move out of the staging handle; the emptied Default is dropped.
         *blockchain = std::mem::take(&mut *staged_blockchain.write().await);
         // #3277 F4: a self-cut node re-resolves its base from the block 1 it
@@ -319,14 +422,6 @@ pub async fn mine_block(
             mempool.remove_transaction(tx_id);
         }
     }
-
-    let hash = block.hash.unwrap_or_else(|| block.calculate_hash());
-    let state_transitions = extract_transitions(
-        &pre_block_state,
-        &block,
-        block.height,
-        block.timestamp.timestamp(),
-    );
 
     let block_height = block.height;
     let tx_count = block.transactions.len();
@@ -351,11 +446,7 @@ pub async fn mine_block(
 
     #[cfg(feature = "p2p")]
     if let Some(ref p2p) = state.p2p {
-        let sr: [u8; 32] = {
-            let bc = state.blockchain.read().await;
-            bc.state.state_root.0
-        };
-        notify_p2p_chain_advanced(p2p, &block, true, sr);
+        notify_p2p_chain_advanced(p2p, &block, true, committed_state_root);
     }
 
     // Broadcast NewBlock event to WebSocket subscribers (#1081).
@@ -432,35 +523,6 @@ pub async fn mine_block(
         }
     }
 
-    // Persist block and transitions to storage (moves block — must be last).
-    let (checkpoint_state, finalized_height) = {
-        let blockchain = state.blockchain.read().await;
-        let storage = state.storage.read().await;
-        (
-            storage.checkpoint_state_bytes(block_height, &blockchain.state),
-            blockchain.finalized_height(),
-        )
-    };
-    match checkpoint_state {
-        Ok(checkpoint_state) => {
-            let mut storage = state.storage.write().await;
-            if let Err(e) = storage
-                .persist_block_with_finalized(
-                    block,
-                    state_transitions,
-                    checkpoint_state,
-                    finalized_height,
-                )
-                .await
-            {
-                log::error!("Failed to persist block {}: {}", block_height, e);
-            }
-        },
-        Err(e) => {
-            log::error!("Failed to persist block {}: {}", block_height, e);
-        },
-    }
-
     HttpResponse::Created().json(MineBlockResponse {
         height: block_height,
         hash: hash.to_string(),
@@ -520,4 +582,17 @@ pub async fn get_mining_stats(state: web::Data<AppState>) -> impl Responder {
         "difficulty": difficulty,
         "avg_block_time_secs": avg_block_time_secs,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProducerPersistTestControl;
+    use wrfcoin_native_chain::blockchain::block::Block;
+
+    impl ProducerPersistTestControl {
+        pub(super) fn capture_candidate(&self, block: &Block) {
+            *self.candidate_bytes.lock().expect("test capture mutex") =
+                bincode::serialize(block).expect("test candidate block encoding");
+        }
+    }
 }
