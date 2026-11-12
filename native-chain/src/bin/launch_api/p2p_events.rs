@@ -16787,9 +16787,9 @@ mod station_registration_admission_tests {
     }
 
     /// Every non-test caller of the registry-checked admission path in this
-    /// binary, pinned. Only the gossip ingest passes a real registry (so a
-    /// `ForecastScore` can pass admission there), and it filters through the
-    /// oracle-set and forecast checks first; `helpers.rs` passes one only for
+    /// binary, pinned. Only the gossip ingest and the forecast score submit
+    /// route pass a real registry (so a `ForecastScore` can pass admission
+    /// there), and both run the oracle-set and forecast checks first; `helpers.rs` passes one only for
     /// `OracleAttestation`; every other caller passes `None`, which fails a
     /// score closed. A new caller must be added here, with its set check.
     /// The gossip ingest itself has one non-test caller, the live
@@ -16873,6 +16873,13 @@ mod station_registration_admission_tests {
                         source.contains("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);"),
                         "the live arm filters before ingest"
                     );
+                },
+                ("routes/forecast_late_score.rs", "Some(&signing_keys)") => {
+                    let source = std::fs::read_to_string(root.join("routes/forecast_late_score.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    let set_check = source.find("chain.state.oracle_set.contains(&s.oracle)").expect("route: oracle-set check");
+                    let forecast_check = source.find("check_admissible_score(&payload)").expect("route: forecast check");
+                    let admit = source.find("add_transaction_with_signing_keys_at_height(").unwrap();
+                    assert!(set_check < admit && forecast_check < admit, "route: both checks run before admission");
                 },
                 ("helpers.rs", "signing_keys.as_ref()") => {
                     let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test

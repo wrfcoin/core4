@@ -8589,6 +8589,7 @@ dependencies = [
  "url",
  "uuid",
  "wrfcoin-build-provenance",
+ "wrfcoin-forecast-score",
  "wrfcoin-shared-protocol",
  "zeroize",
 ]
