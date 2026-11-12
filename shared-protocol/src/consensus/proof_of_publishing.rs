@@ -67,6 +67,72 @@ pub const LATE_QUORUM_COMMIT_IDS_METADATA_KEY: &str = "oracle_reward_late_quorum
 pub const ATTESTER_SETTLEMENTS_METADATA_KEY: &str = "attester_settlements";
 pub const PRODUCER_SETTLEMENT_METADATA_KEY: &str = "producer_settlement";
 
+/// Producer-written metadata keys the follower applies state from, each with
+/// the code a block is refused under when the key differs from the follower's
+/// own derivation ([`ProofOfPublishing::producer_metadata_mismatches`]).
+pub const RECOMPUTED_METADATA_KEYS: &[(&str, &str)] = &[
+    (
+        "governance_transitions",
+        "SP_CONS_METADATA_GOVERNANCE_TRANSITIONS_MISMATCH",
+    ),
+    ("reward_entries", "SP_CONS_METADATA_REWARD_ENTRIES_MISMATCH"),
+    (
+        "oracle_local_accuracy_entries",
+        "SP_CONS_METADATA_ORACLE_ACCURACY_ENTRIES_MISMATCH",
+    ),
+];
+
+/// Refusal code when the follower cannot run the producer sequence on a block
+/// at all, so there is nothing to compare its metadata with.
+pub const METADATA_RECOMPUTE_FAILED_CODE: &str = "SP_CONS_METADATA_RECOMPUTE_FAILED";
+
+/// One producer-written metadata key that differs from the follower's own
+/// derivation. `key` is `"*"` under [`METADATA_RECOMPUTE_FAILED_CODE`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducerMetadataMismatch {
+    pub code: &'static str,
+    pub key: &'static str,
+    pub detail: String,
+}
+
+/// The typed content of one recomputed metadata key, re-serialized. `None` for
+/// an absent key and for an empty list: both claim nothing.
+fn canonical_recomputed_metadata(
+    key: &str,
+    raw: Option<&String>,
+) -> std::result::Result<Option<String>, String> {
+    fn typed<T: serde::de::DeserializeOwned + Serialize>(
+        raw: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let entries: Vec<T> = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        serde_json::to_string(&entries).map(Some).map_err(|e| e.to_string())
+    }
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    match key {
+        "governance_transitions" => typed::<StateTransition>(raw),
+        "reward_entries" => typed::<ContributionRewardRecord>(raw),
+        "oracle_local_accuracy_entries" => typed::<(String, String, u32, u32)>(raw),
+        other => Err(format!("'{other}' is not a recomputed metadata key")),
+    }
+}
+
+/// A bounded, log-safe rendering of one side of a metadata mismatch.
+fn describe_recomputed_metadata(canonical: Option<&str>) -> String {
+    match canonical {
+        None => "nothing".to_string(),
+        Some(json) => format!(
+            "{} bytes (sha3 {})",
+            json.len(),
+            hex::encode(&hash_bytes(json.as_bytes()).as_bytes()[..8])
+        ),
+    }
+}
+
 /// Number of decisions settled in this block (#2846). Written on every block
 /// that runs contribution-reward processing, so a steady `0` is an observation
 /// rather than an absent key.
@@ -3620,26 +3686,8 @@ impl ProofOfPublishing {
         // Saturating arithmetic is only for diagnostic context; the existing
         // block-height calculation below remains unchanged.
         let refusal_height = chain.height.saturating_add(1);
-        self.set_data_quality_policy(chain.state.governance.params.data_quality_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_DATA_QUALITY_POLICY", refusal_height, err))?;
-        self.set_pop_liveness_policy(chain.state.governance.params.pop_liveness_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_POP_LIVENESS_POLICY", refusal_height, err))?;
-        self.set_task_assigner_policy(chain.state.governance.params.task_assigner_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_TASK_ASSIGNER_POLICY", refusal_height, err))?;
-        self.set_scarcity_policy(chain.state.governance.params.scarcity_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_SCARCITY_POLICY", refusal_height, err))?;
-        self.set_multidomain_reward_policy(
-            chain
-                .state
-                .governance
-                .params
-                .multidomain_reward_policy
-                .clone(),
-        ).map_err(|err| Self::refuse("SP_CONS_MULTIDOMAIN_REWARD_POLICY", refusal_height, err))?;
-
-        // Sync authorized oracle set for forecast receipt verification
-        self.set_authorized_oracles(chain.state.oracle_registry().oracle_set().clone());
-        self.set_oracle_signing_keys(chain.state.signing_keys.clone());  // secret-copy-ok: SigningKeyRegistry holds public keys only (KeyEpochRecord.public_key)
+        self.sync_engine_from_state(&chain.state)
+            .map_err(|(code, err)| Self::refuse(code, refusal_height, err))?;
 
         // Initialize difficulty adjustment timestamp on first block creation
         // (uses block timestamp for determinism — all nodes see the same value).
@@ -4305,32 +4353,11 @@ impl ProofOfPublishing {
         self.stamp_producer_pubkey(&mut block);
         let mut staged = chain.state.clone();
 
-        // #2464: snapshot quorum status BEFORE any transition is applied.
-        // Governance does not touch attestations, but taking it here keeps the
-        // "pre-transition" contract obvious at every call site.
-        let had_quorum_before_block = Self::commits_with_quorum_before_block(&staged, &block);
-
-        // Governance first (does not touch commit/reveal/attestation state).
-        // The assembly screen, the validation replay and the transition
-        // extractor follow this order when
-        // `chain_binding::governance_before_launch(height)` says so.
-        self.apply_governance_transitions(&mut staged, &mut block)
-            .map_err(|err| Self::refuse("SP_CONS_GOVERNANCE_TRANSITIONS", block.height, err))?;
-
-        // Single-pass verify+apply: transitions are evaluated once, on the
-        // staged State, and never re-replayed. This avoids the previous
-        // double-replay where verify_launch_state_invariants cloned the entire
-        // Blockchain and apply_contribution_rewards re-ran the same
-        // transitions (#779).
-        let revealed_commit_ids = Self::apply_launch_state_transitions_on_state(&mut staged, &block)
-            .map_err(|err| Self::refuse("SP_CONS_LAUNCH_STATE_TRANSITIONS", block.height, err.into()))?;
-
-        self.process_contribution_rewards(
-            &mut staged,
-            &mut block,
-            &revealed_commit_ids,
-            &had_quorum_before_block,
-        ).map_err(|err| Self::refuse("SP_CONS_CONTRIBUTION_REWARDS", block.height, err))?;
+        // The staged sequence (engine sync, quorum snapshot, governance,
+        // launch, rewards) lives in one function shared with the follower's
+        // metadata recompute, so the two cannot drift apart.
+        self.stage_block_on(&mut staged, &mut block)
+            .map_err(|(code, err)| Self::refuse(code, block.height, err))?;
 
         // #1857: finalization (deferred-slashing flush + commit/reveal expiry +
         // state_root recompute) must run AFTER rewards so the producer and the
@@ -6951,6 +6978,176 @@ impl ProofOfPublishing {
             })?;
         }
         Ok((replay, revealed))
+    }
+
+    /// Copy everything the engine reads from chain state while it builds a
+    /// block onto the engine: the five governance policies, the authorized
+    /// oracle set and the oracle signing keys.
+    ///
+    /// The one definition of that copy. `create_next_block` calls it before it
+    /// selects transactions, and [`Self::stage_block_on`] calls it again on the
+    /// state it stages, for the producer and for a follower's metadata
+    /// recompute alike. Both therefore score a block under the policies of the
+    /// state the block builds on, never under whatever the engine last held.
+    /// On failure, returns the refusal code of the policy that did not
+    /// validate.
+    ///
+    /// Block validation calls it too, before `verify_block` (see the consensus
+    /// adapter's `validate_block`): the publishing-score check there scores
+    /// the block with the same engine policies, so it must read them from the
+    /// state the block builds on as well.
+    pub fn sync_engine_from_state(
+        &mut self,
+        state: &State,
+    ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+        let params = &state.governance.params;
+        self.set_data_quality_policy(params.data_quality_policy.clone())
+            .map_err(|err| ("SP_CONS_DATA_QUALITY_POLICY", err))?;
+        self.set_pop_liveness_policy(params.pop_liveness_policy.clone())
+            .map_err(|err| ("SP_CONS_POP_LIVENESS_POLICY", err))?;
+        self.set_task_assigner_policy(params.task_assigner_policy.clone())
+            .map_err(|err| ("SP_CONS_TASK_ASSIGNER_POLICY", err))?;
+        self.set_scarcity_policy(params.scarcity_policy.clone())
+            .map_err(|err| ("SP_CONS_SCARCITY_POLICY", err))?;
+        self.set_multidomain_reward_policy(params.multidomain_reward_policy.clone())
+            .map_err(|err| ("SP_CONS_MULTIDOMAIN_REWARD_POLICY", err))?;
+
+        // Authorized oracle set for forecast receipt verification.
+        self.set_authorized_oracles(state.oracle_registry().oracle_set().clone());
+        self.set_oracle_signing_keys(state.signing_keys.clone()); // secret-copy-ok: SigningKeyRegistry holds public keys only (KeyEpochRecord.public_key)
+        Ok(())
+    }
+
+    /// The producer's staged sequence for one block: everything between the
+    /// pre-block state and block finalization. `staged` is the pre-block state
+    /// on entry and holds the block's governance, launch and reward effects on
+    /// return; `block` gains the metadata those steps write.
+    ///
+    /// THE ONE DEFINITION of that sequence and its order. `create_next_block`
+    /// calls it to build a block, and
+    /// [`Self::producer_metadata_mismatches`] calls it to derive what a
+    /// received block's metadata must be. A change to the steps or their order
+    /// made here reaches both; made anywhere else, upgraded followers would
+    /// refuse every block the change affects.
+    ///
+    /// 1. Copy the engine's policies, oracle set and signing keys from
+    ///    `staged` ([`Self::sync_engine_from_state`]).
+    /// 2. Snapshot which commits already had quorum (#2464), before any
+    ///    transition is applied.
+    /// 3. Governance batch (does not touch commit/reveal/attestation state).
+    ///    The producer always applies it before the launch batch. The assembly
+    ///    screen, the validation replay and the transition extractor follow
+    ///    this order when `chain_binding::governance_before_launch(height)`
+    ///    says so.
+    /// 4. Launch batch, evaluated once on the staged state (#779).
+    /// 5. Reward pass.
+    ///
+    /// On failure, returns the refusal code of the step that failed.
+    fn stage_block_on(
+        &mut self,
+        staged: &mut State,
+        block: &mut Block,
+    ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+        self.sync_engine_from_state(staged)?;
+        let had_quorum_before_block = Self::commits_with_quorum_before_block(staged, block);
+        self.apply_governance_transitions(staged, block)
+            .map_err(|err| ("SP_CONS_GOVERNANCE_TRANSITIONS", err))?;
+        let revealed_commit_ids = Self::apply_launch_state_transitions_on_state(staged, block)
+            .map_err(|err| ("SP_CONS_LAUNCH_STATE_TRANSITIONS", err.into()))?;
+        self.process_contribution_rewards(
+            staged,
+            block,
+            &revealed_commit_ids,
+            &had_quorum_before_block,
+        )
+        .map_err(|err| ("SP_CONS_CONTRIBUTION_REWARDS", err))
+    }
+
+    /// Whether a block at `height` is refused when a producer-written metadata
+    /// key differs from this node's own derivation
+    /// ([`Self::producer_metadata_mismatches`]).
+    ///
+    /// Unconditional. This is the one place a height fence would go if a replay
+    /// of a chain's history in compare mode (`replay_verify --compare-metadata`)
+    /// ever reports a mismatch on a block that chain already accepted.
+    pub const fn producer_metadata_recompute_enforced(_height: u64) -> bool {
+        true
+    }
+
+    /// Derive the producer-written metadata of `block` from `state` (the state
+    /// before the block) and report every key in
+    /// [`RECOMPUTED_METADATA_KEYS`] whose content in the block differs.
+    ///
+    /// The derivation is the producer's own sequence
+    /// ([`Self::stage_block_on`], the function `create_next_block` builds
+    /// with), run on a copy of the state and a copy of the block with those
+    /// keys removed. A key is equal when the bytes match, or
+    /// when both sides decode to the same typed list (an empty list and an
+    /// absent key are the same claim). A derivation that fails is reported
+    /// under [`METADATA_RECOMPUTE_FAILED_CODE`]: an honest producer refuses to
+    /// build such a block.
+    ///
+    /// Neither `state` nor `block` is changed. An empty result means the block
+    /// claims nothing its transactions and the pre-block state do not justify.
+    ///
+    /// The engine itself is changed: its policies, oracle set and signing keys
+    /// are overwritten with those of `state`
+    /// ([`Self::sync_engine_from_state`]). That is the copy the producer makes
+    /// before it mines on `state`, so a node that produces the next block sets
+    /// the same values again, and nothing else reads them between blocks.
+    ///
+    /// The derivation applies transitions to a copy of the state, and state
+    /// apply increments three process-wide operational counters:
+    /// `tx_dropped`, `slashing_events_total` and `key_image_double_spend`. A
+    /// block that triggers one is therefore counted once more on a node that
+    /// validates it. [`Self::verify_launch_state_invariants`] already replays
+    /// the launch batch on a copy and counts the same events a second time in
+    /// the same way. The reward pass itself increments none. These counters
+    /// are monitoring only; no rule reads them.
+    pub fn producer_metadata_mismatches(
+        &mut self,
+        state: &State,
+        block: &Block,
+    ) -> Vec<ProducerMetadataMismatch> {
+        let mut scratch = block.clone();
+        for (key, _) in RECOMPUTED_METADATA_KEYS {
+            scratch.metadata.remove(*key);
+        }
+        let mut staged = state.clone();
+        // The producer's own sequence, by calling it. A step that fails refuses
+        // production, so there is no honest block to compare with.
+        if let Err((code, error)) = self.stage_block_on(&mut staged, &mut scratch) {
+            return vec![ProducerMetadataMismatch {
+                code: METADATA_RECOMPUTE_FAILED_CODE,
+                key: "*",
+                detail: format!("the producer sequence does not run on this block ({code}): {error}"),
+            }];
+        }
+
+        RECOMPUTED_METADATA_KEYS
+            .iter()
+            .filter_map(|(key, code)| {
+                let claimed = block.metadata.get(*key);
+                let recomputed = scratch.metadata.get(*key);
+                if claimed == recomputed {
+                    return None;
+                }
+                let detail = match (
+                    canonical_recomputed_metadata(key, claimed),
+                    canonical_recomputed_metadata(key, recomputed),
+                ) {
+                    (Ok(claimed), Ok(recomputed)) if claimed == recomputed => return None,
+                    (Ok(claimed), Ok(recomputed)) => format!(
+                        "block carries {}, this node derives {}",
+                        describe_recomputed_metadata(claimed.as_deref()),
+                        describe_recomputed_metadata(recomputed.as_deref()),
+                    ),
+                    (Err(error), _) => format!("the block's value does not decode: {error}"),
+                    (_, Err(error)) => format!("the derived value does not decode: {error}"),
+                };
+                Some(ProducerMetadataMismatch { code, key, detail })
+            })
+            .collect()
     }
 
     /// Delegates to `apply_launch_state_transitions_on_state` via `chain.state`.

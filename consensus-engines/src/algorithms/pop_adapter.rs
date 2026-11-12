@@ -245,6 +245,28 @@ impl PopConsensusAdapter {
         });
     }
 
+    /// The metadata comparison `validate_block` enforces, on its own and
+    /// without rejecting anything: every producer-written key of `block` that
+    /// differs from what this node derives from `state` (the state before the
+    /// block). For an offline replay that counts differences over a chain's
+    /// history (`replay_verify --compare-metadata`); not for use inside a
+    /// running node.
+    ///
+    /// # Panics
+    ///
+    /// If the PoP lock is held elsewhere. The replay tool is the only owner.
+    pub fn producer_metadata_mismatches_blocking(
+        &self,
+        state: &wrfcoin_shared_protocol::blockchain::state::State,
+        block: &Block,
+    ) -> Vec<wrfcoin_shared_protocol::consensus::proof_of_publishing::ProducerMetadataMismatch>
+    {
+        self.pop
+            .try_write()
+            .expect("producer_metadata_mismatches_blocking: the PoP lock is held elsewhere")
+            .producer_metadata_mismatches(state, block)
+    }
+
     /// Stateful PoP block production path used by launch API mining.
     ///
     /// This delegates to `ProofOfPublishing::create_next_block`, which applies
@@ -358,7 +380,22 @@ impl ConsensusEngine for PopConsensusAdapter {
         }
 
         let mut pop = self.pop.write().await;
-        pop.set_oracle_signing_keys(chain.state.signing_keys.clone());
+        // Check the block under the governance policies of the state it builds
+        // on, as the producer built it. `verify_block` recomputes the block's
+        // publishing score with the engine's task-assigner, scarcity and
+        // multidomain policies. Without this copy a node that never mines
+        // would score with the engine defaults (and a producing node with
+        // whatever it held at its own last block), and would refuse an honest
+        // block as a score mismatch once any of those policies is not at its
+        // default. Also sets the oracle set and the oracle signing keys.
+        if let Err((code, error)) = pop.sync_engine_from_state(&chain.state) {
+            warn!(
+                "{code}: block at height {} rejected: the chain's governance policies do not \
+                 validate ({error})",
+                block.height
+            );
+            return Ok(false);
+        }
         pop.set_verification_genesis(chain.state.genesis_emission_config.clone());
         let recent_timestamps: Vec<i64> = chain
             .blocks()
@@ -389,6 +426,24 @@ impl ConsensusEngine for PopConsensusAdapter {
             return Ok(false);
         }
 
+        // The block's producer-written metadata is applied to state by
+        // `extract_transitions`. Derive it here from the block's transactions
+        // and the pre-block state, and refuse a block that claims anything
+        // else. Runs last: every cheaper rejection has already had its turn.
+        if ProofOfPublishing::producer_metadata_recompute_enforced(block.height) {
+            let mismatches = pop.producer_metadata_mismatches(&chain.state, block);
+            for mismatch in &mismatches {
+                warn!(
+                    "{}: block at height {} rejected: metadata key '{}' is not what this node \
+                     derives from the block's transactions ({})",
+                    mismatch.code, block.height, mismatch.key, mismatch.detail
+                );
+            }
+            if !mismatches.is_empty() {
+                return Ok(false);
+            }
+        }
+
         Ok(true)
     }
 
@@ -413,7 +468,12 @@ impl ConsensusEngine for PopConsensusAdapter {
         let next_height = chain.height.checked_add(1).ok_or_else(|| {
             ConsensusError::CreationFailed("block height overflow while creating PoP block".into())
         })?;
-        pop.set_authorized_oracles(chain.state.oracle_registry().oracle_set().clone());
+        // Score under the governance policies, oracle set and signing keys of
+        // the state this block builds on, as `create_next_block` and
+        // `validate_block` do.
+        pop.sync_engine_from_state(&chain.state).map_err(|(code, err)| {
+            ConsensusError::CreationFailed(format!("{code}: {err}"))
+        })?;
 
         // Use chain.tip as the typed Hash. The trait passes previous_hash as
         // &str for compatibility, but Block::new requires Hash. Assert they

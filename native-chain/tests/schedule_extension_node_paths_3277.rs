@@ -91,6 +91,7 @@ const CHAIN_INSTALL_PRIMITIVES: &[&str] = &[
     ".load_state(",
     "replay_persisted_chain(",
     "replay_persisted_chain_with_checkpoint_observer(",
+    "replay_persisted_chain_with_block_precheck(",
 ];
 
 const HOOK: &str = "reresolve_base_schedule_if_block1(";
@@ -263,12 +264,16 @@ fn every_replay_wrapper_reaches_the_shared_armed_loop_3317() {
             "replay_persisted_chain_with_checkpoint_observer",
             "replay_persisted_chain_observed_and_checkpoints(",
         ),
+        (
+            "replay_persisted_chain_with_block_precheck",
+            "replay_persisted_chain_observed_and_checkpoints(",
+        ),
     ] {
         assert!(fn_body(path, name).contains(target), "{name} must call {target}");
     }
     assert!(
         fn_body("src/bin/replay_verify/main.rs", "main")
-            .contains("replay_persisted_chain_with_checkpoint_observer("),
+            .contains("replay_persisted_chain_with_block_precheck("),
         "the shipped CLI must use the checkpoint observer and shared armed loop"
     );
 }
