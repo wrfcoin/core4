@@ -2724,6 +2724,7 @@ mod tests {
     mod privacy_admission_tests;
     mod inbound_budget_verdict_tests;
     mod raw_peer_net;
+    mod weather_forwarding_tests;
 
     // --- Branches newly reachable via the harness ------------------------
     //
@@ -3049,22 +3050,21 @@ mod tests {
         );
     }
 
-    /// The test that the harness split left behind (#2118 / #2533).
+    /// A weather message with a signature that cannot verify, dispatched
+    /// through the real `handle_behaviour_event`, is counted and nothing is
+    /// held against the peer it arrived from: not in the churn-resistant
+    /// observe-only score (#2118), not as a `PeerPenalized` event.
     ///
-    /// `observe_persistent_offence_records_but_never_bans` covers the scoring
-    /// rule in isolation; this covers the thing it cannot — that a real
-    /// invalid-signature weather message, dispatched through the real
-    /// `handle_behaviour_event`, actually reaches that scoring call.
-    ///
-    /// That distinction is the whole reason this exists. A RED control on the
-    /// original #2118 work unwired `observe_persistent_offence` and left
-    /// 245/245 green, because every test called the rule directly. This one
-    /// fails when the wiring goes.
+    /// The peer a bad weather message arrives from is whoever relayed it, and
+    /// the signature is checked against a key the sender supplies, so the
+    /// delivery says nothing about that peer. This test used to assert the
+    /// opposite (that the handler fed the observe-only score); the wiring it
+    /// guarded was removed on purpose.
     #[tokio::test]
-    async fn handle_behaviour_event_records_the_observe_only_score() {
+    async fn a_bad_weather_signature_is_counted_and_not_held_against_the_peer() {
         use std::net::{IpAddr, Ipv4Addr};
 
-        let (mut h, _events) = BehaviourHarness::new();
+        let (mut h, mut events) = BehaviourHarness::new();
         let peer = PeerId::random();
         let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
 
@@ -3104,11 +3104,20 @@ mod tests {
         ))
         .await;
 
+        assert_eq!(
+            h.metrics.snapshot(0).weather_msgs_invalid_sig,
+            1,
+            "the signature check ran and the failure is counted, so the event stays visible"
+        );
+        assert_eq!(
+            h.persistent_scores.effective(&peer, ip, 0),
+            0.0,
+            "a bad weather signature must not be scored against the delivering peer"
+        );
+        assert!(h.weather_peer_scores.get(&peer).is_none());
         assert!(
-            h.persistent_scores.effective(&peer, ip, 0) > 0.0,
-            "an invalid weather signature dispatched through the real handler \
-             must reach the churn-resistant score — if this is 0, the observe-only \
-             wiring is gone and nothing else in the suite would notice"
+            matches!(events.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+            "and no PeerPenalized event may reach the launch layer"
         );
     }
 
@@ -4816,91 +4825,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn penalize_invalid_weather_signature_has_all_four_effects() {
-        use super::{MetricsCollector, SyncPeerScore};
-        use crate::scoring::PersistentScore;
-        use std::net::{IpAddr, Ipv4Addr};
-
-        let metrics = std::sync::Arc::new(MetricsCollector::new());
-        let mut scores: rustc_hash::FxHashMap<PeerId, SyncPeerScore> =
-            rustc_hash::FxHashMap::default();
-        let mut persistent = PersistentScore::new(3_600, 3.0);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-
-        let peer = PeerId::random();
-        persistent.note_address(peer, IpAddr::V4(Ipv4Addr::new(10, 4, 4, 1)), 0);
-
-        let before = metrics
-            .weather_msgs_invalid_sig
-            .load(std::sync::atomic::Ordering::Relaxed);
-
-        let banned = super::penalize_invalid_weather_signature(
-            &metrics, &mut scores, &mut persistent, 0, &tx, peer, "test reason",
-        )
-        .await;
-
-        // 1. metric
-        assert_eq!(
-            metrics.weather_msgs_invalid_sig.load(std::sync::atomic::Ordering::Relaxed),
-            before + 1,
-            "the invalid-signature metric must increment"
-        );
-        // 2. PeerId-keyed score
-        assert!(scores.contains_key(&peer), "the offence must be recorded per-peer");
-        assert!(!banned, "one offence is below the ban threshold");
-        // 3. churn-resistant observer — THE effect the RED control could not see before
-        assert!(
-            persistent.effective_for(&peer, 0) > 0.0,
-            "the observe-only score must record the offence; if this passes with the \
-             observe step removed, the seam is not doing its job"
-        );
-        // 4. event
-        match rx.try_recv() {
-            Ok(P2pEvent::PeerPenalized { peer_id, banned: ev_banned, .. }) => {
-                assert_eq!(peer_id, peer);
-                assert_eq!(ev_banned, banned, "event must carry the same decision");
-            },
-            other => panic!("expected PeerPenalized, got {other:?}"),
-        }
-    }
-
-    /// A fresh identity from the same subnet inherits observed suspicion through the seam
-    /// — the churn defect, end to end through the production penalty path.
-    #[tokio::test]
-    async fn penalty_seam_lets_a_fresh_identity_inherit_subnet_suspicion() {
-        use super::{MetricsCollector, SyncPeerScore};
-        use crate::scoring::PersistentScore;
-        use std::net::{IpAddr, Ipv4Addr};
-
-        let metrics = std::sync::Arc::new(MetricsCollector::new());
-        let mut scores: rustc_hash::FxHashMap<PeerId, SyncPeerScore> =
-            rustc_hash::FxHashMap::default();
-        let mut persistent = PersistentScore::new(3_600, 3.0);
-        let (tx, _rx) = tokio::sync::mpsc::channel(64);
-
-        let bad = PeerId::random();
-        persistent.note_address(bad, IpAddr::V4(Ipv4Addr::new(10, 5, 5, 1)), 0);
-        for _ in 0..6 {
-            super::penalize_invalid_weather_signature(
-                &metrics, &mut scores, &mut persistent, 0, &tx, bad, "r",
-            )
-            .await;
-        }
-
-        // Reconnect under a brand-new identity from the same /24.
-        let fresh = PeerId::random();
-        persistent.note_address(fresh, IpAddr::V4(Ipv4Addr::new(10, 5, 5, 2)), 0);
-        assert!(
-            scores.get(&fresh).is_none(),
-            "the PeerId-keyed map sees a clean peer — that IS the defect"
-        );
-        assert!(
-            persistent.effective_for(&fresh, 0) > 0.0,
-            "the churn-resistant score must still see the subnet's history"
-        );
-    }
-
     /// #2118 observe-only: the step records the offence and reports the disagreement,
     /// and — critically — never bans on its own.
     #[test]
@@ -5237,7 +5161,7 @@ fn record_new_handshake_timeouts(
 /// The likeliest trigger is honest: a version-skewed fleet mid-upgrade (#2076)
 /// reconnect-loops against every peer.
 ///
-/// Extracted for the same reason `penalize_invalid_weather_signature` is — the match arm
+/// Extracted so the penalty contract is testable — the match arm
 /// needs a live `Swarm`, which no test in this crate can build, so anything left inline
 /// there is unreachable by tests. `swarm.disconnect_peer_id` stays at the call site: it is
 /// the transport action, not part of the peer-penalty contract.
@@ -5282,53 +5206,6 @@ fn should_refresh_sync_connection(peer_health: Option<&crate::sync::SyncPeerMetr
     peer_health.is_some_and(|health| {
         health.consecutive_transport_failures >= SYNC_CONNECTION_REFRESH_FAILURE_THRESHOLD
     })
-}
-
-/// The complete penalty for an invalid weather-station signature (#2118 test seam).
-///
-/// Extracted so the penalty contract is testable. `handle_behaviour_event` needs a live
-/// `Swarm<WrfcoinBehaviour>` — which no test in this crate can build — so anything left
-/// inline in that match arm is, in practice, unreachable by tests. A RED control proved
-/// exactly that: unwiring the observe-only step from both arms left the whole suite green.
-///
-/// Everything here is plain state, so all four effects are asserted in tests:
-///   1. the invalid-signature metric increments;
-///   2. the PeerId-keyed score records the offence and decides `banned`;
-///   3. the churn-resistant score observes it (#2118, observe-only — never bans);
-///   4. a `PeerPenalized` event is emitted with that decision.
-///
-/// The gossipsub `Reject` stays at the call site: it is the transport's validation
-/// verdict, not part of the peer-penalty contract, and it is the one step that genuinely
-/// needs the swarm.
-///
-/// Returns the `banned` decision, so callers and tests read the same value.
-async fn penalize_invalid_weather_signature(
-    metrics: &Arc<MetricsCollector>,
-    weather_peer_scores: &mut FxHashMap<PeerId, SyncPeerScore>,
-    persistent_scores: &mut crate::scoring::PersistentScore,
-    persistent_now: u64,
-    event_tx: &mpsc::Sender<P2pEvent>,
-    peer: PeerId,
-    reason: &str,
-) -> bool {
-    metrics
-        .weather_msgs_invalid_sig
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let score = weather_peer_scores.entry(peer).or_default();
-    score.record_invalid_weather_sig();
-    let banned = score.is_banned();
-    // #2118 OBSERVE-ONLY. `banned` above is still the decision; this only records where a
-    // churn-resistant policy would differ, so the weight and half-life can be calibrated
-    // before anything disconnects an honest operator.
-    observe_persistent_offence(persistent_scores, peer, banned, persistent_now);
-    let _ = event_tx
-        .send(P2pEvent::PeerPenalized {
-            peer_id: peer,
-            reason: reason.to_string(),
-            banned,
-        })
-        .await;
-    banned
 }
 
 /// Claim one signature verification for `peer`, returning whether the caller
@@ -5428,7 +5305,9 @@ async fn handle_behaviour_event(
     peer_inbound_bytes: &mut FxHashMap<PeerId, u64>,
     peer_inbound_rate_windows: &mut FxHashMap<PeerId, PeerInboundRateState>,
     inbound_rate_limit: InboundRateLimit,
-    weather_peer_scores: &mut FxHashMap<PeerId, SyncPeerScore>,
+    // No longer written: a bad weather signature is not held against the
+    // peer that delivered it. Kept so the handler's callers do not change.
+    _weather_peer_scores: &mut FxHashMap<PeerId, SyncPeerScore>,
     // #2118 observe-only: records what a churn-resistant policy would do. Never bans.
     persistent_scores: &mut crate::scoring::PersistentScore,
     persistent_now: u64,
@@ -5529,6 +5408,17 @@ async fn handle_behaviour_event(
                 metrics
                     .messages_rejected
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Ignore, not Reject: the bytes are not forwarded, and a peer on
+                // a newer wire version is not scored down for a kind this node
+                // does not know.
+                let _ = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .report_message_validation_result(
+                        &message_id,
+                        &propagation_source,
+                        gossipsub::MessageAcceptance::Ignore,
+                    );
                 return;
             };
 
@@ -5539,6 +5429,16 @@ async fn handle_behaviour_event(
                 metrics
                     .messages_rejected
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Ignore, not Reject: the inline size limit is this node's own
+                // setting, so exceeding it is not proof of a bad peer.
+                let _ = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .report_message_validation_result(
+                        &message_id,
+                        &propagation_source,
+                        gossipsub::MessageAcceptance::Ignore,
+                    );
                 return;
             }
 
@@ -5558,14 +5458,31 @@ async fn handle_behaviour_event(
                     );
                 return;
             }
-            let _ = swarm
-                .behaviour_mut()
-                .gossipsub
-                .report_message_validation_result(
-                    &message_id,
-                    &propagation_source,
-                    gossipsub::MessageAcceptance::Accept,
-                );
+            // `Accept` is what releases a message to this node's other peers.
+            // The weather kinds carry checks of their own (nonce, admission,
+            // signature), so their arms below report the verdict once those
+            // have run. Every other kind is accepted here, as before.
+            //
+            // A weather message that fails a check is reported `Ignore`, never
+            // `Reject`: it is not forwarded, and the peer it came from is not
+            // scored down. That peer is whoever relayed it, not its author. A
+            // replayed nonce or a rate limit is a fact about what THIS node has
+            // already seen, and a node on an older release forwards weather
+            // before checking it, so neither says the relayer is at fault.
+            let verdict_after_own_checks = matches!(
+                message,
+                WrfcoinMessage::WeatherData { .. } | WrfcoinMessage::WeatherDataV2 { .. }
+            );
+            if !verdict_after_own_checks {
+                let _ = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .report_message_validation_result(
+                        &message_id,
+                        &propagation_source,
+                        gossipsub::MessageAcceptance::Accept,
+                    );
+            }
 
             match message {
                 WrfcoinMessage::NewBlock { block_bytes } => {
@@ -5602,7 +5519,7 @@ async fn handle_behaviour_event(
                             .report_message_validation_result(
                                 &message_id,
                                 &propagation_source,
-                                gossipsub::MessageAcceptance::Reject,
+                                gossipsub::MessageAcceptance::Ignore,
                             );
                         return;
                     };
@@ -5626,7 +5543,7 @@ async fn handle_behaviour_event(
                             .report_message_validation_result(
                                 &message_id,
                                 &propagation_source,
-                                gossipsub::MessageAcceptance::Reject,
+                                gossipsub::MessageAcceptance::Ignore,
                             );
                         return;
                     }
@@ -5640,6 +5557,16 @@ async fn handle_behaviour_event(
                     // happens, which is the entire point; verifying and then
                     // discarding the result would bound nothing.
                     if !claim_verify_budget(verify_budget, &metrics, propagation_source) {
+                        // Unverified, so not forwarded; the budget is this
+                        // node's own limit, so the peer is not scored down.
+                        let _ = swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .report_message_validation_result(
+                                &message_id,
+                                &propagation_source,
+                                gossipsub::MessageAcceptance::Ignore,
+                            );
                         return;
                     }
 
@@ -5662,19 +5589,25 @@ async fn handle_behaviour_event(
                             .report_message_validation_result(
                                 &message_id,
                                 &propagation_source,
-                                gossipsub::MessageAcceptance::Reject,
+                                gossipsub::MessageAcceptance::Ignore,
                             );
-                        penalize_invalid_weather_signature(
-                            metrics,
-                            weather_peer_scores,
-                            persistent_scores,
-                            persistent_now,
-                            event_tx,
-                            propagation_source,
-                            "invalid weather station signature",
-                        )
-                        .await;
+                        // Counted and logged, and that is all. The key is the
+                        // sender's own and `propagation_source` is whoever relayed
+                        // the message, which a node on an older release does before
+                        // checking it. No score is kept against that peer and no
+                        // `PeerPenalized` goes to the launch layer.
+                        metrics
+                            .weather_msgs_invalid_sig
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     } else {
+                        let _ = swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .report_message_validation_result(
+                                &message_id,
+                                &propagation_source,
+                                gossipsub::MessageAcceptance::Accept,
+                            );
                         metrics
                             .weather_msgs_received
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -5844,7 +5777,7 @@ async fn handle_behaviour_event(
                             .report_message_validation_result(
                                 &message_id,
                                 &propagation_source,
-                                gossipsub::MessageAcceptance::Reject,
+                                gossipsub::MessageAcceptance::Ignore,
                             );
                         return;
                     }
@@ -5858,6 +5791,16 @@ async fn handle_behaviour_event(
                     // happens, which is the entire point; verifying and then
                     // discarding the result would bound nothing.
                     if !claim_verify_budget(verify_budget, &metrics, propagation_source) {
+                        // Unverified, so not forwarded; the budget is this
+                        // node's own limit, so the peer is not scored down.
+                        let _ = swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .report_message_validation_result(
+                                &message_id,
+                                &propagation_source,
+                                gossipsub::MessageAcceptance::Ignore,
+                            );
                         return;
                     }
 
@@ -5881,23 +5824,29 @@ async fn handle_behaviour_event(
                             .report_message_validation_result(
                                 &message_id,
                                 &propagation_source,
-                                gossipsub::MessageAcceptance::Reject,
+                                gossipsub::MessageAcceptance::Ignore,
                             );
-                        penalize_invalid_weather_signature(
-                            metrics,
-                            weather_peer_scores,
-                            persistent_scores,
-                            persistent_now,
-                            event_tx,
-                            propagation_source,
-                            "invalid weather station signature (v2)",
-                        )
-                        .await;
+                        // Counted and logged, and that is all. The key is the
+                        // sender's own and `propagation_source` is whoever relayed
+                        // the message, which a node on an older release does before
+                        // checking it. No score is kept against that peer and no
+                        // `PeerPenalized` goes to the launch layer.
+                        metrics
+                            .weather_msgs_invalid_sig
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // Fail closed: never bridge an unverified V2 payload to
                         // the mempool / earn-loop.
                         return;
                     }
 
+                    let _ = swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .report_message_validation_result(
+                            &message_id,
+                            &propagation_source,
+                            gossipsub::MessageAcceptance::Accept,
+                        );
                     metrics
                         .weather_msgs_received
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

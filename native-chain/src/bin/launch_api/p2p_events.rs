@@ -10,11 +10,8 @@ use wrfcoin_consensus_engines::{
 };
 use wrfcoin_native_chain::blockchain::block::Block;
 use wrfcoin_native_chain::blockchain::chain::{Blockchain, MAX_REORG_DEPTH};
-use wrfcoin_native_chain::blockchain::transaction::{
-    CommitPayload, RevealPayload, Transaction, TransactionInput, TransactionOutput,
-    TransactionType,
-};
-use wrfcoin_native_chain::crypto::hash::{Hash as CryptoHash, hash_bytes};
+use wrfcoin_native_chain::blockchain::transaction::{Transaction, TransactionType};
+use wrfcoin_native_chain::crypto::hash::Hash as CryptoHash;
 use wrfcoin_native_chain::mempool::pool::Mempool;
 use wrfcoin_native_chain::p2p_divergence::{
     ChainDivergenceObservation, ChainStateView, LocalCanonicalRoot,
@@ -33,10 +30,6 @@ use wrfcoin_shared_protocol::monitoring::CORE_METRICS;
 #[cfg(feature = "execution")]
 use wrfcoin_shared_protocol::blockchain::transaction::{
     forecast_receipt_has_valid_signature, ForecastArtifactManifest, ForecastVerificationReceipt,
-};
-use wrfcoin_shared_protocol::weather::schema::{
-    canonicalize_weather_payload, classify_weather_payload, WeatherPayloadClassification,
-    WeatherPayloadParseOptions,
 };
 
 #[cfg(feature = "p2p")]
@@ -705,193 +698,6 @@ fn truncate_to_byte_budget(blocks: Vec<Block>, byte_budget: u64) -> (Vec<Block>,
     let mut blocks = blocks;
     blocks.truncate(kept);
     (blocks, used)
-}
-
-fn parse_weather_observation_timestamp(payload: &serde_json::Value) -> i64 {
-    let extract_timestamp = |value: &serde_json::Value| -> Option<i64> {
-        match value {
-            serde_json::Value::Number(number) => number.as_i64(),
-            serde_json::Value::String(raw) => raw.parse::<i64>().ok(),
-            _ => None,
-        }
-    };
-
-    for key in ["observed_at_unix", "observed_at", "timestamp"] {
-        if let Some(value) = payload.get(key).and_then(&extract_timestamp) {
-            return value;
-        }
-    }
-    if let Some(observation) = payload.get("observation") {
-        for key in ["observed_at_unix", "observed_at", "timestamp"] {
-            if let Some(value) = observation.get(key).and_then(&extract_timestamp) {
-                return value;
-            }
-        }
-    }
-
-    chrono::Utc::now().timestamp()
-}
-
-async fn bridge_weather_payload_to_mempool(
-    station_id: &str,
-    raw_payload: &[u8],
-    mempool: &Arc<RwLock<Mempool>>,
-    // Node-local weather identity key (#1969 gossip signer). The bridge signs the
-    // commit authorization (#1848) with it so the ingested contribution passes
-    // fail-closed mempool admission instead of being silently dropped (#2389).
-    // `verify_commit_authorization` is self-certifying (it does not bind the
-    // pubkey to `station_id`), and contribution rewards are separately gated by
-    // oracle-attestation quorum, so authorizing with the node's own key vouches
-    // for the submission without becoming a reward-forgery vector.
-    commit_signing_key: &wrfcoin_native_chain::crypto::signature::PrivateKey,
-) {
-    let payload: serde_json::Value = match serde_json::from_slice(raw_payload) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("Failed to decode weather payload JSON from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let classification = classify_weather_payload(&payload, WeatherPayloadParseOptions::default());
-    match classification {
-        WeatherPayloadClassification::NonWeather
-        | WeatherPayloadClassification::UnsupportedSchemaVersion
-        | WeatherPayloadClassification::InvalidSchemaVersionMarkerType
-        | WeatherPayloadClassification::InvalidCanonicalPayload => {
-            log::debug!("Ignoring non-weather or invalid weather payload from station {station_id}");
-            return;
-        },
-        WeatherPayloadClassification::CanonicalV1 | WeatherPayloadClassification::LegacyUnversioned => {}
-    }
-
-    let canonical_payload = match canonicalize_weather_payload(&payload, WeatherPayloadParseOptions::default()) {
-        Ok(Some(canonical_payload)) => canonical_payload,
-        Ok(None) => {
-            log::warn!("Weather payload classification expected weather data but canonicalization returned empty payload for station {station_id}");
-            return;
-        },
-        Err(error) => {
-            log::warn!("Failed to canonicalize weather payload from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let contribution_type = "contribution".to_string();
-    let timestamp = parse_weather_observation_timestamp(&canonical_payload);
-    let nonce = hex::encode(
-        hash_bytes(
-            format!(
-                "wrfcoin-weather:{station_id}:{contribution_type}:{timestamp}:{}",
-                canonical_payload
-            )
-            .as_bytes(),
-        )
-        .as_bytes(),
-    );
-    let commit_id = Transaction::compute_commit_id(
-        &canonical_payload,
-        &nonce,
-        station_id,
-        timestamp,
-        &contribution_type,
-    );
-
-    let timestamp_dt = chrono::DateTime::from_timestamp(timestamp, 0)
-        .unwrap_or_else(chrono::Utc::now);
-
-    let mut commit_payload = CommitPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        auth_pubkey: None,
-        auth_signature: None,
-    };
-    // #2389: authorize the commit with the node's weather identity key so it
-    // satisfies the #1848 fail-closed sender-auth check at mempool admission.
-    // Without this the commit is rejected ("commit sender authorization failed")
-    // and the entire P2P weather-ingestion path produces zero transactions.
-    commit_payload.sign_authorization(commit_signing_key);
-    let reveal_payload = RevealPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        data: canonical_payload,
-        nonce: nonce.clone(),
-        data_cid: None,
-        data_hash: None,
-        storage_provider: None,
-        provenance: None,
-        manifest: None,
-        verification_receipt: None,
-        compute_receipt: None,
-        quality_tier: None,
-    };
-
-    let commitment_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:commit").as_bytes());
-        let tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx
-    };
-    let mut commitment_tx = commitment_tx;
-    commitment_tx.tx_type = TransactionType::ContributionCommit;
-    commitment_tx.timestamp = timestamp_dt;
-    commitment_tx.data = serde_json::to_string(&commit_payload).ok();
-    commitment_tx.set_id();
-
-    let reveal_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:reveal").as_bytes());
-        let mut tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx.tx_type = TransactionType::ContributionReveal;
-        tx.timestamp = timestamp_dt;
-        tx.data = serde_json::to_string(&reveal_payload).ok();
-        tx.set_id();
-        tx
-    };
-
-    let mut guard = mempool.write().await;
-    if let Err(error) = guard.add_transaction(commitment_tx) {
-        log::warn!(
-            "Failed to enqueue contribution commit for station {station_id} payload: {error}"
-        );
-    }
-    if let Err(error) = guard.add_transaction(reveal_tx) {
-        log::warn!(
-            "Failed to enqueue contribution reveal for station {station_id} payload: {error}"
-        );
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2359,10 +2165,8 @@ pub async fn run_p2p_event_loop(
     // and read by the `/network/peers/reputation` operator route. Shared (not
     // loop-local) so the route observes the same state the loop maintains.
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    // #2389: node-local weather identity key used to sign the commit
-    // authorization on P2P-ingested weather contributions (see
-    // `bridge_weather_payload_to_mempool`). In production this is the node's
-    // `weather_gossip_signing_key`.
+    // The node's `weather_gossip_signing_key`. The loop no longer uses it:
+    // weather gossip is not turned into transactions.
     commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
 ) {
     run_p2p_event_loop_with_persist_control(
@@ -2411,7 +2215,9 @@ async fn run_p2p_event_loop_with_persist_control(
     state_diverged: Arc<AtomicBool>,
     recovery_policy: StateDivergenceRecoveryPolicy,
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
+    // Unused since weather gossip stopped creating transactions; kept so the
+    // loop's callers do not change.
+    _commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
     #[cfg(test)] persist_control: Option<EventPersistTestControl>,
 ) {
     log::info!("P2P event consumer started");
@@ -2886,14 +2692,11 @@ async fn run_p2p_event_loop_with_persist_control(
                 }
             },
 
-            P2pEvent::WeatherData { station_id, data, .. } => {
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+            // A peer's weather message is logged and nothing more. Its station
+            // id is the sender's choice and its signature is by a key the sender
+            // supplies, so this node does not turn it into transactions of its
+            // own. Stations submit through the API.
+            P2pEvent::WeatherData { station_id, .. } => {
                 log::info!("P2P weather data received from station {station_id}");
             },
 
@@ -3014,13 +2817,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         .cache_content_ref_payload(content_ref, &data, "weather-data-v2")
                         .await;
                 }
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+                // As for `WeatherData`: logged, never turned into transactions.
                 log::info!("P2P weather data v2 received from station {station_id}");
             },
 
@@ -5757,7 +5554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5818,56 +5615,18 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherData should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherData should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-001".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherData gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_v2_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_v2_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5928,51 +5687,13 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherDataV2 should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherDataV2 should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-002".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherDataV2 gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 
