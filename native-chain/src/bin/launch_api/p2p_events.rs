@@ -13159,10 +13159,74 @@ mod tests {
     ///
     /// The attesting oracles are in both the old and the new set, so the block
     /// is valid in either order. (An attestation valid under only one of the
-    /// two sets is the separate ordering question, P11 in the private design
-    /// notes; it is not what this test settles.)
+    /// two sets is a separate ordering question; it is not what this test
+    /// settles.)
     #[tokio::test]
     async fn producer_and_follower_agree_on_a_block_with_a_governance_change_and_attestations() {
+        let height = assert_governance_change_with_attestations_agree(0, "governance-change-with-attestations").await;
+        assert!(
+            !wrfcoin_shared_protocol::crypto::chain_binding::governance_before_launch(height),
+            "control: nothing scheduled, so the follower's other order sites run launch first"
+        );
+    }
+
+    /// The same block shape at a height where `governance_before_launch` is
+    /// true (`forecast_late_score` in force: scheduled, with
+    /// `forecaster_key_binding` active for the full lead), in an isolated child
+    /// because the schedule is process-global. There the assembly screen, the
+    /// validation replay and the transition extractor all apply governance
+    /// first, as the producer does; the follower's metadata recompute, its
+    /// launch replay, extraction and apply must still reach the producer's
+    /// metadata and state.
+    #[tokio::test]
+    async fn producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch() {
+        const CHILD: &str = "WRFCOIN_GOVERNANCE_BEFORE_LAUNCH_AGREE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "p2p_events::tests::producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .expect("re-exec child");
+            assert!(status.success(), "isolated governance-before-launch child failed");
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, FeatureSchedule, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
+            governance_before_launch, install_feature_schedule,
+        };
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 1),
+                (ConsensusFeature::ForecastLateScore.name().to_string(), 1),
+            ])
+            .expect("schedule"),
+        );
+        let base = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS + 100;
+        assert!(
+            !governance_before_launch(1),
+            "vacuity guard: below the key-binding lead the order is still launch first"
+        );
+        let height = assert_governance_change_with_attestations_agree(
+            base,
+            "governance-change-with-attestations-governance-first",
+        )
+        .await;
+        assert!(
+            governance_before_launch(height),
+            "the block must be mined where governance_before_launch is true (height {height})"
+        );
+    }
+
+    /// Mines a block at `base_height + 1` that finalizes an oracle-set
+    /// proposal and carries a commit, its reveal and two oracle attestations,
+    /// then checks that a fresh follower derives exactly the producer's
+    /// metadata and reaches the producer's state. Returns the block height.
+    async fn assert_governance_change_with_attestations_agree(base_height: u64, label: &str) -> u64 {
         use rand::SeedableRng;
         use wrfcoin_native_chain::blockchain::state::StateTransition;
         use wrfcoin_native_chain::blockchain::transaction::{
@@ -13252,8 +13316,15 @@ mod tests {
                     .expect("seed the vote");
             });
 
-        let scenario = mine_attested_reward_block_with_genesis(1.0, configure).await;
+        let scenario = mine_attested_reward_block_at_base_height(
+            1.0,
+            wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass::Real,
+            configure,
+            base_height,
+        )
+        .await;
         let block = scenario.block_1.clone();
+        assert_eq!(block.height, base_height + 1, "the block lands right above the base");
 
         // Vacuity guards: the block really has both kinds of content, and the
         // governance change really happened on the producer.
@@ -13292,9 +13363,19 @@ mod tests {
             );
         }
 
-        // A follower that shares the genesis and has never mined.
+        // A follower that shares the genesis and has never mined, positioned
+        // at the block's parent (the seed builds state, not the height).
+        let prev_hash = block.prev_block_hash;
+        let seed = &scenario.seed_genesis;
+        let seed_at_parent = move |chain: &mut Blockchain| {
+            (seed)(chain);
+            if base_height > 0 {
+                chain.height = base_height;
+                chain.tip = prev_hash;
+            }
+        };
         let mut follower = Blockchain::default();
-        (scenario.seed_genesis)(&mut follower);
+        seed_at_parent(&mut follower);
         assert!(!follower.state.oracle_set.contains(&new_oracle));
         ProofOfPublishing::verify_launch_state_invariants(&follower, &block)
             .expect("the follower's launch replay accepts the block");
@@ -13311,17 +13392,13 @@ mod tests {
 
         // Validation, extraction and apply through the P2P path, then the
         // producer/applier state comparison (state root and field diff).
-        let applied = apply_block_to_fresh_applier(&block, &scenario.seed_genesis).await;
+        let applied = apply_block_to_fresh_applier(&block, &seed_at_parent).await;
         assert!(
             applied.read().await.state.oracle_set.contains(&new_oracle),
             "the follower applied the new oracle set too"
         );
-        assert_block_apply_parity(
-            "governance-change-with-attestations",
-            &scenario.producer_chain,
-            &applied,
-        )
-        .await;
+        assert_block_apply_parity_at(label, block.height, &scenario.producer_chain, &applied).await;
+        block.height
     }
 
     /// #2806 GREEN control at the activation fence, through the production
