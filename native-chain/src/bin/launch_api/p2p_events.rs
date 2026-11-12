@@ -783,6 +783,7 @@ async fn report_authoritative_sync_rejection(
     blockchain: &Arc<RwLock<Blockchain>>,
     peer_id: libp2p::PeerId,
     block_height: u64,
+    block_hash: [u8; 32],
     attribution: AuthoritativeSyncRejectionAttribution,
     reason: String,
 ) {
@@ -802,6 +803,7 @@ async fn report_authoritative_sync_rejection(
         .send(P2pCommand::AuthoritativeSyncRejected {
             peer_id,
             block_height,
+            block_hash,
             accepted_height,
             accepted_tip_hash,
             accepted_state_root,
@@ -1081,10 +1083,9 @@ where
                         // Deterministically invalid: never offer it again.
                         ReorgOutcome::InvalidChain => fork_buffer.note_failed_chain(&reorg_chain),
                         // May succeed later: leave the buffer intact, try the next candidate.
+                        // Every abort restores the pre-fork
+                        // live chain with storage unchanged, so this is safe.
                         ReorgOutcome::Transient => {},
-                        // The in-memory chain may have changed: stop, as the
-                        // pre-classification code did after any attempt.
-                        ReorgOutcome::Aborted => break,
                     }
                 }
                 // #3277 S3: whether the reorg completed or restored the
@@ -1521,14 +1522,13 @@ enum ReorgOutcome {
     /// state-root failure): safe to remember and never retry.
     InvalidChain,
     /// Aborted for a reason that may not recur (checkpoint/WAL/storage I/O,
-    /// serialization, persistence hook, consensus error, a concurrent local
-    /// extension). The in-memory chain is as it was before the attempt.
+    /// serialization, persistence hook, consensus error, an `execute_reorg`
+    /// error, a failed durable replacement, a concurrent local extension).
+    /// The in-memory chain AND durable storage are as they were before the
+    /// attempt (the fork replacement commits in one storage
+    /// transaction under the chain guard, and every abort restores the
+    /// pre-fork live chain).
     Transient,
-    /// Aborted after the in-memory chain may already have been changed (an
-    /// `execute_reorg` error, or a durable rollback/persist failure after the
-    /// in-memory reorg). Nothing is learned about the candidate and no further
-    /// candidate is attempted against a chain in an uncertain state.
-    Aborted,
 }
 
 /// Shared implementation for production and exact-version rejection tests.
@@ -1545,6 +1545,46 @@ async fn try_reorg_inner<F>(
     consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
     p2p: Option<&P2pClient>,
     prepare_persist_state: F,
+) -> ReorgOutcome
+where
+    F: FnOnce(
+        wrfcoin_native_chain::blockchain::state::State,
+    ) -> wrfcoin_native_chain::blockchain::state::State,
+{
+    try_reorg_with_persist_control_at(
+        version,
+        candidate_blocks,
+        blockchain,
+        storage,
+        consensus,
+        p2p,
+        prepare_persist_state,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+/// Per-call test controls on the real Storage write seam; no global fault
+/// state.
+#[cfg(test)]
+struct ForkPersistTestControl {
+    /// Drop the prepared checkpoint bytes of the fork block at this height so
+    /// the real durable write fails there.
+    omit_checkpoint_height: Option<u64>,
+    /// Pause right before the durable write: (reached, resume).
+    barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+}
+
+async fn try_reorg_with_persist_control_at<F>(
+    version: wrfcoin_shared_protocol::crypto::chain_binding::SigningProtocolVersion,
+    candidate_blocks: Vec<Block>,
+    blockchain: &Arc<RwLock<Blockchain>>,
+    storage: &Arc<RwLock<Storage>>,
+    consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
+    p2p: Option<&P2pClient>,
+    prepare_persist_state: F,
+    #[cfg(test)] control: Option<&ForkPersistTestControl>,
 ) -> ReorgOutcome
 where
     F: FnOnce(
@@ -1824,8 +1864,11 @@ where
 
     // Execute the reorg on the in-memory chain.
     if let Err(e) = chain.execute_reorg(&plan, fork_state_for_reorg) {
-        log::error!("Reorg execution failed: {e}");
-        return ReorgOutcome::Aborted;
+        // Restore the full pre-fork live chain; storage is
+        // untouched, so the attempt is retryable.
+        *chain = pre_reorg_snapshot;
+        log::error!("Reorg execution failed: {e}; restored the pre-fork live chain");
+        return ReorgOutcome::Transient;
     }
 
     // Apply state transitions for each new block. If any transition fails,
@@ -1953,37 +1996,51 @@ where
         }
     }
 
+    #[cfg(test)]
+    if let Some(control) = control {
+        for (block, _, checkpoint) in &mut prepared_persistence {
+            if control.omit_checkpoint_height == Some(block.height) {
+                *checkpoint = None;
+            }
+        }
+    }
+
     let new_tip_height = chain.height;
     let new_tip = chain.tip;
     let current_state_root: [u8; 32] = chain.state.state_root.0;
     let finalized_height = chain.finalized_height();
-    drop(chain);
-
-    // Every consensus/state check has passed. Only now mutate durable storage.
-    {
-        let mut st = storage.write().await;
-
-        if let Err(e) = st.rollback_to_height(plan.fork_height, new_tip).await {
-            log::error!("Reorg storage rollback failed: {e}");
-            return ReorgOutcome::Aborted;
-        }
-
-        for (blk, transitions, checkpoint_state) in prepared_persistence {
-            let height = blk.height;
-            if let Err(e) = st
-                .persist_block_with_finalized(
-                    blk,
-                    transitions,
-                    checkpoint_state,
-                    finalized_height,
-                )
-                .await
-            {
-                log::error!("Reorg persist failed at height {height}: {e}");
-                return ReorgOutcome::Aborted;
-            }
-        }
+    #[cfg(test)]
+    if let Some((reached, resume)) = control.and_then(|c| c.barrier.as_ref()) {
+        reached.notify_one();
+        resume.notified().await;
     }
+
+    // Every consensus/state check has passed. Hold the API chain
+    // guard until the WHOLE durable replacement (rollback + every fork block,
+    // WAL entry and due checkpoint) commits in one storage transaction, so no
+    // reader or peer sees a fork that is not durable, and a failure leaves
+    // memory and disk both on the old branch. Lock order chain -> storage, as
+    // above (the disk preload already takes storage under this guard).
+    let persist_result = storage
+        .write()
+        .await
+        .replace_fork_with_finalized(
+            plan.fork_height,
+            plan.fork_hash,
+            prepared_persistence,
+            finalized_height,
+        )
+        .await;
+    if let Err(e) = persist_result {
+        *chain = pre_reorg_snapshot;
+        log::error!(
+            "REORG ABORTED: durable replacement failed fork_height={} old_height={} old_tip={} \
+             candidate_tip={}: {e}; restored the pre-fork live chain, durable storage unchanged",
+            plan.fork_height, old_height, old_tip, new_tip,
+        );
+        return ReorgOutcome::Transient;
+    }
+    drop(chain);
 
     if let Some(client) = p2p {
         if let Some(tip_block) = candidate_blocks.last() {
@@ -2515,6 +2572,7 @@ async fn run_p2p_event_loop_with_persist_control(
                             &blockchain,
                             peer_id,
                             height,
+                            [0u8; 32],
                             AuthoritativeSyncRejectionAttribution::PeerInvalid,
                             format!("failed to deserialize synced block: {e}"),
                         )
@@ -2523,6 +2581,9 @@ async fn run_p2p_event_loop_with_persist_control(
                     },
                 };
                 let height_before = blockchain.read().await.height;
+                // The recomputed header hash, never the block's own claim:
+                // halt corroboration counts peers serving the same block.
+                let block_hash = <[u8; 32]>::from(block.calculate_hash());
                 let outcome = apply_p2p_block(
                     block,
                     P2pBlockSource::HistoricalSync,
@@ -2544,6 +2605,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         &blockchain,
                         peer_id,
                         height,
+                        block_hash,
                         attribution,
                         reason,
                     )
@@ -3993,6 +4055,12 @@ mod tests {
     /// prune that fork-point checkpoint.
     async fn committed_reorg_fixture(
     ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
+        committed_reorg_fixture_with_storage(test_storage()).await
+    }
+
+    async fn committed_reorg_fixture_with_storage(
+        storage: Arc<RwLock<Storage>>,
+    ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
         let (common_chain, common_blocks) =
             committed_fixture_blocks(Blockchain::default(), 1, 0x41).await;
         let common = common_blocks[0].clone();
@@ -4002,7 +4070,6 @@ mod tests {
         let (_, fork_blocks) = committed_fixture_blocks(common_chain, 2, 0x42).await;
 
         let chain = Arc::new(RwLock::new(Blockchain::default()));
-        let storage = test_storage();
         feed_committed_block_at_v2(common, &chain, &storage).await;
         let common_state = chain.read().await.state.clone();
         storage
@@ -4019,6 +4086,146 @@ mod tests {
             "fixture control: the local branch must be fully accepted before reorg"
         );
         (chain, storage, fork_blocks)
+    }
+
+    /// A storage failure in the middle of a whole-fork
+    /// replacement (rollback committed, block 2 written, block 3's due
+    /// checkpoint fails) must leave BOTH the live chain and durable storage on
+    /// the old branch, publish nothing, report a retryable outcome, and a
+    /// retry of the same fork must then install it.
+    #[tokio::test]
+    async fn fork_mid_write_failure_is_atomic_and_retryable_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        // Interval 3: fork block 3 is a due checkpoint, block 2 is not.
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let before = chain_mark(&chain).await;
+        let snapshot = chain.read().await.clone();
+        let durable_before = storage.read().await.load_state().unwrap().unwrap();
+        let durable_blocks_before = storage.read().await.load_blocks_range(0, 3).unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let control = super::ForkPersistTestControl {
+            omit_checkpoint_height: Some(3),
+            barrier: None,
+        };
+        let outcome = super::try_reorg_with_persist_control_at(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+            Some(&control),
+        )
+        .await;
+        assert_eq!(chain_mark(&chain).await, before, "failed durable write changed the live chain");
+        {
+            let after = chain.read().await;
+            assert_eq!(
+                bincode::serialize(after.blocks()).unwrap(),
+                bincode::serialize(snapshot.blocks()).unwrap(),
+                "live block window differs from the pre-fork snapshot"
+            );
+            assert_eq!(after.total_block_count(), snapshot.total_block_count());
+            assert_eq!(after.finalized_height(), snapshot.finalized_height());
+        }
+        assert!(commands.try_recv().is_err(), "failed replacement published to peers");
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.height, durable_before.height, "durable height moved");
+        assert_eq!(recovered.tip, durable_before.tip, "durable tip moved");
+        assert_eq!(recovered.state.state_root, durable_before.state.state_root);
+        let durable_blocks_after = storage.read().await.load_blocks_range(0, 3).unwrap();
+        assert_eq!(
+            bincode::serialize(&durable_blocks_after).unwrap(),
+            bincode::serialize(&durable_blocks_before).unwrap(),
+            "durable blocks are a partial fork"
+        );
+        assert_eq!(
+            outcome,
+            super::ReorgOutcome::Transient,
+            "nothing changed, so the attempt must stay retryable"
+        );
+
+        let retry = super::try_reorg_inner(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+        )
+        .await;
+        assert_eq!(retry, super::ReorgOutcome::Reorged);
+        assert_eq!(chain.read().await.tip, fork.last().unwrap().hash.unwrap());
+        let durable = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(durable.tip, chain.read().await.tip);
+        assert_eq!(durable.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok(), "retry did not publish");
+    }
+
+    /// No API reader and no peer may observe the new
+    /// fork before its durable replacement has committed.
+    #[tokio::test]
+    async fn fork_publication_waits_for_durable_replacement_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let old_tip = chain.read().await.tip;
+        let new_tip = fork.last().unwrap().hash.unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let applying = {
+            let chain = Arc::clone(&chain);
+            let storage = Arc::clone(&storage);
+            let reached = Arc::clone(&reached);
+            let resume = Arc::clone(&resume);
+            tokio::spawn(async move {
+                let control = super::ForkPersistTestControl {
+                    omit_checkpoint_height: None,
+                    barrier: Some((reached, resume)),
+                };
+                super::try_reorg_with_persist_control_at(
+                    SigningProtocolVersion::V2,
+                    fork,
+                    &chain,
+                    &storage,
+                    &test_consensus(),
+                    Some(&client),
+                    std::convert::identity,
+                    Some(&control),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reached.notified())
+            .await
+            .unwrap();
+        assert_eq!(storage.read().await.load_state().unwrap().unwrap().tip, old_tip);
+        let premature_command = commands.try_recv().is_ok();
+        let premature_reader = tokio::time::timeout(Duration::from_millis(30), chain.read())
+            .await
+            .map(|g| g.tip)
+            .ok();
+        resume.notify_one();
+        let outcome = applying.await.unwrap();
+        assert_eq!(outcome, super::ReorgOutcome::Reorged);
+        assert!(
+            premature_reader.is_none(),
+            "API observed the live chain (tip {premature_reader:?}) before the durable replacement"
+        );
+        assert!(!premature_command, "peer saw an unpersisted fork");
+        assert_eq!(chain.read().await.tip, new_tip);
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.tip, new_tip);
+        assert_eq!(recovered.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok());
     }
 
     // ---------------------------------------------------------------------

@@ -510,6 +510,10 @@ pub enum P2pCommand {
     AuthoritativeSyncRejected {
         peer_id: PeerId,
         block_height: u64,
+        /// Header hash (recomputed) of the rejected block; all zero when it
+        /// did not decode. Used to corroborate a validation halt only across
+        /// peers serving the SAME block.
+        block_hash: [u8; 32],
         accepted_height: u64,
         accepted_tip_hash: [u8; 32],
         accepted_state_root: [u8; 32],
@@ -2120,6 +2124,7 @@ async fn event_loop(
                     Some(P2pCommand::AuthoritativeSyncRejected {
                         peer_id,
                         block_height,
+                        block_hash,
                         accepted_height,
                         accepted_tip_hash,
                         accepted_state_root,
@@ -2143,7 +2148,7 @@ async fn event_loop(
                             // evidence — rotate away from the server and let a
                             // second distinct server corroborate a validation
                             // halt instead of graylisting the peer set.
-                            sync_manager.note_rule_rejection(&peer_id, block_height);
+                            sync_manager.note_rule_rejection(&peer_id, block_height, block_hash);
                         }
                         // Every block cached here was admitted relative to the speculative
                         // shadow tip. Reconstruct the deliberately context-free shadow at
