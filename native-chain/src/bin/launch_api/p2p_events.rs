@@ -12789,6 +12789,618 @@ mod tests {
         .await;
     }
 
+    // ---- Producer-written metadata is recomputed by the follower ----
+    //
+    // Each test below takes a block an honest producer built, edits ONE
+    // producer-written metadata key so it carries something the block's
+    // transactions do not justify, re-seals the hash (as the producer that
+    // wrote it would) and hands it to a fresh follower over the P2P apply
+    // path. The follower must refuse it and keep its state. The honest block
+    // is applied to a second follower as the control.
+
+    /// Re-seal a block after a metadata edit.
+    fn reseal_after_metadata_edit(block: &mut Block) {
+        let hash = block.calculate_hash();
+        block.set_hash(hash);
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_governance_transition_no_transaction_justifies() {
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+
+        let victim = Address([0x51; 20]);
+        let taker = Address([0x52; 20]);
+        let seed_genesis = move |chain: &mut Blockchain| {
+            chain.state.create_account(victim, Balance::new(1_000_000));
+            chain.state.recalculate_state_root();
+        };
+
+        let mut producer_genesis = Blockchain::default();
+        seed_genesis(&mut producer_genesis);
+        let producer_chain = Arc::new(RwLock::new(producer_genesis));
+        let producer_mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let honest = test_consensus()
+            .create_pop_block_with_state(
+                Arc::clone(&producer_chain),
+                Arc::clone(&producer_mempool),
+                &test_address_string(0x61),
+            )
+            .await
+            .expect("producer mines a coinbase-only block");
+        assert!(
+            !honest.metadata.contains_key("governance_transitions"),
+            "the honest block has no governance transition"
+        );
+
+        // The block carries no transfer transaction at all.
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "governance_transitions".to_string(),
+            serde_json::to_string(&vec![StateTransition::BalanceTransfer {
+                from: victim,
+                to: taker,
+                amount: Balance::new(900_000),
+                nonce: Some(0),
+                current_block: honest.height,
+            }])
+            .expect("transition list serializes"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let taker_balance = follower.state.get_account(&taker).map(|a| a.balance.0);
+            let victim_balance = follower.state.get_account(&victim).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, taker_balance, victim_balance),
+                (0, None, Some(1_000_000)),
+                "a governance transition no transaction justifies must reject the block \
+                 (height, taker balance, victim balance)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_reward_entry_with_a_changed_payee() {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        let mut entries: Vec<ContributionRewardRecord> = serde_json::from_str(
+            honest.metadata.get("reward_entries").expect("honest block has reward_entries"),
+        )
+        .expect("reward_entries decode");
+        assert!(entries[0].amount.0 > 0, "vacuity guard: the honest block pays a reward");
+        assert_eq!(entries[0].address, scenario.recipient);
+
+        let taker = Address([0x53; 20]);
+        entries[0].address = taker;
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "reward_entries".to_string(),
+            serde_json::to_string(&entries).expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let taker_balance = follower.state.get_account(&taker).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, taker_balance),
+                (0, None),
+                "a reward entry paying an address the reveal does not name must reject the \
+                 block (height, taker balance)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, &scenario.seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_reward_entry_with_a_changed_amount() {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        let mut entries: Vec<ContributionRewardRecord> = serde_json::from_str(
+            honest.metadata.get("reward_entries").expect("honest block has reward_entries"),
+        )
+        .expect("reward_entries decode");
+        let honest_amount = entries[0].amount.0;
+        assert!(honest_amount > 1, "vacuity guard: the honest block pays a reward");
+
+        entries[0].amount = Balance::new(honest_amount / 2);
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "reward_entries".to_string(),
+            serde_json::to_string(&entries).expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let paid = follower.state.get_account(&scenario.recipient).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, paid),
+                (0, Some(0)),
+                "a reward entry whose amount differs from the scored amount must reject the \
+                 block (height, recipient balance)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_oracle_accuracy_entry_no_receipt_justifies() {
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        assert!(
+            !honest.metadata.contains_key("oracle_local_accuracy_entries"),
+            "the honest block carries no forecast receipt, so no accuracy entry"
+        );
+
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "oracle_local_accuracy_entries".to_string(),
+            serde_json::to_string(&vec![(
+                "oracle-of-choice".to_string(),
+                "station-attest".to_string(),
+                10_000u32,
+                10u32,
+            )])
+            .expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let recorded = follower
+                .state
+                .oracle_local_accuracy_for_station("oracle-of-choice", "station-attest")
+                .is_some();
+            assert_eq!(
+                (follower.height, recorded),
+                (0, false),
+                "an accuracy entry no forecast receipt justifies must reject the block \
+                 (height, accuracy recorded)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, &scenario.seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    // ---- The follower derives rewards under the chain's governance policies ----
+    //
+    // The reward pass reads three governance policies from the consensus
+    // engine, not from state: task assigner, scarcity and multidomain. A
+    // producer copies them from state before it mines. A node that only
+    // follows must make the same copy before it derives a block's metadata, or
+    // it scores the block under the engine defaults and refuses an honest
+    // block as soon as a policy is not at its default.
+    //
+    // Each test mines the same reward block twice, once under the default
+    // policy and once under a changed one, and first checks that the change
+    // moves the reward (so the policy is really in play). It then hands the
+    // changed-policy block to a follower whose engine has never mined.
+
+    /// The amounts in a block's `reward_entries`.
+    fn reward_amounts(block: &Block) -> Vec<u128> {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+        let raw = block.metadata.get("reward_entries").expect("reward block has reward_entries");
+        serde_json::from_str::<Vec<ContributionRewardRecord>>(raw)
+            .expect("reward_entries decode")
+            .into_iter()
+            .map(|record| record.amount.0)
+            .collect()
+    }
+
+    async fn assert_follower_accepts_reward_block_under_policy(
+        policy: &str,
+        set_policy: fn(&mut wrfcoin_native_chain::blockchain::state::GovernanceParameters),
+        reveal_data: serde_json::Value,
+        base_height: u64,
+    ) {
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+
+        let under_default = mine_attested_reward_block_with_reveal_data(
+            1.0,
+            ContributionProvenanceClass::Real,
+            Arc::new(|_| {}),
+            base_height,
+            Some(reveal_data.clone()),
+        )
+        .await;
+        let under_policy = mine_attested_reward_block_with_reveal_data(
+            1.0,
+            ContributionProvenanceClass::Real,
+            Arc::new(move |chain: &mut Blockchain| set_policy(&mut chain.state.governance.params)),
+            base_height,
+            Some(reveal_data),
+        )
+        .await;
+        let block = under_policy.block_1.clone();
+        assert_ne!(
+            reward_amounts(&under_default.block_1),
+            reward_amounts(&block),
+            "vacuity guard: the changed {policy} policy must change the reward the producer pays"
+        );
+
+        // A follower that shares the genesis and has never mined.
+        let mut follower = Blockchain::default();
+        (under_policy.seed_genesis)(&mut follower);
+        if base_height > 0 {
+            follower.height = base_height;
+            follower.tip = block.prev_block_hash;
+        }
+        // The comparison `validate_block` enforces, on an engine that has never
+        // mined: it must find nothing to object to in an honest block.
+        let differences = {
+            let pop_config = ConsensusFactory::default_config(ConsensusType::ProofOfPublishing);
+            ConsensusFactory::create_pop_adapter(&pop_config)
+                .producer_metadata_mismatches_blocking(&follower.state, &block)
+        };
+        assert_eq!(
+            differences,
+            Vec::new(),
+            "a follower must derive the metadata an honest producer wrote under a non-default \
+             {policy} policy"
+        );
+
+        // Full block validation: the publishing-score check in `verify_block`
+        // reads the same policies, so it too must use the chain's.
+        let accepted = test_consensus()
+            .validate_block(&block, &follower)
+            .await
+            .expect("validation returns a verdict");
+        assert!(
+            accepted,
+            "a follower must accept an honest reward block mined under a non-default {policy} policy"
+        );
+
+        // From genesis the block can also go through the P2P apply path.
+        if base_height == 0 {
+            let applied = apply_block_to_fresh_applier(&block, &under_policy.seed_genesis).await;
+            assert_eq!(
+                applied.read().await.height,
+                1,
+                "the block must also apply through the P2P path"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_scarcity_policy() {
+        assert_follower_accepts_reward_block_under_policy(
+            "scarcity",
+            |params| {
+                params.scarcity_policy.data_desert_multiplier = 2.0;
+                params.scarcity_policy.proximity_multiplier = 1.5;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "data_desert": 1.0, "proximity_need": 1.0,
+            }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_task_assigner_policy() {
+        assert_follower_accepts_reward_block_under_policy(
+            "task assigner",
+            |params| {
+                params.task_assigner_policy.underserved_bonus_multiplier = 2.5;
+                params.task_assigner_policy.redundancy_penalty_multiplier = 0.9;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "assignment_utility": 1.0, "redundancy": 0.5,
+            }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_data_quality_policy() {
+        // A borderline reading (between the acceptance and the high-quality
+        // thresholds), so the borderline multipliers decide both the block's
+        // publishing score and the reward.
+        assert_follower_accepts_reward_block_under_policy(
+            "data quality",
+            |params| {
+                params.data_quality_policy.borderline_scoring_multiplier = 0.95;
+                params.data_quality_policy.borderline_reward_multiplier = 0.9;
+            },
+            serde_json::json!({ "quality": 0.8, "volume": 0.2, "uniqueness": 0.2 }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_multidomain_policy() {
+        // The domain marker is a string, which only the metric extraction in
+        // force from the rich-reward height accepts, so this block is mined at
+        // that height.
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT;
+        assert_follower_accepts_reward_block_under_policy(
+            "multidomain",
+            |params| {
+                params.multidomain_reward_policy.soil_enabled = true;
+                params.multidomain_reward_policy.soil_weight = 0.5;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "domain": "soil",
+                "pipeline": { "backend39_ready": true, "storage_providers6_ready": true },
+            }),
+            RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1,
+        )
+        .await;
+    }
+
+    /// A block that carries a governance change AND launch transactions: a due
+    /// proposal that replaces the oracle set is finalized in the same block as
+    /// a commit, its reveal and two oracle attestations. The producer applies
+    /// the governance batch before the launch batch; the follower's metadata
+    /// recompute must use that same sequence, and every other follower step
+    /// (launch invariants, transition extraction, apply) must reach the
+    /// producer's state.
+    ///
+    /// The attesting oracles are in both the old and the new set, so the block
+    /// is valid in either order. (An attestation valid under only one of the
+    /// two sets is a separate ordering question; it is not what this test
+    /// settles.)
+    #[tokio::test]
+    async fn producer_and_follower_agree_on_a_block_with_a_governance_change_and_attestations() {
+        let height = assert_governance_change_with_attestations_agree(0, "governance-change-with-attestations").await;
+        assert!(
+            !wrfcoin_shared_protocol::crypto::chain_binding::governance_before_launch(height),
+            "control: nothing scheduled, so the follower's other order sites run launch first"
+        );
+    }
+
+    /// The same block shape at a height where `governance_before_launch` is
+    /// true (`forecast_late_score` in force: scheduled, with
+    /// `forecaster_key_binding` active for the full lead), in an isolated child
+    /// because the schedule is process-global. There the assembly screen, the
+    /// validation replay and the transition extractor all apply governance
+    /// first, as the producer does; the follower's metadata recompute, its
+    /// launch replay, extraction and apply must still reach the producer's
+    /// metadata and state.
+    #[tokio::test]
+    async fn producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch() {
+        const CHILD: &str = "WRFCOIN_GOVERNANCE_BEFORE_LAUNCH_AGREE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "p2p_events::tests::producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .expect("re-exec child");
+            assert!(status.success(), "isolated governance-before-launch child failed");
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, FeatureSchedule, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
+            governance_before_launch, install_feature_schedule,
+        };
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 1),
+                (ConsensusFeature::ForecastLateScore.name().to_string(), 1),
+            ])
+            .expect("schedule"),
+        );
+        let base = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS + 100;
+        assert!(
+            !governance_before_launch(1),
+            "vacuity guard: below the key-binding lead the order is still launch first"
+        );
+        let height = assert_governance_change_with_attestations_agree(
+            base,
+            "governance-change-with-attestations-governance-first",
+        )
+        .await;
+        assert!(
+            governance_before_launch(height),
+            "the block must be mined where governance_before_launch is true (height {height})"
+        );
+    }
+
+    /// Mines a block at `base_height + 1` that finalizes an oracle-set
+    /// proposal and carries a commit, its reveal and two oracle attestations,
+    /// then checks that a fresh follower derives exactly the producer's
+    /// metadata and reaches the producer's state. Returns the block height.
+    async fn assert_governance_change_with_attestations_agree(base_height: u64, label: &str) -> u64 {
+        use rand::SeedableRng;
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            GovernanceProposalPayload, GovernanceVotePayload,
+        };
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
+
+        // The fixture's two oracles (`mine_attested_reward_block*` seeds), and
+        // a third the proposal adds.
+        let oracle_id = |seed: u64| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            PublicKey::from_private_key(&PrivateKey::generate(&mut rng)).to_string()
+        };
+        let new_set = [oracle_id(901), oracle_id(902), oracle_id(905)];
+        let new_oracle = new_set[2].clone();
+        let new_set_csv = new_set.join(",");
+
+        let configure: Arc<dyn Fn(&mut Blockchain) + Send + Sync> =
+            Arc::new(move |chain: &mut Blockchain| {
+                let proposer = Address([0x41; 20]);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(9_411);
+                let voter_key = PrivateKey::generate(&mut rng);
+                let voter_pub = PublicKey::from_private_key(&voter_key);
+                let voter = Address::from_public_key(&voter_pub);
+                chain.state.create_account(proposer, Balance::new(20_000_000_000_000));
+                chain.state.create_account(voter, Balance::new(10));
+                chain
+                    .state
+                    .apply_transition(StateTransition::LockToStake {
+                        address: voter,
+                        amount: Balance::new(10),
+                    })
+                    .expect("stake the governance voter");
+
+                let mut proposal = Transaction::new(vec![], vec![]);
+                proposal.sender_address = proposer;
+                proposal.tx_type = TransactionType::GovernanceProposal;
+                proposal.data = Some(
+                    serde_json::to_string(&GovernanceProposalPayload {
+                        proposal_id: "oracle-set-with-attestations".to_string(),
+                        parameter: "oracle_set".to_string(),
+                        value: new_set_csv.clone(),
+                        voting_deadline: Some(1),
+                        deposit: None,
+                    })
+                    .expect("proposal serializes"),
+                );
+                proposal.set_id();
+                chain
+                    .state
+                    .apply_transition(StateTransition::ProcessGovernanceTransaction {
+                        tx: proposal,
+                        current_block: 0,
+                    })
+                    .expect("seed the oracle-set proposal");
+
+                let mut payload = GovernanceVotePayload {
+                    proposal_id: "oracle-set-with-attestations".to_string(),
+                    approve: true,
+                    voting_power: Some(10),
+                    signature: None,
+                    signer_public_key: Some(voter_pub.to_hex()),
+                };
+                let signature = match SigningProtocolVersion::active() {
+                    SigningProtocolVersion::V1 => {
+                        voter_key.sign(payload.canonical_signing_message().as_bytes())
+                    },
+                    SigningProtocolVersion::V2 => {
+                        wrfcoin_native_chain::crypto::domain_signing::sign_domain(
+                            &voter_key, &payload,
+                        )
+                    },
+                };
+                payload.signature = Some(signature.to_hex());
+                let mut vote = Transaction::new(vec![], vec![]);
+                vote.sender_address = voter;
+                vote.tx_type = TransactionType::GovernanceVote;
+                vote.data = Some(serde_json::to_string(&payload).expect("vote serializes"));
+                vote.set_id();
+                chain
+                    .state
+                    .apply_transition(StateTransition::ProcessGovernanceTransaction {
+                        tx: vote,
+                        current_block: 0,
+                    })
+                    .expect("seed the vote");
+            });
+
+        let scenario = mine_attested_reward_block_at_base_height(
+            1.0,
+            wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass::Real,
+            configure,
+            base_height,
+        )
+        .await;
+        let block = scenario.block_1.clone();
+        assert_eq!(block.height, base_height + 1, "the block lands right above the base");
+
+        // Vacuity guards: the block really has both kinds of content, and the
+        // governance change really happened on the producer.
+        let governance: Vec<StateTransition> = serde_json::from_str(
+            block
+                .metadata
+                .get("governance_transitions")
+                .expect("the block finalizes the due proposal"),
+        )
+        .expect("governance_transitions decode");
+        assert!(
+            governance
+                .iter()
+                .any(|t| matches!(t, StateTransition::FinalizeGovernanceProposal { .. })),
+            "the governance batch must finalize the oracle-set proposal: {governance:?}"
+        );
+        assert_eq!(
+            block
+                .transactions
+                .iter()
+                .filter(|tx| tx.tx_type == TransactionType::OracleAttestation)
+                .count(),
+            2,
+            "the same block must carry the oracle attestations"
+        );
+        assert_eq!(
+            block.metadata.get("rewards_minted_count").map(String::as_str),
+            Some("1"),
+            "and the reward the attestations unlock"
+        );
+        {
+            let producer = scenario.producer_chain.read().await;
+            assert!(
+                producer.state.oracle_set.contains(&new_oracle),
+                "the producer applied the new oracle set"
+            );
+        }
+
+        // A follower that shares the genesis and has never mined, positioned
+        // at the block's parent (the seed builds state, not the height).
+        let prev_hash = block.prev_block_hash;
+        let seed = &scenario.seed_genesis;
+        let seed_at_parent = move |chain: &mut Blockchain| {
+            (seed)(chain);
+            if base_height > 0 {
+                chain.height = base_height;
+                chain.tip = prev_hash;
+            }
+        };
+        let mut follower = Blockchain::default();
+        seed_at_parent(&mut follower);
+        assert!(!follower.state.oracle_set.contains(&new_oracle));
+        ProofOfPublishing::verify_launch_state_invariants(&follower, &block)
+            .expect("the follower's launch replay accepts the block");
+        let differences = {
+            let pop_config = ConsensusFactory::default_config(ConsensusType::ProofOfPublishing);
+            ConsensusFactory::create_pop_adapter(&pop_config)
+                .producer_metadata_mismatches_blocking(&follower.state, &block)
+        };
+        assert_eq!(
+            differences,
+            Vec::new(),
+            "the follower must derive exactly the metadata the producer wrote"
+        );
+
+        // Validation, extraction and apply through the P2P path, then the
+        // producer/applier state comparison (state root and field diff).
+        let applied = apply_block_to_fresh_applier(&block, &seed_at_parent).await;
+        assert!(
+            applied.read().await.state.oracle_set.contains(&new_oracle),
+            "the follower applied the new oracle set too"
+        );
+        assert_block_apply_parity_at(label, block.height, &scenario.producer_chain, &applied).await;
+        block.height
+    }
+
     /// #2806 GREEN control at the activation fence, through the production
     /// historical-sync transport. The retired chain wedged every fresh joiner at
     /// 11,016 because canonical block 11,017 carried a Real reveal with one
