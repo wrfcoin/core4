@@ -83,11 +83,12 @@ DRAFT_MAX_CLOCK_GAP_SECONDS = 120
 
 
 def verify_draft(draft: dict, *, wallet: str, alias: str, variable: str, lead_hours: int, value: float,
-                 now: int, model_id: str) -> str:
+                 now: int, model_id) -> str:
     """Check a draft before signing it. Returns the station id to sign over.
 
     The draft's time must be the present, and its data text must be byte for byte the text this worker
     would write itself for the same forecast, so it can hold no extra, repeated or reordered field.
+    `model_id` is the model name the draft must carry, or a tuple of names any one of which is accepted.
     """
     def fail(why):
         raise DraftMismatch(why)
@@ -130,7 +131,10 @@ def verify_draft(draft: dict, *, wallet: str, alias: str, variable: str, lead_ho
         fail("the draft is not dated now (check this computer's clock)")
     if not re.match(r"^[\x21-\x7e]{1,128}$", nonce):
         fail("the draft nonce is malformed")
-    if data != build_data(station_id, variable, round_tenth(value), lead_hours, timestamp, model_id):
+    accepted = (model_id,) if isinstance(model_id, str) else tuple(model_id)
+    if parsed.get("model_id") not in accepted:
+        fail("the draft carries a different model name")
+    if data != build_data(station_id, variable, round_tenth(value), lead_hours, timestamp, parsed["model_id"]):
         fail("the draft text is not exactly the forecast this worker asked for")
     if commit_id(data, nonce, station_id, timestamp) != commit:
         fail("the commit id does not match the forecast")

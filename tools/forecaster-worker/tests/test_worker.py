@@ -117,6 +117,10 @@ class ChainRulesTest(unittest.TestCase):
         want = dict(wallet=ADDRESS, alias=chain.station_alias(STATION), variable="temperature_c", lead_hours=6, value=12.3,
                     now=T + 30, model_id="website-manual/v1")
         self.assertEqual(chain.verify_draft(site_draft(), **want), STATION)
+        either = dict(want, model_id=("gfs-station-bias/v0", "website-manual/v1"))
+        self.assertEqual(chain.verify_draft(site_draft(), **either), STATION)
+        with self.assertRaisesRegex(chain.DraftMismatch, "different model name"):
+            chain.verify_draft(site_draft(), **dict(want, model_id=("gfs-station-bias/v0",)))
         for bad in (site_draft(value=15), site_draft(lead=12), site_draft(station="PWS-OTHER"),
                     site_draft(variable="pressure_hpa"), site_draft(forecaster="0x" + "11" * 20)):
             with self.assertRaises(chain.DraftMismatch):
@@ -310,6 +314,8 @@ class FakeSite:
         self.logins = 0
         self.submitted = []
         self.refuse_station = None
+        self.honours_model_id = True       # False = a site from before drafts took a model name
+        self.asked_model_ids = []
 
     def forecast_status(self):
         return {"enabled": True, "leads": [1, 6, 12, 24], "variables": ["temperature_c", "pressure_hpa"], "stations": self.open}
@@ -328,11 +334,13 @@ class FakeSite:
     def logout(self):
         self.logged_in = False
 
-    def draft(self, alias, variable, lead, value):
+    def draft(self, alias, variable, lead, value, model_id=None):
         if alias == self.refuse_station:
             raise SiteError(403, "STATION_NOT_OPEN", "not open")
+        self.asked_model_ids.append(model_id)
         station = self.ids[alias]
-        data = chain.build_data(station, variable, value, lead, self.now, "website-manual/v1")
+        name = model_id if (self.honours_model_id and model_id) else "website-manual/v1"
+        data = chain.build_data(station, variable, value, lead, self.now, name)
         return {"forecaster": ADDRESS, "stationAlias": alias, "stationId": station, "data": data, "nonce": "web-" + "0" * 32,
                 "timestamp": self.now, "commitId": chain.commit_id(data, "web-" + "0" * 32, station, self.now)}
 
@@ -405,6 +413,35 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(site.logins, 2)                    # a new day: a fresh login, not yesterday's token
         self.assertEqual(len(tomorrow.forecasts), 4)
 
+    def test_forecasts_carry_the_workers_own_model_name(self):
+        site = FakeSite(self.NOW, [self.alias_a], self.ids)
+        self.run_once(site, dry_run=False)
+        self.assertEqual(set(site.asked_model_ids), {"gfs-station-bias/v0"})
+        self.assertEqual(len(site.submitted), 4)
+        self.assertEqual({json.loads(b["data"])["model_id"] for b in site.submitted}, {"gfs-station-bias/v0"})
+
+    def test_a_site_that_ignores_the_model_name_still_works(self):
+        site = FakeSite(self.NOW, [self.alias_a], self.ids)
+        site.honours_model_id = False
+        self.run_once(site, dry_run=False)
+        self.assertEqual(len(site.submitted), 4)
+        self.assertEqual({json.loads(b["data"])["model_id"] for b in site.submitted}, {"website-manual/v1"})
+
+    def test_a_draft_with_a_third_model_name_is_never_signed(self):
+        site = FakeSite(self.NOW, [self.alias_a], self.ids)
+        honest = site.draft
+        site.draft = lambda alias, variable, lead, value, model_id=None: honest(alias, variable, lead, value, "someone-else/v1")
+        report, _ = self.run_once(site, dry_run=False)
+        self.assertEqual(site.submitted, [])
+        self.assertTrue(any("different model name" in line for line in report.lines))
+
+    def test_dry_run_draft_uses_the_workers_model_name(self):
+        site = FakeSite(self.NOW, [self.alias_a], self.ids)
+        report, _ = self.run_once(site, dry_run=True)
+        self.assertTrue(report.forecasts)
+        for f in report.forecasts:
+            self.assertEqual(json.loads(f["submit_body"]["data"])["model_id"], "gfs-station-bias/v0")
+
     def test_at_most_four_forecasts_a_cycle_and_closed_stations_are_skipped(self):
         site = FakeSite(self.NOW, sorted(self.ids), self.ids)
         report, _ = self.run_once(site, dry_run=False)
@@ -419,7 +456,7 @@ class CycleTest(unittest.TestCase):
     def test_a_draft_for_another_value_is_never_signed(self):
         site = FakeSite(self.NOW, [self.alias_a], self.ids)
         honest = site.draft
-        site.draft = lambda alias, variable, lead, value: honest(alias, variable, lead, value + 5)
+        site.draft = lambda alias, variable, lead, value, model_id=None: honest(alias, variable, lead, value + 5, model_id)
         report, store = self.run_once(site, dry_run=False)
         self.assertEqual(site.submitted, [])
         self.assertTrue(any("Nothing was signed" in line for line in report.lines))
@@ -499,6 +536,19 @@ class SiteClientTest(unittest.TestCase):
         with self.assertRaises(SiteError) as caught:
             busy.draft("st_aaaaaaaaaaaa", "temperature_c", 6, 1.0)
         self.assertEqual(caught.exception.code, "ALREADY_FORECAST")
+
+    def test_draft_request_names_the_model_only_when_asked(self):
+        bodies = []
+
+        def transport(method, url, headers, body):
+            bodies.append(json.loads(body))
+            return 200, b'{"success":true,"data":{}}'
+        site = Site("https://wrfcoin.com/api", transport=transport, sleep=lambda s: None)
+        site._token = "t"
+        site.draft("st_aaaaaaaaaaaa", "temperature_c", 6, 1.0)
+        site.draft("st_aaaaaaaaaaaa", "temperature_c", 6, 1.0, model_id="gfs-station-bias/v0")
+        self.assertNotIn("modelId", bodies[0])
+        self.assertEqual(bodies[1]["modelId"], "gfs-station-bias/v0")
 
 
 class GribHardeningTest(unittest.TestCase):
@@ -795,7 +845,7 @@ class ResilienceTest(unittest.TestCase):
         for failing in ("observations", "draft"):
             site = FakeSite(self.NOW, sorted(ids), ids)
             calls = []
-            def busy(*args, _calls=calls):
+            def busy(*args, _calls=calls, **kwargs):
                 _calls.append(args)
                 raise SiteError(429, None, None, retry_after=1200)
             setattr(site, failing, busy)

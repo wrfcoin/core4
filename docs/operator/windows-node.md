@@ -383,6 +383,49 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
 - **Height stays at 0:** check the internet connection; the seed is
   `seed.wrfcoin.com` port 9000 (outbound TCP).
 
+## Oracle attester (testnet only)
+
+An oracle attester checks new weather readings against physical ranges and a
+reference station and signs its votes. The installer ships `oracle_attester.exe`
+next to the node. It does nothing until its identity is registered on chain
+(an oracle-set change signed by the oracle governance key); until then its
+votes are refused.
+
+1. Start menu → **WRFCoin Node** → **Create Attester Key**. This writes
+   `%LOCALAPPDATA%\WRFCoin\oracle.key` (a random ed25519 seed, readable only by
+   your account, never shown and never replaced) and `oracle.token` (the node's
+   Oracle-role API token). It shows only the **public key** (the oracle id) and
+   writes it to `oracle-public.txt` in the same folder and to
+   `wrfcoin-oracle-public.txt` on your Desktop. The CLI prints the same key:
+   `wrfcoin.exe oracle public-key --key-file "%LOCALAPPDATA%\WRFCoin\oracle.key"`.
+2. Restart the node (**Stop WRFCoin Node**, then **WRFCoin Node**) so it accepts
+   the attester token.
+3. **Start WRFCoin Attester** / **Stop WRFCoin Attester**. Output goes to
+   `logs\attester.log`; its first lines show
+   `TESTNET software oracle key active` and `oracle id <public key>`.
+   **Stop WRFCoin Node** stops the attester too.
+
+The attester's settings come from `attester-888.conf` next to the node (the
+public keys of the other signing roles: the attester refuses to run if its key
+is one of them, and your own `server.key`, if any, is added automatically; the
+reference station; poll and freshness windows), with your own
+`%LOCALAPPDATA%\WRFCoin\attester.conf` on top. Upgrades replace the first and
+never touch the second. The reference mode is a setting you must choose, so the
+attester does not start until `attester.conf` has it, for example:
+
+```
+WRFCOIN_ATTESTER_REFERENCE_MODE=fixed
+```
+
+(`shadow` and `per_station` also need `WRFCOIN_ATTESTER_MAX_REFERENCE_KM=<km>`.)
+Only the reference and timing settings may be set there; the refused keys, the
+node address and the token always come from the package.
+
+Rules the attester enforces (it refuses to start otherwise): testnet only
+(`WRFCOIN_NETWORK_ID=testnet`, a non-mainnet chain id), only your account can
+read the key file, and not together with an HSM. Back up `oracle.key` somewhere
+only you can read: a new key means a new oracle registration.
+
 ## Not done yet
 
 - **Update notice.** The node does not yet tell you when a newer version exists;

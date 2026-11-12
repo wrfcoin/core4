@@ -122,7 +122,7 @@ const SITES: &[(&str, &str, Site)] = &[
     // IBD / live P2P join.
     ("src/bin/launch_api/p2p_events.rs", "apply_p2p_block_with_persist_control_at", Site::Calls(&[HOOK])),
     // A node that mines a block (block 1 on a fresh cut).
-    ("src/bin/launch_api/routes/mining.rs", "mine_block", Site::Calls(&[HOOK])),
+    ("src/bin/launch_api/routes/mining.rs", "mine_block_with_persist_control", Site::Calls(&[HOOK])),
     // Snapshot join.
     ("src/bin/launch_api/routes/snapshot.rs", "install_verified_snapshot", Site::Calls(&[HOOK])),
     (
@@ -152,9 +152,9 @@ const SITES: &[(&str, &str, Site)] = &[
     // Reviewed, not node paths.
     (
         "src/bin/launch_api/p2p_events.rs",
-        "try_reorg_inner",
+        "try_reorg_with_persist_control_at",
         Site::NotANodePath(
-            "REFUSAL SITE (core4#3370, #3373): try_reorg_inner returns before installing any \
+            "REFUSAL SITE (core4#3370, #3373): try_reorg_with_persist_control_at returns before installing any \
              chain when `plan.replaces_block_one()`, so a genesis reorg never swaps an armed \
              block 1 under a running node (the operator wipes and rejoins by snapshot join or \
              IBD, both of which arm block 1). A reorg forking at height >= 1 keeps block 1, \

@@ -170,14 +170,14 @@ jobs:
           $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
           $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
           $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
-          foreach ($f in 'launch_api.exe','wrfcoin.exe','oracle_attester.exe','chain-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+          foreach ($f in 'launch_api.exe','wrfcoin.exe','oracle_attester.exe','chain-888.conf','attester-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
           }
           # The installed attester runs (offline --help) from its install folder.
           $attHelp = & (Join-Path $app 'oracle_attester.exe') --help | Out-String
           if ($LASTEXITCODE -ne 0 -or $attHelp -notmatch 'WRFCOIN_ATTESTER_NODE_URL') { throw "installed oracle_attester.exe --help failed: $attHelp" }
           Write-Host 'installed oracle_attester.exe --help: OK'
-          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk') {
+          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk','Create Attester Key.lnk','Start WRFCoin Attester.lnk','Stop WRFCoin Attester.lnk') {
             if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
           }
           if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
@@ -347,6 +347,59 @@ jobs:
             Get-Content -LiteralPath $errLog -Tail 5
             if ($r.ExitCode -eq 0 -or $err -notmatch 'S-1-5-32-545') { throw 'launch_api did not refuse a key file BUILTIN\Users can read' }
             Write-Host 'Server key: created user-only, loaded by the node, and a Users-readable copy refused'
+
+            # Oracle attester (testnet): 'Create Attester Key' writes a user-only
+            # seed and token and shows only the public key; StartAttester stops
+            # until the operator's attester.conf chooses a reference mode; with
+            # one set, the attester runs on the key file against the local node
+            # and stops on Ctrl+C. Seed and token are only pattern-checked.
+            $oracleKey = Join-Path $root 'oracle.key'
+            $oracleToken = Join-Path $root 'oracle.token'
+            Invoke-Shortcut 'Create Attester Key.lnk' '-Quiet'
+            $seed = (Get-Content -LiteralPath $oracleKey -Raw).Trim()
+            if ($seed -notmatch '^[0-9a-f]{64}$') { throw 'oracle.key is not one 64-hex seed' }
+            Assert-UserOnly $oracleKey
+            Assert-UserOnly $oracleToken
+            $oracleTok = (Get-Content -LiteralPath $oracleToken -Raw).Trim()
+            if ($oracleTok -notmatch '^[0-9a-f]{64}$' -or $oracleTok -eq $tok) { throw 'oracle.token is not its own 64-hex token' }
+            $oraclePub = (Get-Content -LiteralPath (Join-Path $root 'oracle-public.txt') -Raw).Trim()
+            if ($oraclePub -notmatch '^[0-9a-f]{64}$' -or $oraclePub -eq $seed) { throw 'oracle-public.txt does not hold a public key' }
+            if ((Get-Content -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'wrfcoin-oracle-public.txt') -Raw).Trim() -ne $oraclePub) { throw 'Desktop copy of the public key differs' }
+            $shown = (Get-Content 'target\installer\Create_Attester_Key_lnk.out.log','target\installer\Create_Attester_Key_lnk.err.log' -Raw -ErrorAction SilentlyContinue) -join ''
+            if ($shown.Contains($seed) -or -not $shown.Contains($oraclePub)) { throw 'Create Attester Key must show the public key and never the seed' }
+            Invoke-Shortcut 'Create Attester Key.lnk' '-Quiet'
+            if ((Get-Content -LiteralPath $oracleKey -Raw).Trim() -ne $seed) { throw 'a second Create Attester Key replaced the key' }
+            Write-Host "attester key: user-only, public key $oraclePub, not replaced on a second run"
+
+            if (Test-Path -LiteralPath (Join-Path $root 'oracle.key.tmp')) { throw 'oracle.key.tmp was left behind' }
+            & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $app 'wrfcoin-node.ps1') -Action StartAttester -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'StartAttester ran without a chosen reference mode' }
+            $global:LASTEXITCODE = 0   # the refusal was expected
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'set WRFCOIN_ATTESTER_REFERENCE_MODE (fixed, shadow or per_station) in' -SimpleMatch -Quiet)) { throw 'launcher.log does not say which setting and file to edit' }
+            # The operator's own file, in the user-only data folder; upgrades never replace it.
+            [System.IO.File]::WriteAllText((Join-Path $root 'attester.conf'), "# CI`r`nWRFCOIN_ATTESTER_REFERENCE_MODE=fixed`r`n")
+
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            $attLog = Join-Path $root 'logs\attester.log'
+            try {
+              Invoke-Shortcut 'Start WRFCoin Attester.lnk' '-Quiet'
+              if (@(Get-Process oracle_attester -ErrorAction SilentlyContinue).Count -ne 1) { throw 'expected one oracle_attester process' }
+              $keyLine = Select-String -Path $attLog -Pattern 'TESTNET software oracle key active' | Select-Object -First 1
+              if (-not $keyLine) { throw 'attester.log does not show the testnet oracle key loading' }
+              if (-not (Select-String -Path $attLog -Pattern "oracle id $oraclePub" -SimpleMatch -Quiet)) { throw 'attester.log oracle id is not the public key from oracle-public.txt' }
+              $logText = Get-Content -LiteralPath $attLog -Raw
+              if ($logText.Contains($seed) -or $logText.Contains($oracleTok)) { throw 'attester.log contains the seed or the token' }
+              Invoke-Shortcut 'Stop WRFCoin Attester.lnk' '-Quiet'
+              if (@(Get-Process oracle_attester -ErrorAction SilentlyContinue).Count -ne 0) { throw 'attester still running after Stop WRFCoin Attester' }
+              # Stop (node) also stops a running attester first.
+              Invoke-Shortcut 'Start WRFCoin Attester.lnk' '-Quiet'
+              Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+              if (@(Get-Process oracle_attester, launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'Stop did not stop both the attester and the node' }
+            } finally {
+              Write-Host '::group::attester.log (tail)'; Get-Content $attLog -Tail 40 -ErrorAction SilentlyContinue; Write-Host '::endgroup::'
+              Get-Process oracle_attester -ErrorAction SilentlyContinue | Stop-Process -Force
+            }
+            Write-Host 'attester: unset reference mode refused; runs on the user-only key file with its own token; Stop Attester and Stop (node) stop it'
 
             # reachable.conf ("Open your port"): the two allowed keys reach the node
             # and the dashboard shows the announced address; any other key stops

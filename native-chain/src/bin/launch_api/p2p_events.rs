@@ -10,11 +10,8 @@ use wrfcoin_consensus_engines::{
 };
 use wrfcoin_native_chain::blockchain::block::Block;
 use wrfcoin_native_chain::blockchain::chain::{Blockchain, MAX_REORG_DEPTH};
-use wrfcoin_native_chain::blockchain::transaction::{
-    CommitPayload, RevealPayload, Transaction, TransactionInput, TransactionOutput,
-    TransactionType,
-};
-use wrfcoin_native_chain::crypto::hash::{Hash as CryptoHash, hash_bytes};
+use wrfcoin_native_chain::blockchain::transaction::{Transaction, TransactionType};
+use wrfcoin_native_chain::crypto::hash::Hash as CryptoHash;
 use wrfcoin_native_chain::mempool::pool::Mempool;
 use wrfcoin_native_chain::p2p_divergence::{
     ChainDivergenceObservation, ChainStateView, LocalCanonicalRoot,
@@ -33,10 +30,6 @@ use wrfcoin_shared_protocol::monitoring::CORE_METRICS;
 #[cfg(feature = "execution")]
 use wrfcoin_shared_protocol::blockchain::transaction::{
     forecast_receipt_has_valid_signature, ForecastArtifactManifest, ForecastVerificationReceipt,
-};
-use wrfcoin_shared_protocol::weather::schema::{
-    canonicalize_weather_payload, classify_weather_payload, WeatherPayloadClassification,
-    WeatherPayloadParseOptions,
 };
 
 #[cfg(feature = "p2p")]
@@ -707,193 +700,6 @@ fn truncate_to_byte_budget(blocks: Vec<Block>, byte_budget: u64) -> (Vec<Block>,
     (blocks, used)
 }
 
-fn parse_weather_observation_timestamp(payload: &serde_json::Value) -> i64 {
-    let extract_timestamp = |value: &serde_json::Value| -> Option<i64> {
-        match value {
-            serde_json::Value::Number(number) => number.as_i64(),
-            serde_json::Value::String(raw) => raw.parse::<i64>().ok(),
-            _ => None,
-        }
-    };
-
-    for key in ["observed_at_unix", "observed_at", "timestamp"] {
-        if let Some(value) = payload.get(key).and_then(&extract_timestamp) {
-            return value;
-        }
-    }
-    if let Some(observation) = payload.get("observation") {
-        for key in ["observed_at_unix", "observed_at", "timestamp"] {
-            if let Some(value) = observation.get(key).and_then(&extract_timestamp) {
-                return value;
-            }
-        }
-    }
-
-    chrono::Utc::now().timestamp()
-}
-
-async fn bridge_weather_payload_to_mempool(
-    station_id: &str,
-    raw_payload: &[u8],
-    mempool: &Arc<RwLock<Mempool>>,
-    // Node-local weather identity key (#1969 gossip signer). The bridge signs the
-    // commit authorization (#1848) with it so the ingested contribution passes
-    // fail-closed mempool admission instead of being silently dropped (#2389).
-    // `verify_commit_authorization` is self-certifying (it does not bind the
-    // pubkey to `station_id`), and contribution rewards are separately gated by
-    // oracle-attestation quorum, so authorizing with the node's own key vouches
-    // for the submission without becoming a reward-forgery vector.
-    commit_signing_key: &wrfcoin_native_chain::crypto::signature::PrivateKey,
-) {
-    let payload: serde_json::Value = match serde_json::from_slice(raw_payload) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("Failed to decode weather payload JSON from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let classification = classify_weather_payload(&payload, WeatherPayloadParseOptions::default());
-    match classification {
-        WeatherPayloadClassification::NonWeather
-        | WeatherPayloadClassification::UnsupportedSchemaVersion
-        | WeatherPayloadClassification::InvalidSchemaVersionMarkerType
-        | WeatherPayloadClassification::InvalidCanonicalPayload => {
-            log::debug!("Ignoring non-weather or invalid weather payload from station {station_id}");
-            return;
-        },
-        WeatherPayloadClassification::CanonicalV1 | WeatherPayloadClassification::LegacyUnversioned => {}
-    }
-
-    let canonical_payload = match canonicalize_weather_payload(&payload, WeatherPayloadParseOptions::default()) {
-        Ok(Some(canonical_payload)) => canonical_payload,
-        Ok(None) => {
-            log::warn!("Weather payload classification expected weather data but canonicalization returned empty payload for station {station_id}");
-            return;
-        },
-        Err(error) => {
-            log::warn!("Failed to canonicalize weather payload from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let contribution_type = "contribution".to_string();
-    let timestamp = parse_weather_observation_timestamp(&canonical_payload);
-    let nonce = hex::encode(
-        hash_bytes(
-            format!(
-                "wrfcoin-weather:{station_id}:{contribution_type}:{timestamp}:{}",
-                canonical_payload
-            )
-            .as_bytes(),
-        )
-        .as_bytes(),
-    );
-    let commit_id = Transaction::compute_commit_id(
-        &canonical_payload,
-        &nonce,
-        station_id,
-        timestamp,
-        &contribution_type,
-    );
-
-    let timestamp_dt = chrono::DateTime::from_timestamp(timestamp, 0)
-        .unwrap_or_else(chrono::Utc::now);
-
-    let mut commit_payload = CommitPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        auth_pubkey: None,
-        auth_signature: None,
-    };
-    // #2389: authorize the commit with the node's weather identity key so it
-    // satisfies the #1848 fail-closed sender-auth check at mempool admission.
-    // Without this the commit is rejected ("commit sender authorization failed")
-    // and the entire P2P weather-ingestion path produces zero transactions.
-    commit_payload.sign_authorization(commit_signing_key);
-    let reveal_payload = RevealPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        data: canonical_payload,
-        nonce: nonce.clone(),
-        data_cid: None,
-        data_hash: None,
-        storage_provider: None,
-        provenance: None,
-        manifest: None,
-        verification_receipt: None,
-        compute_receipt: None,
-        quality_tier: None,
-    };
-
-    let commitment_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:commit").as_bytes());
-        let tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx
-    };
-    let mut commitment_tx = commitment_tx;
-    commitment_tx.tx_type = TransactionType::ContributionCommit;
-    commitment_tx.timestamp = timestamp_dt;
-    commitment_tx.data = serde_json::to_string(&commit_payload).ok();
-    commitment_tx.set_id();
-
-    let reveal_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:reveal").as_bytes());
-        let mut tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx.tx_type = TransactionType::ContributionReveal;
-        tx.timestamp = timestamp_dt;
-        tx.data = serde_json::to_string(&reveal_payload).ok();
-        tx.set_id();
-        tx
-    };
-
-    let mut guard = mempool.write().await;
-    if let Err(error) = guard.add_transaction(commitment_tx) {
-        log::warn!(
-            "Failed to enqueue contribution commit for station {station_id} payload: {error}"
-        );
-    }
-    if let Err(error) = guard.add_transaction(reveal_tx) {
-        log::warn!(
-            "Failed to enqueue contribution reveal for station {station_id} payload: {error}"
-        );
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum P2pBlockSource {
     LiveGossip,
@@ -977,6 +783,7 @@ async fn report_authoritative_sync_rejection(
     blockchain: &Arc<RwLock<Blockchain>>,
     peer_id: libp2p::PeerId,
     block_height: u64,
+    block_hash: [u8; 32],
     attribution: AuthoritativeSyncRejectionAttribution,
     reason: String,
 ) {
@@ -996,6 +803,7 @@ async fn report_authoritative_sync_rejection(
         .send(P2pCommand::AuthoritativeSyncRejected {
             peer_id,
             block_height,
+            block_hash,
             accepted_height,
             accepted_tip_hash,
             accepted_state_root,
@@ -1275,10 +1083,9 @@ where
                         // Deterministically invalid: never offer it again.
                         ReorgOutcome::InvalidChain => fork_buffer.note_failed_chain(&reorg_chain),
                         // May succeed later: leave the buffer intact, try the next candidate.
+                        // Every abort restores the pre-fork
+                        // live chain with storage unchanged, so this is safe.
                         ReorgOutcome::Transient => {},
-                        // The in-memory chain may have changed: stop, as the
-                        // pre-classification code did after any attempt.
-                        ReorgOutcome::Aborted => break,
                     }
                 }
                 // #3277 S3: whether the reorg completed or restored the
@@ -1715,14 +1522,13 @@ enum ReorgOutcome {
     /// state-root failure): safe to remember and never retry.
     InvalidChain,
     /// Aborted for a reason that may not recur (checkpoint/WAL/storage I/O,
-    /// serialization, persistence hook, consensus error, a concurrent local
-    /// extension). The in-memory chain is as it was before the attempt.
+    /// serialization, persistence hook, consensus error, an `execute_reorg`
+    /// error, a failed durable replacement, a concurrent local extension).
+    /// The in-memory chain AND durable storage are as they were before the
+    /// attempt (the fork replacement commits in one storage
+    /// transaction under the chain guard, and every abort restores the
+    /// pre-fork live chain).
     Transient,
-    /// Aborted after the in-memory chain may already have been changed (an
-    /// `execute_reorg` error, or a durable rollback/persist failure after the
-    /// in-memory reorg). Nothing is learned about the candidate and no further
-    /// candidate is attempted against a chain in an uncertain state.
-    Aborted,
 }
 
 /// Shared implementation for production and exact-version rejection tests.
@@ -1739,6 +1545,46 @@ async fn try_reorg_inner<F>(
     consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
     p2p: Option<&P2pClient>,
     prepare_persist_state: F,
+) -> ReorgOutcome
+where
+    F: FnOnce(
+        wrfcoin_native_chain::blockchain::state::State,
+    ) -> wrfcoin_native_chain::blockchain::state::State,
+{
+    try_reorg_with_persist_control_at(
+        version,
+        candidate_blocks,
+        blockchain,
+        storage,
+        consensus,
+        p2p,
+        prepare_persist_state,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+/// Per-call test controls on the real Storage write seam; no global fault
+/// state.
+#[cfg(test)]
+struct ForkPersistTestControl {
+    /// Drop the prepared checkpoint bytes of the fork block at this height so
+    /// the real durable write fails there.
+    omit_checkpoint_height: Option<u64>,
+    /// Pause right before the durable write: (reached, resume).
+    barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+}
+
+async fn try_reorg_with_persist_control_at<F>(
+    version: wrfcoin_shared_protocol::crypto::chain_binding::SigningProtocolVersion,
+    candidate_blocks: Vec<Block>,
+    blockchain: &Arc<RwLock<Blockchain>>,
+    storage: &Arc<RwLock<Storage>>,
+    consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
+    p2p: Option<&P2pClient>,
+    prepare_persist_state: F,
+    #[cfg(test)] control: Option<&ForkPersistTestControl>,
 ) -> ReorgOutcome
 where
     F: FnOnce(
@@ -2018,8 +1864,11 @@ where
 
     // Execute the reorg on the in-memory chain.
     if let Err(e) = chain.execute_reorg(&plan, fork_state_for_reorg) {
-        log::error!("Reorg execution failed: {e}");
-        return ReorgOutcome::Aborted;
+        // Restore the full pre-fork live chain; storage is
+        // untouched, so the attempt is retryable.
+        *chain = pre_reorg_snapshot;
+        log::error!("Reorg execution failed: {e}; restored the pre-fork live chain");
+        return ReorgOutcome::Transient;
     }
 
     // Apply state transitions for each new block. If any transition fails,
@@ -2147,37 +1996,51 @@ where
         }
     }
 
+    #[cfg(test)]
+    if let Some(control) = control {
+        for (block, _, checkpoint) in &mut prepared_persistence {
+            if control.omit_checkpoint_height == Some(block.height) {
+                *checkpoint = None;
+            }
+        }
+    }
+
     let new_tip_height = chain.height;
     let new_tip = chain.tip;
     let current_state_root: [u8; 32] = chain.state.state_root.0;
     let finalized_height = chain.finalized_height();
-    drop(chain);
-
-    // Every consensus/state check has passed. Only now mutate durable storage.
-    {
-        let mut st = storage.write().await;
-
-        if let Err(e) = st.rollback_to_height(plan.fork_height, new_tip).await {
-            log::error!("Reorg storage rollback failed: {e}");
-            return ReorgOutcome::Aborted;
-        }
-
-        for (blk, transitions, checkpoint_state) in prepared_persistence {
-            let height = blk.height;
-            if let Err(e) = st
-                .persist_block_with_finalized(
-                    blk,
-                    transitions,
-                    checkpoint_state,
-                    finalized_height,
-                )
-                .await
-            {
-                log::error!("Reorg persist failed at height {height}: {e}");
-                return ReorgOutcome::Aborted;
-            }
-        }
+    #[cfg(test)]
+    if let Some((reached, resume)) = control.and_then(|c| c.barrier.as_ref()) {
+        reached.notify_one();
+        resume.notified().await;
     }
+
+    // Every consensus/state check has passed. Hold the API chain
+    // guard until the WHOLE durable replacement (rollback + every fork block,
+    // WAL entry and due checkpoint) commits in one storage transaction, so no
+    // reader or peer sees a fork that is not durable, and a failure leaves
+    // memory and disk both on the old branch. Lock order chain -> storage, as
+    // above (the disk preload already takes storage under this guard).
+    let persist_result = storage
+        .write()
+        .await
+        .replace_fork_with_finalized(
+            plan.fork_height,
+            plan.fork_hash,
+            prepared_persistence,
+            finalized_height,
+        )
+        .await;
+    if let Err(e) = persist_result {
+        *chain = pre_reorg_snapshot;
+        log::error!(
+            "REORG ABORTED: durable replacement failed fork_height={} old_height={} old_tip={} \
+             candidate_tip={}: {e}; restored the pre-fork live chain, durable storage unchanged",
+            plan.fork_height, old_height, old_tip, new_tip,
+        );
+        return ReorgOutcome::Transient;
+    }
+    drop(chain);
 
     if let Some(client) = p2p {
         if let Some(tip_block) = candidate_blocks.last() {
@@ -2302,10 +2165,8 @@ pub async fn run_p2p_event_loop(
     // and read by the `/network/peers/reputation` operator route. Shared (not
     // loop-local) so the route observes the same state the loop maintains.
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    // #2389: node-local weather identity key used to sign the commit
-    // authorization on P2P-ingested weather contributions (see
-    // `bridge_weather_payload_to_mempool`). In production this is the node's
-    // `weather_gossip_signing_key`.
+    // The node's `weather_gossip_signing_key`. The loop no longer uses it:
+    // weather gossip is not turned into transactions.
     commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
 ) {
     run_p2p_event_loop_with_persist_control(
@@ -2354,7 +2215,9 @@ async fn run_p2p_event_loop_with_persist_control(
     state_diverged: Arc<AtomicBool>,
     recovery_policy: StateDivergenceRecoveryPolicy,
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
+    // Unused since weather gossip stopped creating transactions; kept so the
+    // loop's callers do not change.
+    _commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
     #[cfg(test)] persist_control: Option<EventPersistTestControl>,
 ) {
     log::info!("P2P event consumer started");
@@ -2709,6 +2572,7 @@ async fn run_p2p_event_loop_with_persist_control(
                             &blockchain,
                             peer_id,
                             height,
+                            [0u8; 32],
                             AuthoritativeSyncRejectionAttribution::PeerInvalid,
                             format!("failed to deserialize synced block: {e}"),
                         )
@@ -2717,6 +2581,9 @@ async fn run_p2p_event_loop_with_persist_control(
                     },
                 };
                 let height_before = blockchain.read().await.height;
+                // The recomputed header hash, never the block's own claim:
+                // halt corroboration counts peers serving the same block.
+                let block_hash = <[u8; 32]>::from(block.calculate_hash());
                 let outcome = apply_p2p_block(
                     block,
                     P2pBlockSource::HistoricalSync,
@@ -2738,6 +2605,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         &blockchain,
                         peer_id,
                         height,
+                        block_hash,
                         attribution,
                         reason,
                     )
@@ -2824,14 +2692,11 @@ async fn run_p2p_event_loop_with_persist_control(
                 }
             },
 
-            P2pEvent::WeatherData { station_id, data, .. } => {
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+            // A peer's weather message is logged and nothing more. Its station
+            // id is the sender's choice and its signature is by a key the sender
+            // supplies, so this node does not turn it into transactions of its
+            // own. Stations submit through the API.
+            P2pEvent::WeatherData { station_id, .. } => {
                 log::info!("P2P weather data received from station {station_id}");
             },
 
@@ -2952,13 +2817,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         .cache_content_ref_payload(content_ref, &data, "weather-data-v2")
                         .await;
                 }
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+                // As for `WeatherData`: logged, never turned into transactions.
                 log::info!("P2P weather data v2 received from station {station_id}");
             },
 
@@ -4229,6 +4088,12 @@ mod tests {
     /// prune that fork-point checkpoint.
     async fn committed_reorg_fixture(
     ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
+        committed_reorg_fixture_with_storage(test_storage()).await
+    }
+
+    async fn committed_reorg_fixture_with_storage(
+        storage: Arc<RwLock<Storage>>,
+    ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
         let (common_chain, common_blocks) =
             committed_fixture_blocks(Blockchain::default(), 1, 0x41).await;
         let common = common_blocks[0].clone();
@@ -4238,7 +4103,6 @@ mod tests {
         let (_, fork_blocks) = committed_fixture_blocks(common_chain, 2, 0x42).await;
 
         let chain = Arc::new(RwLock::new(Blockchain::default()));
-        let storage = test_storage();
         feed_committed_block_at_v2(common, &chain, &storage).await;
         let common_state = chain.read().await.state.clone();
         storage
@@ -4255,6 +4119,146 @@ mod tests {
             "fixture control: the local branch must be fully accepted before reorg"
         );
         (chain, storage, fork_blocks)
+    }
+
+    /// A storage failure in the middle of a whole-fork
+    /// replacement (rollback committed, block 2 written, block 3's due
+    /// checkpoint fails) must leave BOTH the live chain and durable storage on
+    /// the old branch, publish nothing, report a retryable outcome, and a
+    /// retry of the same fork must then install it.
+    #[tokio::test]
+    async fn fork_mid_write_failure_is_atomic_and_retryable_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        // Interval 3: fork block 3 is a due checkpoint, block 2 is not.
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let before = chain_mark(&chain).await;
+        let snapshot = chain.read().await.clone();
+        let durable_before = storage.read().await.load_state().unwrap().unwrap();
+        let durable_blocks_before = storage.read().await.load_blocks_range(0, 3).unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let control = super::ForkPersistTestControl {
+            omit_checkpoint_height: Some(3),
+            barrier: None,
+        };
+        let outcome = super::try_reorg_with_persist_control_at(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+            Some(&control),
+        )
+        .await;
+        assert_eq!(chain_mark(&chain).await, before, "failed durable write changed the live chain");
+        {
+            let after = chain.read().await;
+            assert_eq!(
+                bincode::serialize(after.blocks()).unwrap(),
+                bincode::serialize(snapshot.blocks()).unwrap(),
+                "live block window differs from the pre-fork snapshot"
+            );
+            assert_eq!(after.total_block_count(), snapshot.total_block_count());
+            assert_eq!(after.finalized_height(), snapshot.finalized_height());
+        }
+        assert!(commands.try_recv().is_err(), "failed replacement published to peers");
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.height, durable_before.height, "durable height moved");
+        assert_eq!(recovered.tip, durable_before.tip, "durable tip moved");
+        assert_eq!(recovered.state.state_root, durable_before.state.state_root);
+        let durable_blocks_after = storage.read().await.load_blocks_range(0, 3).unwrap();
+        assert_eq!(
+            bincode::serialize(&durable_blocks_after).unwrap(),
+            bincode::serialize(&durable_blocks_before).unwrap(),
+            "durable blocks are a partial fork"
+        );
+        assert_eq!(
+            outcome,
+            super::ReorgOutcome::Transient,
+            "nothing changed, so the attempt must stay retryable"
+        );
+
+        let retry = super::try_reorg_inner(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+        )
+        .await;
+        assert_eq!(retry, super::ReorgOutcome::Reorged);
+        assert_eq!(chain.read().await.tip, fork.last().unwrap().hash.unwrap());
+        let durable = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(durable.tip, chain.read().await.tip);
+        assert_eq!(durable.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok(), "retry did not publish");
+    }
+
+    /// No API reader and no peer may observe the new
+    /// fork before its durable replacement has committed.
+    #[tokio::test]
+    async fn fork_publication_waits_for_durable_replacement_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let old_tip = chain.read().await.tip;
+        let new_tip = fork.last().unwrap().hash.unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let applying = {
+            let chain = Arc::clone(&chain);
+            let storage = Arc::clone(&storage);
+            let reached = Arc::clone(&reached);
+            let resume = Arc::clone(&resume);
+            tokio::spawn(async move {
+                let control = super::ForkPersistTestControl {
+                    omit_checkpoint_height: None,
+                    barrier: Some((reached, resume)),
+                };
+                super::try_reorg_with_persist_control_at(
+                    SigningProtocolVersion::V2,
+                    fork,
+                    &chain,
+                    &storage,
+                    &test_consensus(),
+                    Some(&client),
+                    std::convert::identity,
+                    Some(&control),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reached.notified())
+            .await
+            .unwrap();
+        assert_eq!(storage.read().await.load_state().unwrap().unwrap().tip, old_tip);
+        let premature_command = commands.try_recv().is_ok();
+        let premature_reader = tokio::time::timeout(Duration::from_millis(30), chain.read())
+            .await
+            .map(|g| g.tip)
+            .ok();
+        resume.notify_one();
+        let outcome = applying.await.unwrap();
+        assert_eq!(outcome, super::ReorgOutcome::Reorged);
+        assert!(
+            premature_reader.is_none(),
+            "API observed the live chain (tip {premature_reader:?}) before the durable replacement"
+        );
+        assert!(!premature_command, "peer saw an unpersisted fork");
+        assert_eq!(chain.read().await.tip, new_tip);
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.tip, new_tip);
+        assert_eq!(recovered.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok());
     }
 
     // ---------------------------------------------------------------------
@@ -5583,7 +5587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5644,56 +5648,18 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherData should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherData should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-001".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherData gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_v2_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_v2_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5754,51 +5720,13 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherDataV2 should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherDataV2 should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-002".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherDataV2 gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 

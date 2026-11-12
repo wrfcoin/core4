@@ -4240,6 +4240,8 @@ mod tests {
     }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
+    #[cfg(feature = "p2p")]
+    mod producer_persist_3544;
     #[path = "reward_address_index.rs"]
     mod reward_address_index;
     #[path = "reward_history_newest.rs"]
@@ -17896,6 +17898,71 @@ mod tests {
             get_station_list_3342!(&app, "/transactions/station/registrations?limit=100000", op);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(all["stations"].as_array().unwrap().len(), 3);
+    }
+
+    /// Public reads return station coordinates at 0.1 degree; full precision
+    /// needs the operator token. The pending-attestation surface, every role:
+    /// Reader, Contributor and Oracle get the 0.1 degree grid, Operator the
+    /// registry value, anonymous nothing. Coordinates are made up.
+    #[actix_web::test]
+    async fn pending_attestations_give_exact_coordinates_only_to_the_operator() {
+        let state = test_state(None);
+        // PWS-A is seeded at (10.123456, 20.654321).
+        seed_station_list_3342(&state, &["PWS-A"]).await;
+        let station_id = "PWS-A";
+        let nonce = "coords-tenth-nonce";
+        let timestamp = 1_700_000_000_i64;
+        let data = json!({ "temperature_c": 12.5 });
+        let commit_id =
+            Transaction::compute_commit_id(&data, nonce, station_id, timestamp, "weather_observation");
+        let mut reveal = age_test_entry("coords-tenth-reveal");
+        reveal.tx_type = TransactionType::ContributionReveal;
+        reveal.sender_address = Address::new([0x5b; 20]);
+        reveal.data = Some(
+            json!({
+                "commit_id": commit_id,
+                "station_id": station_id,
+                "timestamp": timestamp,
+                "contribution_type": "weather_observation",
+                "data": data,
+                "nonce": nonce,
+            })
+            .to_string(),
+        );
+        reveal.set_id();
+        state.mempool.write().await.add_transaction(reveal).expect("reveal admitted");
+        let app = test::init_service(test_app(state)).await;
+
+        let (anon, _) = get_station_list_3342!(&app, "/transactions/oracle/pending", None);
+        assert_eq!(anon, StatusCode::UNAUTHORIZED);
+
+        let cases: [(&str, &str, f64, f64); 4] = [
+            ("reader", TEST_READER_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("contributor", TEST_CONTRIBUTOR_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("oracle", TEST_ORACLE_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("operator", TEST_OPERATOR_TOKEN, 10.123456, 20.654321), // secret-leak-ok: test-only constant token
+        ];
+        for (role, token, latitude, longitude) in cases {
+            let (status, body) =
+                get_station_list_3342!(&app, "/transactions/oracle/pending", Some(token));
+            assert_eq!(status, StatusCode::OK, "{role}");
+            let entry = body["observations"]
+                .as_array()
+                .expect("observations array")
+                .iter()
+                .find(|o| o["station_id"] == station_id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{role}: the reveal must be listed"));
+            assert_eq!(entry["station_location"]["latitude"], latitude, "{role}");
+            assert_eq!(entry["station_location"]["longitude"], longitude, "{role}");
+            if role != "operator" {
+                let wire = body.to_string();
+                assert!(
+                    !wire.contains("10.12") && !wire.contains("20.65"),
+                    "{role}: finer than 0.1 degree must not reach a non-operator"
+                );
+            }
+        }
     }
 
     /// #3343 review: a tiny page must not collect or sort the registry. With

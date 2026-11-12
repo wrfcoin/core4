@@ -261,7 +261,18 @@ impl Mempool {
     /// Sender key for the per-sender admission cap (#2039). Uses the hex sender
     /// address; a single, central definition so admission and every removal
     /// path agree on the key.
+    ///
+    /// An oracle attestation is keyed on the oracle id in its payload instead.
+    /// Its sender address is the zero address whenever the oracle id is a
+    /// 64-hex key rather than an address, and the zero address is shared by
+    /// every transaction built without a sender, so under the address key a
+    /// full zero bucket would refuse attestations. Only an attestation signed
+    /// by a registered oracle key is ever stored, so the oracle id cannot be
+    /// used to open extra buckets.
     fn sender_key(tx: &Transaction) -> String {
+        if let Some(attestation) = tx.parse_oracle_attestation_payload() {
+            return format!("oracle-attestation:{}", attestation.oracle_id);
+        }
         tx.sender_address.to_hex()
     }
 
@@ -2695,6 +2706,48 @@ mod tests {
         other.set_id();
         mp.add_transaction(other)
             .expect("a different sender must still be admitted");
+    }
+
+    /// Oracle attestations are counted per oracle, not under the zero sender
+    /// address they share with every other transaction built without one. A
+    /// full zero-sender bucket must not keep a registered oracle's attestation
+    /// out, and each oracle is still bounded by the same cap.
+    #[test]
+    fn oracle_attestation_is_admitted_when_the_zero_sender_bucket_is_full() {
+        let config = Config {
+            mempool_max_txs_per_sender: 2,
+            ..Config::default()
+        };
+        let mut mp = Mempool::new(&config);
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-a"))
+            .expect("1st zero-sender tx admitted");
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-b"))
+            .expect("2nd zero-sender tx admitted");
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-c"))
+            .expect_err("vacuity guard: the zero-sender bucket is full");
+
+        let mut registry = SigningKeyRegistry::default();
+        let mut attest = |commit: &str| {
+            let (tx, oracle_id) = signed_oracle_attestation(7101, commit, commit);
+            assert_eq!(
+                tx.sender_address,
+                Address([0u8; 20]),
+                "the attestation carries the zero sender address, as on chain 888"
+            );
+            registry
+                .ensure_legacy_identity_key(&oracle_id, SigningRole::Oracle, 0)
+                .expect("register the oracle signing key");
+            mp.add_transaction_with_signing_keys(tx, Some(&registry))
+        };
+
+        attest("crowd-1")
+            .expect("a registered oracle's attestation is admitted while the zero-sender bucket is full");
+        attest("crowd-2").expect("the oracle's 2nd attestation is admitted");
+        let err = attest("crowd-3").expect_err("one oracle is still bounded by the per-sender cap");
+        assert!(
+            err.to_string().contains("per-sender limit"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Removing a transaction frees its sender's slot (#2039 — the count is
