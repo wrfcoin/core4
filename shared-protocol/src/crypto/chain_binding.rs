@@ -1219,9 +1219,10 @@ pub enum ConsensusFeature {
     /// Includes the `StreakReplayNodeService` ordering, so it is scheduled on
     /// its own, in place of that feature.
     ///
-    /// Wire ordinal 31. Ships
-    /// UNSCHEDULED and NOT live-schedulable; inactive, the replay is byte for
-    /// byte the one before it.
+    /// Wire ordinal 31. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. A live schedule extension may name it; scheduling
+    /// is the owner's signature only. Inactive, the replay is byte for byte
+    /// the one before it.
     StreakReplayRecipientParity,
     /// Limited station registrar key (`consensus::station_registrar`). From
     /// its activation a station registration may be authorized by a key
@@ -1492,15 +1493,14 @@ impl ConsensusFeature {
             | Self::SlashEvidenceReports
             // #3565: behaviour is wired, but activation is an owner decision.
             | Self::DeviceSubmissionLimit
-            // #3591: wired and tested; scheduling is a separate owner step.
+            // #3591: superseded by `streak_replay_recipient_parity`, which
+            // includes its ordering; never scheduled on its own.
             | Self::StreakReplayNodeService
             // #3336: wired and tested; scheduling is a separate owner step.
             | Self::StationCoordinatesFixedPoint
             // Transfer fee burn: wired and tested; scheduled together with
             // `paymaster` in one owner-signed release, never alone.
             | Self::TransferFeeBurn
-            // Wired and tested; scheduling is a separate owner step.
-            | Self::StreakReplayRecipientParity
             // Held until review and the determinism differential; then a
             // release makes it schedulable, no earlier than the key binding's
             // activation + `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`
@@ -1535,7 +1535,11 @@ impl ConsensusFeature {
             // Wired end to end (admission, block classifier, apply, finalize,
             // pricing, checkpoint/snapshot layout); scheduling is the owner's
             // signature, after review and the determinism differential.
-            | Self::AdvisoryGovernance => true,
+            | Self::AdvisoryGovernance
+            // Wired and tested (extractor replay from the producer's pre-reward
+            // state and recipient rule; producer, P2P applier, extraction and
+            // WAL agree); the binary accepts a schedule, the owner signs it.
+            | Self::StreakReplayRecipientParity => true,
         }
     }
 
@@ -3149,6 +3153,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
         for node in [None, Some(other.as_str())] {
@@ -3171,7 +3177,6 @@ mod tests {
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
-            ConsensusFeature::StreakReplayRecipientParity,
             ConsensusFeature::ForecastLateScore,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
@@ -3193,6 +3198,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
         assert_eq!(schedulable, expected);
@@ -3899,9 +3906,10 @@ mod streak_replay_recipient_parity_pin {
     use super::*;
 
     /// Appended right after `bond_admission_key` (the last public feature,
-    /// core4 #120), so the wire ordinal stays fixed. Unscheduled.
+    /// core4 #120), so the wire ordinal stays fixed. In no genesis or default
+    /// schedule; a live schedule extension may name it (owner-signed).
     #[test]
-    fn feature_follows_bond_admission_key_and_is_unscheduled() {
+    fn feature_follows_bond_admission_key_and_is_schedulable() {
         let f = ConsensusFeature::StreakReplayRecipientParity;
         assert_eq!(ConsensusFeature::parse("streak_replay_recipient_parity"), Some(f));
         let all = ConsensusFeature::ALL;
@@ -3911,8 +3919,10 @@ mod streak_replay_recipient_parity_pin {
         let k = known.iter().position(|x| *x == "streak_replay_recipient_parity").unwrap();
         assert_eq!(known[k - 1], "bond_admission_key");
         assert_eq!(bincode::serialize(&f).unwrap(), 31u32.to_le_bytes(), "ordinal after bond_admission_key");
-        assert!(!f.schedulable(None));
+        assert!(f.schedulable(None));
+        assert!(f.schedulable(Some(&"cd".repeat(32))));
         assert!(f.has_behaviour());
+        assert!(!FeatureSchedule::default().active(f, u64::MAX), "unscheduled by default");
     }
 
     /// `streak_replay_recipient_parity` supersedes `streak_replay_node_service`:
