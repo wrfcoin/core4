@@ -1287,7 +1287,7 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// authorize no schedule, upgrade notice, oracle action, bond or other
 /// station registration.
 ///
-/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// **ONE ROW: chain 888.** With no row for a chain the feature cannot be
 /// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
 /// the library signers, genesis validation), and if a block schedules it
 /// anyway the registrar path accepts nothing. To set one, a reviewed consensus
@@ -1301,7 +1301,18 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// against this table, so a key is never removed or replaced, and nodes that
 /// disagree on the table disagree on block validity. Retiring a key takes a
 /// release; adding one means every producer upgrades together.
-pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[];
+///
+/// 888/testnet: the owner's two registrar keys, generated offline on
+/// 2026-11-13 (`docs/plans/2026-11-08-registrar-key-plan.md`, workspace docs).
+/// The first is the online key the signing service holds; the second is the
+/// cold spare, which never leaves offline storage. Public keys only.
+pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[GovernancePin {
+    genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
+    keys: &[
+        "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009", // pragma: allowlist secret -- public registrar KEY (ed25519 public key), online
+        "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b",  // pragma: allowlist secret -- public registrar KEY (ed25519 public key), cold spare
+    ],
+}];
 
 #[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_STATION_REGISTRAR_PIN: std::sync::OnceLock<(String, Vec<String>)> =
@@ -1603,11 +1614,24 @@ mod tests {
         }
     }
 
-    /// The station registrar table today: no chain has a key. The row that
-    /// sets one changes this test in the same reviewed PR.
+    /// The station registrar table, byte for byte. Replay re-verifies
+    /// historical registrar registrations against it, so a key is only ever
+    /// appended, never removed or replaced.
     #[test]
     fn station_registrar_pins_are_immutable() {
-        assert_eq!(STATION_REGISTRAR_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        const CHAIN_888_BLOCK1: &str =
+            "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+        const ONLINE: &str = "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009"; // pragma: allowlist secret -- public registrar KEY
+        const SPARE: &str = "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b"; // pragma: allowlist secret -- public registrar KEY
+        assert_eq!( // secret-leak-ok: test; public block-1 hash and public ed25519 registrar keys, no secret material
+            STATION_REGISTRAR_KEY_PINS,
+            &[GovernancePin {
+                genesis_hash: CHAIN_888_BLOCK1,
+                keys: &[ONLINE, SPARE],
+            }]
+        );
+        assert_ne!(ONLINE, SPARE, "the spare is a second key, not a copy");
+        // CHAIN_888_BLOCK1 is the hash in packaging/windows/chain-888.conf.
         for pin in STATION_REGISTRAR_KEY_PINS {
             assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
             assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message
