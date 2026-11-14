@@ -148,6 +148,14 @@ pub enum BondCommands {
         #[clap(long)]
         transaction_file: PathBuf,
     },
+    /// One resumable pass that bonds this node on testnet: grant check,
+    /// Deposit plan, server/consumer signatures, admission request, passkey
+    /// payout approval, owner signature and submission. State and every
+    /// packet stay in --state-dir; a rerun picks up where the last one
+    /// stopped and never re-signs a step already sent.
+    /// Exit 0: registered. Exit 2: waiting (funds, admission, payout approval,
+    /// inclusion); run again later.
+    Start(super::node_bond_start::StartArgs),
     /// Inspect a deployment's funded bond, bindings and exit state.
     Inspect {
         #[clap(long)]
@@ -325,6 +333,50 @@ pub(crate) fn sign_packet(
     Ok(())
 }
 
+/// Sign the owner, server or consumer role of a lifecycle packet with a
+/// software operator key (`sign --key-file`, `bond start`). Other roles refuse.
+pub(crate) fn sign_with_operator_key(
+    tx: &mut Transaction,
+    role: BondSignerRole,
+    key: &OperatorKey,
+    identity: &ChainIdentity,
+) -> Result<()> {
+    let operator_role = match role {
+        BondSignerRole::Owner => OperatorRole::Owner,
+        BondSignerRole::Server => OperatorRole::Server,
+        BondSignerRole::Consumer => OperatorRole::Consumer,
+        _ => anyhow::bail!(
+            "software operator signer role refused; use dedicated HSM for governance/payout"
+        ),
+    };
+    let mut payload = NodeBondLifecycle::parse(tx)
+        .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
+    let public: [u8; 32] = key.public_key().as_bytes().try_into()?;
+    ensure!(
+        payload.governance_key != Some(public),
+        "software operator key cannot double as governance key"
+    );
+    if matches!(role, BondSignerRole::Owner) {
+        ensure!(
+            key.public_key().as_bytes() == payload.owner_key,
+            "owner public key mismatch"
+        );
+    }
+    let signature = key
+        .sign_lifecycle(operator_role, &payload.signed.authorization, identity)?
+        .as_bytes()
+        .to_vec();
+    match role {
+        BondSignerRole::Owner => payload.signed.owner_signature = signature,
+        BondSignerRole::Server => payload.signed.server_signature = signature,
+        BondSignerRole::Consumer => payload.signed.consumer_signature = signature,
+        _ => unreachable!(),
+    }
+    tx.data = Some(serde_json::to_string(&payload)?);
+    tx.set_id();
+    Ok(())
+}
+
 fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedSigner> {
     ensure!(
         // secret-leak-ok: presence check over variable names only; no credential value is read or formatted
@@ -415,6 +467,9 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
     if let BondCommands::Update(args) = command {
         return super::node_bond_update::handle(args).await;
     }
+    if let BondCommands::Start(args) = command {
+        return super::node_bond_start::handle(args).await;
+    }
     if let BondCommands::Admit(args) = command {
         return super::node_bond_admit::handle_admit(args).await;
     }
@@ -468,42 +523,12 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         );
         let identity = ChainIdentity::new(chain_id, network_id);
         if let Some(path) = key_file {
-            let operator_role = match role {
-                BondSignerRole::Owner => OperatorRole::Owner,
-                BondSignerRole::Server => OperatorRole::Server,
-                BondSignerRole::Consumer => OperatorRole::Consumer,
-                _ => anyhow::bail!(
-                    "software operator signer role refused; use dedicated HSM for governance/payout"
-                ),
-            };
-            let key = OperatorKey::load(path)?;
-            let mut payload = NodeBondLifecycle::parse(&tx)
-                .ok_or_else(|| anyhow::anyhow!("invalid Node lifecycle transaction"))?;
-            let public: [u8; 32] = key.public_key().as_bytes().try_into()?;
             ensure!(
-                payload.governance_key != Some(public),
-                "software operator key cannot double as governance key"
+                matches!(role, BondSignerRole::Owner | BondSignerRole::Server | BondSignerRole::Consumer),
+                "software operator signer role refused; use dedicated HSM for governance/payout"
             );
-            if matches!(role, BondSignerRole::Owner) {
-                ensure!(
-                    key.public_key().as_bytes() == payload.owner_key,
-                    "owner public key mismatch"
-                );
-            }
-            let signature = key
-                .sign_lifecycle(operator_role, &payload.signed.authorization, &identity)?
-                .as_bytes()
-                .to_vec();
-            match role {
-                BondSignerRole::Owner => {
-                    payload.signed.owner_signature = signature;
-                },
-                BondSignerRole::Server => payload.signed.server_signature = signature,
-                BondSignerRole::Consumer => payload.signed.consumer_signature = signature,
-                _ => unreachable!(),
-            }
-            tx.data = Some(serde_json::to_string(&payload)?);
-            tx.set_id();
+            let key = OperatorKey::load(path)?;
+            sign_with_operator_key(&mut tx, *role, &key, &identity)?;
         } else {
             let signer = resolve_signer()?;
             sign_packet(&mut tx, *role, &identity, signer.signer.as_ref())?;
@@ -549,6 +574,7 @@ pub async fn handle(command: &BondCommands) -> Result<Value> {
         | BondCommands::Deposit(_)
         | BondCommands::Update(_)
         | BondCommands::Admit(_)
+        | BondCommands::Start(_)
         | BondCommands::AdmissionRequest(_)
         | BondCommands::Probe { .. }
         | BondCommands::KeyInfo { .. }
