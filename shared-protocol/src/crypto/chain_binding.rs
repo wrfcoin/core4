@@ -1219,9 +1219,10 @@ pub enum ConsensusFeature {
     /// Includes the `StreakReplayNodeService` ordering, so it is scheduled on
     /// its own, in place of that feature.
     ///
-    /// Wire ordinal 31. Ships
-    /// UNSCHEDULED and NOT live-schedulable; inactive, the replay is byte for
-    /// byte the one before it.
+    /// Wire ordinal 31. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. A live schedule extension may name it; scheduling
+    /// is the owner's signature only. Inactive, the replay is byte for byte
+    /// the one before it.
     StreakReplayRecipientParity,
     /// Limited station registrar key (`consensus::station_registrar`). From
     /// its activation a station registration may be authorized by a key
@@ -1257,6 +1258,80 @@ pub enum ConsensusFeature {
     /// schedule or cut pin. The binary accepts a live schedule extension
     /// naming it; scheduling is the owner's signature only.
     AdvisoryGovernance,
+    /// Forecast late score (`consensus::forecast_late_score`). From its activation:
+    ///
+    /// - a forecast reveal stores a forecast record (forecaster, station,
+    ///   variable, integer value, lead, chain-derived valid time);
+    /// - `TransactionType::ForecastScore` carries an oracle-quorum-signed
+    ///   observation and scores stored forecasts with the integer rule in
+    ///   `wrfcoin_forecast_score::late_score`;
+    /// - a bucket (station, variable, lead, valid hour) closes 24 h after its
+    ///   valid time and pays its top forecasters from a capped share of the
+    ///   Contribution slice; unused budget is not minted;
+    /// - a forecast reveal no longer earns a baseline credit.
+    ///
+    /// Below activation the transaction type is refused by mempool admission,
+    /// the block classifier and apply, and `State::forecast_late_score` stays
+    /// empty, so blocks and `state_root` are byte-identical.
+    ///
+    /// In force only once `forecaster_key_binding` has itself been active for
+    /// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks
+    /// ([`forecast_late_score_active`]): the forecaster paid is the key-bound
+    /// commit signer.
+    ///
+    /// Wire ordinal 34. Ships UNSCHEDULED and NOT live-schedulable: it appears
+    /// in no genesis, default schedule or cut pin. Scheduling is the owner's
+    /// signature only, in a later release that makes it schedulable.
+    ForecastLateScore,
+}
+
+/// Blocks `forecaster_key_binding` must already have been active before
+/// `forecast_late_score` takes effect.
+pub const FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS: u64 = 2_000;
+
+/// Whether the forecast late score is in force at `height`: the feature is
+/// active AND `forecaster_key_binding` has been active for at least
+/// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks. Every consensus
+/// read of the feature goes through this, so a schedule that names
+/// `forecast_late_score` too early (or without the key binding) leaves the
+/// lane dormant on every node rather than paying unbound forecasters.
+pub fn forecast_late_score_active(height: u64) -> bool {
+    forecast_late_score_active_with(feature_active, height)
+}
+
+/// Whether a block at `height` applies its governance transitions BEFORE its
+/// launch batch on every path that orders a block's transitions: the
+/// producer (which always has), the assembly screen, the validation replay
+/// and the transition extractor. The one place this order is decided; true
+/// exactly while the forecast late score is in force, because a score reads
+/// what governance can change in the same block (the oracle set, the quorum,
+/// the signing keys) and a bucket close reads `stake_required`.
+pub fn governance_before_launch(height: u64) -> bool {
+    forecast_late_score_active(height)
+}
+
+/// [`forecast_late_score_active`] over an explicit activation predicate.
+pub fn forecast_late_score_active_with(
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+    height: u64,
+) -> bool {
+    active(ConsensusFeature::ForecastLateScore, height)
+        && height
+            .checked_sub(FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS)
+            .is_some_and(|bound_since| active(ConsensusFeature::ForecasterKeyBinding, bound_since))
+}
+
+/// Admission rule for a schedule naming `forecast_late_score` at
+/// `activation_height`: `forecaster_key_binding` must be scheduled (already,
+/// or in the same extension) and the late score must activate at least
+/// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks after it.
+pub fn forecast_late_score_schedule_allowed(
+    activation_height: u64,
+    key_binding_activation: Option<u64>,
+) -> bool {
+    key_binding_activation
+        .and_then(|bound| bound.checked_add(FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS))
+        .is_some_and(|earliest| activation_height >= earliest)
 }
 
 /// Activation admission contract: Refs #3527, all five hardening items, plus
@@ -1307,6 +1382,7 @@ impl ConsensusFeature {
         Self::StreakReplayRecipientParity,
         Self::StationRegistrarKey,
         Self::AdvisoryGovernance,
+        Self::ForecastLateScore,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1346,6 +1422,7 @@ impl ConsensusFeature {
             Self::StreakReplayRecipientParity => "streak_replay_recipient_parity",
             Self::StationRegistrarKey => "station_registrar_key",
             Self::AdvisoryGovernance => "advisory_governance",
+            Self::ForecastLateScore => "forecast_late_score",
         }
     }
 
@@ -1416,15 +1493,19 @@ impl ConsensusFeature {
             | Self::SlashEvidenceReports
             // #3565: behaviour is wired, but activation is an owner decision.
             | Self::DeviceSubmissionLimit
-            // #3591: wired and tested; scheduling is a separate owner step.
+            // #3591: superseded by `streak_replay_recipient_parity`, which
+            // includes its ordering; never scheduled on its own.
             | Self::StreakReplayNodeService
             // #3336: wired and tested; scheduling is a separate owner step.
             | Self::StationCoordinatesFixedPoint
             // Transfer fee burn: wired and tested; scheduled together with
             // `paymaster` in one owner-signed release, never alone.
             | Self::TransferFeeBurn
-            // Wired and tested; scheduling is a separate owner step.
-            | Self::StreakReplayRecipientParity => false,
+            // Held until review and the determinism differential; then a
+            // release makes it schedulable, no earlier than the key binding's
+            // activation + `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`
+            // (`forecast_late_score_schedule_allowed`).
+            | Self::ForecastLateScore => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1454,7 +1535,11 @@ impl ConsensusFeature {
             // Wired end to end (admission, block classifier, apply, finalize,
             // pricing, checkpoint/snapshot layout); scheduling is the owner's
             // signature, after review and the determinism differential.
-            | Self::AdvisoryGovernance => true,
+            | Self::AdvisoryGovernance
+            // Wired and tested (extractor replay from the producer's pre-reward
+            // state and recipient rule; producer, P2P applier, extraction and
+            // WAL agree); the binary accepts a schedule, the owner signs it.
+            | Self::StreakReplayRecipientParity => true,
         }
     }
 
@@ -1494,6 +1579,9 @@ impl ConsensusFeature {
             Self::StationRegistrarKey => true,
             // Advisory governance: admission, classifier, apply and finalize read it.
             Self::AdvisoryGovernance => true,
+            // Reveal records, the score transaction, bucket close and pay, and
+            // the baseline-credit switch all read it.
+            Self::ForecastLateScore => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1568,13 +1656,18 @@ mod forecast_skill_baseline_tests {
         assert_eq!(ConsensusFeature::ALL[30], ConsensusFeature::BondAdmissionKey);
         assert_eq!(ConsensusFeature::ALL[31], ConsensusFeature::StreakReplayRecipientParity);
         assert_eq!(ConsensusFeature::ALL[32], ConsensusFeature::StationRegistrarKey);
-        assert_eq!(ConsensusFeature::ALL.len(), 34);
-        // Advisory governance is appended after it at ordinal 33.
         assert_eq!(ConsensusFeature::ALL[33], ConsensusFeature::AdvisoryGovernance);
         assert_eq!(
             bincode::serialize(&ConsensusFeature::AdvisoryGovernance).unwrap(),
             33u32.to_le_bytes()
         );
+        // The forecast late score is appended after it at ordinal 34.
+        assert_eq!(ConsensusFeature::ALL[34], ConsensusFeature::ForecastLateScore);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::ForecastLateScore).unwrap(),
+            34u32.to_le_bytes()
+        );
+        assert_eq!(ConsensusFeature::ALL.len(), 35);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3060,6 +3153,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
         for node in [None, Some(other.as_str())] {
@@ -3082,7 +3177,7 @@ mod tests {
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
-            ConsensusFeature::StreakReplayRecipientParity,
+            ConsensusFeature::ForecastLateScore,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
@@ -3103,6 +3198,8 @@ mod tests {
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
         assert_eq!(schedulable, expected);
@@ -3809,9 +3906,10 @@ mod streak_replay_recipient_parity_pin {
     use super::*;
 
     /// Appended right after `bond_admission_key` (the last public feature,
-    /// core4 #120), so the wire ordinal stays fixed. Unscheduled.
+    /// core4 #120), so the wire ordinal stays fixed. In no genesis or default
+    /// schedule; a live schedule extension may name it (owner-signed).
     #[test]
-    fn feature_follows_bond_admission_key_and_is_unscheduled() {
+    fn feature_follows_bond_admission_key_and_is_schedulable() {
         let f = ConsensusFeature::StreakReplayRecipientParity;
         assert_eq!(ConsensusFeature::parse("streak_replay_recipient_parity"), Some(f));
         let all = ConsensusFeature::ALL;
@@ -3821,8 +3919,10 @@ mod streak_replay_recipient_parity_pin {
         let k = known.iter().position(|x| *x == "streak_replay_recipient_parity").unwrap();
         assert_eq!(known[k - 1], "bond_admission_key");
         assert_eq!(bincode::serialize(&f).unwrap(), 31u32.to_le_bytes(), "ordinal after bond_admission_key");
-        assert!(!f.schedulable(None));
+        assert!(f.schedulable(None));
+        assert!(f.schedulable(Some(&"cd".repeat(32))));
         assert!(f.has_behaviour());
+        assert!(!FeatureSchedule::default().active(f, u64::MAX), "unscheduled by default");
     }
 
     /// `streak_replay_recipient_parity` supersedes `streak_replay_node_service`:

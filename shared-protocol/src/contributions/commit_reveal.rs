@@ -284,9 +284,20 @@ impl CommitRevealState {
             }
         }
 
-        let parsed_weather_payload =
+        // `forecast_late_score`: once it is in force a forecast reveal is never
+        // a station reading, whatever fields its data carries. It gets no
+        // weather point and no quality score, and does not replace the
+        // station's last accepted reading; so a reveal that holds a quality
+        // score is a reading, which is what a forecast score may cite as
+        // truth or window. Below the feature nothing changes.
+        let forecast_is_not_a_reading = payload.contribution_type == "forecast"
+            && crate::crypto::chain_binding::forecast_late_score_active(current_block_height);
+        let parsed_weather_payload = if forecast_is_not_a_reading {
+            None
+        } else {
             parse_weather_payload_with_options(&payload.data, self.weather_payload_parse_options)
-                .map_err(|reason| CommitRevealError::WeatherPayloadSchemaValidation { reason })?;
+                .map_err(|reason| CommitRevealError::WeatherPayloadSchemaValidation { reason })?
+        };
         let weather_point = if let Some(parsed) = parsed_weather_payload {
             let previous = self.station_last_weather.get(&payload.station_id);
             let validation =

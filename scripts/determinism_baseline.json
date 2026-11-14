@@ -2,10 +2,10 @@
   "version": 2,
   "generated_by": "scripts/check_determinism.py --update-baseline",
   "totals": {
-    "fingerprints": 1770,
-    "occurrences": 2043
+    "fingerprints": 1768,
+    "occurrences": 2041
   },
-  "digest": "sha256:ce06857fdb588e98fb93cf82ed06d61efd76640954df26a227a3918e98f3596a",
+  "digest": "sha256:39a03bcaf0484d324ccfb520a3b01294e2169ec56c5e09f12a6f3a0fca93385d",
   "authorizations": [
     {
       "bootstrap_fingerprints": 1876,
@@ -785,8 +785,6 @@
     "native-chain/src/bin/launch_api/main.rs|env-var|std::env::var(protocol_signer::env_vars::SNAPSHOT_SIGNER_PRIVATE_KEY)": 1,
     "native-chain/src/bin/launch_api/main.rs|unseeded-rng|.unwrap_or_else(|| PrivateKey::generate(&mut rand::thread_rng()));": 1,
     "native-chain/src/bin/launch_api/main.rs|wall-clock|let now = chrono::Utc::now().timestamp();": 2,
-    "native-chain/src/bin/launch_api/p2p_events.rs|wall-clock|.unwrap_or_else(chrono::Utc::now);": 1,
-    "native-chain/src/bin/launch_api/p2p_events.rs|wall-clock|chrono::Utc::now().timestamp()": 1,
     "native-chain/src/bin/launch_api/p2p_events.rs|wall-clock|let now = match std::time::SystemTime::now()": 1,
     "native-chain/src/bin/launch_api/peer_reputation.rs|unordered-iteration|self.peers.values().filter(|record| record.graylisted).count()": 1,
     "native-chain/src/bin/launch_api/rate_limit.rs|env-var|std::env::var(\"RATE_LIMIT_READ_PER_MIN\")": 1,

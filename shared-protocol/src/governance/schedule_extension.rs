@@ -429,6 +429,11 @@ pub enum ScheduleExtensionError {
     /// ADMISSION POLICY, not validity: a feature this binary implements but
     /// marks not schedulable ([`ConsensusFeature::schedulable`]).
     FeatureNotSchedulable { feature: String },
+    /// ADMISSION POLICY, not validity: `forecast_late_score` named before
+    /// `forecaster_key_binding` has been (or will have been) active for
+    /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks, or without the
+    /// key binding scheduled at all.
+    ForecastLateScoreTooEarly { activation_height: u64, key_binding_activation: Option<u64> },
     /// SIGNING policy: a name held by [`HELD_FEATURE_PREFIXES`] is refused by
     /// every library signer that takes no faucet proof of possession
     /// ([`sign_feature_schedule_extension`] and `…_with_key`); it is signed
@@ -568,6 +573,14 @@ impl std::fmt::Display for ScheduleExtensionError {
             Self::FeatureNotSchedulable { feature } => write!(
                 f,
                 "feature {feature} is not schedulable by this binary"
+            ),
+            Self::ForecastLateScoreTooEarly { activation_height, key_binding_activation } => write!(
+                f,
+                "forecast_late_score at height {activation_height} is too early: it must activate at \
+                 least {} blocks after forecaster_key_binding ({})",
+                crate::crypto::chain_binding::FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
+                key_binding_activation
+                    .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
             ),
             Self::FeatureHeld { feature, until } => write!(
                 f,
@@ -1057,10 +1070,51 @@ pub fn check_admission_policy(
             Some(_) => {},
         }
     }
+    check_forecast_late_score_dependency(
+        extension,
+        crate::crypto::chain_binding::effective_feature_schedule()
+            .activation_height(ConsensusFeature::ForecasterKeyBinding.name()),
+    )?;
     if !extension.version_steps.is_empty() {
         return Err(ScheduleExtensionError::VersionStepsNotSupported);
     }
     Ok(())
+}
+
+/// `forecast_late_score` pays the key-bound forecaster, so an extension naming
+/// it is admitted only when `forecaster_key_binding` activates at least
+/// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks earlier.
+/// `scheduled_key_binding` is the key binding's activation on this node, if
+/// any; the same extension may also carry it. ADMISSION POLICY; the consensus
+/// half is [`crate::crypto::chain_binding::forecast_late_score_active`],
+/// which keeps the lane dormant under a schedule this would have refused.
+pub fn check_forecast_late_score_dependency(
+    extension: &FeatureScheduleExtension,
+    scheduled_key_binding: Option<u64>,
+) -> Result<(), ScheduleExtensionError> {
+    let height_of = |feature: ConsensusFeature| {
+        extension
+            .entries
+            .iter()
+            .find(|entry| entry.feature == feature.name())
+            .map(|entry| entry.activation_height)
+    };
+    let Some(activation_height) = height_of(ConsensusFeature::ForecastLateScore) else {
+        return Ok(());
+    };
+    let key_binding_activation =
+        scheduled_key_binding.or_else(|| height_of(ConsensusFeature::ForecasterKeyBinding));
+    if crate::crypto::chain_binding::forecast_late_score_schedule_allowed(
+        activation_height,
+        key_binding_activation,
+    ) {
+        Ok(())
+    } else {
+        Err(ScheduleExtensionError::ForecastLateScoreTooEarly {
+            activation_height,
+            key_binding_activation,
+        })
+    }
 }
 
 /// The name of the feature that gates the extension transaction itself (V1).
@@ -1233,7 +1287,7 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// authorize no schedule, upgrade notice, oracle action, bond or other
 /// station registration.
 ///
-/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// **ONE ROW: chain 888.** With no row for a chain the feature cannot be
 /// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
 /// the library signers, genesis validation), and if a block schedules it
 /// anyway the registrar path accepts nothing. To set one, a reviewed consensus
@@ -1247,7 +1301,18 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// against this table, so a key is never removed or replaced, and nodes that
 /// disagree on the table disagree on block validity. Retiring a key takes a
 /// release; adding one means every producer upgrades together.
-pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[];
+///
+/// 888/testnet: the owner's two registrar keys, generated offline on
+/// 2026-11-13 (`docs/plans/2026-11-08-registrar-key-plan.md`, workspace docs).
+/// The first is the online key the signing service holds; the second is the
+/// cold spare, which never leaves offline storage. Public keys only.
+pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[GovernancePin {
+    genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
+    keys: &[
+        "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009", // pragma: allowlist secret -- public registrar KEY (ed25519 public key), online
+        "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b",  // pragma: allowlist secret -- public registrar KEY (ed25519 public key), cold spare
+    ],
+}];
 
 #[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_STATION_REGISTRAR_PIN: std::sync::OnceLock<(String, Vec<String>)> =
@@ -1549,11 +1614,24 @@ mod tests {
         }
     }
 
-    /// The station registrar table today: no chain has a key. The row that
-    /// sets one changes this test in the same reviewed PR.
+    /// The station registrar table, byte for byte. Replay re-verifies
+    /// historical registrar registrations against it, so a key is only ever
+    /// appended, never removed or replaced.
     #[test]
     fn station_registrar_pins_are_immutable() {
-        assert_eq!(STATION_REGISTRAR_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        const CHAIN_888_BLOCK1: &str =
+            "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+        const ONLINE: &str = "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009"; // pragma: allowlist secret -- public registrar KEY
+        const SPARE: &str = "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b"; // pragma: allowlist secret -- public registrar KEY
+        assert_eq!( // secret-leak-ok: test; public block-1 hash and public ed25519 registrar keys, no secret material
+            STATION_REGISTRAR_KEY_PINS,
+            &[GovernancePin {
+                genesis_hash: CHAIN_888_BLOCK1,
+                keys: &[ONLINE, SPARE],
+            }]
+        );
+        assert_ne!(ONLINE, SPARE, "the spare is a second key, not a copy");
+        // CHAIN_888_BLOCK1 is the hash in packaging/windows/chain-888.conf.
         for pin in STATION_REGISTRAR_KEY_PINS {
             assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
             assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message

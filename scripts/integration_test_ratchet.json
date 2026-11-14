@@ -1050,11 +1050,19 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
     },
     {
       "package": "wrfcoin-native-chain",
       "target": "advisory_governance_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "forecast_late_score_parity"
     },
     {
       "package": "wrfcoin-shared-protocol",

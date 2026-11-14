@@ -4240,6 +4240,8 @@ mod tests {
     }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
+    #[cfg(feature = "p2p")]
+    mod producer_persist_3544;
     #[path = "reward_address_index.rs"]
     mod reward_address_index;
     #[path = "reward_history_newest.rs"]
@@ -4370,6 +4372,8 @@ mod tests {
     mod node_fraud_route;
     #[path = "security_key_route.rs"]
     mod security_key_route;
+    #[path = "forecast_late_score_route.rs"]
+    mod forecast_late_score_route;
 
     #[cfg(unix)]
     #[path = "payout_signer_3499.rs"]

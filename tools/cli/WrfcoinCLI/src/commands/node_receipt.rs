@@ -70,7 +70,52 @@ pub enum ReceiptCommands {
         #[clap(long)]
         dry_run: bool,
     },
+    /// One unattended pass for a timer (every 30 min): fetch this epoch's
+    /// claims for this bond, sign them once with the owner key, keep the
+    /// packet, post it to the local node and re-post the SAME packet on
+    /// later passes until it is included. Stops 60 blocks before the close.
+    /// Exit 0: done or nothing to do. Exit 2: posted, run again later.
+    Auto {
+        /// Owner-only folder for this command's state: one signed packet per
+        /// epoch (`epoch-<E>.packet.json`) and the claims it was built from.
+        #[clap(long)]
+        state_dir: PathBuf,
+        /// Public claim mailbox. Claims are read from
+        /// `<url>/<deployment_id>/<epoch>`; no credential is sent to it.
+        #[clap(long, conflicts_with = "claims_dir", required_unless_present = "claims_dir")]
+        mailbox_url: Option<String>,
+        /// A local folder instead of a mailbox: `<dir>/epoch-<E>/bonded-*.json`.
+        #[clap(long)]
+        claims_dir: Option<PathBuf>,
+        /// Registered server deployment, not consumer deployment.
+        #[clap(long)]
+        deployment_id: String,
+        #[clap(long)]
+        sender: String,
+        #[clap(long)]
+        genesis_hash: String,
+        #[clap(long)]
+        chain_id: String,
+        #[clap(long, default_value = "testnet")]
+        network_id: String,
+        /// This machine's own node.
+        #[clap(long)]
+        api_url: String,
+        /// Mode0600, current-user wallet PKCS#8 JSON or legacy raw hex seed.
+        #[clap(long)]
+        key_file: PathBuf,
+        /// Owner-only file containing the local node's Operator bearer.
+        #[clap(long)]
+        operator_token_file: PathBuf,
+        #[clap(long, default_value = "1000000")]
+        fee: u64,
+    },
 }
+
+/// `receipt auto` stops re-posting this many blocks before the epoch close.
+pub(crate) const AUTO_CLOSE_MARGIN_BLOCKS: u64 = 60;
+/// Below this owner balance (0.05 WRF) `receipt auto` warns: each receipt costs a fee.
+pub(crate) const AUTO_LOW_BALANCE_BASE_UNITS: u128 = 5_000_000;
 
 fn id(text: &str) -> Result<[u8; 32]> {
     ensure!(text.len() == 64, "expected 32-byte hex identifier");
@@ -297,6 +342,324 @@ pub(crate) fn durable_packet(out: &Path, tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
+fn checked_url(text: &str, what: &str) -> Result<()> {
+    let url = url::Url::parse(text)?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "invalid {what} URL"
+    );
+    Ok(())
+}
+
+/// A client for the local node, carrying its Operator bearer from an
+/// owner-only file (never argv).
+fn node_client(api_url: &str, operator_token_file: &Path) -> Result<ApiClient> {
+    checked_url(api_url, "public API")?;
+    let token = secret_file(operator_token_file, 16 * 1024)?;
+    let token = std::str::from_utf8(&token)
+        .map_err(|_| anyhow::anyhow!("invalid operator credential"))?
+        .trim();
+    let credential_available = !token.is_empty();
+    ensure!(credential_available, "operator credential unavailable"); // secret-leak-ok: constant error and boolean presence check, no credential contents.
+    ApiClient::new_without_redirects(ApiConfig {
+        base_url: api_url.trim_end_matches('/').to_owned(),
+        bearer_token: Some(token.to_owned()),
+        ..ApiConfig::default()
+    })
+}
+
+async fn check_network(
+    api: &ApiClient,
+    chain_id: &str,
+    network_id: &str,
+    genesis: [u8; 32],
+) -> Result<()> {
+    let network: Value = api.receipt_request("GET", "/network/info", None).await?;
+    ensure!(
+        network["chain_id"].as_str() == Some(chain_id)
+            && network["network_id"].as_str() == Some(network_id)
+            && network["genesis_hash"]
+                .as_str()
+                .and_then(super::node_deposit::api_hash)
+                == Some(genesis),
+        "API chain/genesis mismatch"
+    );
+    Ok(())
+}
+
+/// Every claim's server key is this bond's, and every consumer key is the
+/// one its own bond registered.
+async fn check_registered_signers(
+    api: &ApiClient,
+    registration: &Value,
+    batch: &NodeServiceBatch,
+) -> Result<()> {
+    for claim in &batch.claims {
+        let server = &registration["registration"]["binding"];
+        let consumer = api
+            .receipt_request(
+                "GET",
+                &format!("/node/bonds/{}", hex::encode(claim.ticket.consumer_id)),
+                None,
+            )
+            .await?;
+        ensure!(
+            server["server_key"] == serde_json::to_value(id(&claim.manifest.signer_id)?)?
+                && consumer["registration"]["binding"]["consumer_key"]
+                    == serde_json::to_value(claim.receipt.receipt.consumer_pubkey)?,
+            "archive registered signer mismatch"
+        );
+    }
+    Ok(())
+}
+
+async fn receipts_included(api: &ApiClient, ids: &[String]) -> bool {
+    for receipt_id in ids {
+        let view = api
+            .receipt_request("GET", &format!("/node/receipts/{receipt_id}"), None)
+            .await
+            .unwrap_or(Value::Null);
+        if !(view["receipt_id"].as_str() == Some(receipt_id)
+            && view["status"] == "INCLUDED"
+            && view["included"] == true)
+        {
+            return false;
+        }
+    }
+    !ids.is_empty()
+}
+
+fn batch_ids(batch: &NodeServiceBatch) -> Result<Vec<String>> {
+    Ok(batch
+        .claims
+        .iter()
+        .map(|c| claim_hash(c).map(hex::encode))
+        .collect::<Result<_, _>>()?)
+}
+
+fn parse_u64(value: &Value) -> Option<u64> {
+    value.as_str().and_then(|s| s.parse().ok())
+}
+
+fn owner_only_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Copy this epoch's claims into `<state_dir>/epoch-<E>/` in the archive
+/// shape `read_batch` reads. `None`: no claim for this bond and epoch yet.
+///
+/// Mailbox answer (`GET <url>/<deployment_id>/<epoch>`, public, 404 = none):
+/// `{"claims":[{"claim_hex":"<wire hex>","receipt_id":"<64 hex>"}, ...]}`,
+/// at most `MAX_NODE_CLAIMS` entries. Every claim is checked again here.
+async fn stage_claims(
+    state_dir: &Path,
+    mailbox_url: Option<&str>,
+    claims_dir: Option<&Path>,
+    deployment: [u8; 32],
+    epoch: u64,
+) -> Result<Option<PathBuf>> {
+    if let Some(dir) = claims_dir {
+        let dir = dir.join(format!("epoch-{epoch}"));
+        return Ok(dir.is_dir().then_some(dir));
+    }
+    let base = mailbox_url.ok_or_else(|| anyhow::anyhow!("--mailbox-url or --claims-dir required"))?;
+    checked_url(base, "mailbox")?;
+    // Public read: never the operator bearer.
+    let mailbox = ApiClient::new_without_redirects(ApiConfig {
+        base_url: base.trim_end_matches('/').to_owned(),
+        bearer_token: None,
+        ..ApiConfig::default()
+    })?;
+    let answer = match mailbox
+        .receipt_request("GET", &format!("/{}/{epoch}", hex::encode(deployment)), None)
+        .await
+    {
+        Ok(answer) => answer,
+        Err(e) if e.to_string().starts_with("RECEIPT_HTTP_404") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let claims = answer["claims"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("mailbox answer has no claims list"))?;
+    if claims.is_empty() {
+        return Ok(None);
+    }
+    ensure!(claims.len() <= MAX_NODE_CLAIMS, "too many claims for one batch");
+    let staged = state_dir.join(format!("epoch-{epoch}"));
+    if staged.exists() {
+        std::fs::remove_dir_all(&staged)?;
+    }
+    owner_only_dir(&staged)?;
+    for claim in claims {
+        let receipt_id = claim["receipt_id"].as_str().unwrap_or_default();
+        id(receipt_id).map_err(|_| anyhow::anyhow!("mailbox receipt identifier invalid"))?;
+        let body = json!({"claim_hex": claim["claim_hex"], "receipt_id": receipt_id});
+        std::fs::write(
+            staged.join(format!("bonded-{receipt_id}.json")),
+            serde_json::to_vec(&body)?,
+        )?;
+    }
+    Ok(Some(staged))
+}
+
+fn retry_later(message: String) -> anyhow::Error {
+    wrfcoin_cli::errors::CliError::new(
+        wrfcoin_cli::errors::CliErrorCode::ConnectionError,
+        format!("RETRY_LATER {message}"),
+    )
+    .into()
+}
+
+async fn auto(command: &ReceiptCommands) -> Result<Value> {
+    let ReceiptCommands::Auto {
+        state_dir,
+        mailbox_url,
+        claims_dir,
+        deployment_id,
+        sender,
+        genesis_hash,
+        chain_id,
+        network_id,
+        api_url,
+        key_file,
+        operator_token_file,
+        fee,
+    } = command
+    else {
+        anyhow::bail!("not a receipt auto command");
+    };
+    let identity = ChainIdentity::new(chain_id, network_id);
+    let genesis = id(genesis_hash)?;
+    let deployment = id(deployment_id)?;
+    let sender: Address = sender.parse()?;
+    let api = node_client(api_url, operator_token_file)?;
+    check_network(&api, chain_id, network_id, genesis).await?;
+    let registration: Value = api
+        .receipt_request("GET", &format!("/node/bonds/{}", hex::encode(deployment)), None)
+        .await?;
+    ensure!(
+        registration["registration"]["binding"]["owner_account"] == serde_json::to_value(sender)?,
+        "registered owner mismatch"
+    );
+    let Some(epoch) = parse_u64(&registration["epoch"]) else {
+        return Ok(json!({"status":"NOT_ACTIVE","submitted":false}));
+    };
+    let height = parse_u64(&registration["height"])
+        .ok_or_else(|| anyhow::anyhow!("node height unavailable"))?;
+    // Older nodes do not report the close; then only the epoch number bounds a packet.
+    let cutoff = parse_u64(&registration["epoch_close_height"])
+        .map(|close| close.saturating_sub(AUTO_CLOSE_MARGIN_BLOCKS));
+    let late = cutoff.is_some_and(|c| height >= c);
+
+    let account = api
+        .receipt_request("GET", &format!("/addresses/{sender}"), None)
+        .await?;
+    let nonce = parse_u64(&account["nonce"])
+        .ok_or_else(|| anyhow::anyhow!("sender nonce unavailable"))?;
+    let balance = account["spendable_balance"]
+        .as_str()
+        .or(account["balance"].as_str())
+        .and_then(|b| b.parse::<u128>().ok());
+    let low_balance = balance.is_some_and(|b| b < AUTO_LOW_BALANCE_BASE_UNITS);
+    if low_balance {
+        eprintln!("warning: the owner account holds under 0.05 WRF; each receipt costs a fee");
+    }
+    let base = json!({"epoch":epoch.to_string(),"height":height.to_string(),
+        "cutoff_height":cutoff.map(|c| c.to_string()),"low_owner_balance":low_balance});
+    let answer = |status: &str, extra: Value| {
+        let mut out = base.clone();
+        out["status"] = json!(status);
+        if let (Some(out), Some(extra)) = (out.as_object_mut(), extra.as_object()) {
+            out.extend(extra.clone());
+        }
+        out
+    };
+
+    owner_only_dir(state_dir)?;
+    let packet_path = state_dir.join(format!("epoch-{epoch}.packet.json"));
+    let mut retained = false;
+    if packet_path.exists() {
+        let tx: Transaction = serde_json::from_slice(&bounded_read(&packet_path, SUBMIT_CAP)?)?;
+        let submission = NodeReceiptSubmission::parse(&tx)
+            .ok_or_else(|| anyhow::anyhow!("retained packet is not a receipt submission"))?;
+        ensure!(
+            tx.sender_address == sender
+                && submission.batch.claims.iter().all(|c| {
+                    c.ticket.context.epoch == epoch && c.ticket.server_id == deployment
+                }),
+            "retained packet is for another bond or epoch"
+        );
+        let ids = batch_ids(&submission.batch)?;
+        if receipts_included(&api, &ids).await {
+            return Ok(answer("INCLUDED", json!({"receipt_ids":ids,"submitted":false})));
+        }
+        if tx.nonce < nonce {
+            // Another transaction from the owner used this nonce, so this
+            // packet can never be included. Keep it, and sign afresh.
+            let stale = state_dir.join(format!("epoch-{epoch}.packet.stale-{}.json", tx.nonce));
+            std::fs::rename(&packet_path, stale)?;
+        } else {
+            retained = true;
+        }
+    }
+    if late {
+        return Ok(answer("TOO_LATE", json!({"submitted":false})));
+    }
+    if !retained {
+        let Some(staged) = stage_claims(
+            state_dir,
+            mailbox_url.as_deref(),
+            claims_dir.as_deref(),
+            deployment,
+            epoch,
+        )
+        .await?
+        else {
+            return Ok(answer("NO_CLAIM", json!({"submitted":false})));
+        };
+        let batch = read_batch(&staged, epoch, deployment, genesis, &identity)?;
+        if batch.claims.is_empty() {
+            return Ok(answer("NO_CLAIM", json!({"submitted":false})));
+        }
+        check_registered_signers(&api, &registration, &batch).await?;
+        let key = load_key(Some(key_file), false)?;
+        ensure!(key.address() == sender, "owner signer mismatch");
+        let tx = assemble(batch, sender, nonce, genesis, &identity, &key, *fee)?;
+        durable_packet(&packet_path, &tx)?;
+    }
+    // Always post the bytes kept on disk, so every pass sends the same packet.
+    let body: Value = serde_json::from_slice(&bounded_read(&packet_path, SUBMIT_CAP)?)?;
+    let tx: Transaction = serde_json::from_value(body.clone())?;
+    let ids = NodeReceiptSubmission::parse(&tx)
+        .ok_or_else(|| anyhow::anyhow!("retained packet is not a receipt submission"))
+        .and_then(|s| batch_ids(&s.batch))?;
+    let ack = api
+        .receipt_request("POST", "/node/receipts/submit", Some(body))
+        .await;
+    if receipts_included(&api, &ids).await {
+        return Ok(answer("INCLUDED", json!({"receipt_ids":ids,"submitted":true})));
+    }
+    let detail = match ack {
+        Ok(a) if a["admitted"] == true => "admitted, waiting for inclusion".to_string(),
+        Ok(_) => "RECEIPT_ACK".to_string(),
+        Err(e) => e.to_string(),
+    };
+    Err(retry_later(format!(
+        "epoch {epoch}: {detail}; packet {}",
+        packet_path.display()
+    )))
+}
+
 pub async fn handle(command: &ReceiptCommands) -> Result<Value> {
     let ReceiptCommands::Submit {
         archive,
@@ -313,7 +676,10 @@ pub async fn handle(command: &ReceiptCommands) -> Result<Value> {
         fee,
         out,
         dry_run,
-    } = command;
+    } = command
+    else {
+        return auto(command).await;
+    };
     let identity = ChainIdentity::new(chain_id, network_id);
     let genesis = id(genesis_hash)?;
     let sender: Address = sender.parse()?;
@@ -339,41 +705,13 @@ pub async fn handle(command: &ReceiptCommands) -> Result<Value> {
     let key = load_key(key_file.as_deref(), *mnemonic_stdin)?;
     let selected_sender = key.address();
     ensure!(selected_sender == sender, "owner signer mismatch");
-    let url = url::Url::parse(api_url)?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        "invalid public API URL"
-    );
-    let token = secret_file(
+    let api = node_client(
+        api_url,
         operator_token_file
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("--operator-token-file required"))?,
-        16 * 1024,
     )?;
-    let token = std::str::from_utf8(&token)
-        .map_err(|_| anyhow::anyhow!("invalid operator credential"))?
-        .trim();
-    let credential_available = !token.is_empty();
-    ensure!(credential_available, "operator credential unavailable"); // secret-leak-ok: constant error and boolean presence check, no credential contents.
-    let api = ApiClient::new_without_redirects(ApiConfig {
-        base_url: api_url.trim_end_matches('/').to_owned(),
-        bearer_token: Some(token.to_owned()),
-        ..ApiConfig::default()
-    })?;
-    let network: Value = api.receipt_request("GET", "/network/info", None).await?;
-    ensure!(
-        network["chain_id"].as_str() == Some(chain_id)
-            && network["network_id"].as_str() == Some(network_id)
-            && network["genesis_hash"]
-                .as_str()
-                .and_then(super::node_deposit::api_hash)
-                == Some(genesis),
-        "API chain/genesis mismatch"
-    );
+    check_network(&api, chain_id, network_id, genesis).await?;
     let registration: Value = api
         .receipt_request(
             "GET",
@@ -385,22 +723,7 @@ pub async fn handle(command: &ReceiptCommands) -> Result<Value> {
         registration["registration"]["binding"]["owner_account"] == serde_json::to_value(sender)?,
         "registered owner mismatch"
     );
-    for claim in &batch.claims {
-        let server = &registration["registration"]["binding"];
-        let consumer = api
-            .receipt_request(
-                "GET",
-                &format!("/node/bonds/{}", hex::encode(claim.ticket.consumer_id)),
-                None,
-            )
-            .await?;
-        ensure!(
-            server["server_key"] == serde_json::to_value(id(&claim.manifest.signer_id)?)?
-                && consumer["registration"]["binding"]["consumer_key"]
-                    == serde_json::to_value(claim.receipt.receipt.consumer_pubkey)?,
-            "archive registered signer mismatch"
-        );
-    }
+    check_registered_signers(&api, &registration, &batch).await?;
     let account = api
         .receipt_request("GET", &format!("/addresses/{sender}"), None)
         .await?;
@@ -790,5 +1113,261 @@ mod tests {
         post.assert();
         readback.assert();
         std::fs::remove_dir_all(root).unwrap();
+    }
+    struct AutoFixture {
+        root: PathBuf,
+        command: ReceiptCommands,
+        receipt_id: String,
+        claim_hex: String,
+        sender: Address,
+    }
+
+    fn auto_fixture(tag: &str) -> AutoFixture {
+        let claim = fixture::claim(&fixture::state(), 1);
+        let root = std::env::temp_dir().join(format!("receipt-auto-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let key_file = root.join("key");
+        let token_file = root.join("token");
+        std::fs::write(&key_file, hex::encode([10u8; 32])).unwrap(); // secret-leak-ok: synthetic signing fixture only.
+        std::fs::write(&token_file, "synthetic-receipt-auto-bearer").unwrap(); // secret-leak-ok: fixed synthetic bearer for mock server only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&key_file, &token_file] {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        let sender = fixture::bonds::address(10);
+        AutoFixture {
+            command: ReceiptCommands::Auto {
+                state_dir: root.join("state"),
+                mailbox_url: Some(format!("{}/mailbox", mockito::server_url())),
+                claims_dir: None,
+                deployment_id: hex::encode([1; 32]),
+                sender: sender.to_string(),
+                genesis_hash: hex::encode([7; 32]),
+                chain_id: "777".into(),
+                network_id: "testnet".into(),
+                api_url: mockito::server_url(),
+                key_file,
+                operator_token_file: token_file,
+                fee: 1_000_000,
+            },
+            receipt_id: hex::encode(claim_hash(&claim).unwrap()),
+            claim_hex: hex::encode(claim.to_wire().unwrap()),
+            root,
+            sender,
+        }
+    }
+
+    /// The node reads every pass makes: chain, this bond (epoch 1 at `height`,
+    /// closing at `close`), the consumer's bond and the owner account.
+    fn auto_node_mocks(f: &AutoFixture, height: u64, close: u64, nonce: u64, balance: &str) -> Vec<mockito::Mock> {
+        let claim = fixture::claim(&fixture::state(), 1);
+        vec![
+            mockito::mock("GET", "/network/info")
+                .with_body(json!({"chain_id":"777","network_id":"testnet","genesis_hash":format!("0x{}",hex::encode([7;32]))}).to_string())
+                .create(),
+            mockito::mock("GET", format!("/node/bonds/{}", hex::encode([1; 32])).as_str())
+                .with_body(json!({"height":height.to_string(),"epoch":"1","epoch_close_height":close.to_string(),
+                    "registration":{"binding":{"owner_account":f.sender,"server_key":id(&claim.manifest.signer_id).unwrap()}}}).to_string())
+                .create(),
+            mockito::mock("GET", format!("/node/bonds/{}", hex::encode(claim.ticket.consumer_id)).as_str())
+                .with_body(json!({"registration":{"binding":{"consumer_key":claim.receipt.receipt.consumer_pubkey}}}).to_string())
+                .create(),
+            mockito::mock("GET", format!("/addresses/{}", f.sender).as_str())
+                .with_body(json!({"balance":balance,"spendable_balance":balance,"nonce":nonce.to_string()}).to_string())
+                .create(),
+        ]
+    }
+
+    fn auto_mailbox(f: &AutoFixture) -> mockito::Mock {
+        mockito::mock("GET", format!("/mailbox/{}/1", hex::encode([1; 32])).as_str())
+            // A public read: the local node's bearer must never reach the mailbox.
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_body(json!({"claims":[{"claim_hex":f.claim_hex,"receipt_id":f.receipt_id}]}).to_string())
+    }
+
+    fn auto_readback(f: &AutoFixture, included: bool) -> mockito::Mock {
+        let body = if included {
+            json!({"receipt_id":f.receipt_id,"included":true,"status":"INCLUDED"})
+        } else {
+            json!({"receipt_id":f.receipt_id,"included":null,"status":"UNKNOWN"})
+        };
+        mockito::mock("GET", format!("/node/receipts/{}", f.receipt_id).as_str())
+            .with_body(body.to_string())
+            .create()
+    }
+
+    #[test]
+    fn receipt_auto_signs_once_reposts_the_same_packet_then_reports_included() {
+        let _guard = LOCK.lock().unwrap();
+        let f = auto_fixture("cycle");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let packet = f.root.join("state").join("epoch-1.packet.json");
+
+        // Pass 1: claim in the mailbox, signed, kept, posted; not yet included: exit 2.
+        let node = auto_node_mocks(&f, 100, 1_000, 1, "100000000000");
+        let mailbox = auto_mailbox(&f).expect(1).create();
+        let post = mockito::mock("POST", "/node/receipts/submit")
+            .with_status(202)
+            .with_body_from_request(|request| {
+                let tx: Transaction = serde_json::from_slice(request.body().unwrap()).unwrap();
+                NodeReceiptSubmission::parse(&tx)
+                    .unwrap()
+                    .verify_authorization(&fixture::identity(), &[7; 32])
+                    .unwrap();
+                json!({"tx_id":tx.id.unwrap().to_hex(),"admitted":true,"included":false}).to_string().into_bytes()
+            })
+            .expect(1)
+            .create();
+        let readback = auto_readback(&f, false);
+        let err = runtime.block_on(handle(&f.command)).unwrap_err();
+        assert_eq!(crate::commands::emit::classify_exit_code(&err), 2, "{err}");
+        assert!(err.to_string().starts_with("RETRY_LATER"), "{err}");
+        mailbox.assert();
+        post.assert();
+        let first = std::fs::read(&packet).unwrap();
+        let tx: Transaction = serde_json::from_slice(&first).unwrap();
+        assert_eq!(tx.nonce, 1);
+        drop((post, readback, mailbox));
+
+        // Pass 2: still pending. No new signature, no mailbox read: the SAME bytes are posted again.
+        let mailbox = auto_mailbox(&f).expect(0).create();
+        let same: Value = serde_json::from_slice(&first).unwrap();
+        let post = mockito::mock("POST", "/node/receipts/submit")
+            .match_body(mockito::Matcher::Json(same))
+            .with_status(202)
+            .with_body(json!({"tx_id":tx.id.unwrap().to_hex(),"admitted":true,"included":false}).to_string())
+            .expect(1)
+            .create();
+        let readback = auto_readback(&f, false);
+        let err = runtime.block_on(handle(&f.command)).unwrap_err();
+        assert_eq!(crate::commands::emit::classify_exit_code(&err), 2);
+        post.assert();
+        mailbox.assert();
+        assert_eq!(std::fs::read(&packet).unwrap(), first);
+        drop((post, readback, mailbox, node));
+
+        // Pass 3: included (nonce moved on). Nothing is posted; exit 0.
+        let node = auto_node_mocks(&f, 200, 1_000, 2, "100000000000");
+        let post = mockito::mock("POST", "/node/receipts/submit").expect(0).create();
+        let readback = auto_readback(&f, true);
+        let done = runtime.block_on(handle(&f.command)).unwrap();
+        assert_eq!(done["status"], "INCLUDED");
+        assert_eq!(done["submitted"], false);
+        assert_eq!(done["receipt_ids"][0], f.receipt_id);
+        post.assert();
+        drop((post, readback, node));
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    #[test]
+    fn receipt_auto_no_claim_too_late_and_low_balance_exit_zero_without_posting() {
+        let _guard = LOCK.lock().unwrap();
+        let f = auto_fixture("idle");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let post = mockito::mock("POST", "/node/receipts/submit").expect(0).create();
+
+        // No claim yet (mailbox 404): nothing to do, exit 0, no packet. Low balance is flagged.
+        let node = auto_node_mocks(&f, 100, 1_000, 1, "4999999");
+        let mailbox = mockito::mock("GET", format!("/mailbox/{}/1", hex::encode([1; 32])).as_str())
+            .with_status(404)
+            .expect(1)
+            .create();
+        let out = runtime.block_on(handle(&f.command)).unwrap();
+        assert_eq!(out["status"], "NO_CLAIM");
+        assert_eq!(out["low_owner_balance"], true);
+        assert!(!f.root.join("state").join("epoch-1.packet.json").exists());
+        mailbox.assert();
+        drop((mailbox, node));
+
+        // Within 60 blocks of the close: stop, and do not even read the mailbox.
+        let node = auto_node_mocks(&f, 1_000 - AUTO_CLOSE_MARGIN_BLOCKS, 1_000, 1, "100000000000");
+        let mailbox = auto_mailbox(&f).expect(0).create();
+        let out = runtime.block_on(handle(&f.command)).unwrap();
+        assert_eq!(out["status"], "TOO_LATE");
+        assert_eq!(out["cutoff_height"], (1_000 - AUTO_CLOSE_MARGIN_BLOCKS).to_string());
+        assert_eq!(out["low_owner_balance"], false);
+        mailbox.assert();
+        post.assert();
+        drop((mailbox, node, post));
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    #[test]
+    fn receipt_auto_resigns_when_another_transaction_used_the_packet_nonce() {
+        let _guard = LOCK.lock().unwrap();
+        let f = auto_fixture("stale");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let state = f.root.join("state");
+        let packet = state.join("epoch-1.packet.json");
+        // A kept packet signed at nonce 1, never included.
+        let old = assemble(
+            batch(),
+            f.sender,
+            1,
+            [7; 32],
+            &fixture::identity(),
+            &OperatorKey::from_seed(fixture::key(10).as_bytes()).unwrap(),
+            1_000_000,
+        )
+        .unwrap();
+        owner_only_dir(&state).unwrap();
+        durable_packet(&packet, &old).unwrap();
+        // The owner account is now at nonce 2: that packet can never land.
+        let node = auto_node_mocks(&f, 100, 1_000, 2, "100000000000");
+        let mailbox = auto_mailbox(&f).expect(1).create();
+        let post = mockito::mock("POST", "/node/receipts/submit")
+            .match_body(mockito::Matcher::PartialJson(json!({"nonce":2})))
+            .with_status(202)
+            .with_body(json!({"admitted":true}).to_string())
+            .expect(1)
+            .create();
+        let readback = auto_readback(&f, false);
+        let err = runtime.block_on(handle(&f.command)).unwrap_err();
+        assert_eq!(crate::commands::emit::classify_exit_code(&err), 2);
+        post.assert();
+        mailbox.assert();
+        let fresh: Transaction = serde_json::from_slice(&std::fs::read(&packet).unwrap()).unwrap();
+        assert_eq!(fresh.nonce, 2);
+        assert!(state.join("epoch-1.packet.stale-1.json").exists());
+        drop((post, readback, mailbox, node));
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    #[test]
+    fn receipt_auto_refuses_a_kept_packet_for_another_bond_and_a_bad_mailbox_id() {
+        let _guard = LOCK.lock().unwrap();
+        let f = auto_fixture("refuse");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let node = auto_node_mocks(&f, 100, 1_000, 1, "100000000000");
+        // A mailbox entry whose id would escape the staging folder is refused.
+        let mailbox = mockito::mock("GET", format!("/mailbox/{}/1", hex::encode([1; 32])).as_str())
+            .with_body(json!({"claims":[{"claim_hex":f.claim_hex,"receipt_id":"../../escape"}]}).to_string())
+            .create();
+        let err = runtime.block_on(handle(&f.command)).unwrap_err();
+        assert!(err.to_string().contains("mailbox receipt identifier invalid"), "{err}");
+        drop(mailbox);
+        // A kept packet signed by a different sender is refused, not posted.
+        let state = f.root.join("state");
+        let other = assemble(
+            batch(),
+            fixture::bonds::address(20),
+            1,
+            [7; 32],
+            &fixture::identity(),
+            &OperatorKey::from_seed(fixture::key(20).as_bytes()).unwrap(),
+            1_000_000,
+        )
+        .unwrap();
+        owner_only_dir(&state).unwrap();
+        durable_packet(&state.join("epoch-1.packet.json"), &other).unwrap();
+        let post = mockito::mock("POST", "/node/receipts/submit").expect(0).create();
+        let err = runtime.block_on(handle(&f.command)).unwrap_err();
+        assert!(err.to_string().contains("another bond or epoch"), "{err}");
+        post.assert();
+        drop(node);
+        std::fs::remove_dir_all(&f.root).unwrap();
     }
 }

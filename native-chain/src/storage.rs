@@ -128,9 +128,11 @@ pub const CHECKPOINT_ENVELOPE_MAGIC: [u8; 8] = *b"WRFCKPT\0";
 /// (written only when non-empty; an empty map keeps the format-15 writer).
 /// Version17 appends the advisory-proposal map (written only when non-empty;
 /// an empty map keeps the format-16 or older writer).
+/// Version18 appends the forecast late-score state (written only when
+/// non-empty; while empty the format-17 or older writer is kept).
 /// Version-3 through version-11 checkpoints
 /// migrate through registered, frozen layouts before decoding.
-pub const CHECKPOINT_FORMAT_VERSION: u32 = 17;
+pub const CHECKPOINT_FORMAT_VERSION: u32 = 18;
 
 /// Maximum number of decoded blocks [`Storage::scan_persisted_blocks`] holds in
 /// memory at once.
@@ -1077,6 +1079,56 @@ impl Storage {
         Ok(())
     }
 
+    /// Commit a whole fork replacement in one durable transaction. A failure
+    /// drops all staged rollback, block, WAL and checkpoint writes, and keeps
+    /// the in-memory WAL sequence unchanged for the same-fork retry.
+    pub async fn replace_fork_with_finalized(
+        &mut self,
+        fork_height: u64,
+        fork_tip: Hash,
+        replacement: Vec<(Block, Vec<StateTransition>, Option<Vec<u8>>)>,
+        finalized_height: u64,
+    ) -> Result<(), StorageError> {
+        let db = Arc::clone(&self.db);
+        let encryption = self.encryption.clone();
+        let checkpoint_interval = self.checkpoint_interval;
+        let mut wal_seq = self.wal_sequence;
+        let tip_bytes = bincode::serialize(&fork_tip)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let new_wal_seq = tokio::task::spawn_blocking(move || {
+            let txn = db.begin_write()?;
+            rollback_in_transaction(&txn, encryption.as_ref(), fork_height, &tip_bytes)?;
+            for (block, transitions, checkpoint) in replacement {
+                // Same rule as `Storage::needs_checkpoint`.
+                let checkpoint_due = block.height > 0 && block.height % checkpoint_interval == 0;
+                persist_block_in_transaction(
+                    &txn,
+                    encryption.as_ref(),
+                    &mut wal_seq,
+                    &block,
+                    &transitions,
+                    checkpoint_due,
+                    checkpoint.as_deref(),
+                    finalized_height,
+                )
+                .map_err(|e| {
+                    log::error!(
+                        "Fork durable replacement failed at height={} hash={}: {e}",
+                        block.height,
+                        block.hash.unwrap_or_else(|| block.calculate_hash())
+                    );
+                    e
+                })?;
+            }
+            txn.commit()?;
+            Ok::<u64, StorageError>(wal_seq)
+        })
+        .await
+        .map_err(|e| StorageError::SpawnBlocking(e.to_string()))??;
+        self.wal_sequence = new_wal_seq;
+        Ok(())
+    }
+
     /// Persist just the monotonic BFT `finalized_height` value. Called by
     /// the finality-signal consumer (see `finality_events.rs`) so that
     /// finality advances caused by BFT signals (not tied to a new block)
@@ -1608,6 +1660,18 @@ fn rollback_to_height_sync(
     new_tip_bytes: &[u8],
 ) -> Result<(), StorageError> {
     let write_txn = db.begin_write()?;
+    rollback_in_transaction(&write_txn, encryption, target_height, new_tip_bytes)?;
+    write_txn.commit()?;
+    log::info!("Storage rolled back to height {}", target_height);
+    Ok(())
+}
+
+fn rollback_in_transaction(
+    write_txn: &redb::WriteTransaction,
+    encryption: Option<&StorageEncryption>,
+    target_height: u64,
+    new_tip_bytes: &[u8],
+) -> Result<(), StorageError> {
     {
         // Remove blocks above target_height.
         let mut blocks = write_txn.open_table(BLOCKS_TABLE)?;
@@ -1671,9 +1735,6 @@ fn rollback_to_height_sync(
             encrypt_value(encryption, &new_last_checkpoint.to_le_bytes())?;
         meta.insert(META_LAST_CHECKPOINT, encrypted_checkpoint_height.as_slice())?;
     }
-    write_txn.commit()?;
-
-    log::info!("Storage rolled back to height {}", target_height);
     Ok(())
 }
 
@@ -1818,10 +1879,15 @@ fn decode_state_checkpoint_migrating(
             // allowlist: the appended map is empty (its u64 zero length).
             // Likewise the advisory-proposal map (format 17): a migration
             // appends it empty.
-            let v16_body = &migrated[header_len..migrated.len() - 8];
+            // Likewise the forecast late-score state (format 18): a migration
+            // appends it empty (five empty maps, 40 zero bytes).
+            let v17_body = &migrated[header_len..migrated.len() - migrations::EMPTY_FORECAST_LATE_SCORE_BYTES];
+            let v16_body = &v17_body[..v17_body.len() - 8];
             let v15_body = &v16_body[..v16_body.len() - 8];
-            let compatible = if !state.advisory_proposals.is_empty() {
+            let compatible = if !state.forecast_late_score.is_empty() {
                 migrated.clone()
+            } else if !state.advisory_proposals.is_empty() {
+                migrations::envelope(17, v17_body)
             } else if !state.send_allowlists.is_empty() {
                 migrations::envelope(16, v16_body)
             } else if state.node_receipt_registry.is_none() {
@@ -2139,7 +2205,42 @@ fn persist_block_sync(
     // #2086: one durable transaction for block, WAL, metadata and checkpoint.
     // A checkpoint error must not leave a committed block with stale WAL sequencing.
     let write_txn = db.begin_write()?;
+    persist_block_in_transaction(
+        &write_txn,
+        encryption,
+        wal_sequence,
+        block,
+        transitions,
+        checkpoint_due,
+        checkpoint_state_bytes,
+        finalized_height,
+    )?;
+    write_txn.commit()?;
+    if let Some(state_bytes) = checkpoint_state_bytes.filter(|_| checkpoint_due) {
+        log::info!(
+            "Created checkpoint at height {} (state size: {} bytes)",
+            block.height,
+            state_bytes.len()
+        );
+    }
+    Ok(())
+}
 
+/// The block/WAL/metadata/checkpoint writes of ONE block inside a caller-owned
+/// transaction (#2086). `persist_block_sync` wraps it in its own transaction;
+/// whole-fork replacement calls it for every fork block inside the
+/// single rollback + replacement transaction. Nothing commits here.
+#[allow(clippy::excessive_nesting, clippy::too_many_arguments)]
+fn persist_block_in_transaction(
+    write_txn: &redb::WriteTransaction,
+    encryption: Option<&StorageEncryption>,
+    wal_sequence: &mut u64,
+    block: &Block,
+    transitions: &[StateTransition],
+    checkpoint_due: bool,
+    checkpoint_state_bytes: Option<&[u8]>,
+    finalized_height: u64,
+) -> Result<(), StorageError> {
     {
         // Write WAL entries.
         let mut wal = write_txn.open_table(WAL_TABLE)?;
@@ -2238,14 +2339,6 @@ fn persist_block_sync(
         }
     }
 
-    write_txn.commit()?;
-    if let Some(state_bytes) = checkpoint_state_bytes.filter(|_| checkpoint_due) {
-        log::info!(
-            "Created checkpoint at height {} (state size: {} bytes)",
-            block.height,
-            state_bytes.len()
-        );
-    }
     Ok(())
 }
 
@@ -2369,6 +2462,30 @@ fn is_legacy_json_incompatibility(error: &Box<bincode::ErrorKind>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn produced_block_raw_bytes_match_legacy_encoding_3544() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open(&dir.path().join("chain.redb"), 1).unwrap();
+        let mut block = Block::new(3, Default::default(), Vec::new(), 1, 1);
+        block.metadata.insert("consensus".into(), "PoP".into());
+        block
+            .metadata
+            .insert("fixture".into(), "producer-persist-3544".into());
+        block.set_hash(block.calculate_hash());
+        // This is the pre-change encoder; only the commit/publication order changes.
+        let before = bincode::serialize(&block).unwrap();
+        let state = State::default();
+        let checkpoint = storage.checkpoint_state_bytes(1, &state).unwrap();
+        storage
+            .persist_block(block, Vec::new(), checkpoint)
+            .await
+            .unwrap();
+        let read = storage.db.begin_read().unwrap();
+        let table = read.open_table(BLOCKS_TABLE).unwrap();
+        let value = table.get(1).unwrap().unwrap();
+        assert_eq!(storage.decrypt_value(value.value()).unwrap(), before);
+    }
+
     use super::*;
     use crate::blockchain::block::Block;
     use crate::blockchain::chain::Blockchain;

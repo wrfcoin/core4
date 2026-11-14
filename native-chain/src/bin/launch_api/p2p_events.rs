@@ -10,11 +10,8 @@ use wrfcoin_consensus_engines::{
 };
 use wrfcoin_native_chain::blockchain::block::Block;
 use wrfcoin_native_chain::blockchain::chain::{Blockchain, MAX_REORG_DEPTH};
-use wrfcoin_native_chain::blockchain::transaction::{
-    CommitPayload, RevealPayload, Transaction, TransactionInput, TransactionOutput,
-    TransactionType,
-};
-use wrfcoin_native_chain::crypto::hash::{Hash as CryptoHash, hash_bytes};
+use wrfcoin_native_chain::blockchain::transaction::{Transaction, TransactionType};
+use wrfcoin_native_chain::crypto::hash::Hash as CryptoHash;
 use wrfcoin_native_chain::mempool::pool::Mempool;
 use wrfcoin_native_chain::p2p_divergence::{
     ChainDivergenceObservation, ChainStateView, LocalCanonicalRoot,
@@ -33,10 +30,6 @@ use wrfcoin_shared_protocol::monitoring::CORE_METRICS;
 #[cfg(feature = "execution")]
 use wrfcoin_shared_protocol::blockchain::transaction::{
     forecast_receipt_has_valid_signature, ForecastArtifactManifest, ForecastVerificationReceipt,
-};
-use wrfcoin_shared_protocol::weather::schema::{
-    canonicalize_weather_payload, classify_weather_payload, WeatherPayloadClassification,
-    WeatherPayloadParseOptions,
 };
 
 #[cfg(feature = "p2p")]
@@ -707,193 +700,6 @@ fn truncate_to_byte_budget(blocks: Vec<Block>, byte_budget: u64) -> (Vec<Block>,
     (blocks, used)
 }
 
-fn parse_weather_observation_timestamp(payload: &serde_json::Value) -> i64 {
-    let extract_timestamp = |value: &serde_json::Value| -> Option<i64> {
-        match value {
-            serde_json::Value::Number(number) => number.as_i64(),
-            serde_json::Value::String(raw) => raw.parse::<i64>().ok(),
-            _ => None,
-        }
-    };
-
-    for key in ["observed_at_unix", "observed_at", "timestamp"] {
-        if let Some(value) = payload.get(key).and_then(&extract_timestamp) {
-            return value;
-        }
-    }
-    if let Some(observation) = payload.get("observation") {
-        for key in ["observed_at_unix", "observed_at", "timestamp"] {
-            if let Some(value) = observation.get(key).and_then(&extract_timestamp) {
-                return value;
-            }
-        }
-    }
-
-    chrono::Utc::now().timestamp()
-}
-
-async fn bridge_weather_payload_to_mempool(
-    station_id: &str,
-    raw_payload: &[u8],
-    mempool: &Arc<RwLock<Mempool>>,
-    // Node-local weather identity key (#1969 gossip signer). The bridge signs the
-    // commit authorization (#1848) with it so the ingested contribution passes
-    // fail-closed mempool admission instead of being silently dropped (#2389).
-    // `verify_commit_authorization` is self-certifying (it does not bind the
-    // pubkey to `station_id`), and contribution rewards are separately gated by
-    // oracle-attestation quorum, so authorizing with the node's own key vouches
-    // for the submission without becoming a reward-forgery vector.
-    commit_signing_key: &wrfcoin_native_chain::crypto::signature::PrivateKey,
-) {
-    let payload: serde_json::Value = match serde_json::from_slice(raw_payload) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("Failed to decode weather payload JSON from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let classification = classify_weather_payload(&payload, WeatherPayloadParseOptions::default());
-    match classification {
-        WeatherPayloadClassification::NonWeather
-        | WeatherPayloadClassification::UnsupportedSchemaVersion
-        | WeatherPayloadClassification::InvalidSchemaVersionMarkerType
-        | WeatherPayloadClassification::InvalidCanonicalPayload => {
-            log::debug!("Ignoring non-weather or invalid weather payload from station {station_id}");
-            return;
-        },
-        WeatherPayloadClassification::CanonicalV1 | WeatherPayloadClassification::LegacyUnversioned => {}
-    }
-
-    let canonical_payload = match canonicalize_weather_payload(&payload, WeatherPayloadParseOptions::default()) {
-        Ok(Some(canonical_payload)) => canonical_payload,
-        Ok(None) => {
-            log::warn!("Weather payload classification expected weather data but canonicalization returned empty payload for station {station_id}");
-            return;
-        },
-        Err(error) => {
-            log::warn!("Failed to canonicalize weather payload from station {station_id}: {error}");
-            return;
-        },
-    };
-
-    let contribution_type = "contribution".to_string();
-    let timestamp = parse_weather_observation_timestamp(&canonical_payload);
-    let nonce = hex::encode(
-        hash_bytes(
-            format!(
-                "wrfcoin-weather:{station_id}:{contribution_type}:{timestamp}:{}",
-                canonical_payload
-            )
-            .as_bytes(),
-        )
-        .as_bytes(),
-    );
-    let commit_id = Transaction::compute_commit_id(
-        &canonical_payload,
-        &nonce,
-        station_id,
-        timestamp,
-        &contribution_type,
-    );
-
-    let timestamp_dt = chrono::DateTime::from_timestamp(timestamp, 0)
-        .unwrap_or_else(chrono::Utc::now);
-
-    let mut commit_payload = CommitPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        auth_pubkey: None,
-        auth_signature: None,
-    };
-    // #2389: authorize the commit with the node's weather identity key so it
-    // satisfies the #1848 fail-closed sender-auth check at mempool admission.
-    // Without this the commit is rejected ("commit sender authorization failed")
-    // and the entire P2P weather-ingestion path produces zero transactions.
-    commit_payload.sign_authorization(commit_signing_key);
-    let reveal_payload = RevealPayload {
-        commit_id: commit_id.clone(),
-        station_id: station_id.to_string(),
-        timestamp,
-        contribution_type: contribution_type.clone(),
-        data: canonical_payload,
-        nonce: nonce.clone(),
-        data_cid: None,
-        data_hash: None,
-        storage_provider: None,
-        provenance: None,
-        manifest: None,
-        verification_receipt: None,
-        compute_receipt: None,
-        quality_tier: None,
-    };
-
-    let commitment_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:commit").as_bytes());
-        let tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx
-    };
-    let mut commitment_tx = commitment_tx;
-    commitment_tx.tx_type = TransactionType::ContributionCommit;
-    commitment_tx.timestamp = timestamp_dt;
-    commitment_tx.data = serde_json::to_string(&commit_payload).ok();
-    commitment_tx.set_id();
-
-    let reveal_tx = {
-        let tx_input_seed =
-            hash_bytes(format!("{station_id}:{commit_id}:{timestamp}:reveal").as_bytes());
-        let mut tx = Transaction::new(
-            vec![TransactionInput {
-                txid: tx_input_seed,
-                vout: 0,
-                signature: None,
-                public_key: None,
-                coinbase_data: None,
-            }],
-            vec![TransactionOutput {
-                amount: 0,
-                address: format!("0x{station_id}"),
-                script: "OP_TRUE".to_string(),
-                nft_data: None,
-            }],
-        );
-        tx.tx_type = TransactionType::ContributionReveal;
-        tx.timestamp = timestamp_dt;
-        tx.data = serde_json::to_string(&reveal_payload).ok();
-        tx.set_id();
-        tx
-    };
-
-    let mut guard = mempool.write().await;
-    if let Err(error) = guard.add_transaction(commitment_tx) {
-        log::warn!(
-            "Failed to enqueue contribution commit for station {station_id} payload: {error}"
-        );
-    }
-    if let Err(error) = guard.add_transaction(reveal_tx) {
-        log::warn!(
-            "Failed to enqueue contribution reveal for station {station_id} payload: {error}"
-        );
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum P2pBlockSource {
     LiveGossip,
@@ -977,6 +783,7 @@ async fn report_authoritative_sync_rejection(
     blockchain: &Arc<RwLock<Blockchain>>,
     peer_id: libp2p::PeerId,
     block_height: u64,
+    block_hash: [u8; 32],
     attribution: AuthoritativeSyncRejectionAttribution,
     reason: String,
 ) {
@@ -996,6 +803,7 @@ async fn report_authoritative_sync_rejection(
         .send(P2pCommand::AuthoritativeSyncRejected {
             peer_id,
             block_height,
+            block_hash,
             accepted_height,
             accepted_tip_hash,
             accepted_state_root,
@@ -1275,10 +1083,9 @@ where
                         // Deterministically invalid: never offer it again.
                         ReorgOutcome::InvalidChain => fork_buffer.note_failed_chain(&reorg_chain),
                         // May succeed later: leave the buffer intact, try the next candidate.
+                        // Every abort restores the pre-fork
+                        // live chain with storage unchanged, so this is safe.
                         ReorgOutcome::Transient => {},
-                        // The in-memory chain may have changed: stop, as the
-                        // pre-classification code did after any attempt.
-                        ReorgOutcome::Aborted => break,
                     }
                 }
                 // #3277 S3: whether the reorg completed or restored the
@@ -1715,14 +1522,13 @@ enum ReorgOutcome {
     /// state-root failure): safe to remember and never retry.
     InvalidChain,
     /// Aborted for a reason that may not recur (checkpoint/WAL/storage I/O,
-    /// serialization, persistence hook, consensus error, a concurrent local
-    /// extension). The in-memory chain is as it was before the attempt.
+    /// serialization, persistence hook, consensus error, an `execute_reorg`
+    /// error, a failed durable replacement, a concurrent local extension).
+    /// The in-memory chain AND durable storage are as they were before the
+    /// attempt (the fork replacement commits in one storage
+    /// transaction under the chain guard, and every abort restores the
+    /// pre-fork live chain).
     Transient,
-    /// Aborted after the in-memory chain may already have been changed (an
-    /// `execute_reorg` error, or a durable rollback/persist failure after the
-    /// in-memory reorg). Nothing is learned about the candidate and no further
-    /// candidate is attempted against a chain in an uncertain state.
-    Aborted,
 }
 
 /// Shared implementation for production and exact-version rejection tests.
@@ -1739,6 +1545,46 @@ async fn try_reorg_inner<F>(
     consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
     p2p: Option<&P2pClient>,
     prepare_persist_state: F,
+) -> ReorgOutcome
+where
+    F: FnOnce(
+        wrfcoin_native_chain::blockchain::state::State,
+    ) -> wrfcoin_native_chain::blockchain::state::State,
+{
+    try_reorg_with_persist_control_at(
+        version,
+        candidate_blocks,
+        blockchain,
+        storage,
+        consensus,
+        p2p,
+        prepare_persist_state,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+/// Per-call test controls on the real Storage write seam; no global fault
+/// state.
+#[cfg(test)]
+struct ForkPersistTestControl {
+    /// Drop the prepared checkpoint bytes of the fork block at this height so
+    /// the real durable write fails there.
+    omit_checkpoint_height: Option<u64>,
+    /// Pause right before the durable write: (reached, resume).
+    barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+}
+
+async fn try_reorg_with_persist_control_at<F>(
+    version: wrfcoin_shared_protocol::crypto::chain_binding::SigningProtocolVersion,
+    candidate_blocks: Vec<Block>,
+    blockchain: &Arc<RwLock<Blockchain>>,
+    storage: &Arc<RwLock<Storage>>,
+    consensus: &Arc<TypedConsensusManager<PopConsensusAdapter>>,
+    p2p: Option<&P2pClient>,
+    prepare_persist_state: F,
+    #[cfg(test)] control: Option<&ForkPersistTestControl>,
 ) -> ReorgOutcome
 where
     F: FnOnce(
@@ -2018,8 +1864,11 @@ where
 
     // Execute the reorg on the in-memory chain.
     if let Err(e) = chain.execute_reorg(&plan, fork_state_for_reorg) {
-        log::error!("Reorg execution failed: {e}");
-        return ReorgOutcome::Aborted;
+        // Restore the full pre-fork live chain; storage is
+        // untouched, so the attempt is retryable.
+        *chain = pre_reorg_snapshot;
+        log::error!("Reorg execution failed: {e}; restored the pre-fork live chain");
+        return ReorgOutcome::Transient;
     }
 
     // Apply state transitions for each new block. If any transition fails,
@@ -2147,37 +1996,51 @@ where
         }
     }
 
+    #[cfg(test)]
+    if let Some(control) = control {
+        for (block, _, checkpoint) in &mut prepared_persistence {
+            if control.omit_checkpoint_height == Some(block.height) {
+                *checkpoint = None;
+            }
+        }
+    }
+
     let new_tip_height = chain.height;
     let new_tip = chain.tip;
     let current_state_root: [u8; 32] = chain.state.state_root.0;
     let finalized_height = chain.finalized_height();
-    drop(chain);
-
-    // Every consensus/state check has passed. Only now mutate durable storage.
-    {
-        let mut st = storage.write().await;
-
-        if let Err(e) = st.rollback_to_height(plan.fork_height, new_tip).await {
-            log::error!("Reorg storage rollback failed: {e}");
-            return ReorgOutcome::Aborted;
-        }
-
-        for (blk, transitions, checkpoint_state) in prepared_persistence {
-            let height = blk.height;
-            if let Err(e) = st
-                .persist_block_with_finalized(
-                    blk,
-                    transitions,
-                    checkpoint_state,
-                    finalized_height,
-                )
-                .await
-            {
-                log::error!("Reorg persist failed at height {height}: {e}");
-                return ReorgOutcome::Aborted;
-            }
-        }
+    #[cfg(test)]
+    if let Some((reached, resume)) = control.and_then(|c| c.barrier.as_ref()) {
+        reached.notify_one();
+        resume.notified().await;
     }
+
+    // Every consensus/state check has passed. Hold the API chain
+    // guard until the WHOLE durable replacement (rollback + every fork block,
+    // WAL entry and due checkpoint) commits in one storage transaction, so no
+    // reader or peer sees a fork that is not durable, and a failure leaves
+    // memory and disk both on the old branch. Lock order chain -> storage, as
+    // above (the disk preload already takes storage under this guard).
+    let persist_result = storage
+        .write()
+        .await
+        .replace_fork_with_finalized(
+            plan.fork_height,
+            plan.fork_hash,
+            prepared_persistence,
+            finalized_height,
+        )
+        .await;
+    if let Err(e) = persist_result {
+        *chain = pre_reorg_snapshot;
+        log::error!(
+            "REORG ABORTED: durable replacement failed fork_height={} old_height={} old_tip={} \
+             candidate_tip={}: {e}; restored the pre-fork live chain, durable storage unchanged",
+            plan.fork_height, old_height, old_tip, new_tip,
+        );
+        return ReorgOutcome::Transient;
+    }
+    drop(chain);
 
     if let Some(client) = p2p {
         if let Some(tip_block) = candidate_blocks.last() {
@@ -2302,10 +2165,8 @@ pub async fn run_p2p_event_loop(
     // and read by the `/network/peers/reputation` operator route. Shared (not
     // loop-local) so the route observes the same state the loop maintains.
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    // #2389: node-local weather identity key used to sign the commit
-    // authorization on P2P-ingested weather contributions (see
-    // `bridge_weather_payload_to_mempool`). In production this is the node's
-    // `weather_gossip_signing_key`.
+    // The node's `weather_gossip_signing_key`. The loop no longer uses it:
+    // weather gossip is not turned into transactions.
     commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
 ) {
     run_p2p_event_loop_with_persist_control(
@@ -2354,7 +2215,9 @@ async fn run_p2p_event_loop_with_persist_control(
     state_diverged: Arc<AtomicBool>,
     recovery_policy: StateDivergenceRecoveryPolicy,
     peer_reputation: crate::peer_reputation::SharedPeerReputation,
-    commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
+    // Unused since weather gossip stopped creating transactions; kept so the
+    // loop's callers do not change.
+    _commit_signing_key: Arc<wrfcoin_native_chain::crypto::signature::PrivateKey>,
     #[cfg(test)] persist_control: Option<EventPersistTestControl>,
 ) {
     log::info!("P2P event consumer started");
@@ -2709,6 +2572,7 @@ async fn run_p2p_event_loop_with_persist_control(
                             &blockchain,
                             peer_id,
                             height,
+                            [0u8; 32],
                             AuthoritativeSyncRejectionAttribution::PeerInvalid,
                             format!("failed to deserialize synced block: {e}"),
                         )
@@ -2717,6 +2581,9 @@ async fn run_p2p_event_loop_with_persist_control(
                     },
                 };
                 let height_before = blockchain.read().await.height;
+                // The recomputed header hash, never the block's own claim:
+                // halt corroboration counts peers serving the same block.
+                let block_hash = <[u8; 32]>::from(block.calculate_hash());
                 let outcome = apply_p2p_block(
                     block,
                     P2pBlockSource::HistoricalSync,
@@ -2738,6 +2605,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         &blockchain,
                         peer_id,
                         height,
+                        block_hash,
                         attribution,
                         reason,
                     )
@@ -2824,14 +2692,11 @@ async fn run_p2p_event_loop_with_persist_control(
                 }
             },
 
-            P2pEvent::WeatherData { station_id, data, .. } => {
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+            // A peer's weather message is logged and nothing more. Its station
+            // id is the sender's choice and its signature is by a key the sender
+            // supplies, so this node does not turn it into transactions of its
+            // own. Stations submit through the API.
+            P2pEvent::WeatherData { station_id, .. } => {
                 log::info!("P2P weather data received from station {station_id}");
             },
 
@@ -2952,13 +2817,7 @@ async fn run_p2p_event_loop_with_persist_control(
                         .cache_content_ref_payload(content_ref, &data, "weather-data-v2")
                         .await;
                 }
-                bridge_weather_payload_to_mempool(
-                    &station_id,
-                    &data,
-                    &mempool,
-                    &commit_signing_key,
-                )
-                .await;
+                // As for `WeatherData`: logged, never turned into transactions.
                 log::info!("P2P weather data v2 received from station {station_id}");
             },
 
@@ -3265,6 +3124,7 @@ pub(crate) fn admissible_gossip_txs(
             },
         })
         .filter(|tx| oracle_attestation_admissible(state, tx))
+        .filter(|tx| forecast_score_admissible(state, tx))
         .collect()
 }
 
@@ -3286,6 +3146,38 @@ pub(crate) fn oracle_attestation_admissible(
         },
         // Malformed payloads are left to the mempool, which refuses them.
         None => true,
+    }
+}
+
+/// `forecast_late_score` (node policy, no consensus effect): a gossiped
+/// score is offered to the pool only if every signer is in the chain's oracle
+/// set and every forecast it lists is recorded, unscored and of the attested
+/// commit block in this node's state: the same read-only checks the submit
+/// route runs before admission. Apply stays the authority (it
+/// skips unknown and scored forecasts so racing relays do not fail each
+/// other). Other transaction types pass through.
+pub(crate) fn forecast_score_admissible(
+    state: &wrfcoin_native_chain::blockchain::state::State,
+    tx: &Transaction,
+) -> bool {
+    use wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload;
+    if tx.tx_type != TransactionType::ForecastScore {
+        return true;
+    }
+    // A malformed payload is the mempool's to refuse, with its own code.
+    let Some(payload) = ForecastScorePayload::parse(tx) else {
+        return true;
+    };
+    if !payload.signatures.iter().all(|signer| state.oracle_set.contains(&signer.oracle)) {
+        log::debug!("P2P forecast score not admitted: a signer is not in the oracle set");
+        return false;
+    }
+    match state.forecast_late_score.check_admissible_score(&payload) {
+        Ok(()) => true,
+        Err(error) => {
+            log::debug!("P2P forecast score not admitted: {error}");
+            false
+        },
     }
 }
 
@@ -4196,6 +4088,12 @@ mod tests {
     /// prune that fork-point checkpoint.
     async fn committed_reorg_fixture(
     ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
+        committed_reorg_fixture_with_storage(test_storage()).await
+    }
+
+    async fn committed_reorg_fixture_with_storage(
+        storage: Arc<RwLock<Storage>>,
+    ) -> (Arc<RwLock<Blockchain>>, Arc<RwLock<Storage>>, Vec<Block>) {
         let (common_chain, common_blocks) =
             committed_fixture_blocks(Blockchain::default(), 1, 0x41).await;
         let common = common_blocks[0].clone();
@@ -4205,7 +4103,6 @@ mod tests {
         let (_, fork_blocks) = committed_fixture_blocks(common_chain, 2, 0x42).await;
 
         let chain = Arc::new(RwLock::new(Blockchain::default()));
-        let storage = test_storage();
         feed_committed_block_at_v2(common, &chain, &storage).await;
         let common_state = chain.read().await.state.clone();
         storage
@@ -4222,6 +4119,146 @@ mod tests {
             "fixture control: the local branch must be fully accepted before reorg"
         );
         (chain, storage, fork_blocks)
+    }
+
+    /// A storage failure in the middle of a whole-fork
+    /// replacement (rollback committed, block 2 written, block 3's due
+    /// checkpoint fails) must leave BOTH the live chain and durable storage on
+    /// the old branch, publish nothing, report a retryable outcome, and a
+    /// retry of the same fork must then install it.
+    #[tokio::test]
+    async fn fork_mid_write_failure_is_atomic_and_retryable_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        // Interval 3: fork block 3 is a due checkpoint, block 2 is not.
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let before = chain_mark(&chain).await;
+        let snapshot = chain.read().await.clone();
+        let durable_before = storage.read().await.load_state().unwrap().unwrap();
+        let durable_blocks_before = storage.read().await.load_blocks_range(0, 3).unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let control = super::ForkPersistTestControl {
+            omit_checkpoint_height: Some(3),
+            barrier: None,
+        };
+        let outcome = super::try_reorg_with_persist_control_at(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+            Some(&control),
+        )
+        .await;
+        assert_eq!(chain_mark(&chain).await, before, "failed durable write changed the live chain");
+        {
+            let after = chain.read().await;
+            assert_eq!(
+                bincode::serialize(after.blocks()).unwrap(),
+                bincode::serialize(snapshot.blocks()).unwrap(),
+                "live block window differs from the pre-fork snapshot"
+            );
+            assert_eq!(after.total_block_count(), snapshot.total_block_count());
+            assert_eq!(after.finalized_height(), snapshot.finalized_height());
+        }
+        assert!(commands.try_recv().is_err(), "failed replacement published to peers");
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.height, durable_before.height, "durable height moved");
+        assert_eq!(recovered.tip, durable_before.tip, "durable tip moved");
+        assert_eq!(recovered.state.state_root, durable_before.state.state_root);
+        let durable_blocks_after = storage.read().await.load_blocks_range(0, 3).unwrap();
+        assert_eq!(
+            bincode::serialize(&durable_blocks_after).unwrap(),
+            bincode::serialize(&durable_blocks_before).unwrap(),
+            "durable blocks are a partial fork"
+        );
+        assert_eq!(
+            outcome,
+            super::ReorgOutcome::Transient,
+            "nothing changed, so the attempt must stay retryable"
+        );
+
+        let retry = super::try_reorg_inner(
+            SigningProtocolVersion::V2,
+            fork.clone(),
+            &chain,
+            &storage,
+            &test_consensus(),
+            Some(&client),
+            std::convert::identity,
+        )
+        .await;
+        assert_eq!(retry, super::ReorgOutcome::Reorged);
+        assert_eq!(chain.read().await.tip, fork.last().unwrap().hash.unwrap());
+        let durable = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(durable.tip, chain.read().await.tip);
+        assert_eq!(durable.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok(), "retry did not publish");
+    }
+
+    /// No API reader and no peer may observe the new
+    /// fork before its durable replacement has committed.
+    #[tokio::test]
+    async fn fork_publication_waits_for_durable_replacement_3545() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(RwLock::new(
+            Storage::open(&dir.path().join("chain.redb"), 3).unwrap(),
+        ));
+        let (chain, storage, fork) = committed_reorg_fixture_with_storage(storage).await;
+        let old_tip = chain.read().await.tip;
+        let new_tip = fork.last().unwrap().hash.unwrap();
+        let (client, mut commands) = P2pClient::for_testing_with_commands(libp2p::PeerId::random());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let applying = {
+            let chain = Arc::clone(&chain);
+            let storage = Arc::clone(&storage);
+            let reached = Arc::clone(&reached);
+            let resume = Arc::clone(&resume);
+            tokio::spawn(async move {
+                let control = super::ForkPersistTestControl {
+                    omit_checkpoint_height: None,
+                    barrier: Some((reached, resume)),
+                };
+                super::try_reorg_with_persist_control_at(
+                    SigningProtocolVersion::V2,
+                    fork,
+                    &chain,
+                    &storage,
+                    &test_consensus(),
+                    Some(&client),
+                    std::convert::identity,
+                    Some(&control),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), reached.notified())
+            .await
+            .unwrap();
+        assert_eq!(storage.read().await.load_state().unwrap().unwrap().tip, old_tip);
+        let premature_command = commands.try_recv().is_ok();
+        let premature_reader = tokio::time::timeout(Duration::from_millis(30), chain.read())
+            .await
+            .map(|g| g.tip)
+            .ok();
+        resume.notify_one();
+        let outcome = applying.await.unwrap();
+        assert_eq!(outcome, super::ReorgOutcome::Reorged);
+        assert!(
+            premature_reader.is_none(),
+            "API observed the live chain (tip {premature_reader:?}) before the durable replacement"
+        );
+        assert!(!premature_command, "peer saw an unpersisted fork");
+        assert_eq!(chain.read().await.tip, new_tip);
+        let recovered = storage.read().await.load_state().unwrap().unwrap();
+        assert_eq!(recovered.tip, new_tip);
+        assert_eq!(recovered.state.state_root, chain.read().await.state.state_root);
+        assert!(commands.try_recv().is_ok());
     }
 
     // ---------------------------------------------------------------------
@@ -5550,7 +5587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5611,56 +5648,18 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherData should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherData should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-001".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherData gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 
     #[tokio::test]
-    async fn run_p2p_event_loop_weather_data_v2_bridges_to_contribution_txs() {
+    async fn run_p2p_event_loop_weather_data_v2_creates_no_transactions() {
         let blockchain = Arc::new(RwLock::new(Blockchain::default()));
         let mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
         let storage = test_storage();
@@ -5721,51 +5720,13 @@ mod tests {
             wrfcoin_native_chain::blockchain::transaction::TransactionType::ContributionReveal,
             10,
         );
-        assert_eq!(commits.len(), 1, "WeatherDataV2 should create one contribution commit");
-        assert_eq!(reveals.len(), 1, "WeatherDataV2 should create one contribution reveal");
-
-        let commit_payload: serde_json::Value = serde_json::from_str(
-            commits[0]
-                .data
-                .as_deref()
-                .expect("commit transaction should include a payload"),
-        )
-        .expect("commit payload should be valid JSON");
-        let reveal_payload: serde_json::Value = serde_json::from_str(
-            reveals[0]
-                .data
-                .as_deref()
-                .expect("reveal transaction should include a payload"),
-        )
-        .expect("reveal payload should be valid JSON");
+        // A peer's weather message names any station id it likes and is signed
+        // with a key the peer supplies. It must not become transactions in this
+        // node's mempool, authorized with this node's key.
         assert_eq!(
-            commit_payload["station_id"],
-            serde_json::Value::String("station-002".to_string())
-        );
-        assert_eq!(
-            commit_payload["contribution_type"],
-            serde_json::Value::String("contribution".to_string())
-        );
-        assert_eq!(commit_payload["commit_id"], reveal_payload["commit_id"]);
-
-        // #2389 RED-on-revert: the bridged commit must carry a valid #1848
-        // sender authorization. If `bridge_weather_payload_to_mempool` stops
-        // signing the payload, the commit is rejected at admission and never
-        // reaches the mempool, so `commits` is empty and the length assertions
-        // above already fail — but assert the authorization explicitly so the
-        // intent (a *signed, admissible* commit) is unambiguous.
-        assert!(
-            commit_payload["auth_pubkey"].is_string(),
-            "bridged commit must be signed (auth_pubkey present): {commit_payload}"
-        );
-        assert!(
-            commit_payload["auth_signature"].is_string(),
-            "bridged commit must be signed (auth_signature present): {commit_payload}"
-        );
-        assert!(
-            commits[0].verify_commit_authorization(),
-            "bridged commit authorization must verify so it passes #1848 fail-closed \
-             mempool admission (RED if the bridge's sign_authorization call is reverted)"
+            (commits.len(), reveals.len(), mempool.read().await.size()),
+            (0, 0, 0),
+            "WeatherDataV2 gossip must not create mempool transactions (commits, reveals, pool size)"
         );
     }
 
@@ -7706,6 +7667,8 @@ mod tests {
             field!("advisory_proposals", |s| field_json(
                 &s.advisory_proposals.iter().collect::<Vec<_>>()
             )),
+            // BTreeMaps throughout: compared as one ordered value.
+            field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
         ]
     }
 
@@ -11487,6 +11450,9 @@ mod tests {
             // Producer/applier/WAL parity with populated proposals:
             // native-chain/tests/advisory_governance_parity.rs.
             "advisory_proposals",
+            // Apply-path coverage with recorded, scored and paid forecasts:
+            // shared-protocol/tests/forecast_late_score.rs.
+            "forecast_late_score",
         ]
         .into_iter()
         .collect();
@@ -12821,6 +12787,618 @@ mod tests {
             &applier_chain,
         )
         .await;
+    }
+
+    // ---- Producer-written metadata is recomputed by the follower ----
+    //
+    // Each test below takes a block an honest producer built, edits ONE
+    // producer-written metadata key so it carries something the block's
+    // transactions do not justify, re-seals the hash (as the producer that
+    // wrote it would) and hands it to a fresh follower over the P2P apply
+    // path. The follower must refuse it and keep its state. The honest block
+    // is applied to a second follower as the control.
+
+    /// Re-seal a block after a metadata edit.
+    fn reseal_after_metadata_edit(block: &mut Block) {
+        let hash = block.calculate_hash();
+        block.set_hash(hash);
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_governance_transition_no_transaction_justifies() {
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+
+        let victim = Address([0x51; 20]);
+        let taker = Address([0x52; 20]);
+        let seed_genesis = move |chain: &mut Blockchain| {
+            chain.state.create_account(victim, Balance::new(1_000_000));
+            chain.state.recalculate_state_root();
+        };
+
+        let mut producer_genesis = Blockchain::default();
+        seed_genesis(&mut producer_genesis);
+        let producer_chain = Arc::new(RwLock::new(producer_genesis));
+        let producer_mempool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+        let honest = test_consensus()
+            .create_pop_block_with_state(
+                Arc::clone(&producer_chain),
+                Arc::clone(&producer_mempool),
+                &test_address_string(0x61),
+            )
+            .await
+            .expect("producer mines a coinbase-only block");
+        assert!(
+            !honest.metadata.contains_key("governance_transitions"),
+            "the honest block has no governance transition"
+        );
+
+        // The block carries no transfer transaction at all.
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "governance_transitions".to_string(),
+            serde_json::to_string(&vec![StateTransition::BalanceTransfer {
+                from: victim,
+                to: taker,
+                amount: Balance::new(900_000),
+                nonce: Some(0),
+                current_block: honest.height,
+            }])
+            .expect("transition list serializes"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let taker_balance = follower.state.get_account(&taker).map(|a| a.balance.0);
+            let victim_balance = follower.state.get_account(&victim).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, taker_balance, victim_balance),
+                (0, None, Some(1_000_000)),
+                "a governance transition no transaction justifies must reject the block \
+                 (height, taker balance, victim balance)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_reward_entry_with_a_changed_payee() {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        let mut entries: Vec<ContributionRewardRecord> = serde_json::from_str(
+            honest.metadata.get("reward_entries").expect("honest block has reward_entries"),
+        )
+        .expect("reward_entries decode");
+        assert!(entries[0].amount.0 > 0, "vacuity guard: the honest block pays a reward");
+        assert_eq!(entries[0].address, scenario.recipient);
+
+        let taker = Address([0x53; 20]);
+        entries[0].address = taker;
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "reward_entries".to_string(),
+            serde_json::to_string(&entries).expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let taker_balance = follower.state.get_account(&taker).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, taker_balance),
+                (0, None),
+                "a reward entry paying an address the reveal does not name must reject the \
+                 block (height, taker balance)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, &scenario.seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_reward_entry_with_a_changed_amount() {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        let mut entries: Vec<ContributionRewardRecord> = serde_json::from_str(
+            honest.metadata.get("reward_entries").expect("honest block has reward_entries"),
+        )
+        .expect("reward_entries decode");
+        let honest_amount = entries[0].amount.0;
+        assert!(honest_amount > 1, "vacuity guard: the honest block pays a reward");
+
+        entries[0].amount = Balance::new(honest_amount / 2);
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "reward_entries".to_string(),
+            serde_json::to_string(&entries).expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let paid = follower.state.get_account(&scenario.recipient).map(|a| a.balance.0);
+            assert_eq!(
+                (follower.height, paid),
+                (0, Some(0)),
+                "a reward entry whose amount differs from the scored amount must reject the \
+                 block (height, recipient balance)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn follower_rejects_oracle_accuracy_entry_no_receipt_justifies() {
+        let scenario = mine_attested_reward_block(1.0).await;
+        let honest = scenario.block_1.clone();
+        assert!(
+            !honest.metadata.contains_key("oracle_local_accuracy_entries"),
+            "the honest block carries no forecast receipt, so no accuracy entry"
+        );
+
+        let mut edited = honest.clone();
+        edited.metadata.insert(
+            "oracle_local_accuracy_entries".to_string(),
+            serde_json::to_string(&vec![(
+                "oracle-of-choice".to_string(),
+                "station-attest".to_string(),
+                10_000u32,
+                10u32,
+            )])
+            .expect("entries serialize"),
+        );
+        reseal_after_metadata_edit(&mut edited);
+
+        let follower = apply_block_to_fresh_applier(&edited, &scenario.seed_genesis).await;
+        {
+            let follower = follower.read().await;
+            let recorded = follower
+                .state
+                .oracle_local_accuracy_for_station("oracle-of-choice", "station-attest")
+                .is_some();
+            assert_eq!(
+                (follower.height, recorded),
+                (0, false),
+                "an accuracy entry no forecast receipt justifies must reject the block \
+                 (height, accuracy recorded)"
+            );
+        }
+
+        let control = apply_block_to_fresh_applier(&honest, &scenario.seed_genesis).await;
+        assert_eq!(control.read().await.height, 1, "the honest block is still accepted");
+    }
+
+    // ---- The follower derives rewards under the chain's governance policies ----
+    //
+    // The reward pass reads three governance policies from the consensus
+    // engine, not from state: task assigner, scarcity and multidomain. A
+    // producer copies them from state before it mines. A node that only
+    // follows must make the same copy before it derives a block's metadata, or
+    // it scores the block under the engine defaults and refuses an honest
+    // block as soon as a policy is not at its default.
+    //
+    // Each test mines the same reward block twice, once under the default
+    // policy and once under a changed one, and first checks that the change
+    // moves the reward (so the policy is really in play). It then hands the
+    // changed-policy block to a follower whose engine has never mined.
+
+    /// The amounts in a block's `reward_entries`.
+    fn reward_amounts(block: &Block) -> Vec<u128> {
+        use wrfcoin_native_chain::blockchain::state::ContributionRewardRecord;
+        let raw = block.metadata.get("reward_entries").expect("reward block has reward_entries");
+        serde_json::from_str::<Vec<ContributionRewardRecord>>(raw)
+            .expect("reward_entries decode")
+            .into_iter()
+            .map(|record| record.amount.0)
+            .collect()
+    }
+
+    async fn assert_follower_accepts_reward_block_under_policy(
+        policy: &str,
+        set_policy: fn(&mut wrfcoin_native_chain::blockchain::state::GovernanceParameters),
+        reveal_data: serde_json::Value,
+        base_height: u64,
+    ) {
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+
+        let under_default = mine_attested_reward_block_with_reveal_data(
+            1.0,
+            ContributionProvenanceClass::Real,
+            Arc::new(|_| {}),
+            base_height,
+            Some(reveal_data.clone()),
+        )
+        .await;
+        let under_policy = mine_attested_reward_block_with_reveal_data(
+            1.0,
+            ContributionProvenanceClass::Real,
+            Arc::new(move |chain: &mut Blockchain| set_policy(&mut chain.state.governance.params)),
+            base_height,
+            Some(reveal_data),
+        )
+        .await;
+        let block = under_policy.block_1.clone();
+        assert_ne!(
+            reward_amounts(&under_default.block_1),
+            reward_amounts(&block),
+            "vacuity guard: the changed {policy} policy must change the reward the producer pays"
+        );
+
+        // A follower that shares the genesis and has never mined.
+        let mut follower = Blockchain::default();
+        (under_policy.seed_genesis)(&mut follower);
+        if base_height > 0 {
+            follower.height = base_height;
+            follower.tip = block.prev_block_hash;
+        }
+        // The comparison `validate_block` enforces, on an engine that has never
+        // mined: it must find nothing to object to in an honest block.
+        let differences = {
+            let pop_config = ConsensusFactory::default_config(ConsensusType::ProofOfPublishing);
+            ConsensusFactory::create_pop_adapter(&pop_config)
+                .producer_metadata_mismatches_blocking(&follower.state, &block)
+        };
+        assert_eq!(
+            differences,
+            Vec::new(),
+            "a follower must derive the metadata an honest producer wrote under a non-default \
+             {policy} policy"
+        );
+
+        // Full block validation: the publishing-score check in `verify_block`
+        // reads the same policies, so it too must use the chain's.
+        let accepted = test_consensus()
+            .validate_block(&block, &follower)
+            .await
+            .expect("validation returns a verdict");
+        assert!(
+            accepted,
+            "a follower must accept an honest reward block mined under a non-default {policy} policy"
+        );
+
+        // From genesis the block can also go through the P2P apply path.
+        if base_height == 0 {
+            let applied = apply_block_to_fresh_applier(&block, &under_policy.seed_genesis).await;
+            assert_eq!(
+                applied.read().await.height,
+                1,
+                "the block must also apply through the P2P path"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_scarcity_policy() {
+        assert_follower_accepts_reward_block_under_policy(
+            "scarcity",
+            |params| {
+                params.scarcity_policy.data_desert_multiplier = 2.0;
+                params.scarcity_policy.proximity_multiplier = 1.5;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "data_desert": 1.0, "proximity_need": 1.0,
+            }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_task_assigner_policy() {
+        assert_follower_accepts_reward_block_under_policy(
+            "task assigner",
+            |params| {
+                params.task_assigner_policy.underserved_bonus_multiplier = 2.5;
+                params.task_assigner_policy.redundancy_penalty_multiplier = 0.9;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "assignment_utility": 1.0, "redundancy": 0.5,
+            }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_data_quality_policy() {
+        // A borderline reading (between the acceptance and the high-quality
+        // thresholds), so the borderline multipliers decide both the block's
+        // publishing score and the reward.
+        assert_follower_accepts_reward_block_under_policy(
+            "data quality",
+            |params| {
+                params.data_quality_policy.borderline_scoring_multiplier = 0.95;
+                params.data_quality_policy.borderline_reward_multiplier = 0.9;
+            },
+            serde_json::json!({ "quality": 0.8, "volume": 0.2, "uniqueness": 0.2 }),
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn follower_accepts_reward_block_under_a_non_default_multidomain_policy() {
+        // The domain marker is a string, which only the metric extraction in
+        // force from the rich-reward height accepts, so this block is mined at
+        // that height.
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT;
+        assert_follower_accepts_reward_block_under_policy(
+            "multidomain",
+            |params| {
+                params.multidomain_reward_policy.soil_enabled = true;
+                params.multidomain_reward_policy.soil_weight = 0.5;
+            },
+            serde_json::json!({
+                "quality": 1.0, "volume": 0.2, "uniqueness": 0.2,
+                "domain": "soil",
+                "pipeline": { "backend39_ready": true, "storage_providers6_ready": true },
+            }),
+            RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1,
+        )
+        .await;
+    }
+
+    /// A block that carries a governance change AND launch transactions: a due
+    /// proposal that replaces the oracle set is finalized in the same block as
+    /// a commit, its reveal and two oracle attestations. The producer applies
+    /// the governance batch before the launch batch; the follower's metadata
+    /// recompute must use that same sequence, and every other follower step
+    /// (launch invariants, transition extraction, apply) must reach the
+    /// producer's state.
+    ///
+    /// The attesting oracles are in both the old and the new set, so the block
+    /// is valid in either order. (An attestation valid under only one of the
+    /// two sets is a separate ordering question; it is not what this test
+    /// settles.)
+    #[tokio::test]
+    async fn producer_and_follower_agree_on_a_block_with_a_governance_change_and_attestations() {
+        let height = assert_governance_change_with_attestations_agree(0, "governance-change-with-attestations").await;
+        assert!(
+            !wrfcoin_shared_protocol::crypto::chain_binding::governance_before_launch(height),
+            "control: nothing scheduled, so the follower's other order sites run launch first"
+        );
+    }
+
+    /// The same block shape at a height where `governance_before_launch` is
+    /// true (`forecast_late_score` in force: scheduled, with
+    /// `forecaster_key_binding` active for the full lead), in an isolated child
+    /// because the schedule is process-global. There the assembly screen, the
+    /// validation replay and the transition extractor all apply governance
+    /// first, as the producer does; the follower's metadata recompute, its
+    /// launch replay, extraction and apply must still reach the producer's
+    /// metadata and state.
+    #[tokio::test]
+    async fn producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch() {
+        const CHILD: &str = "WRFCOIN_GOVERNANCE_BEFORE_LAUNCH_AGREE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "p2p_events::tests::producer_and_follower_agree_on_a_governance_change_where_governance_runs_before_launch",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .expect("re-exec child");
+            assert!(status.success(), "isolated governance-before-launch child failed");
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, FeatureSchedule, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
+            governance_before_launch, install_feature_schedule,
+        };
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 1),
+                (ConsensusFeature::ForecastLateScore.name().to_string(), 1),
+            ])
+            .expect("schedule"),
+        );
+        let base = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS + 100;
+        assert!(
+            !governance_before_launch(1),
+            "vacuity guard: below the key-binding lead the order is still launch first"
+        );
+        let height = assert_governance_change_with_attestations_agree(
+            base,
+            "governance-change-with-attestations-governance-first",
+        )
+        .await;
+        assert!(
+            governance_before_launch(height),
+            "the block must be mined where governance_before_launch is true (height {height})"
+        );
+    }
+
+    /// Mines a block at `base_height + 1` that finalizes an oracle-set
+    /// proposal and carries a commit, its reveal and two oracle attestations,
+    /// then checks that a fresh follower derives exactly the producer's
+    /// metadata and reaches the producer's state. Returns the block height.
+    async fn assert_governance_change_with_attestations_agree(base_height: u64, label: &str) -> u64 {
+        use rand::SeedableRng;
+        use wrfcoin_native_chain::blockchain::state::StateTransition;
+        use wrfcoin_native_chain::blockchain::transaction::{
+            GovernanceProposalPayload, GovernanceVotePayload,
+        };
+        use wrfcoin_native_chain::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing;
+
+        // The fixture's two oracles (`mine_attested_reward_block*` seeds), and
+        // a third the proposal adds.
+        let oracle_id = |seed: u64| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            PublicKey::from_private_key(&PrivateKey::generate(&mut rng)).to_string()
+        };
+        let new_set = [oracle_id(901), oracle_id(902), oracle_id(905)];
+        let new_oracle = new_set[2].clone();
+        let new_set_csv = new_set.join(",");
+
+        let configure: Arc<dyn Fn(&mut Blockchain) + Send + Sync> =
+            Arc::new(move |chain: &mut Blockchain| {
+                let proposer = Address([0x41; 20]);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(9_411);
+                let voter_key = PrivateKey::generate(&mut rng);
+                let voter_pub = PublicKey::from_private_key(&voter_key);
+                let voter = Address::from_public_key(&voter_pub);
+                chain.state.create_account(proposer, Balance::new(20_000_000_000_000));
+                chain.state.create_account(voter, Balance::new(10));
+                chain
+                    .state
+                    .apply_transition(StateTransition::LockToStake {
+                        address: voter,
+                        amount: Balance::new(10),
+                    })
+                    .expect("stake the governance voter");
+
+                let mut proposal = Transaction::new(vec![], vec![]);
+                proposal.sender_address = proposer;
+                proposal.tx_type = TransactionType::GovernanceProposal;
+                proposal.data = Some(
+                    serde_json::to_string(&GovernanceProposalPayload {
+                        proposal_id: "oracle-set-with-attestations".to_string(),
+                        parameter: "oracle_set".to_string(),
+                        value: new_set_csv.clone(),
+                        voting_deadline: Some(1),
+                        deposit: None,
+                    })
+                    .expect("proposal serializes"),
+                );
+                proposal.set_id();
+                chain
+                    .state
+                    .apply_transition(StateTransition::ProcessGovernanceTransaction {
+                        tx: proposal,
+                        current_block: 0,
+                    })
+                    .expect("seed the oracle-set proposal");
+
+                let mut payload = GovernanceVotePayload {
+                    proposal_id: "oracle-set-with-attestations".to_string(),
+                    approve: true,
+                    voting_power: Some(10),
+                    signature: None,
+                    signer_public_key: Some(voter_pub.to_hex()),
+                };
+                let signature = match SigningProtocolVersion::active() {
+                    SigningProtocolVersion::V1 => {
+                        voter_key.sign(payload.canonical_signing_message().as_bytes())
+                    },
+                    SigningProtocolVersion::V2 => {
+                        wrfcoin_native_chain::crypto::domain_signing::sign_domain(
+                            &voter_key, &payload,
+                        )
+                    },
+                };
+                payload.signature = Some(signature.to_hex());
+                let mut vote = Transaction::new(vec![], vec![]);
+                vote.sender_address = voter;
+                vote.tx_type = TransactionType::GovernanceVote;
+                vote.data = Some(serde_json::to_string(&payload).expect("vote serializes"));
+                vote.set_id();
+                chain
+                    .state
+                    .apply_transition(StateTransition::ProcessGovernanceTransaction {
+                        tx: vote,
+                        current_block: 0,
+                    })
+                    .expect("seed the vote");
+            });
+
+        let scenario = mine_attested_reward_block_at_base_height(
+            1.0,
+            wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass::Real,
+            configure,
+            base_height,
+        )
+        .await;
+        let block = scenario.block_1.clone();
+        assert_eq!(block.height, base_height + 1, "the block lands right above the base");
+
+        // Vacuity guards: the block really has both kinds of content, and the
+        // governance change really happened on the producer.
+        let governance: Vec<StateTransition> = serde_json::from_str(
+            block
+                .metadata
+                .get("governance_transitions")
+                .expect("the block finalizes the due proposal"),
+        )
+        .expect("governance_transitions decode");
+        assert!(
+            governance
+                .iter()
+                .any(|t| matches!(t, StateTransition::FinalizeGovernanceProposal { .. })),
+            "the governance batch must finalize the oracle-set proposal: {governance:?}"
+        );
+        assert_eq!(
+            block
+                .transactions
+                .iter()
+                .filter(|tx| tx.tx_type == TransactionType::OracleAttestation)
+                .count(),
+            2,
+            "the same block must carry the oracle attestations"
+        );
+        assert_eq!(
+            block.metadata.get("rewards_minted_count").map(String::as_str),
+            Some("1"),
+            "and the reward the attestations unlock"
+        );
+        {
+            let producer = scenario.producer_chain.read().await;
+            assert!(
+                producer.state.oracle_set.contains(&new_oracle),
+                "the producer applied the new oracle set"
+            );
+        }
+
+        // A follower that shares the genesis and has never mined, positioned
+        // at the block's parent (the seed builds state, not the height).
+        let prev_hash = block.prev_block_hash;
+        let seed = &scenario.seed_genesis;
+        let seed_at_parent = move |chain: &mut Blockchain| {
+            (seed)(chain);
+            if base_height > 0 {
+                chain.height = base_height;
+                chain.tip = prev_hash;
+            }
+        };
+        let mut follower = Blockchain::default();
+        seed_at_parent(&mut follower);
+        assert!(!follower.state.oracle_set.contains(&new_oracle));
+        ProofOfPublishing::verify_launch_state_invariants(&follower, &block)
+            .expect("the follower's launch replay accepts the block");
+        let differences = {
+            let pop_config = ConsensusFactory::default_config(ConsensusType::ProofOfPublishing);
+            ConsensusFactory::create_pop_adapter(&pop_config)
+                .producer_metadata_mismatches_blocking(&follower.state, &block)
+        };
+        assert_eq!(
+            differences,
+            Vec::new(),
+            "the follower must derive exactly the metadata the producer wrote"
+        );
+
+        // Validation, extraction and apply through the P2P path, then the
+        // producer/applier state comparison (state root and field diff).
+        let applied = apply_block_to_fresh_applier(&block, &seed_at_parent).await;
+        assert!(
+            applied.read().await.state.oracle_set.contains(&new_oracle),
+            "the follower applied the new oracle set too"
+        );
+        assert_block_apply_parity_at(label, block.height, &scenario.producer_chain, &applied).await;
+        block.height
     }
 
     /// #2806 GREEN control at the activation fence, through the production
@@ -16012,6 +16590,308 @@ mod station_registration_admission_tests {
             ingest_gossiped_transaction(&mut pool, registration_tx("r"), &keys),
             GossipIngest::RefusedByPolicy("station_registration_gossip")
         );
+    }
+
+    /// `forecast_late_score`: a gossiped score naming an unknown or an
+    /// already-scored forecast is not offered to the pool; one naming a
+    /// recorded, unscored forecast of the attested block is. Other types pass.
+    #[test]
+    fn gossiped_scores_must_name_recorded_unscored_forecasts() {
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation,
+        };
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        for (commit_id, skill) in [("f", None), ("s", Some(10))] {
+            state.forecast_late_score.records.insert(
+                commit_id.to_string(),
+                ForecastRecord {
+                    forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                    station_id: attestation.station_id.clone(),
+                    variable: attestation.variable,
+                    value: 1_950,
+                    lead_hours: attestation.lead_hours,
+                    commit_height: attestation.commit_height,
+                    commit_time: attestation.commit_time,
+                    target: attestation.target,
+                    reveal_height: attestation.commit_height + 1,
+                    skill,
+                },
+            );
+        }
+        let score = |ids: &[&str]| {
+            let payload = ForecastScorePayload {
+                attestation: attestation.clone(),
+                signatures: Vec::new(),
+                forecast_commit_ids: ids.iter().map(|id| id.to_string()).collect(),
+            };
+            let mut tx = Transaction::new(Vec::new(), Vec::new());
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &score(&["f"])), "recorded and unscored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["unknown"])), "never recorded");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["s"])), "already scored");
+        assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["f", "unknown"])), "one bad id refuses the score");
+        // Through the live ingress filter: only the admissible score survives.
+        let survivors = crate::p2p_events::admissible_gossip_txs(
+            &state,
+            10,
+            vec![score(&["unknown"]), score(&["s"]), score(&["f"])],
+        );
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].id, score(&["f"]).id);
+        // Another type is not affected.
+        let mut other = Transaction::new(Vec::new(), Vec::new());
+        other.tx_type = TransactionType::Transfer;
+        assert!(crate::p2p_events::forecast_score_admissible(&state, &other));
+    }
+
+    /// A gossiped score whose signers include an identity outside the chain's
+    /// oracle set is not offered to the pool, even when that identity still
+    /// holds an Oracle key in the registry; the pending score stays.
+    #[tokio::test]
+    async fn gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered() {
+        const NAME: &str = "p2p_events::station_registration_admission_tests::gossiped_score_with_a_signer_outside_the_oracle_set_is_not_offered";
+        if crate::helpers::test_env::isolated_chain_domain(NAME, "777", "testnet", "0x2727272727272727272727272727272727272727", "none") {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+            ForecastRecord, ForecastScorePayload, LateScoreVariable, ObservationAttestation, ObservationSignature,
+            forecast_score_message, score_outpoint,
+        };
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ChainIdentity, ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::security::key_registry::{SigningKeyRegistry, SigningRole};
+        refresh_feature_schedule_extensions(vec![
+            (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 0),
+            (ConsensusFeature::ForecastLateScore.name().to_string(), 0),
+        ]);
+        const HEIGHT: u64 = 3_000;
+        let key = |seed: u8| PrivateKey::from_bytes(&[seed; 32]).unwrap();
+        let id = |k: &PrivateKey| PublicKey::from_private_key(k).to_hex();
+        let (o1, o2, outsider) = (key(0x31), key(0x32), key(0x39));
+        let attestation = ObservationAttestation {
+            station_id: "st-gossip".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 1_762_646_400,
+            target: 1_762_646_400 + 6 * 3_600,
+            truth: 2_000,
+            truth_commit_id: "t".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r".into()],
+        };
+        let identity = ChainIdentity::active();
+        let ids = vec!["f".to_string()];
+        let score = |signers: &[&PrivateKey]| {
+            let message = forecast_score_message(&identity.chain_id, &identity.network_id, &attestation, &ids);
+            let mut signatures: Vec<ObservationSignature> = signers
+                .iter()
+                .map(|k| ObservationSignature { oracle: id(k), ed25519: k.sign(&message).to_hex() })
+                .collect();
+            signatures.sort_by(|a, b| a.oracle.cmp(&b.oracle));
+            let payload = ForecastScorePayload { attestation: attestation.clone(), signatures, forecast_commit_ids: ids.clone() };
+            let mut tx = Transaction::new(
+                vec![TransactionInput {
+                    txid: score_outpoint(&identity.chain_id, &identity.network_id, &payload),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 0,
+                    address: wrfcoin_shared_protocol::common::types::Address([0x77; 20]).to_string(),
+                    script: "OP_TRUE".into(),
+                    nft_data: None,
+                }],
+            );
+            tx.tx_type = TransactionType::ForecastScore;
+            tx.sender_address = wrfcoin_shared_protocol::common::types::Address([0x77; 20]);
+            tx.data = Some(serde_json::to_string(&payload).unwrap());
+            tx.set_id();
+            tx
+        };
+        // All three keys are registered; only o1 and o2 are in the oracle set.
+        let mut keys = SigningKeyRegistry::default();
+        for k in [&o1, &o2, &outsider] {
+            keys.ensure_legacy_identity_key(&id(k), SigningRole::Oracle, 0).unwrap();
+        }
+        let mut state = wrfcoin_native_chain::blockchain::state::State::new();
+        state.oracle_set = [id(&o1), id(&o2)].into_iter().collect();
+        state.forecast_late_score.records.insert(
+            "f".into(),
+            ForecastRecord {
+                forecaster: wrfcoin_shared_protocol::common::types::Address([0x55; 20]),
+                station_id: attestation.station_id.clone(),
+                variable: attestation.variable,
+                value: 1_950,
+                lead_hours: attestation.lead_hours,
+                commit_height: attestation.commit_height,
+                commit_time: attestation.commit_time,
+                target: attestation.target,
+                reveal_height: attestation.commit_height + 1,
+                skill: None,
+            },
+        );
+        let pending = score(&[&o1, &o2]);
+        let superset = score(&[&o1, &o2, &outsider]);
+        let mut pool = Mempool::new(&Config::default());
+        if let Err(e) = Mempool::new(&Config::default())
+            .add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT))
+        {
+            panic!("the base score must be admissible: {e}");
+        }
+        for tx in crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![pending.clone()]) {
+            assert_eq!(
+                crate::p2p_events::ingest_gossiped_transaction_at_height(&mut pool, tx, &keys, Some(HEIGHT)),
+                GossipIngest::Admitted
+            );
+        }
+        assert!(pool.contains(&pending.id.unwrap()));
+        // The live ingress: the superset never reaches the pool.
+        let offered = crate::p2p_events::admissible_gossip_txs(&state, HEIGHT, vec![superset.clone()]);
+        assert!(offered.is_empty(), "a signer outside the oracle set is not offered");
+        assert!(pool.contains(&pending.id.unwrap()), "the pending score stays");
+        assert!(!pool.contains(&superset.id.unwrap()));
+        assert_eq!(pool.size(), 1);
+        // The pool checks signatures against the registry only; the oracle-set
+        // requirement is enforced by the gossip filter.
+        let mut bare = Mempool::new(&Config::default());
+        bare.add_transaction_with_signing_keys_at_height(pending.clone(), Some(&keys), Some(HEIGHT)).unwrap();
+        bare.add_transaction_with_signing_keys_at_height(superset.clone(), Some(&keys), Some(HEIGHT))
+            .expect("the pool checks signatures against the registry only");
+    }
+
+    /// Every non-test caller of the registry-checked admission path in this
+    /// binary, pinned. Only the gossip ingest and the forecast score submit
+    /// route pass a real registry (so a `ForecastScore` can pass admission
+    /// there), and both run the oracle-set and forecast checks first; `helpers.rs` passes one only for
+    /// `OracleAttestation`; every other caller passes `None`, which fails a
+    /// score closed. A new caller must be added here, with its set check.
+    /// The gossip ingest itself has one non-test caller, the live
+    /// `NewTransactions` arm, which runs `admissible_gossip_txs` first.
+    #[test]
+    fn forecast_score_admission_callers_all_check_the_oracle_set() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/launch_api");
+        let mut found: Vec<(String, String)> = Vec::new();
+        let mut ingest_calls: Vec<(String, String)> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() { // key-file-exempt: reads Rust source for a guard test
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != "tests") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                let body = source.find("\n#[cfg(test)]\nmod ").map_or(source.as_str(), |cut| &source[..cut]);
+                let rel = path.strip_prefix(&root).unwrap().display().to_string();
+                for (at, _) in body.match_indices("add_transaction_with_signing_keys_at_height(") {
+                    let args: String = body[at..].chars().skip(44).take(120).collect();
+                    let keys_arg = args.split(',').nth(1).unwrap_or("").trim().to_string();
+                    found.push((rel.clone(), keys_arg));
+                }
+                // The gossip ingest passes a real registry, so each of its callers
+                // must run `admissible_gossip_txs` first. Pin them.
+                for (at, _) in body.match_indices("ingest_gossiped_transaction_at_height(") {
+                    if body[..at].ends_with("fn ") {
+                        continue;
+                    }
+                    let item_start = body[..at].rfind("\n}\n").map_or(0, |i| i + 3);
+                    let header = &body[item_start..at];
+                    let header = &header[..header.find("fn ").unwrap_or(header.len())];
+                    if header.contains("#[cfg(test)]") {
+                        continue;
+                    }
+                    let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = body[at..].find('\n').map_or(body.len(), |i| at + i);
+                    ingest_calls.push((rel.clone(), body[line_start..line_end].trim().to_string()));
+                }
+            }
+        }
+        assert_eq!(
+            ingest_calls,
+            vec![(
+                "p2p_events.rs".to_string(),
+                "let _ = ingest_gossiped_transaction_at_height(&mut mp, tx, &signing_keys, Some(height));".to_string()
+            )],
+            "the only non-test gossip ingest caller is the live NewTransactions arm"
+        );
+        {
+            let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+            let arm = &source[source.find("P2pEvent::NewTransactions(tx_bytes_vec) => {").unwrap()..];
+            let arm = &arm[..arm.find("P2pEvent::PeerConnected(").unwrap()];
+            let filtered = arm.find("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);").unwrap();
+            let looped = arm.find("for tx in admissible {").unwrap();
+            let ingested = arm.find("ingest_gossiped_transaction_at_height(").unwrap();
+            assert!(filtered < looped && looped < ingested, "the live arm ingests only what admissible_gossip_txs kept");
+        }
+        found.sort();
+        for (file, keys_arg) in &found {
+            match (file.as_str(), keys_arg.as_str()) {
+                (_, "None") => {},
+                ("p2p_events.rs", "Some(signing_keys)") => {
+                    let source = std::fs::read_to_string(root.join("p2p_events.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    let filter = &source[source.find("pub(crate) fn forecast_score_admissible(").unwrap()..];
+                    let filter = &filter[..filter.find("\n}\n").unwrap()];
+                    assert!(filter.contains("state.oracle_set.contains(&signer.oracle)"), "gossip: oracle-set check");
+                    assert!(filter.contains("check_admissible_score"), "gossip: forecast check");
+                    assert!(
+                        source.contains(".filter(|tx| forecast_score_admissible(state, tx))"),
+                        "the ingress filter runs the check"
+                    );
+                    assert!(
+                        source.contains("let admissible = admissible_gossip_txs(&chain.state, chain.height, decoded);"),
+                        "the live arm filters before ingest"
+                    );
+                },
+                ("routes/forecast_late_score.rs", "Some(&signing_keys)") => {
+                    let source = std::fs::read_to_string(root.join("routes/forecast_late_score.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    let set_check = source.find("chain.state.oracle_set.contains(&s.oracle)").expect("route: oracle-set check");
+                    let forecast_check = source.find("check_admissible_score(&payload)").expect("route: forecast check");
+                    let admit = source.find("add_transaction_with_signing_keys_at_height(").unwrap();
+                    assert!(set_check < admit && forecast_check < admit, "route: both checks run before admission");
+                },
+                ("helpers.rs", "signing_keys.as_ref()") => {
+                    let source = std::fs::read_to_string(root.join("helpers.rs")).unwrap(); // key-file-exempt: reads Rust source for a guard test
+                    assert!(
+                        source.contains("== wrfcoin_native_chain::blockchain::transaction::TransactionType::OracleAttestation"),
+                        "helpers.rs passes a registry only for OracleAttestation"
+                    );
+                },
+                other => panic!("unreviewed registry-checked admission caller {other:?}: add it here with its oracle-set check"),
+            }
+        }
+        assert!(found.iter().any(|(f, _)| f == "p2p_events.rs"), "{found:?}");
     }
 
     /// The decision does not depend on the node's role: the ingress has no

@@ -181,6 +181,12 @@ pub enum TransactionType {
     /// Append-only index 43. Refused everywhere below the unscheduled
     /// `ConsensusFeature::AdvisoryGovernance` activation.
     AdvisoryGovernance,
+    /// Forecast late score (`consensus::forecast_late_score::ForecastScorePayload`
+    /// in `data`): an oracle-quorum-signed observation plus the forecast
+    /// commit ids to score against it. Anyone may relay it; it pays nothing to
+    /// its sender. Append-only index 44. Refused everywhere until
+    /// `forecast_late_score` is in force.
+    ForecastScore,
 }
 
 impl fmt::Display for TransactionType {
@@ -228,6 +234,7 @@ impl fmt::Display for TransactionType {
             TransactionType::SecurityKeyAction => write!(f, "SecurityKeyAction"),
             TransactionType::SendAllowlist => write!(f, "SendAllowlist"),
             TransactionType::AdvisoryGovernance => write!(f, "AdvisoryGovernance"),
+            TransactionType::ForecastScore => write!(f, "ForecastScore"),
             TransactionType::SlashEvidenceReport => write!(f, "SlashEvidenceReport"),
             TransactionType::SessionKeyAction => write!(f, "SessionKeyAction"),
         }

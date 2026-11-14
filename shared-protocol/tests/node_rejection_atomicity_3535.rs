@@ -556,6 +556,8 @@ fn transition_name(t: &StateTransition) -> &'static str {
             "ApplyStationRegistrarRegistration"
         },
         StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
+        StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
+        StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
     }
 }
 
@@ -778,6 +780,35 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
             proposal_id: "adv-0000000000000000".into(),
             current_block: fixture::A,
         },
+        // `forecast_late_score` (unscheduled here, so both are refused).
+        60 => StateTransition::ApplyForecastScore {
+            payload: serde_json::from_value(serde_json::json!({
+                "attestation": {
+                    "station_id": "sweep",
+                    "variable": "temperature_c",
+                    "lead_hours": 6,
+                    "commit_height": 5,
+                    "commit_time": 3_600,
+                    "target": 25_200,
+                    "truth": 2_000,
+                    "truth_commit_id": "t1",
+                    "reference": 300,
+                    "mean24": 1_900,
+                    "last": 2_100,
+                    "window_hash": "00".repeat(32),
+                    "window_commit_ids": ["r1"],
+                },
+                "signatures": [{ "oracle": hex::encode(fixture::pk(20)), "ed25519": "00".repeat(64) }],
+                "forecast_commit_ids": ["f1"],
+            }))
+            .unwrap(),
+            block_height: fixture::A,
+            block_timestamp: 100_000,
+        },
+        61 => StateTransition::CloseForecastBuckets {
+            block_height: fixture::A,
+            block_timestamp: 10_000,
+        },
         _ => {
             // Synthetic zero-value fixtures, preserving the original sweep inputs.
             // StateTransition is not a protocol bincode boundary; keep fixtures JSON.
@@ -854,6 +885,8 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "ApplyNodeFraudReport",
         "ApplyStationRegistrarRegistration",
         "FinalizeAdvisoryProposal",
+        "ApplyForecastScore",
+        "CloseForecastBuckets",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {

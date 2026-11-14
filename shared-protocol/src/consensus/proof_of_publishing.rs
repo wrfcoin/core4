@@ -67,6 +67,72 @@ pub const LATE_QUORUM_COMMIT_IDS_METADATA_KEY: &str = "oracle_reward_late_quorum
 pub const ATTESTER_SETTLEMENTS_METADATA_KEY: &str = "attester_settlements";
 pub const PRODUCER_SETTLEMENT_METADATA_KEY: &str = "producer_settlement";
 
+/// Producer-written metadata keys the follower applies state from, each with
+/// the code a block is refused under when the key differs from the follower's
+/// own derivation ([`ProofOfPublishing::producer_metadata_mismatches`]).
+pub const RECOMPUTED_METADATA_KEYS: &[(&str, &str)] = &[
+    (
+        "governance_transitions",
+        "SP_CONS_METADATA_GOVERNANCE_TRANSITIONS_MISMATCH",
+    ),
+    ("reward_entries", "SP_CONS_METADATA_REWARD_ENTRIES_MISMATCH"),
+    (
+        "oracle_local_accuracy_entries",
+        "SP_CONS_METADATA_ORACLE_ACCURACY_ENTRIES_MISMATCH",
+    ),
+];
+
+/// Refusal code when the follower cannot run the producer sequence on a block
+/// at all, so there is nothing to compare its metadata with.
+pub const METADATA_RECOMPUTE_FAILED_CODE: &str = "SP_CONS_METADATA_RECOMPUTE_FAILED";
+
+/// One producer-written metadata key that differs from the follower's own
+/// derivation. `key` is `"*"` under [`METADATA_RECOMPUTE_FAILED_CODE`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducerMetadataMismatch {
+    pub code: &'static str,
+    pub key: &'static str,
+    pub detail: String,
+}
+
+/// The typed content of one recomputed metadata key, re-serialized. `None` for
+/// an absent key and for an empty list: both claim nothing.
+fn canonical_recomputed_metadata(
+    key: &str,
+    raw: Option<&String>,
+) -> std::result::Result<Option<String>, String> {
+    fn typed<T: serde::de::DeserializeOwned + Serialize>(
+        raw: &str,
+    ) -> std::result::Result<Option<String>, String> {
+        let entries: Vec<T> = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        serde_json::to_string(&entries).map(Some).map_err(|e| e.to_string())
+    }
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    match key {
+        "governance_transitions" => typed::<StateTransition>(raw),
+        "reward_entries" => typed::<ContributionRewardRecord>(raw),
+        "oracle_local_accuracy_entries" => typed::<(String, String, u32, u32)>(raw),
+        other => Err(format!("'{other}' is not a recomputed metadata key")),
+    }
+}
+
+/// A bounded, log-safe rendering of one side of a metadata mismatch.
+fn describe_recomputed_metadata(canonical: Option<&str>) -> String {
+    match canonical {
+        None => "nothing".to_string(),
+        Some(json) => format!(
+            "{} bytes (sha3 {})",
+            json.len(),
+            hex::encode(&hash_bytes(json.as_bytes()).as_bytes()[..8])
+        ),
+    }
+}
+
 /// Number of decisions settled in this block (#2846). Written on every block
 /// that runs contribution-reward processing, so a steady `0` is an observation
 /// rather than an absent key.
@@ -124,6 +190,8 @@ const MULTIDOMAIN_STORAGE_READY_KEY: &str = "pipeline.storage_providers6_ready";
 /// averaging converts back to f64 against the SAME scale as the quantizer —
 /// two scales would be the drift bug the shared quantizer exists to prevent.
 pub(crate) const SCORE_PRECISION: u64 = 1_000_000;
+/// `ContributionRewardRecord::reason` prefix of a forecast reveal credit.
+pub const FORECAST_REWARD_REASON_PREFIX: &str = "forecast:";
 const BASELINE_FORECAST_SCORE_MULTIPLIER_MU: u64 = 250_000;
 const BASELINE_FORECAST_SKILL_MU: u64 = 100_000;
 /// Quantize an f64 score/confidence to fixed-point millionths
@@ -2253,6 +2321,8 @@ struct BlockTxValidationAccumulators {
     session_key_action_count: usize,
     /// Advisory-governance proposals seen so far (`advisory_governance`).
     advisory_proposal_count: usize,
+    /// Forecast score transactions seen so far (`forecast_late_score`).
+    forecast_score_count: usize,
     node_receipt_batch_count: usize,
     node_fraud_report_count: usize,
     /// Per-worker fee-less transaction counts for the per-block rate limit.
@@ -2927,6 +2997,59 @@ impl ProofOfPublishing {
             || self.is_contribution_quality_acceptable(tx)
     }
 
+    /// Producer-only selection. A block applies its governance-routed
+    /// transactions before its node-service transactions (`apply_governance_transitions`
+    /// runs before the launch-state pass), so for an account with a node-service
+    /// transaction at nonce `n` in the candidate, any of that account's other
+    /// nonce-spending transactions at a nonce above `n` would fail its nonce check
+    /// and be lost. Remove those from the candidate WITHOUT marking them skipped,
+    /// so they stay in the mempool and land in a later block. Commit/reveal,
+    /// attestation and coinbase transactions are never touched.
+    ///
+    /// Selection policy only: no validation, apply or extraction rule changes.
+    /// Run before the separation guard, so a node-service transaction the guard
+    /// then holds back keeps its owner's later nonces back with it.
+    pub(crate) fn hold_nonces_behind_node_service(transactions: &mut Vec<Transaction>) -> usize {
+        let is_node_service = |tx: &Transaction| {
+            matches!(
+                tx.tx_type,
+                TransactionType::NodeBondLifecycle
+                    | TransactionType::NodeServiceBatch
+                    | TransactionType::NodeFraudReport
+            )
+        };
+        let mut lowest: FxHashMap<Address, u64> = FxHashMap::default();
+        for tx in transactions.iter().filter(|tx| is_node_service(tx)) {
+            let entry = lowest
+                .entry(crate::mempool::node_admission::nonce_account(tx))
+                .or_insert(tx.nonce);
+            *entry = (*entry).min(tx.nonce);
+        }
+        if lowest.is_empty() {
+            return 0;
+        }
+        let before = transactions.len();
+        transactions.retain(|tx| {
+            if is_node_service(tx)
+                || matches!(
+                    tx.tx_type,
+                    TransactionType::Coinbase
+                        | TransactionType::ContributionCommit
+                        | TransactionType::ContributionReveal
+                        | TransactionType::ForecastCommit
+                        | TransactionType::ForecastReveal
+                        | TransactionType::OracleAttestation
+                )
+            {
+                return true;
+            }
+            !lowest
+                .get(&crate::mempool::node_admission::nonce_account(tx))
+                .is_some_and(|&n| tx.nonce > n)
+        });
+        before - transactions.len()
+    }
+
     /// Producer-only block-template guard (interim, non-forking).
     ///
     /// Keeps node-service transactions (`NodeBondLifecycle`, `NodeServiceBatch`,
@@ -3563,26 +3686,8 @@ impl ProofOfPublishing {
         // Saturating arithmetic is only for diagnostic context; the existing
         // block-height calculation below remains unchanged.
         let refusal_height = chain.height.saturating_add(1);
-        self.set_data_quality_policy(chain.state.governance.params.data_quality_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_DATA_QUALITY_POLICY", refusal_height, err))?;
-        self.set_pop_liveness_policy(chain.state.governance.params.pop_liveness_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_POP_LIVENESS_POLICY", refusal_height, err))?;
-        self.set_task_assigner_policy(chain.state.governance.params.task_assigner_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_TASK_ASSIGNER_POLICY", refusal_height, err))?;
-        self.set_scarcity_policy(chain.state.governance.params.scarcity_policy.clone())
-            .map_err(|err| Self::refuse("SP_CONS_SCARCITY_POLICY", refusal_height, err))?;
-        self.set_multidomain_reward_policy(
-            chain
-                .state
-                .governance
-                .params
-                .multidomain_reward_policy
-                .clone(),
-        ).map_err(|err| Self::refuse("SP_CONS_MULTIDOMAIN_REWARD_POLICY", refusal_height, err))?;
-
-        // Sync authorized oracle set for forecast receipt verification
-        self.set_authorized_oracles(chain.state.oracle_registry().oracle_set().clone());
-        self.set_oracle_signing_keys(chain.state.signing_keys.clone());  // secret-copy-ok: SigningKeyRegistry holds public keys only (KeyEpochRecord.public_key)
+        self.sync_engine_from_state(&chain.state)
+            .map_err(|(code, err)| Self::refuse(code, refusal_height, err))?;
 
         // Initialize difficulty adjustment timestamp on first block creation
         // (uses block timestamp for determinism — all nodes see the same value).
@@ -4007,6 +4112,19 @@ impl ProofOfPublishing {
             next_height,
             &mut transactions,
         ));
+
+        // Producer selection: a block applies its governance-routed
+        // transactions (transfers, stakes, ...) BEFORE its node-service ones, so
+        // an owner's transfer at nonce n+1 next to their node tx at n fails its
+        // nonce check, does nothing, and still leaves the pool as mined. Hold
+        // such later nonces for the next block (they stay pending, not skipped).
+        let held_behind_node_service = Self::hold_nonces_behind_node_service(&mut transactions);
+        if held_behind_node_service > 0 {
+            debug!(
+                "held {held_behind_node_service} transaction(s) behind a same-account node-service nonce at height {next_height}"
+            );
+        }
+
         // Producer-only separation guard: never place a node-service transaction
         // and a contribution reveal in the same block. Selection policy only;
         // the held-back side stays in the mempool for the next block.
@@ -4235,29 +4353,11 @@ impl ProofOfPublishing {
         self.stamp_producer_pubkey(&mut block);
         let mut staged = chain.state.clone();
 
-        // #2464: snapshot quorum status BEFORE any transition is applied.
-        // Governance does not touch attestations, but taking it here keeps the
-        // "pre-transition" contract obvious at every call site.
-        let had_quorum_before_block = Self::commits_with_quorum_before_block(&staged, &block);
-
-        // Governance first (does not touch commit/reveal/attestation state).
-        self.apply_governance_transitions(&mut staged, &mut block)
-            .map_err(|err| Self::refuse("SP_CONS_GOVERNANCE_TRANSITIONS", block.height, err))?;
-
-        // Single-pass verify+apply: transitions are evaluated once, on the
-        // staged State, and never re-replayed. This avoids the previous
-        // double-replay where verify_launch_state_invariants cloned the entire
-        // Blockchain and apply_contribution_rewards re-ran the same
-        // transitions (#779).
-        let revealed_commit_ids = Self::apply_launch_state_transitions_on_state(&mut staged, &block)
-            .map_err(|err| Self::refuse("SP_CONS_LAUNCH_STATE_TRANSITIONS", block.height, err.into()))?;
-
-        self.process_contribution_rewards(
-            &mut staged,
-            &mut block,
-            &revealed_commit_ids,
-            &had_quorum_before_block,
-        ).map_err(|err| Self::refuse("SP_CONS_CONTRIBUTION_REWARDS", block.height, err))?;
+        // The staged sequence (engine sync, quorum snapshot, governance,
+        // launch, rewards) lives in one function shared with the follower's
+        // metadata recompute, so the two cannot drift apart.
+        self.stage_block_on(&mut staged, &mut block)
+            .map_err(|(code, err)| Self::refuse(code, block.height, err))?;
 
         // #1857: finalization (deferred-slashing flush + commit/reveal expiry +
         // state_root recompute) must run AFTER rewards so the producer and the
@@ -5439,6 +5539,15 @@ impl ProofOfPublishing {
             // Multiply class-based weight by a reputation factor derived from the oracle's
             // fixed-point score in the registry. Clamped to [0.1, 2.0] so a poisoned
             // reputation can't zero out rewards and an exemplary oracle can earn up to 2×.
+            //
+            // The registry is NOT state-root material, and followers recompute
+            // this reward from their own copy of it. The key is the reveal
+            // sender's address (40 hex); every chain writer of reputation keys
+            // by oracle id (a 64-hex public key on 888), so today this always
+            // reads the default score on every node. Keep it that way, or put
+            // the registry's scores into the root in a flagged change first:
+            // a score that could differ between nodes here would split them.
+            // Pinned by `reward_pass_sees_default_reputation_for_an_address_key`.
             let oracle_id = hex::encode(tx.sender_address.0);
             let raw_rep = reward_state.oracle_registry().reputation_score(&oracle_id);
             let rep_factor = (raw_rep as f64 / SCORE_SCALE as f64).clamp(0.1, 2.0);
@@ -5698,8 +5807,13 @@ impl ProofOfPublishing {
             );
         }
 
+        // `forecast_late_score`: once it is in force a forecast reveal earns
+        // nothing here (no baseline credit, no receipt credit); forecasts are
+        // paid for skill at bucket close only.
+        let forecast_late_score =
+            crate::crypto::chain_binding::forecast_late_score_active(block.height);
         for tx in &block.transactions {
-            if block.height < FORECAST_MANIFEST_ACTIVATION_HEIGHT {
+            if block.height < FORECAST_MANIFEST_ACTIVATION_HEIGHT || forecast_late_score {
                 break;
             }
             if tx.tx_type != TransactionType::ForecastReveal {
@@ -5917,6 +6031,9 @@ impl ProofOfPublishing {
                 || !record.provenance_class.is_reward_eligible()
                 || record.amount.0 == 0
                 || revealed_commit_ids.contains(commit_id)
+                // `forecast_late_score`: a forecast credit deferred from
+                // before the feature took effect is not settled after it.
+                || (forecast_late_score && record.reason.starts_with(FORECAST_REWARD_REASON_PREFIX))
                 // #3347: a deferred reward of a station that has since been
                 // deactivated (or reported stolen) is not settled while it
                 // stays inactive.
@@ -6559,6 +6676,17 @@ impl ProofOfPublishing {
                     security_key_auth: tx.security_key_spend_proof(),
                 }))
             },
+            // Forecast late score. The SAME parse the P2P/WAL extractor uses,
+            // with the block's own height and timestamp, so producer ==
+            // applier == WAL replay. The apply arm is gated on
+            // `forecast_late_score_active` and fails closed, so the producer
+            // prunes an inapplicable score and a peer rejects a block
+            // carrying one.
+            TransactionType::ForecastScore => {
+                let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(tx)
+                    .ok_or(ConsensusInvariantError::MissingPopPayload { height: block_height, tx_index, tx_type: tx.tx_type })?;
+                Ok(Some(StateTransition::ApplyForecastScore { payload, block_height, block_timestamp }))
+            },
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
                 let payload = tx.parse_commit_payload().ok_or(
                     ConsensusInvariantError::MissingPopPayload {
@@ -6713,6 +6841,18 @@ impl ProofOfPublishing {
         }
     }
 
+    /// The per-block `CloseForecastBuckets` transition, or `None` while
+    /// `forecast_late_score` is not in force at `block_height`. The ONE
+    /// constructor the producer's launch batch and the P2P/WAL extractor both
+    /// call.
+    pub fn forecast_bucket_close_transition(
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Option<StateTransition> {
+        crate::crypto::chain_binding::forecast_late_score_active(block_height)
+            .then_some(StateTransition::CloseForecastBuckets { block_height, block_timestamp })
+    }
+
     fn map_launch_transition_batch_error(
         state_before_batch: &State,
         transitions: &[(usize, TransactionType, StateTransition)],
@@ -6788,6 +6928,16 @@ impl ProofOfPublishing {
             }
         }
 
+        // `forecast_late_score`: one bucket close per block, after the
+        // block's transactions, whenever the feature is in force. The
+        // applier's extractor appends the same transition at the same place,
+        // so producer == applier == WAL replay. Never emitted while inactive.
+        if let Some(close) =
+            Self::forecast_bucket_close_transition(block.height, block.timestamp.timestamp())
+        {
+            transitions.push((block.transactions.len(), TransactionType::ForecastScore, close));
+        }
+
         let state_before_batch = state.clone();
         // Height-scoped (#2846): this is the producer's first touch of the
         // block, so it is where the ADR-003 emission partition ledger opens.
@@ -6839,6 +6989,176 @@ impl ProofOfPublishing {
         Ok((replay, revealed))
     }
 
+    /// Copy everything the engine reads from chain state while it builds a
+    /// block onto the engine: the five governance policies, the authorized
+    /// oracle set and the oracle signing keys.
+    ///
+    /// The one definition of that copy. `create_next_block` calls it before it
+    /// selects transactions, and [`Self::stage_block_on`] calls it again on the
+    /// state it stages, for the producer and for a follower's metadata
+    /// recompute alike. Both therefore score a block under the policies of the
+    /// state the block builds on, never under whatever the engine last held.
+    /// On failure, returns the refusal code of the policy that did not
+    /// validate.
+    ///
+    /// Block validation calls it too, before `verify_block` (see the consensus
+    /// adapter's `validate_block`): the publishing-score check there scores
+    /// the block with the same engine policies, so it must read them from the
+    /// state the block builds on as well.
+    pub fn sync_engine_from_state(
+        &mut self,
+        state: &State,
+    ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+        let params = &state.governance.params;
+        self.set_data_quality_policy(params.data_quality_policy.clone())
+            .map_err(|err| ("SP_CONS_DATA_QUALITY_POLICY", err))?;
+        self.set_pop_liveness_policy(params.pop_liveness_policy.clone())
+            .map_err(|err| ("SP_CONS_POP_LIVENESS_POLICY", err))?;
+        self.set_task_assigner_policy(params.task_assigner_policy.clone())
+            .map_err(|err| ("SP_CONS_TASK_ASSIGNER_POLICY", err))?;
+        self.set_scarcity_policy(params.scarcity_policy.clone())
+            .map_err(|err| ("SP_CONS_SCARCITY_POLICY", err))?;
+        self.set_multidomain_reward_policy(params.multidomain_reward_policy.clone())
+            .map_err(|err| ("SP_CONS_MULTIDOMAIN_REWARD_POLICY", err))?;
+
+        // Authorized oracle set for forecast receipt verification.
+        self.set_authorized_oracles(state.oracle_registry().oracle_set().clone());
+        self.set_oracle_signing_keys(state.signing_keys.clone()); // secret-copy-ok: SigningKeyRegistry holds public keys only (KeyEpochRecord.public_key)
+        Ok(())
+    }
+
+    /// The producer's staged sequence for one block: everything between the
+    /// pre-block state and block finalization. `staged` is the pre-block state
+    /// on entry and holds the block's governance, launch and reward effects on
+    /// return; `block` gains the metadata those steps write.
+    ///
+    /// THE ONE DEFINITION of that sequence and its order. `create_next_block`
+    /// calls it to build a block, and
+    /// [`Self::producer_metadata_mismatches`] calls it to derive what a
+    /// received block's metadata must be. A change to the steps or their order
+    /// made here reaches both; made anywhere else, upgraded followers would
+    /// refuse every block the change affects.
+    ///
+    /// 1. Copy the engine's policies, oracle set and signing keys from
+    ///    `staged` ([`Self::sync_engine_from_state`]).
+    /// 2. Snapshot which commits already had quorum (#2464), before any
+    ///    transition is applied.
+    /// 3. Governance batch (does not touch commit/reveal/attestation state).
+    ///    The producer always applies it before the launch batch. The assembly
+    ///    screen, the validation replay and the transition extractor follow
+    ///    this order when `chain_binding::governance_before_launch(height)`
+    ///    says so.
+    /// 4. Launch batch, evaluated once on the staged state (#779).
+    /// 5. Reward pass.
+    ///
+    /// On failure, returns the refusal code of the step that failed.
+    fn stage_block_on(
+        &mut self,
+        staged: &mut State,
+        block: &mut Block,
+    ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+        self.sync_engine_from_state(staged)?;
+        let had_quorum_before_block = Self::commits_with_quorum_before_block(staged, block);
+        self.apply_governance_transitions(staged, block)
+            .map_err(|err| ("SP_CONS_GOVERNANCE_TRANSITIONS", err))?;
+        let revealed_commit_ids = Self::apply_launch_state_transitions_on_state(staged, block)
+            .map_err(|err| ("SP_CONS_LAUNCH_STATE_TRANSITIONS", err.into()))?;
+        self.process_contribution_rewards(
+            staged,
+            block,
+            &revealed_commit_ids,
+            &had_quorum_before_block,
+        )
+        .map_err(|err| ("SP_CONS_CONTRIBUTION_REWARDS", err))
+    }
+
+    /// Whether a block at `height` is refused when a producer-written metadata
+    /// key differs from this node's own derivation
+    /// ([`Self::producer_metadata_mismatches`]).
+    ///
+    /// Unconditional. This is the one place a height fence would go if a replay
+    /// of a chain's history in compare mode (`replay_verify --compare-metadata`)
+    /// ever reports a mismatch on a block that chain already accepted.
+    pub const fn producer_metadata_recompute_enforced(_height: u64) -> bool {
+        true
+    }
+
+    /// Derive the producer-written metadata of `block` from `state` (the state
+    /// before the block) and report every key in
+    /// [`RECOMPUTED_METADATA_KEYS`] whose content in the block differs.
+    ///
+    /// The derivation is the producer's own sequence
+    /// ([`Self::stage_block_on`], the function `create_next_block` builds
+    /// with), run on a copy of the state and a copy of the block with those
+    /// keys removed. A key is equal when the bytes match, or
+    /// when both sides decode to the same typed list (an empty list and an
+    /// absent key are the same claim). A derivation that fails is reported
+    /// under [`METADATA_RECOMPUTE_FAILED_CODE`]: an honest producer refuses to
+    /// build such a block.
+    ///
+    /// Neither `state` nor `block` is changed. An empty result means the block
+    /// claims nothing its transactions and the pre-block state do not justify.
+    ///
+    /// The engine itself is changed: its policies, oracle set and signing keys
+    /// are overwritten with those of `state`
+    /// ([`Self::sync_engine_from_state`]). That is the copy the producer makes
+    /// before it mines on `state`, so a node that produces the next block sets
+    /// the same values again, and nothing else reads them between blocks.
+    ///
+    /// The derivation applies transitions to a copy of the state, and state
+    /// apply increments three process-wide operational counters:
+    /// `tx_dropped`, `slashing_events_total` and `key_image_double_spend`. A
+    /// block that triggers one is therefore counted once more on a node that
+    /// validates it. [`Self::verify_launch_state_invariants`] already replays
+    /// the launch batch on a copy and counts the same events a second time in
+    /// the same way. The reward pass itself increments none. These counters
+    /// are monitoring only; no rule reads them.
+    pub fn producer_metadata_mismatches(
+        &mut self,
+        state: &State,
+        block: &Block,
+    ) -> Vec<ProducerMetadataMismatch> {
+        let mut scratch = block.clone();
+        for (key, _) in RECOMPUTED_METADATA_KEYS {
+            scratch.metadata.remove(*key);
+        }
+        let mut staged = state.clone();
+        // The producer's own sequence, by calling it. A step that fails refuses
+        // production, so there is no honest block to compare with.
+        if let Err((code, error)) = self.stage_block_on(&mut staged, &mut scratch) {
+            return vec![ProducerMetadataMismatch {
+                code: METADATA_RECOMPUTE_FAILED_CODE,
+                key: "*",
+                detail: format!("the producer sequence does not run on this block ({code}): {error}"),
+            }];
+        }
+
+        RECOMPUTED_METADATA_KEYS
+            .iter()
+            .filter_map(|(key, code)| {
+                let claimed = block.metadata.get(*key);
+                let recomputed = scratch.metadata.get(*key);
+                if claimed == recomputed {
+                    return None;
+                }
+                let detail = match (
+                    canonical_recomputed_metadata(key, claimed),
+                    canonical_recomputed_metadata(key, recomputed),
+                ) {
+                    (Ok(claimed), Ok(recomputed)) if claimed == recomputed => return None,
+                    (Ok(claimed), Ok(recomputed)) => format!(
+                        "block carries {}, this node derives {}",
+                        describe_recomputed_metadata(claimed.as_deref()),
+                        describe_recomputed_metadata(recomputed.as_deref()),
+                    ),
+                    (Err(error), _) => format!("the block's value does not decode: {error}"),
+                    (_, Err(error)) => format!("the derived value does not decode: {error}"),
+                };
+                Some(ProducerMetadataMismatch { code, key, detail })
+            })
+            .collect()
+    }
+
     /// Delegates to `apply_launch_state_transitions_on_state` via `chain.state`.
     #[allow(clippy::excessive_nesting)]
     fn apply_launch_state_transitions_strict(
@@ -6854,6 +7174,21 @@ impl ProofOfPublishing {
     /// validity model. Only `State` is cloned — the block history is not needed.
     pub fn verify_launch_state_invariants(chain: &Blockchain, block: &Block) -> Result<()> {
         let mut replay_state = chain.state.clone();
+        // Under `governance_before_launch` the block's governance transitions
+        // are applied first, as the producer applied them: a forecast score in
+        // the launch batch is checked against the oracle set, quorum and
+        // signing keys that the block's own governance leaves in force.
+        if crate::crypto::chain_binding::governance_before_launch(block.height) {
+            replay_state.begin_node_service_block(block.height, *block.prev_block_hash.as_bytes())?;
+            let governance = replay_state.governance_transitions_for_block(
+                &block.transactions,
+                block.height,
+                block.timestamp.timestamp(),
+            );
+            replay_state
+                .apply_transitions_batch(governance)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
         Self::apply_launch_state_transitions_on_state(&mut replay_state, block)
             .map_err(anyhow::Error::from)?;
         Self::verify_real_reveal_quorum_after_replay(&replay_state, block)
@@ -7878,6 +8213,25 @@ impl ProofOfPublishing {
         let mut replay_state = state.clone();
         if replay_state.begin_node_service_block(block_height, parent_hash).is_err() {
             return transactions.drain(..).filter_map(|tx| tx.id).collect();
+        }
+        // The block applies its governance transitions BEFORE this batch
+        // (`create_next_block`), and a forecast score reads what governance
+        // can change in the same block: the oracle set, the quorum, the
+        // signing keys. So from `forecast_late_score` the trial apply runs on
+        // the state the batch will really run on. Otherwise a score that was
+        // valid before the block's governance and is not after it would
+        // survive this screen and then fail the block's own apply, and this
+        // producer would refuse its own block for as long as that score sat
+        // in its mempool. Below the feature the screen is unchanged.
+        if crate::crypto::chain_binding::governance_before_launch(block_height) {
+            let governance =
+                replay_state.governance_transitions_for_block(transactions, block_height, block_timestamp);
+            let mut governed = replay_state.clone();
+            // A governance batch that does not apply fails the block on its
+            // own account; the screen then keeps the pre-governance view.
+            if governed.apply_transitions_batch(governance).is_ok() {
+                replay_state = governed;
+            }
         }
         let mut skipped = Vec::new();
         let mut retained = Vec::with_capacity(transactions.len());
@@ -9133,6 +9487,30 @@ impl ProofOfPublishing {
                 crate::consensus::node_fraud::verify_authorization(&p, &crate::crypto::chain_binding::ChainIdentity::new(c.chain_id,c.network_id), &genesis).ok()
             })();
             if valid.is_none() { return Some("SP_NODE_FRAUD_AUTHORIZATION".into()); }
+        }
+        // Forecast late score: until the feature is in force a block carrying
+        // the type is invalid on every node (an older binary cannot even
+        // decode it). From then on the payload must be well formed and a
+        // block carries at most `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Every
+        // stateful rule is apply's, the oracle signatures included (an
+        // oracle's key is what the signing-key registry holds at the block's
+        // time, with the oracle set and quorum, timing, the bucket and the
+        // cited readings): a score that fails them is dropped at assembly and
+        // fails a peer's apply.
+        if tx.tx_type == TransactionType::ForecastScore {
+            use crate::consensus::forecast_late_score::{
+                ForecastScorePayload, MAX_FORECAST_SCORE_TXS_PER_BLOCK,
+            };
+            if !crate::crypto::chain_binding::forecast_late_score_active(ctx.height) {
+                return Some("SP_FORECAST_LATE_SCORE_INACTIVE".into());
+            }
+            acc.forecast_score_count += 1;
+            if acc.forecast_score_count > MAX_FORECAST_SCORE_TXS_PER_BLOCK {
+                return Some("SP_FORECAST_LATE_SCORE_BLOCK_CAP".into());
+            }
+            if !ForecastScorePayload::parse(tx).is_some_and(|payload| payload.validate().is_ok()) {
+                return Some("SP_FORECAST_LATE_SCORE_PAYLOAD".into());
+            }
         }
         // Send allowlist: below the unscheduled activation a block carrying
         // the type is invalid on every node (an older binary cannot even
@@ -19831,6 +20209,82 @@ mod tests {
         );
     }
 
+    /// The reward pass looks reputation up under the reveal sender's address
+    /// (40 hex characters). Every chain writer of `reputation_scores` keys by
+    /// oracle id, a 64-hex public key on chain 888 (attestation and receipt
+    /// signals), so on a real chain the lookup sees the default score. The
+    /// registry is not state-root material, so this test pins that scores
+    /// written under oracle ids never reach the reward: the reward equals the
+    /// one with nothing written and the one with the default written under the
+    /// address key.
+    #[test]
+    fn reward_pass_sees_default_reputation_for_an_address_key() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        let (oracle_a_sk, oracle_a_id) = oracle_identity(811);
+        let (oracle_b_sk, oracle_b_id) = oracle_identity(812);
+        let contributor_addr = addr(33);
+        assert_eq!(hex::encode(contributor_addr.0).len(), 40, "address key: 40 hex characters");
+        assert_eq!(oracle_a_id.len(), 64, "oracle id key: 64 hex characters, so the two never collide");
+
+        let run = |seed: &dyn Fn(&mut Blockchain), tag: &str| -> Balance {
+            let station_id = format!("station-rep-default-{tag}");
+            let mut chain = Blockchain::default();
+            chain
+                .state
+                .governance
+                .params
+                .contributor_tier_policy
+                .trusted_provider_station_ids
+                .insert(station_id.clone());
+            chain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![oracle_a_id.clone(), oracle_b_id.clone()],
+                    oracle_quorum: 2,
+                })
+                .unwrap();
+            seed(&mut chain);
+            chain.state.create_account(contributor_addr, Balance::new(0));
+            register_real_test_station(&mut chain, &station_id, contributor_addr);
+            let timestamp = 1_700_330_000i64;
+            let (commit, mut reveal, commit_id) = build_commit_and_reveal(
+                TransactionType::ContributionReveal,
+                &station_id,
+                "contribution",
+                timestamp,
+                serde_json::json!({"quality":1.0,"volume":1.0,"uniqueness":1.0}),
+                tag,
+            );
+            reveal.sender_address = contributor_addr;
+            let att_a = signed_attestation_tx(&commit_id, &oracle_a_sk, &oracle_a_id, true, timestamp + 1, &format!("{tag}-a"));
+            let att_b = signed_attestation_tx(&commit_id, &oracle_b_sk, &oracle_b_id, true, timestamp + 2, &format!("{tag}-b"));
+            let mut block = Block::new(3, chain.tip, vec![commit, reveal, att_a, att_b], 1, 1);
+            pop.apply_contribution_rewards(&mut chain, &mut block).unwrap();
+            decided_reward_with_clamped_credit(&chain, &block, &commit_id, &contributor_addr)
+        };
+
+        let untouched = run(&|_| {}, "untouched");
+        let oracle_keyed = run(
+            &|chain: &mut Blockchain| {
+                let registry = chain.state.oracle_registry_mut();
+                registry.set_reputation_score(&oracle_a_id, SCORE_SCALE * 95 / 100);
+                registry.set_reputation_score(&oracle_b_id, SCORE_SCALE * 5 / 100);
+            },
+            "oracle-keyed",
+        );
+        let default_under_address = run(
+            &|chain: &mut Blockchain| {
+                chain
+                    .state
+                    .oracle_registry_mut()
+                    .set_reputation_score(&hex::encode(contributor_addr.0), SCORE_SCALE * 50 / 100);
+            },
+            "address-default",
+        );
+        assert!(untouched > Balance::new(0), "vacuity guard: the reveal is paid");
+        assert_eq!(oracle_keyed, untouched, "scores under oracle ids must not reach the reward");
+        assert_eq!(default_under_address, untouched, "the untouched lookup is the default score");
+    }
+
     #[test]
     fn reputation_improves_after_successful_attestations() {
         use crate::oracle::attestation::OracleRegistry;
@@ -27712,6 +28166,48 @@ mod node_service_reveal_guard_tests {
         ProofOfPublishing::separate_node_service_from_reveals(state, height, txs, n, |_| can_wait)
     }
 
+    /// An account's node-service tx at nonce n holds that account's later
+    /// non-node nonces; its lower nonces, other accounts, reveals and the node tx
+    /// itself stay. The guard then holds the node tx as before.
+    #[test]
+    fn node_service_nonce_holds_only_the_same_accounts_later_nonces() {
+        let height = ACTIVATION + 10;
+        let state = state_with(&[("c1", height + 2)]);
+        let owner = Address([7; 20]);
+        let other = Address([8; 20]);
+        let from = |ty, tag: &str, sender, nonce| {
+            let mut t = tx(ty, tag, None);
+            t.sender_address = sender;
+            t.nonce = nonce;
+            t.set_id();
+            t
+        };
+        let b = from(TransactionType::NodeServiceBatch, "b", owner, 5);
+        let lower = from(TransactionType::Regular, "lower", owner, 4);
+        let later = from(TransactionType::Regular, "later", owner, 6);
+        let later2 = from(TransactionType::Regular, "later2", owner, 7);
+        let others = from(TransactionType::Regular, "others", other, 6);
+        let mut owners_reveal = reveal("c1");
+        owners_reveal.sender_address = owner;
+        owners_reveal.nonce = 9;
+        owners_reveal.set_id();
+        let mut txs = vec![lower.clone(), b.clone(), later.clone(), later2.clone(), others.clone(), owners_reveal.clone()];
+        assert_eq!(ProofOfPublishing::hold_nonces_behind_node_service(&mut txs), 2);
+        let ids: Vec<_> = txs.iter().map(|t| t.id).collect();
+        assert!(ids.contains(&lower.id), "a lower nonce of the owner stays");
+        assert!(ids.contains(&others.id), "another account is untouched");
+        assert!(ids.contains(&b.id), "the node tx itself stays");
+        assert!(ids.contains(&owners_reveal.id), "reveals are never held here");
+        assert!(!ids.contains(&later.id) && !ids.contains(&later2.id), "the owner's later nonces wait");
+        // No node-service tx: nothing changes.
+        let mut plain = vec![lower, later, others];
+        assert_eq!(ProofOfPublishing::hold_nonces_behind_node_service(&mut plain), 0);
+        assert_eq!(plain.len(), 3);
+        let mut n = 0;
+        let r = run(&state, height, &mut txs, &mut n, true);
+        assert_eq!(r, NodeServiceRevealGuard::Mixed { deferred_reveals: 0, deferred_node_service: 1 });
+    }
+
     #[test]
     fn mixed_block_far_from_epoch_close_defers_node_service_and_keeps_reveals() {
         let height = ACTIVATION + 10;
@@ -27910,5 +28406,163 @@ mod node_service_reveal_guard_tests {
             run(&state, ACTIVATION + 10, &mut txs, &mut 0, true);
             assert!(txs.iter().all(|t| t.tx_type == TransactionType::ContributionReveal), "{ty:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod forecast_late_score_block_guards {
+    use super::*;
+    use crate::consensus::forecast_late_score::{
+        ForecastScorePayload, LateScoreVariable, MAX_FORECAST_SCORE_TXS_PER_BLOCK, ObservationAttestation,
+        ObservationSignature, forecast_score_message,
+    };
+    use crate::crypto::chain_binding::{
+        ChainIdentity, FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS, FeatureSchedule, forecast_late_score_active,
+        install_feature_schedule,
+    };
+    use crate::crypto::signature::{PrivateKey, PublicKey};
+
+    fn score_tx(tag: u8, tamper: bool) -> Transaction {
+        let key = PrivateKey::from_bytes(&[7; 32]).unwrap();
+        let mut attestation = ObservationAttestation {
+            station_id: format!("st-{tag}"),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height: 5,
+            commit_time: 3_600,
+            target: 25_200,
+            truth: 2_000,
+            truth_commit_id: "t1".into(),
+            reference: 300,
+            mean24: 1_900,
+            last: 2_100,
+            window_hash: "5a".repeat(32),
+            window_commit_ids: vec!["r1".into()],
+        };
+        let identity = ChainIdentity::active();
+        let forecast_commit_ids = vec!["f1".to_string()];
+        let message = forecast_score_message(&identity.chain_id, &identity.network_id, &attestation, &forecast_commit_ids);
+        let signatures = vec![ObservationSignature {
+            oracle: PublicKey::from_private_key(&key).to_hex(),
+            ed25519: key.sign(&message).to_hex(),
+        }];
+        if tamper {
+            attestation.truth += 1;
+        }
+        let payload = ForecastScorePayload { attestation, signatures, forecast_commit_ids };
+        let mut tx = Transaction::new(vec![], vec![]);
+        tx.tx_type = TransactionType::ForecastScore;
+        tx.data = Some(serde_json::to_string(&payload).unwrap());
+        tx.set_id();
+        tx
+    }
+
+    fn classify(pop: &ProofOfPublishing, height: u64, txs: &[Transaction]) -> Vec<Option<String>> {
+        let empty = FxHashSet::default();
+        let ctx = BlockTxValidationCtx {
+            height,
+            block_time: txs.first().map_or(0, |tx| tx.timestamp.timestamp() as u64),
+            check_quality: false,
+            check_privacy: false,
+            check_compute_fee: false,
+            check_disclosure: false,
+            check_tx_signatures: false,
+            low_quality_quorum_commit_ids: &empty,
+            selective_disclosure_verifier_keys: &[],
+        };
+        let mut acc = BlockTxValidationAccumulators::default();
+        txs.iter().enumerate().map(|(i, tx)| pop.classify_block_transaction(&ctx, tx, i + 1, &mut acc)).collect()
+    }
+
+    /// Unscheduled (every chain today): a block carrying the type is invalid
+    /// at every height, and the producer self-screen (the same classifier)
+    /// drops it.
+    #[test]
+    fn dormant_block_carrying_a_forecast_score_is_invalid() {
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        for height in [1, 2_000, 1_000_000] {
+            assert!(!forecast_late_score_active(height));
+            assert_eq!(
+                classify(&pop, height, &[score_tx(1, false)]),
+                vec![Some("SP_FORECAST_LATE_SCORE_INACTIVE".to_string())]
+            );
+        }
+        let block = Block::new(1, Hash::default(), vec![score_tx(1, false)], 1, 2);
+        assert!(!pop.verify_block_transactions_fused(&block, 1).unwrap());
+        // The transaction has no launch transition a dormant State accepts.
+        let mut state = State::new();
+        let transition = ProofOfPublishing::launch_transition_for_transaction(&score_tx(1, false), 5, 10_000, 1)
+            .unwrap()
+            .expect("a score always maps to its transition");
+        assert!(state.apply_transition(transition).is_err());
+        assert!(state.forecast_late_score.is_empty());
+        assert!(ProofOfPublishing::forecast_bucket_close_transition(5, 10_000).is_none(), "no close is emitted while dormant");
+    }
+
+    /// In force: the payload must be well formed and a block carries at most
+    /// `MAX_FORECAST_SCORE_TXS_PER_BLOCK`. Signatures are not this
+    /// classifier's: an oracle's key is what the signing-key registry in
+    /// state holds at the block's time, so apply checks them (covered through
+    /// `State` in `tests/forecast_late_score.rs`). Runs in a child process:
+    /// the feature schedule is process-wide.
+    #[test]
+    fn active_block_checks_the_payload_shape_and_the_block_cap() {
+        const CHILD: &str = "WRFCOIN_FORECAST_LATE_SCORE_GUARD_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "consensus::proof_of_publishing::forecast_late_score_block_guards::active_block_checks_the_payload_shape_and_the_block_cap",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                ("forecaster_key_binding".into(), 0),
+                ("forecast_late_score".into(), 0),
+            ])
+            .unwrap(),
+        );
+        let active = FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS;
+        let pop = ProofOfPublishing::new(1, 60, 0, 10);
+        // Scheduled at 0, but dormant until the key binding has run 2,000 blocks.
+        assert_eq!(
+            classify(&pop, active - 1, &[score_tx(1, false)]),
+            vec![Some("SP_FORECAST_LATE_SCORE_INACTIVE".to_string())]
+        );
+        assert_eq!(classify(&pop, active, &[score_tx(1, false)]), vec![None]);
+        // A signature that does not verify is well formed: the classifier
+        // has no key registry, so it passes here and apply refuses it.
+        assert_eq!(classify(&pop, active, &[score_tx(1, true)]), vec![None]);
+        let mut malformed = score_tx(1, false);
+        malformed.data = Some("{}".into());
+        assert_eq!(
+            classify(&pop, active, &[malformed]),
+            vec![Some("SP_FORECAST_LATE_SCORE_PAYLOAD".to_string())]
+        );
+        // The same oracle identity twice is a shape error.
+        let mut twice = ForecastScorePayload::parse(&score_tx(1, false)).unwrap();
+        twice.signatures.push(twice.signatures[0].clone());
+        let mut doubled = score_tx(1, false);
+        doubled.data = Some(serde_json::to_string(&twice).unwrap());
+        assert_eq!(
+            classify(&pop, active, &[doubled]),
+            vec![Some("SP_FORECAST_LATE_SCORE_PAYLOAD".to_string())]
+        );
+        let many: Vec<Transaction> = (0..=MAX_FORECAST_SCORE_TXS_PER_BLOCK as u8).map(|i| score_tx(i, false)).collect();
+        let verdicts = classify(&pop, active, &many);
+        assert!(verdicts[..MAX_FORECAST_SCORE_TXS_PER_BLOCK].iter().all(Option::is_none));
+        assert_eq!(verdicts[MAX_FORECAST_SCORE_TXS_PER_BLOCK].as_deref(), Some("SP_FORECAST_LATE_SCORE_BLOCK_CAP"));
+        // The per-block close exists exactly from the effective height.
+        assert!(ProofOfPublishing::forecast_bucket_close_transition(active - 1, 0).is_none());
+        assert!(matches!(
+            ProofOfPublishing::forecast_bucket_close_transition(active, 77),
+            Some(StateTransition::CloseForecastBuckets { block_height, block_timestamp: 77 }) if block_height == active
+        ));
     }
 }
