@@ -16809,13 +16809,16 @@ mod station_registration_admission_tests {
         assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["s"])), "already scored");
         assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["f", "unknown"])), "one bad id refuses the score");
         // Through the live ingress filter: only the admissible score survives.
+        // Build it once: `Transaction::new` stamps `Utc::now()`, so a second
+        // `score(&["f"])` can carry a different id when the clock ticks.
+        let admissible = score(&["f"]);
         let survivors = crate::p2p_events::admissible_gossip_txs(
             &state,
             10,
-            vec![score(&["unknown"]), score(&["s"]), score(&["f"])],
+            vec![score(&["unknown"]), score(&["s"]), admissible.clone()],
         );
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].id, score(&["f"]).id);
+        assert_eq!(survivors[0].id, admissible.id);
         // Another type is not affected.
         let mut other = Transaction::new(Vec::new(), Vec::new());
         other.tx_type = TransactionType::Transfer;

@@ -150,6 +150,15 @@ const SITES: &[(&str, &str, Site)] = &[
         "main",
         Site::Via("src/bin/replay_verify/replay_core.rs", "replay_persisted_chain_observed_and_checkpoints"),
     ),
+    // The station owner key audit (#3565): replays a DB copy like replay_verify.
+    (
+        "src/station_owner_audit.rs",
+        "run_audit",
+        Site::Calls(&[
+            "install_protocol_from_block1(",
+            "install_schedule_extension_authority_for_block1(",
+        ]),
+    ),
     // Reviewed, not node paths.
     (
         "src/bin/launch_api/p2p_events.rs",
