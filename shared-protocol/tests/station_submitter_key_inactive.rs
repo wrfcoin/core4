@@ -6,7 +6,8 @@
 //! extractor: contribution commits by the owner and by another key, a
 //! `set_submitter_key` owner action (inert), the four older owner actions
 //! carrying ODD extra JSON (an unknown `submitter_class` string, a numeric
-//! `submitter_pubkey`, the new field names duplicated), which must still parse
+//! `submitter_pubkey`, the new field names duplicated) or the action in its
+//! externally tagged object form (`{"report_stolen": null}`), which must still parse
 //! and apply exactly as before (unknown fields were always ignored), a
 //! governance re-registration that changes the owner, an owner transfer and a
 //! commit by the new owner. The state-root material and the snapshot export
@@ -40,10 +41,10 @@ const STATION: &str = "st-submitter-inactive-1";
 
 /// SHA3-256 of `State::state_root_material()` after the steps below, on
 /// origin/main 6ade084.
-const ROOT_MATERIAL_SHA3: &str = "0452b9008a7bd9b8b1736d286e3a3fe8b1fd8f4bd1965a1deb41637a1cfbf0f5"; // pragma: allowlist secret -- state digest, not a secret
+const ROOT_MATERIAL_SHA3: &str = "245e94a8db520f5d2cd118edbd1feb427f6f101cbb9c1bf3108c1b3be89f9ed1"; // pragma: allowlist secret -- state digest, not a secret
 /// SHA3-256 over the snapshot export (each key and value, length-prefixed), on
 /// origin/main 6ade084.
-const SNAPSHOT_SHA3: &str = "5ea77be8d5e80e8be4342203332b098bc683c6745021aa7f7e2b77aa54bf38fc"; // pragma: allowlist secret -- state digest, not a secret
+const SNAPSHOT_SHA3: &str = "392d33430ba8d352ba9162097954215f5280811b3af292ecc5ff66e8d827ac70"; // pragma: allowlist secret -- state digest, not a secret
 
 fn key(seed: u8) -> PrivateKey {
     PrivateKey::from_bytes(&[seed; 32]).unwrap()
@@ -141,13 +142,22 @@ fn commit(signer: &PrivateKey, tag: &str) -> CommitPayload {
 
 /// A legacy action whose JSON also carries odd values under the new field
 /// names (variant 0: unknown class string, 1: numeric key, 2: both names
-/// twice). On a binary without the feature these are unknown fields.
+/// twice; unknown fields to a binary without the feature), or (variant 3) the
+/// action in serde's externally tagged OBJECT form, `{"report_stolen": null}`,
+/// which the legacy enum has always accepted.
 fn odd_action(owner: &PrivateKey, kind: StationOwnerActionKind, nonce: u64, variant: usize) -> String {
     let clean = action(owner, kind, nonce);
     let body = clean.trim_end_matches('}');
     match variant {
         0 => format!(r#"{body},"submitter_class":"future_class"}}"#),
         1 => format!(r#"{body},"submitter_pubkey":17}}"#),
+        3 => {
+            let name = serde_json::to_value(kind).unwrap();
+            let name = name.as_str().unwrap();
+            let object = clean.replacen(&format!(r#""action":"{name}""#), &format!(r#""action":{{"{name}":null}}"#), 1);
+            assert_ne!(object, clean, "the action field was rewritten");
+            object
+        },
         _ => format!(
             r#"{body},"submitter_pubkey":"zz","submitter_class":"device","submitter_pubkey":[1],"submitter_class":null}}"#
         ),
@@ -202,7 +212,7 @@ fn run() -> State {
     h += 1;
     // The four older actions with odd extra JSON: each parses and applies.
     let mut nonce = 0u64;
-    for variant in 0..3 {
+    for variant in 0..4 {
         for kind in [
             StationOwnerActionKind::ReportStolen,
             StationOwnerActionKind::Unfreeze,
@@ -217,7 +227,7 @@ fn run() -> State {
             h += 1;
         }
     }
-    assert_eq!(state.station_owner_ledger.get(STATION).map(|e| e.owner_nonce), Some(nonce), "all twelve applied");
+    assert_eq!(state.station_owner_ledger.get(STATION).map(|e| e.owner_nonce), Some(nonce), "all sixteen applied");
     // A governance re-registration that changes the owner (direct apply).
     state.apply_station_registration(reregistration(&gov_owner)).expect("re-registration applies");
     h += 1;

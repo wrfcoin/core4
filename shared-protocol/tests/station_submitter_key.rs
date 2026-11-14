@@ -423,3 +423,21 @@ fn a_registration_that_changes_the_owner_revokes_the_key() {
     assert!(!try_commit(&mut state, &phone, "after-owner-change", 11), "the old key's commit is refused");
     assert!(try_commit(&mut state, &new_owner, "new-owner", 11));
 }
+
+#[test]
+fn routing_reads_the_action_with_the_legacy_enum_deserializer() {
+    use wrfcoin_shared_protocol::blockchain::station_owner::owner_action_is_set_submitter;
+    for (json, want) in [
+        (r#"{"action":"report_stolen"}"#, Some(false)),
+        (r#"{"action":{"report_stolen":null}}"#, Some(false)),
+        (r#"{"action":{"reactivate":null},"submitter_class":"x"}"#, Some(false)),
+        (r#"{"action":"set_submitter_key"}"#, Some(true)),
+        (r#"{"action":{"set_submitter_key":null}}"#, Some(true)),
+        (r#"{"action":"future_action"}"#, None),
+        (r#"{"action":17}"#, None),
+        (r#"{"station_id":"s"}"#, None),
+        (r#"{"action":"report_stolen","action":"unfreeze"}"#, None),
+    ] {
+        assert_eq!(owner_action_is_set_submitter(json), want, "{json}");
+    }
+}

@@ -763,18 +763,21 @@ pub struct StationSubmitterKeyPayload {
     pub submitter_class: Option<SubmitterClass>,
 }
 
-/// Does this `station_owner_action_v1` JSON name `"action": "set_submitter_key"`?
-/// Reads ONLY the `action` field, so routing never depends on any other
-/// field's type. `None` when there is no string `action` (such a payload
-/// never parsed as an owner action, before or after this feature).
+/// Does this `station_owner_action_v1` JSON name the `set_submitter_key` action?
+/// Reads ONLY the `action` field, with the SAME `StationOwnerActionKind`
+/// deserializer the legacy payload uses (so the string form
+/// `"report_stolen"` and the externally tagged object form
+/// `{"report_stolen": null}` route exactly as the legacy parse reads them).
+/// `None` when `action` is missing or not a known action: the legacy shape
+/// fails on exactly those inputs too, before and after this feature.
 pub fn owner_action_is_set_submitter(data: &str) -> Option<bool> {
     #[derive(Deserialize)]
     struct ActionProbe {
-        action: String,
+        action: StationOwnerActionKind,
     }
     serde_json::from_str::<ActionProbe>(data)
         .ok()
-        .map(|probe| probe.action == "set_submitter_key")
+        .map(|probe| probe.action == StationOwnerActionKind::SetSubmitterKey)
 }
 
 impl StationSubmitterKeyPayload {
