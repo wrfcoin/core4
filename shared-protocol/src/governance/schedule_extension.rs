@@ -992,6 +992,16 @@ const BOND_ADMISSION_KEY_HOLD: &str =
 const STATION_REGISTRAR_KEY_HOLD: &str =
     "a key pinned for this chain instance in STATION_REGISTRAR_KEY_PINS";
 
+/// What a `bond_admission_key_retire_N` entry waits on while its chain's pin
+/// row has no slot N.
+const PINNED_SLOT_HOLD_BOND: &str =
+    "a key pinned in that slot for this chain instance in BOND_ADMISSION_KEY_PINS";
+
+/// What a `station_registrar_key_retire_N` entry waits on while its chain's
+/// pin row has no slot N.
+const PINNED_SLOT_HOLD_REGISTRAR: &str =
+    "a key pinned in that slot for this chain instance in STATION_REGISTRAR_KEY_PINS";
+
 fn check_held_features(extension: &FeatureScheduleExtension) -> Result<(), ScheduleExtensionError> {
     if let Some(entry) = extension.entries.iter().find(|entry| {
         entry.feature == ConsensusFeature::BondAdmissionKey.name()
@@ -1010,6 +1020,23 @@ fn check_held_features(extension: &FeatureScheduleExtension) -> Result<(), Sched
             feature: entry.feature.clone(),
             until: STATION_REGISTRAR_KEY_HOLD,
         });
+    }
+    use crate::crypto::chain_binding::{
+        BOND_ADMISSION_KEY_RETIREMENTS, STATION_REGISTRAR_KEY_RETIREMENTS,
+    };
+    let retirements = BOND_ADMISSION_KEY_RETIREMENTS
+        .iter()
+        .map(|f| (*f, PINNED_SLOT_HOLD_BOND))
+        .chain(STATION_REGISTRAR_KEY_RETIREMENTS.iter().map(|f| (*f, PINNED_SLOT_HOLD_REGISTRAR)));
+    for (feature, until) in retirements {
+        if let Some(entry) = extension.entries.iter().find(|entry| {
+            entry.feature == feature.name() && !feature.schedulable(Some(&extension.genesis_hash))
+        }) {
+            return Err(ScheduleExtensionError::FeatureHeld {
+                feature: entry.feature.clone(),
+                until,
+            });
+        }
     }
     match extension
         .entries
@@ -1309,11 +1336,21 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// [`SCHEDULE_EXTENSION_GOVERNANCE_PINS`]: replay re-verifies historical bond
 /// transactions against this table, so a key is never removed or replaced, and
 /// nodes that disagree on the table disagree on block validity. Adding a key
-/// means every producer upgrades together.
+/// means every producer upgrades together, and needs a matching
+/// `bond_admission_key_retire_N` feature first
+/// ([`crate::crypto::chain_binding::BOND_ADMISSION_KEY_RETIREMENTS`]).
+///
+/// **A stolen key is retired, not deleted.** Both slots stay accepted until a
+/// retirement is in force, so moving the service to the spare alone does not
+/// stop a thief. The recovery is: the owner signs a schedule extension naming
+/// `bond_admission_key_retire_N` for the stolen slot N; from its activation
+/// height (at least `MIN_RUNUP_BLOCKS` after the carrying block) that key no
+/// longer co-signs, while blocks below it still verify with it. Then the
+/// service runs on the other slot.
 ///
 /// 888/testnet: the owner's two bond admission keys, generated offline on
-/// 2026-11-14. The first is the online key the bond admission service holds; the
-/// second is the cold spare, which never leaves offline storage. Public keys only.
+/// 2026-11-14. Slot 0 is the online key the bond admission service holds; slot
+/// 1 is the cold spare, which never leaves offline storage. Public keys only.
 pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[GovernancePin {
     genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
     keys: &[
@@ -1372,13 +1409,22 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// **IMMUTABLE once a chain may have used it**, like
 /// [`BOND_ADMISSION_KEY_PINS`]: replay re-verifies historical registrations
 /// against this table, so a key is never removed or replaced, and nodes that
-/// disagree on the table disagree on block validity. Retiring a key takes a
-/// release; adding one means every producer upgrades together.
+/// disagree on the table disagree on block validity. Adding one means every
+/// producer upgrades together, and needs a matching
+/// `station_registrar_key_retire_N` feature first
+/// ([`crate::crypto::chain_binding::STATION_REGISTRAR_KEY_RETIREMENTS`]).
+///
+/// **A stolen key is retired, not deleted**, exactly as for
+/// [`BOND_ADMISSION_KEY_PINS`]: the owner signs a schedule extension naming
+/// `station_registrar_key_retire_N` for the stolen slot N; from its activation
+/// height (at least `MIN_RUNUP_BLOCKS` after the carrying block) that key no
+/// longer authorizes a registration, while blocks below it still verify with
+/// it. Switching the service to the spare alone does not stop a thief.
 ///
 /// 888/testnet: the owner's two registrar keys, generated offline on
 /// 2026-11-13 (`docs/plans/2026-11-08-registrar-key-plan.md`, workspace docs).
-/// The first is the online key the signing service holds; the second is the
-/// cold spare, which never leaves offline storage. Public keys only.
+/// Slot 0 is the online key the signing service holds; slot 1 is the cold
+/// spare, which never leaves offline storage. Public keys only.
 pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[GovernancePin {
     genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
     keys: &[

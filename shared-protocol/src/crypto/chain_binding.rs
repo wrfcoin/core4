@@ -180,6 +180,11 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
         && !ConsensusFeature::StationRegistrarKey.schedulable(Some(&block.calculate_hash().to_hex())) {
         return Err("station_registrar_key needs a pinned key for this genesis".into());
     }
+    if let Some(feature) = BOND_ADMISSION_KEY_RETIREMENTS.iter().chain(STATION_REGISTRAR_KEY_RETIREMENTS)
+        .find(|f| parsed.features.iter().any(|(name, _)| name == f.name()))
+        .filter(|f| !f.schedulable(Some(&block.calculate_hash().to_hex()))) {
+        return Err(format!("{} needs a pinned key in that slot for this genesis", feature.name()));
+    }
     for key in [GENESIS_NODE_EPOCH_KEY, GENESIS_NODE_CHALLENGE_KEY] {
         if block.metadata.get(key).is_some_and(|value| value != "512") {
             return Err("new testnet node timing must be 512 blocks when recorded".into());
@@ -1308,6 +1313,63 @@ pub enum ConsensusFeature {
     /// byte-identical. Wire ordinal 36. Ships UNSCHEDULED and NOT
     /// live-schedulable in this slice.
     StationSubmitterKey,
+    /// Retires slot 0 of this chain's `BOND_ADMISSION_KEY_PINS` row (the
+    /// online key on chain 888). From its activation that key no longer
+    /// co-signs a node-bond `Deposit`/`Update`
+    /// ([`retained_pinned_keys`]); below it the key verifies exactly as
+    /// before, so replay of earlier blocks is unchanged. The pin itself is
+    /// never removed. This is the recovery for a stolen admission key: the
+    /// owner schedules the retirement of the stolen slot and the service
+    /// moves to the other slot.
+    ///
+    /// Wire ordinal 37. Adds no state or wire member. Ships UNSCHEDULED;
+    /// schedulable only on a chain whose pin row has a slot 0.
+    BondAdmissionKeyRetire0,
+    /// [`Self::BondAdmissionKeyRetire0`] for slot 1 (the cold spare on chain
+    /// 888). Wire ordinal 38. Ships UNSCHEDULED.
+    BondAdmissionKeyRetire1,
+    /// Retires slot 0 of this chain's `STATION_REGISTRAR_KEY_PINS` row (the
+    /// online key on chain 888): from its activation that key no longer
+    /// authorizes a station registration; below it, unchanged. Wire ordinal
+    /// 39. Ships UNSCHEDULED; schedulable only on a chain whose pin row has a
+    /// slot 0.
+    StationRegistrarKeyRetire0,
+    /// [`Self::StationRegistrarKeyRetire0`] for slot 1 (the cold spare on
+    /// chain 888). Wire ordinal 40. Ships UNSCHEDULED.
+    StationRegistrarKeyRetire1,
+}
+
+/// The retirement feature for each slot of a `BOND_ADMISSION_KEY_PINS` row,
+/// by slot index. A pin row may hold no more keys than this has entries
+/// (pinned by a test): a third key needs a third feature first.
+pub const BOND_ADMISSION_KEY_RETIREMENTS: &[ConsensusFeature] = &[
+    ConsensusFeature::BondAdmissionKeyRetire0,
+    ConsensusFeature::BondAdmissionKeyRetire1,
+];
+
+/// The retirement feature for each slot of a `STATION_REGISTRAR_KEY_PINS`
+/// row, by slot index. Same rule as [`BOND_ADMISSION_KEY_RETIREMENTS`].
+pub const STATION_REGISTRAR_KEY_RETIREMENTS: &[ConsensusFeature] = &[
+    ConsensusFeature::StationRegistrarKeyRetire0,
+    ConsensusFeature::StationRegistrarKeyRetire1,
+];
+
+/// `pinned` (one chain's pin row, in row order) minus every slot whose
+/// retirement feature in `retirements` is active at `height`. With no
+/// retirement active this returns `pinned` unchanged, in the same order. A
+/// slot with no retirement feature is never retired.
+pub fn retained_pinned_keys(
+    pinned: Vec<String>,
+    retirements: &[ConsensusFeature],
+    height: u64,
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+) -> Vec<String> {
+    pinned
+        .into_iter()
+        .enumerate()
+        .filter(|(slot, _)| !retirements.get(*slot).is_some_and(|f| active(*f, height)))
+        .map(|(_, key)| key)
+        .collect()
 }
 
 /// Blocks `forecaster_key_binding` must already have been active before
@@ -1453,6 +1515,10 @@ impl ConsensusFeature {
         Self::ForecastLateScore,
         Self::LateDataPay,
         Self::StationSubmitterKey,
+        Self::BondAdmissionKeyRetire0,
+        Self::BondAdmissionKeyRetire1,
+        Self::StationRegistrarKeyRetire0,
+        Self::StationRegistrarKeyRetire1,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1495,6 +1561,10 @@ impl ConsensusFeature {
             Self::ForecastLateScore => "forecast_late_score",
             Self::LateDataPay => "late_data_pay",
             Self::StationSubmitterKey => "station_submitter_key",
+            Self::BondAdmissionKeyRetire0 => "bond_admission_key_retire_0",
+            Self::BondAdmissionKeyRetire1 => "bond_admission_key_retire_1",
+            Self::StationRegistrarKeyRetire0 => "station_registrar_key_retire_0",
+            Self::StationRegistrarKeyRetire1 => "station_registrar_key_retire_1",
         }
     }
 
@@ -1536,8 +1606,19 @@ impl ConsensusFeature {
     ///   every other chain and on a node with no block-1 hash.
     /// - `station_registrar_key`: the same rule over
     ///   `schedule_extension::STATION_REGISTRAR_KEY_PINS`.
+    /// - `bond_admission_key_retire_N` / `station_registrar_key_retire_N`:
+    ///   schedulable ONLY on a chain instance whose row in that role's pin
+    ///   table has a slot N.
     pub fn schedulable(self, node_genesis_hash: Option<&str>) -> bool {
+        use crate::governance::schedule_extension::{bond_admission_keys, station_registrar_keys};
+        let has_slot = |keys: fn(&str) -> Vec<String>, slot: usize| {
+            node_genesis_hash.is_some_and(|genesis| keys(genesis).len() > slot)
+        };
         match self {
+            Self::BondAdmissionKeyRetire0 => has_slot(bond_admission_keys, 0),
+            Self::BondAdmissionKeyRetire1 => has_slot(bond_admission_keys, 1),
+            Self::StationRegistrarKeyRetire0 => has_slot(station_registrar_keys, 0),
+            Self::StationRegistrarKeyRetire1 => has_slot(station_registrar_keys, 1),
             Self::StationRegistrarKey => node_genesis_hash.is_some_and(|genesis| {
                 !crate::governance::schedule_extension::station_registrar_keys(genesis).is_empty()
             }),
@@ -1667,6 +1748,11 @@ impl ConsensusFeature {
             Self::LateDataPay => true,
             // The owner-action extractor, admission, apply and the commit check read it.
             Self::StationSubmitterKey => true,
+            // The bond admission key set and the registrar key set read them.
+            Self::BondAdmissionKeyRetire0
+            | Self::BondAdmissionKeyRetire1
+            | Self::StationRegistrarKeyRetire0
+            | Self::StationRegistrarKeyRetire1 => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1763,7 +1849,17 @@ mod forecast_skill_baseline_tests {
             bincode::serialize(&ConsensusFeature::StationSubmitterKey).unwrap(),
             36u32.to_le_bytes()
         );
-        assert_eq!(ConsensusFeature::ALL.len(), 37);
+        // The four pinned-key retirements follow at ordinals 37..=40.
+        for (ordinal, feature) in [
+            (37u32, ConsensusFeature::BondAdmissionKeyRetire0),
+            (38, ConsensusFeature::BondAdmissionKeyRetire1),
+            (39, ConsensusFeature::StationRegistrarKeyRetire0),
+            (40, ConsensusFeature::StationRegistrarKeyRetire1),
+        ] {
+            assert_eq!(ConsensusFeature::ALL[ordinal as usize], feature);
+            assert_eq!(bincode::serialize(&feature).unwrap(), ordinal.to_le_bytes());
+        }
+        assert_eq!(ConsensusFeature::ALL.len(), 41);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension

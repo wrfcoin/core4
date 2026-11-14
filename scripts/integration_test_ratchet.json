@@ -1078,6 +1078,18 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement_slots"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "device_submission_limit_lead_rule"
     },
     {
