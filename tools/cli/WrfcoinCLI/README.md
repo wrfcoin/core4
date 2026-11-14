@@ -32,6 +32,53 @@ current epoch from the local node (`GET /node/bonds/<id>`), then:
 Exit 0: included, nothing to do, or too late this epoch (a missed epoch costs
 only that epoch's pay). Exit 2: posted, run again later.
 
+### Bonding a node in one command: `node bond start` (testnet)
+
+`node bond start` runs the manual bonding steps (infra
+`testnet/services/bond-admission/BOND_ADMISSION.md`) as one pass, on the
+machine where the node runs. Run it, do what it asks, and run it again with the
+same arguments until it exits 0:
+
+```sh
+wrfcoin node bond start --state-dir ~/bond \
+  --owner-key-file owner.key --server-key-file server.key --consumer-key-file consumer.key \
+  --payout-address <passkey wallet address> --payout-approval-file ~/bond/payout-approved.json \
+  --multiaddr /ip4/<public ip>/tcp/9000/p2p/<peer id> \
+  --admission-url https://<backend>/api/bond-admission \
+  --operator-token-file <operator token file>
+```
+
+Each run reads `<state-dir>/bond-start.json`, continues from the step it
+reached, and stops at the first one that has to wait:
+
+1. **Owner funds.** If the owner holds less than 250 WRF plus the fee, it prints
+   the `grant-request … --submit` command to run yourself (it asks a captcha
+   question, so `start` never runs it) and exits 2.
+2. **Deposit plan** naming the pinned admission key as co-signer, with the
+   generated alias `node-<first 8 hex of the server key>` and a new random
+   deployment id kept in the state.
+3. **Server and consumer signatures**, then the **admission request** (the
+   node's peer identity signs the packet and `--multiaddr`), POSTed to
+   `--admission-url` with no credential. A "wait" answer (node too new, not
+   reachable, paced, busy, unreachable) exits 2 and the next run sends the same
+   request again; a final refusal (already admitted, bad packet) exits 1.
+4. **Payout approval.** It prints the approval page link
+   (`--approval-page-url`), the co-signed file to load there and the challenge,
+   and exits 2 until the approved file exists at `--payout-approval-file`.
+5. **Owner signature and submit** to the local node, then on later runs the
+   same packet again until `GET /node/bonds/<id>` says `REGISTERED` (exit 0).
+   The node drops a node transaction more than an hour old, so after 45 minutes
+   the same signed packet goes out in a fresh unsigned wrapper
+   (`final-<n>.json`); nothing is signed again.
+
+Every packet is written once under `<state-dir>/attempt-<n>/` and never
+re-signed. If the Deposit's effective epoch begins before inclusion (or another
+transaction uses the owner nonce), the run says so and exits 2; the next run
+starts attempt `n+1` from a new plan for the same deployment, which the
+admission service treats as a renewal. Seeds are never printed or written to
+the state. It refuses any network but `testnet`, and any chain whose admission
+key this binary does not pin.
+
 `snapshot fetch` obtains its signing domain from the source's `/network/info`.
 It verifies the snapshot in that domain and requires the receiver to report the
 same chain and network before ingest. A known receiver genesis must also match.
