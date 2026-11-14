@@ -843,7 +843,18 @@ async fn two_nodes_round_trip_da_challenge_response() {
     let (peer_id, received_response) = timeout(TEST_TIMEOUT, async {
         loop {
             match handle1.event_rx.recv().await {
-                Some(P2pEvent::DaChallengeResponse { peer_id, response }) => break (peer_id, response),
+                Some(P2pEvent::DaChallengeResponse {
+                    peer_id,
+                    author,
+                    response,
+                }) => {
+                    assert_eq!(
+                        author,
+                        Some(handle2.local_peer_id),
+                        "response author must be the signing keeper"
+                    );
+                    break (peer_id, response);
+                },
                 Some(_) => continue,
                 None => panic!("node1 event channel closed"),
             }

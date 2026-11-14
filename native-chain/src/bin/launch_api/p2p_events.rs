@@ -2893,14 +2893,22 @@ async fn run_p2p_event_loop_with_persist_control(
                 );
             },
 
-            P2pEvent::DaChallengeResponse { peer_id, response } => {
-                da_challenge_runtime
-                    .handle_inbound_response(&peer_id.to_string(), response.clone())
-                    .await;
+            P2pEvent::DaChallengeResponse {
+                peer_id,
+                author,
+                response,
+            } => {
+                // Attribute the response to its signed gossip author, not to
+                // the peer that relayed it (`peer_id`).
+                let author = author.map(|a| a.to_string());
                 log::info!(
-                    "P2P DA challenge response: id={} from={peer_id}",
-                    response.challenge_id
+                    "P2P DA challenge response: id={} author={} via={peer_id}",
+                    response.challenge_id,
+                    author.as_deref().unwrap_or("<none>")
                 );
+                da_challenge_runtime
+                    .handle_inbound_response(author.as_deref(), &peer_id.to_string(), response)
+                    .await;
             },
 
             // #1388: a peer broadcast a finality vote on the

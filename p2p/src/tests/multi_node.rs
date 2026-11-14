@@ -348,3 +348,145 @@ async fn partition_and_recovery() {
     let _ = handle3_prime.command_tx.send(P2pCommand::Shutdown).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
+
+/// A DA challenge response that reaches the challenger through a relay must
+/// carry the keeper as its signed author, not the relay.
+///
+/// Line topology K — R — C: keeper and challenger each allow one outbound
+/// connection and no inbound ones, so both stay attached only to the relay
+/// hub and every message from K to C is forwarded by R. The
+/// event at C must name R as the propagation source and K as the author;
+/// the native-chain DA runtime attributes the response to the author.
+#[tokio::test]
+async fn da_challenge_response_relayed_keeps_signed_author() {
+    use crate::da_challenge::{DataAvailabilityChallengeResponse, compute_proof};
+
+    let _multi_node_guard = super::helpers::serialize_multi_node_test();
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let port_r = allocate_port().await;
+    let addr_r_base: libp2p::Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_r}")
+        .parse()
+        .expect("valid addr");
+    let mut relay = P2pNode::start(P2pConfig {
+        listen_addresses: vec![addr_r_base.clone()],
+        bootstrap_peers: Vec::new(),
+        max_peers_per_subnet: 0,
+        ..super::helpers::peering_config()
+    })
+    .await
+    .expect("relay should start");
+    let addr_r = addr_r_base.with(libp2p::multiaddr::Protocol::P2p(relay.local_peer_id));
+
+    let spoke_config = || P2pConfig {
+        listen_addresses: vec!["/ip4/127.0.0.1/tcp/0".parse().expect("valid multiaddr")],
+        bootstrap_peers: vec![addr_r.clone()],
+        max_peers_per_subnet: 0,
+        // One outbound connection (to the relay) and no inbound: K and C can
+        // neither dial nor accept each other, so they never peer directly.
+        max_established_total: Some(1),
+        max_established_incoming: Some(0),
+        ..super::helpers::peering_config()
+    };
+    let mut keeper = P2pNode::start(spoke_config()).await.expect("keeper should start");
+    let mut challenger = P2pNode::start(spoke_config())
+        .await
+        .expect("challenger should start");
+
+    let relay_id = relay.local_peer_id;
+    let keeper_id = keeper.local_peer_id;
+
+    async fn wait_connected(
+        handle: &mut crate::node::P2pHandle,
+        want: usize,
+    ) -> HashSet<libp2p::PeerId> {
+        let mut seen: HashSet<libp2p::PeerId> = HashSet::new();
+        while seen.len() < want {
+            match handle.event_rx.recv().await {
+                Some(P2pEvent::PeerConnected(pid)) => {
+                    seen.insert(pid);
+                },
+                Some(_) => {},
+                None => panic!("event channel closed"),
+            }
+        }
+        seen
+    }
+    let (keeper_peers, relay_peers, challenger_peers) = tokio::try_join!(
+        timeout(TEST_TIMEOUT, wait_connected(&mut keeper, 1)),
+        timeout(TEST_TIMEOUT, wait_connected(&mut relay, 2)),
+        timeout(TEST_TIMEOUT, wait_connected(&mut challenger, 1)),
+    )
+    .expect("line topology must form");
+    assert_eq!(keeper_peers, HashSet::from([relay_id]));
+    assert_eq!(challenger_peers, HashSet::from([relay_id]));
+    assert!(relay_peers.contains(&keeper_id));
+
+    let (_, _, _) = tokio::join!(
+        super::helpers::wait_for_gossipsub_subscriptions(&mut keeper, 1, Duration::from_secs(30)),
+        super::helpers::wait_for_gossipsub_subscriptions(&mut relay, 1, Duration::from_secs(30)),
+        super::helpers::wait_for_gossipsub_subscriptions(&mut challenger, 1, Duration::from_secs(30))
+    );
+
+    let nonce = [11u8; 32];
+    let fragment = b"relayed-fragment".to_vec();
+    let make_response = |attempt: i64| DataAvailabilityChallengeResponse {
+        challenge_id: "relay-author-1".to_string(),
+        data_fragment: fragment.clone(),
+        proof: compute_proof(&nonce, &fragment),
+        keeper_id: keeper_id.to_string(),
+        // Distinct per attempt so a re-publish is not a gossip duplicate.
+        responded_at: chrono::Utc::now().timestamp() + attempt,
+    };
+
+    // Re-publish until the relay has grafted the topic mesh and forwarded it.
+    let keeper_tx = keeper.command_tx.clone();
+    let received = timeout(TEST_TIMEOUT, async {
+        let mut attempt = 0i64;
+        loop {
+            keeper_tx
+                .send(P2pCommand::BroadcastDaChallengeResponse {
+                    response: make_response(attempt),
+                })
+                .await
+                .expect("send BroadcastDaChallengeResponse");
+            attempt += 1;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while let Ok(event) = tokio::time::timeout_at(deadline, challenger.event_rx.recv()).await {
+                match event {
+                    Some(P2pEvent::DaChallengeResponse {
+                        peer_id,
+                        author,
+                        response,
+                    }) if response.challenge_id == "relay-author-1" => {
+                        return (peer_id, author, response);
+                    },
+                    Some(P2pEvent::PeerConnected(pid)) => {
+                        assert_ne!(pid, keeper_id, "challenger must not peer with keeper directly");
+                    },
+                    Some(_) => {},
+                    None => panic!("challenger event channel closed"),
+                }
+            }
+        }
+    })
+    .await
+    .expect("challenger should receive the relayed DA response");
+
+    let (propagation_source, author, response) = received;
+    assert_eq!(
+        propagation_source, relay_id,
+        "the response must have been forwarded by the relay"
+    );
+    assert_eq!(
+        author,
+        Some(keeper_id),
+        "the event must carry the signed author (keeper), not the relay"
+    );
+    assert_eq!(response.keeper_id, keeper_id.to_string());
+
+    let _ = keeper.command_tx.send(P2pCommand::Shutdown).await;
+    let _ = relay.command_tx.send(P2pCommand::Shutdown).await;
+    let _ = challenger.command_tx.send(P2pCommand::Shutdown).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+}
