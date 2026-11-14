@@ -499,7 +499,9 @@ pub fn export_state_entries(state: &State) -> Result<Vec<(Vec<u8>, Vec<u8>)>, St
             // Advisory governance: absent while empty (always, pre-activation).
             || (name == "advisory_proposals" && state.advisory_proposals.is_empty())
             // Forecast late score: absent while empty (always, until the feature is in force).
-            || (name == "forecast_late_score" && state.forecast_late_score.is_empty()) {
+            || (name == "forecast_late_score" && state.forecast_late_score.is_empty())
+            // Station submitter keys: absent while empty (always, until `station_submitter_key`).
+            || (name == "station_submitters" && state.station_submitters.is_empty()) {
             continue;
         }
         match value {
@@ -615,7 +617,7 @@ pub fn import_state_entries(
         } else if name == "node_receipt_registry" && version != Some(b"4".as_slice()) && version != Some(b"5".as_slice()) && version != Some(b"6".as_slice()) {
             if carried.contains_key(name) { return Err(malformed(name, "receipt marker in legacy snapshot".into())); }
             Value::Null
-        } else if (name == "send_allowlists" || name == "advisory_proposals" || name == "forecast_late_score") && !carried.contains_key(name) {
+        } else if (name == "send_allowlists" || name == "advisory_proposals" || name == "forecast_late_score" || name == "station_submitters") && !carried.contains_key(name) {
             // Omitted by the exporter while empty; any format version.
             Value::Map(Vec::new())
         } else if is_node_local(name) {
@@ -1145,6 +1147,23 @@ mod tests {
                 crate::consensus::forecast_late_score::TrackRecord { skills: vec![-1_000_000, 0, 640_000], last_scored_at: 7_600 + 25_200 },
             );
         }
+        // Station submitter keys (`station_submitter_key`): one approved key and
+        // one recorded commit signer.
+        s.station_submitters.keys.insert(
+            "station-a".into(),
+            crate::blockchain::station_owner::StationSubmitter {
+                pubkey: "ab".repeat(32),
+                class: crate::blockchain::transaction::SubmitterClass::Relay,
+                set_at_height: 7,
+            },
+        );
+        s.station_submitters.commit_signers.insert(
+            "commit-a".into(),
+            crate::blockchain::station_owner::CommitSignerRecord {
+                class: crate::blockchain::transaction::CommitSignerClass::Device,
+                committed_at: 8,
+            },
+        );
         s
     }
 

@@ -1058,6 +1058,14 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "station_submitter_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_submitter_key_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
     },
     {

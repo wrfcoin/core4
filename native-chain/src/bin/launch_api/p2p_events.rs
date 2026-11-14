@@ -7669,6 +7669,8 @@ mod tests {
             )),
             // BTreeMaps throughout: compared as one ordered value.
             field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
+            // BTreeMaps throughout: compared as one ordered value.
+            field!("station_submitters", |s| field_json(&s.station_submitters)),
         ]
     }
 
@@ -10677,6 +10679,64 @@ mod tests {
         assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "late_data_pay on: late data is paid less");
     }
 
+    /// `station_submitter_key` + `device_submission_limit` ON (isolated child):
+    /// the station's commit is signed by an approved RELAY key, not the owner
+    /// key (as the house collector signs). The commit applies, its reveal is
+    /// mined and paid, the signer class is recorded on chain, and producer,
+    /// P2P applier, extracted transitions and WAL replay agree on the root
+    /// with a populated `station_submitters`.
+    #[tokio::test]
+    async fn approved_submitter_key_signs_for_the_station_with_parity_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::approved_submitter_key_signs_for_the_station_with_parity_3565",
+            "WRFCOIN_3565_SUBMITTER_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::blockchain::station_owner::StationSubmitter;
+        use wrfcoin_shared_protocol::blockchain::transaction::{CommitSignerClass, SubmitterClass};
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 1),
+            ])
+            .expect("schedule"),
+        );
+        // The fixture signs non-owner commits with its seed-903 key; approve
+        // exactly that key as the station's relay key in the shared genesis.
+        let relay_key = {
+            use rand::SeedableRng;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(903);
+            let sk = wrfcoin_native_chain::crypto::signature::PrivateKey::generate(&mut rng);
+            wrfcoin_native_chain::crypto::signature::PublicKey::from_private_key(&sk).to_hex()
+        };
+        let approve = Arc::new(move |chain: &mut Blockchain| {
+            chain.state.station_submitters.keys.insert(
+                "station-attest".to_string(),
+                StationSubmitter { pubkey: relay_key.clone(), class: SubmitterClass::Relay, set_at_height: 0 },
+            );
+        });
+        let scenario = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, approve, 0, None, 1, 5, false, &[], &[],
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::StationSubmitterKey, scenario.block_1.height));
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionCommit), 1, "the relay-signed commit is mined");
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionReveal), 1, "its reveal is mined");
+        {
+            let producer = scenario.producer_chain.read().await;
+            let signers: Vec<_> = producer.state.station_submitters.commit_signers.values().map(|r| r.class).collect();
+            assert_eq!(signers, vec![CommitSignerClass::Relay], "the signer class is on chain");
+        }
+        let (amount, _) = reward_and_age_3565(&scenario.block_1);
+        assert!(amount > 0, "the relayed reading is paid");
+        assert_producer_applier_wal_root_parity_3565(&scenario, "submitter-relay").await;
+    }
+
     /// #3565 gate OFF control (isolated child, nothing scheduled): the same
     /// two-reveal mempool mines BOTH reveals, as on main, and an 1805 s old
     /// reading is paid exactly what a fresh one is. Roots agree on every leg.
@@ -11530,6 +11590,9 @@ mod tests {
             // Apply-path coverage with recorded, scored and paid forecasts:
             // shared-protocol/tests/forecast_late_score.rs.
             "forecast_late_score",
+            // Producer/applier/WAL parity with an approved key and recorded
+            // commit signers: native-chain/tests/station_submitter_key_parity.rs.
+            "station_submitters",
         ]
         .into_iter()
         .collect();
