@@ -10,6 +10,28 @@ unstoppable, permissionless future.
 chain, network and genesis must match the target node's `/network/info` before
 submission. Offline receipt dry runs use the explicitly supplied domain.
 
+### Unattended receipts: `node receipt auto`
+
+`node receipt auto` is one pass for a timer (every 30 minutes, outside the
+node process, so the owner key never enters it). Each pass reads the bond's
+current epoch from the local node (`GET /node/bonds/<id>`), then:
+
+- reads this epoch's claims from the public mailbox,
+  `GET <mailbox>/<deployment_id>/<epoch>` →
+  `{"claims":[{"claim_hex":"…","receipt_id":"<64 hex>"}]}` (404 = none yet;
+  no credential is sent), or from `--claims-dir <dir>/epoch-<E>/bonded-*.json`;
+- checks every claim as `receipt submit` does, signs once with the owner key and
+  keeps the packet as `<state-dir>/epoch-<E>.packet.json`;
+- posts that packet to the local node, and on later passes re-posts the same
+  packet until `GET /node/receipts/<id>` says it is included. If another
+  transaction used the packet's nonce, the old packet is kept as
+  `….stale-<nonce>.json` and the claims are signed again;
+- stops 60 blocks before the epoch close (`epoch_close_height`), and warns
+  when the owner account holds under 0.05 WRF.
+
+Exit 0: included, nothing to do, or too late this epoch (a missed epoch costs
+only that epoch's pay). Exit 2: posted, run again later.
+
 `snapshot fetch` obtains its signing domain from the source's `/network/info`.
 It verifies the snapshot in that domain and requires the receiver to report the
 same chain and network before ingest. A known receiver genesis must also match.
