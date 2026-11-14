@@ -4,6 +4,7 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast};
@@ -17,6 +18,83 @@ use wrfcoin_p2p::{
 };
 
 const DA_FAILURE_CHANNEL_CAPACITY: usize = 64;
+
+/// Hard byte budget for cached DA payloads. Inserts come from gossip, so the
+/// cache must stay bounded whatever peers send.
+pub const FRAGMENT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Hard entry cap for cached DA payloads.
+pub const FRAGMENT_CACHE_MAX_ENTRIES: usize = 4_096;
+/// Upper bound on block spacing used to size the cache lifetime.
+const FRAGMENT_CACHE_SECS_PER_BLOCK: u64 = 120;
+/// Entries older than the challenge window can never be challenged
+/// (`RECENT_DA_BLOCK_WINDOW` blocks), so they expire.
+pub const FRAGMENT_CACHE_TTL: Duration =
+    Duration::from_secs(RECENT_DA_BLOCK_WINDOW as u64 * FRAGMENT_CACHE_SECS_PER_BLOCK);
+
+/// Bounded CID -> payload cache: byte budget, entry cap, expiry after the DA
+/// window, oldest-first eviction.
+#[derive(Debug, Default)]
+pub struct FragmentCache {
+    entries: FxHashMap<String, Vec<u8>>,
+    order: VecDeque<(String, Instant)>,
+    total_bytes: usize,
+}
+
+impl FragmentCache {
+    pub fn get(&self, cid: &str) -> Option<&Vec<u8>> {
+        self.entries.get(cid)
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    fn evict_oldest(&mut self) -> bool {
+        let Some((cid, _)) = self.order.pop_front() else {
+            return false;
+        };
+        if let Some(payload) = self.entries.remove(&cid) {
+            self.total_bytes = self.total_bytes.saturating_sub(payload.len());
+        }
+        true
+    }
+
+    pub fn expire(&mut self, now: Instant) {
+        while self
+            .order
+            .front()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= FRAGMENT_CACHE_TTL)
+        {
+            self.evict_oldest();
+        }
+    }
+
+    /// Inserts a new CID, evicting the oldest entries to stay inside the
+    /// budget. Returns false if the payload alone exceeds the budget.
+    pub fn insert(&mut self, cid: String, payload: Vec<u8>, now: Instant) -> bool {
+        self.expire(now);
+        if payload.len() > FRAGMENT_CACHE_MAX_BYTES || self.entries.contains_key(&cid) {
+            return false;
+        }
+        while self.entries.len() >= FRAGMENT_CACHE_MAX_ENTRIES
+            || self.total_bytes.saturating_add(payload.len()) > FRAGMENT_CACHE_MAX_BYTES
+        {
+            if !self.evict_oldest() {
+                break;
+            }
+        }
+        self.total_bytes = self.total_bytes.saturating_add(payload.len());
+        self.order.push_back((cid.clone(), now));
+        self.entries.insert(cid, payload);
+        true
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaChallengeFailure {
@@ -36,7 +114,7 @@ struct InflightDaChallenge {
 #[derive(Clone)]
 pub struct DaChallengeRuntime {
     pub active_peers: Arc<RwLock<FxHashSet<String>>>,
-    pub fragment_cache: Arc<RwLock<FxHashMap<String, Vec<u8>>>>,
+    pub fragment_cache: Arc<RwLock<FragmentCache>>,
     inflight: Arc<RwLock<FxHashMap<String, InflightDaChallenge>>>,
     failure_tx: broadcast::Sender<DaChallengeFailure>,
 }
@@ -46,7 +124,7 @@ impl DaChallengeRuntime {
         let (failure_tx, _) = broadcast::channel(DA_FAILURE_CHANNEL_CAPACITY);
         Self {
             active_peers: Arc::new(RwLock::new(FxHashSet::default())),
-            fragment_cache: Arc::new(RwLock::new(FxHashMap::default())),
+            fragment_cache: Arc::new(RwLock::new(FragmentCache::default())),
             inflight: Arc::new(RwLock::new(FxHashMap::default())),
             failure_tx,
         }
@@ -79,6 +157,7 @@ impl DaChallengeRuntime {
         }
 
         let mut cache = self.fragment_cache.write().await;
+        cache.expire(Instant::now());
         if let Some(existing_payload) = cache.get(&content_ref.data_cid) {
             if existing_payload.as_slice() != payload {
                 log::warn!(
@@ -89,7 +168,7 @@ impl DaChallengeRuntime {
             return;
         }
 
-        cache.insert(content_ref.data_cid.clone(), payload.to_vec());
+        cache.insert(content_ref.data_cid.clone(), payload.to_vec(), Instant::now());
     }
 
     pub async fn handle_inbound_challenge(
@@ -444,7 +523,7 @@ struct RecentChallengeBlock {
 
 fn collect_recent_challengeable_blocks(
     blockchain: &Blockchain,
-    cache: &FxHashMap<String, Vec<u8>>,
+    cache: &FragmentCache,
 ) -> Vec<RecentChallengeBlock> {
     blockchain
         .blocks()
@@ -785,6 +864,62 @@ mod tests {
             "a response whose keeper_id disagrees with its author must not settle the challenge"
         );
         assert!(no_failure_emitted(&mut failure_rx).await);
+    }
+
+    #[tokio::test]
+    async fn fragment_cache_stays_inside_its_byte_budget_and_entry_cap() {
+        let runtime = DaChallengeRuntime::new();
+        // 256 KiB is the gossip message ceiling; push well past the budget.
+        let chunk = 256 * 1024;
+        let inserts = FRAGMENT_CACHE_MAX_BYTES / chunk + 64;
+        for i in 0..inserts {
+            let mut payload = vec![0u8; chunk];
+            payload[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let cid = format!("ipfs:big-{i}");
+            runtime
+                .cache_content_ref_payload(&content_ref_for(&cid, &payload), &payload, "test")
+                .await;
+            let cache = runtime.fragment_cache.read().await;
+            assert!(cache.total_bytes() <= FRAGMENT_CACHE_MAX_BYTES, "byte budget exceeded at insert {i}");
+        }
+        {
+            let cache = runtime.fragment_cache.read().await;
+            assert!(cache.get("ipfs:big-0").is_none(), "oldest entry must be evicted first");
+            assert!(cache.get(&format!("ipfs:big-{}", inserts - 1)).is_some(), "newest entry must be kept");
+        }
+
+        // Many tiny entries hit the entry cap instead.
+        let runtime = DaChallengeRuntime::new();
+        for i in 0..FRAGMENT_CACHE_MAX_ENTRIES + 100 {
+            let payload = format!("p{i}").into_bytes();
+            let cid = format!("ipfs:small-{i}");
+            runtime
+                .cache_content_ref_payload(&content_ref_for(&cid, &payload), &payload, "test")
+                .await;
+        }
+        let cache = runtime.fragment_cache.read().await;
+        assert_eq!(cache.len(), FRAGMENT_CACHE_MAX_ENTRIES);
+        assert!(cache.get("ipfs:small-0").is_none());
+    }
+
+    #[test]
+    fn fragment_cache_entries_expire_after_the_da_window() {
+        let mut cache = FragmentCache::default();
+        let t0 = Instant::now();
+        assert!(cache.insert("ipfs:old".to_string(), b"old".to_vec(), t0));
+        assert!(cache.insert(
+            "ipfs:new".to_string(),
+            b"new".to_vec(),
+            t0 + FRAGMENT_CACHE_TTL / 2
+        ));
+        cache.expire(t0 + FRAGMENT_CACHE_TTL);
+        assert!(cache.get("ipfs:old").is_none(), "entry past the DA window must expire");
+        assert!(cache.get("ipfs:new").is_some());
+        assert_eq!(cache.total_bytes(), 3);
+        assert!(
+            !cache.insert("ipfs:huge".to_string(), vec![0; FRAGMENT_CACHE_MAX_BYTES + 1], t0),
+            "a payload larger than the whole budget is refused"
+        );
     }
 
     #[tokio::test]

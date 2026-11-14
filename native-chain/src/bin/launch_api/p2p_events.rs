@@ -2870,15 +2870,9 @@ async fn run_p2p_event_loop_with_persist_control(
                 }
                 #[cfg(not(feature = "execution"))]
                 {
-                    if let Some(content_ref) = content_ref.as_ref() {
-                        da_challenge_runtime
-                            .cache_content_ref_payload(
-                                content_ref,
-                                &receipt_bytes,
-                                "forecast-task-result-v2",
-                            )
-                            .await;
-                    }
+                    // Without `execution` the receipt is not verified, so its
+                    // bytes are not cached for DA challenges.
+                    let _ = (&receipt_bytes, &content_ref);
                     log::debug!("P2P forecast result v2: task={task_id} node={node_id}");
                 }
             },
@@ -3537,6 +3531,54 @@ mod tests {
             test_commit_signing_key(),
         )
         .await;
+    }
+
+    /// Forecast-result V2 gossip is unverified in a build without `execution`
+    /// (the default node build), so its bytes stay out of the DA fragment
+    /// cache there: the cache holds only content the node has checked.
+    #[cfg(not(feature = "execution"))]
+    #[tokio::test]
+    async fn unverified_forecast_result_v2_is_not_cached_for_da() {
+        use sha2::Digest as _;
+        let runtime = DaChallengeRuntime::new();
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let event_loop = tokio::spawn(run_p2p_event_loop(
+            event_rx,
+            Arc::new(RwLock::new(Blockchain::default())),
+            Arc::new(RwLock::new(Mempool::new(&Config::default()))),
+            test_storage(),
+            test_consensus(),
+            None,
+            runtime.clone(),
+            None,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            StateDivergenceRecoveryPolicy::PeerAgreement,
+            Arc::new(RwLock::new(crate::peer_reputation::PeerReputationTracker::new())),
+            test_commit_signing_key(),
+        ));
+        for i in 0..16u32 {
+            let payload = vec![i as u8; 200 * 1024];
+            event_tx
+                .send(P2pEvent::ForecastTaskResultV2 {
+                    task_id: format!("task-{i}"),
+                    node_id: "peer-a".to_string(),
+                    content_ref: Some(wrfcoin_p2p::ContentRef {
+                        data_cid: format!("ipfs:unverified-{i}"),
+                        data_hash: hex::encode(sha2::Sha256::digest(&payload)),
+                        storage_provider: "ipfs".to_string(),
+                        data_size: payload.len() as u64,
+                    }),
+                    receipt_bytes: payload,
+                })
+                .await
+                .expect("event enqueues");
+        }
+        drop(event_tx);
+        event_loop.await.expect("event loop exits cleanly");
+        let cache = runtime.fragment_cache.read().await;
+        assert_eq!(cache.len(), 0, "unverified forecast payloads were cached");
+        assert_eq!(cache.total_bytes(), 0);
     }
 
     /// Produce blocks through the real stateful producer, then add the V2
