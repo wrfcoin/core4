@@ -37,8 +37,7 @@
 //!   quorum; and that every window reading LANDED below the forecast's commit
 //!   height, so a reading back-dated after the forecast was revealed can never
 //!   enter the window or become `last`.
-//! - Oracle side: which readings fall in the window (24 h; 48 h for the 24 h
-//!   lead) and the 15-minute
+//! - Oracle side: which readings fall in the 48 h window and the 15-minute
 //!   truth window by block time and observation time, quorum as of the closing
 //!   block, the provenance class, the hourly samples, minimum sample counts,
 //!   and the reference arithmetic. The chain never parses or rounds a decimal
@@ -89,7 +88,7 @@ pub const MAX_FORECAST_SCORE_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_FORECASTS_PER_SCORE_TX: usize = 64;
 /// Most score transactions one block may carry.
 pub const MAX_FORECAST_SCORE_TXS_PER_BLOCK: usize = 8;
-/// Most window-reading commit ids one attestation may cite. The 24 h lead's
+/// Most window-reading commit ids one attestation may cite. The scored
 /// window is 48 h (`late_score::window_hours_for_lead`), so this allows a
 /// reading every 3.75 minutes over 48 h (576 at a 5-minute cadence) while
 /// the payload stays under [`MAX_FORECAST_SCORE_PAYLOAD_BYTES`] for 64-hex
@@ -105,8 +104,8 @@ pub const MAX_ID_BYTES: usize = 128;
 /// cheap baselines (persistence or a 3 h trend, nudged past the copy
 /// tolerance) and honest forecasters cannot be told apart (synthetic
 /// backtest 2026-11-12), so a 1 h forecast is not recorded and never paid.
-/// The 24 h lead's reference has a lag-24 term from a 48 h window
-/// (`late_score::reference_for_lead`).
+/// Every lead's reference also has a same-hour-yesterday (lag-24) term from
+/// a 48 h window (`late_score::reference_for_lead`).
 pub const LEAD_HOURS: [u32; 3] = [6, 12, 24];
 /// A forecast may be scored from its target time plus this many seconds:
 /// 15 minutes of readings plus 20 minutes for them to land and reach quorum.
@@ -202,16 +201,16 @@ pub struct ObservationAttestation {
     pub truth: i64,
     /// Commit id of that reading.
     pub truth_commit_id: String,
-    /// The smaller of the window's spread and its lagged-persistence error
-    /// (`late_score::reference_for_lead`: lag = lead; for the 24 h lead the
-    /// lag-24 error over a 48 h window).
+    /// The smallest of the newest 24 h's spread, its lag-`lead` persistence
+    /// error and the lag-24 error over the 48 h window
+    /// (`late_score::reference_for_lead`).
     pub reference: u64,
     /// Mean of the window's hourly samples.
     pub mean24: i64,
     /// The last reading before the commit.
     pub last: i64,
-    /// Lowercase hex SHA3-256 of the hourly samples, 24, or 48 for the 24 h
-    /// lead (`wrfcoin_forecast_score::late_score::window_hash`).
+    /// Lowercase hex SHA3-256 of the 48 hourly samples
+    /// (`wrfcoin_forecast_score::late_score::window_hash`).
     pub window_hash: String,
     /// Commit ids of the readings the window and `last` were built from,
     /// strictly ascending in byte order. Every one landed below

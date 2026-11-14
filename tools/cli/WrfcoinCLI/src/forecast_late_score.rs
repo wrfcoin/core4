@@ -62,7 +62,7 @@ pub struct CommitBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttestationReport {
     pub attestation: ObservationAttestation,
-    /// The hourly samples, oldest first: 24, or 48 for the 24 h lead.
+    /// The 48 hourly samples, oldest first.
     pub window: Vec<Option<i64>>,
     pub samples: usize,
     pub truth_candidates: Vec<String>,
@@ -97,8 +97,7 @@ pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Resul
         block.commit_height
     );
 
-    // 24 h of hourly slots, or 48 h for the 24 h lead (its reference has a
-    // same-hour-yesterday term).
+    // 48 hourly slots: the reference has a same-hour-yesterday term.
     let hours = window_hours_for_lead(block.lead_hours);
     let candidates =
         window_candidates_over(samples, variable, block.commit_time, block.commit_height, hours);
@@ -391,13 +390,14 @@ mod tests {
             match attest_observation(&samples, &block) {
                 Ok(report) => {
                     assert_eq!(report.attestation.truth_commit_id, expect["truth"].as_str().unwrap(), "{case}");
-                    assert_eq!(report.window, expected_window, "{case}");
+                    // The vectors pin the 24 h window: the newest 24 of the 48.
+                    assert_eq!(report.window[24..], expected_window[..], "{case}");
                     assert_eq!(report.last_commit_id, expect["last"].as_str().unwrap(), "{case}");
                     let candidates: Vec<String> = serde_json::from_value(expect["truth_candidates"].clone()).unwrap();
                     assert_eq!(report.truth_candidates, candidates, "{case}");
                     assert_eq!(
                         report.attestation.window_hash,
-                        hex::encode(window_hash(&expected_window).unwrap()),
+                        hex::encode(window_hash(&report.window).unwrap()),
                         "{case}"
                     );
                 },
@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(a.mean24, old.mean24);
         assert_eq!(a.last, daily(47));
 
-        // A 6 h lead on the same readings still uses the newest 24 h only.
+        // A 6 h lead uses the same 48 h window and gets the lag-24 term too.
         let six = CommitBlock { lead_hours: 6, ..block.clone() };
         let six_samples: Vec<ChainSample> = samples
             .iter()
@@ -560,8 +560,12 @@ mod tests {
             })
             .collect();
         let six_report = attest_observation(&six_samples, &six).unwrap();
-        assert_eq!(six_report.window.len(), 24);
-        assert_eq!(six_report.attestation.window_commit_ids.len(), 24);
+        assert_eq!(six_report.window.len(), 48);
+        assert_eq!(six_report.attestation.window_commit_ids.len(), 48);
+        let six_day = wrfcoin_forecast_score::late_score::reference_from_window(&six_report.window[24..], 6)
+            .unwrap()
+            .unwrap();
+        assert!(six_report.attestation.reference < six_day.reference / 10);
 
         // Only one day of history: the lag-24 term has no pairs, so the 24 h
         // lead falls back to the spread (still scored, as before).

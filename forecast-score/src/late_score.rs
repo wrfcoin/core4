@@ -38,12 +38,12 @@ pub const MAX_REFERENCE: u64 = 1_000_000;
 pub const MAX_COPY_TOLERANCE: u64 = 1_000;
 /// Hours in the reference window.
 pub const WINDOW_HOURS: usize = 24;
-/// The lead whose reference also has a same-hour-yesterday (lag-24) term.
-/// Inside a 24-slot window a lag of 24 has no slot pairs, so for this lead
-/// the window is [`DIURNAL_WINDOW_HOURS`] long (see [`reference_for_lead`]).
-pub const DIURNAL_LEAD_HOURS: u32 = 24;
-/// Hours in the window of the [`DIURNAL_LEAD_HOURS`] lead: 48, so a lag of
-/// 24 has up to 24 slot pairs.
+/// Lag of the same-hour-yesterday (diurnal) term every lead's reference has
+/// ([`reference_for_lead`]). Inside a 24-slot window a lag of 24 has no slot
+/// pairs, so the scored window is [`DIURNAL_WINDOW_HOURS`] long.
+pub const DIURNAL_LAG_HOURS: usize = 24;
+/// Hours in the window a forecast is scored against: 48, so the lag-24 term
+/// has up to 24 slot pairs. The newest 24 slots are the 24 h window.
 pub const DIURNAL_WINDOW_HOURS: usize = 2 * WINDOW_HOURS;
 /// Fewest hourly samples a window needs for a baseline.
 pub const MIN_WINDOW_SAMPLES: usize = 12;
@@ -138,7 +138,7 @@ pub enum LateScoreError {
     ReferenceOutOfRange,
     #[error("copy tolerance is above MAX_COPY_TOLERANCE")]
     ToleranceOutOfRange,
-    #[error("a window has exactly 24 hourly slots (48 for the 24 h lead)")]
+    #[error("a window has 24 hourly slots (48 for the scored window)")]
     WindowLength,
     #[error("lag must be between 1 and 24 hours")]
     Lag,
@@ -222,6 +222,9 @@ pub fn late_skill(input: &LateScoreInput) -> Result<LateScore, LateScoreError> {
 pub enum ReferenceKind {
     ClimatologySpread,
     PersistenceSpread,
+    /// The lag-24 (same hour yesterday) error over the 48 h window
+    /// ([`reference_for_lead`]).
+    DiurnalPersistence,
 }
 
 /// Rule 6: the numbers derived from a station's hourly window.
@@ -345,28 +348,26 @@ fn lagged_persistence(
     Ok((pairs, persistence))
 }
 
-/// Hours in the window a forecast with `lead_hours` is scored against: 48
-/// for the [`DIURNAL_LEAD_HOURS`] lead, else 24.
-pub const fn window_hours_for_lead(lead_hours: u32) -> usize {
-    if lead_hours == DIURNAL_LEAD_HOURS {
-        DIURNAL_WINDOW_HOURS
-    } else {
-        WINDOW_HOURS
-    }
+/// Hours in the window a forecast with `lead_hours` is scored against: 48 for
+/// every lead (the lag-24 term needs the day before the newest 24 h).
+pub const fn window_hours_for_lead(_lead_hours: u32) -> usize {
+    DIURNAL_WINDOW_HOURS
 }
 
-/// The reference for a forecast with `lead_hours`, from the window of
-/// [`window_hours_for_lead`] slots, oldest first.
+/// The reference for a forecast with `lead_hours`, from the 48 hourly slots
+/// before the commit, oldest first.
 ///
-/// - Leads other than 24 h: exactly [`reference_from_window`] with
-///   `lag = lead` on the 24-slot window (unchanged).
-/// - The 24 h lead: `window` is 48 slots. `samples`, `mean24` and `spread`
-///   come from its newest 24 slots exactly as for any lead (so the copy
-///   check and the 12-sample minimum are unchanged); the persistence term is
-///   the lag-24 RMSE over the slot pairs `(i, i + 24)` of the 48 slots
-///   ("same hour yesterday" as a forecast of the hour after it), needing at
-///   least [`MIN_PERSISTENCE_PAIRS`] pairs. The reference is the smaller of
-///   the two, as for every lead.
+/// 1. `day` = [`reference_from_window`] on the newest 24 slots with
+///    `lag = lead`: samples, mean24, spread, the lag-`lead` persistence and
+///    the 12-sample minimum, exactly the 24 h rule. (At lead 24 it has no
+///    pairs, so it is the spread.)
+/// 2. The diurnal term: the lag-24 RMSE over the slot pairs `(i, i + 24)` of
+///    all 48 slots ("same hour yesterday" as a forecast), at least
+///    [`MIN_PERSISTENCE_PAIRS`] pairs.
+/// 3. The reference is the diurnal term when it exists and is strictly
+///    smaller than `day.reference` (then `pairs`, `persistence` and `kind`
+///    describe it); otherwise `day` unchanged. A station with no reading in
+///    the older 24 h gets exactly the 24 h rule.
 ///
 /// `Ok(None)`: fewer than [`MIN_WINDOW_SAMPLES`] samples in the newest 24
 /// slots; the forecast is unscored.
@@ -374,35 +375,27 @@ pub fn reference_for_lead(
     window: &[Option<i64>],
     lead_hours: u32,
 ) -> Result<Option<WindowReference>, LateScoreError> {
-    if lead_hours != DIURNAL_LEAD_HOURS {
-        let lag = usize::try_from(lead_hours).map_err(|_| LateScoreError::Lag)?;
-        return reference_from_window(window, lag);
-    }
     if window.len() != DIURNAL_WINDOW_HOURS {
         return Err(LateScoreError::WindowLength);
     }
-    let lag = DIURNAL_LEAD_HOURS as usize;
-    // Spread, mean and samples of the newest day; at lag 24 a 24-slot window
-    // has no pairs, so this carries no persistence term of its own.
+    let lag = usize::try_from(lead_hours).map_err(|_| LateScoreError::Lag)?;
     let Some(day) = reference_from_window(&window[WINDOW_HOURS..], lag)? else {
         return Ok(None);
     };
-    let (pairs, persistence) = lagged_persistence(window, lag)?;
-    let spread = u128::from(day.spread);
-    let (reference, kind) = match persistence {
-        Some(p) if p < spread => (p, ReferenceKind::PersistenceSpread),
-        _ => (spread, ReferenceKind::ClimatologySpread),
-    };
-    let narrow = |value: u128| u64::try_from(value).map_err(|_| LateScoreError::Overflow);
-    Ok(Some(WindowReference {
-        samples: day.samples,
-        mean24: day.mean24,
-        spread: day.spread,
-        pairs,
-        persistence: persistence.map(narrow).transpose()?,
-        reference: narrow(reference)?,
-        kind,
-    }))
+    let (pairs, diurnal) = lagged_persistence(window, DIURNAL_LAG_HOURS)?;
+    match diurnal {
+        Some(d) if d < u128::from(day.reference) => {
+            let d = u64::try_from(d).map_err(|_| LateScoreError::Overflow)?;
+            Ok(Some(WindowReference {
+                pairs,
+                persistence: Some(d),
+                reference: d,
+                kind: ReferenceKind::DiurnalPersistence,
+                ..day
+            }))
+        },
+        _ => Ok(Some(day)),
+    }
 }
 
 /// One station reading as the rule sees it. `id` is the reading's commit id;
@@ -481,7 +474,7 @@ pub fn window_candidates(
     window_candidates_over(samples, variable, commit_time, commit_height, WINDOW_HOURS)
 }
 
-/// [`window_candidates`] over the last `hours` hours (24, or 48 for the 24 h
+/// [`window_candidates`] over the last `hours` hours (24, or 48 for the scored
 /// lead: [`window_hours_for_lead`]).
 pub fn window_candidates_over(
     samples: &[ChainSample],
@@ -528,7 +521,7 @@ pub fn hourly_window(
     Ok(window)
 }
 
-/// [`hourly_window`] over the last `hours` hours (24, or 48 for the 24 h
+/// [`hourly_window`] over the last `hours` hours (24, or 48 for the scored
 /// lead): slot `k` covers `[anchor − (hours − k) h, anchor − (hours − k − 1) h)`.
 /// The newest 24 slots are exactly [`hourly_window`].
 pub fn hourly_window_over(
@@ -609,7 +602,7 @@ pub fn parse_fixed_point(text: &str) -> Option<i64> {
 
 /// Hash that binds an observation attestation to the exact window used:
 /// `SHA3-256(domain ‖ u32_be(slots) ‖ per slot: 0x00, or 0x01 ‖ i64_be(sample))`,
-/// where `slots` is 24, or 48 for the 24 h lead's window. A 24-slot hash is
+/// where `slots` is 24, or 48 for the scored window. A 24-slot hash is
 /// unchanged by the 48-slot form.
 pub fn window_hash(window: &[Option<i64>]) -> Result<[u8; 32], LateScoreError> {
     if window.len() != WINDOW_HOURS && window.len() != DIURNAL_WINDOW_HOURS {
@@ -1051,81 +1044,98 @@ mod tests {
         2_000 + 80 * tri + ((slot as i64 * 7) % 5) - 2
     }
 
-    #[test]
-    fn lead_24_reference_has_a_same_hour_yesterday_term() {
-        let window: Vec<Option<i64>> = (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect();
-        let day = reference_from_window(&window[WINDOW_HOURS..], 24).unwrap().unwrap();
-        // The old rule: no lag-24 pairs in 24 slots, so the spread.
-        assert_eq!((day.pairs, day.persistence, day.kind), (0, None, ReferenceKind::ClimatologySpread));
-        let got = reference_for_lead(&window, 24).unwrap().unwrap();
-        assert_eq!(got.pairs, 24);
-        let persistence = got.persistence.unwrap();
-        assert!(persistence < day.spread / 10, "{persistence} vs spread {}", day.spread);
-        assert_eq!((got.reference, got.kind), (persistence, ReferenceKind::PersistenceSpread));
-        // Samples, mean and spread are the newest day's, as for any lead.
-        assert_eq!((got.samples, got.mean24, got.spread), (day.samples, day.mean24, day.spread));
-        // "Same hour yesterday" (= last reading, 24 h lead) no longer beats
-        // the reference by a wide margin: its error is the lag-24 error.
-        let truth = diurnal(DIURNAL_WINDOW_HOURS + 23);
-        let forecast = diurnal(DIURNAL_WINDOW_HOURS - 1) + 10;
-        let err = forecast.abs_diff(truth);
-        let old = skill_arithmetic(forecast, truth, day.reference, 0, i64::MIN / 2, 0).unwrap();
-        let new = skill_arithmetic(forecast, truth, got.reference, 0, i64::MIN / 2, 0).unwrap();
-        assert!(old.skill > 900_000, "old rule paid {} for err {err}", old.skill);
-        assert!(new.skill < old.skill, "new {} old {}", new.skill, old.skill);
+    fn two_days() -> Vec<Option<i64>> {
+        (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect()
     }
 
     #[test]
-    fn lead_24_takes_the_spread_when_it_is_smaller_or_pairs_are_few() {
-        // Yesterday far from today: the lag-24 error is larger than the spread.
-        let mut window: Vec<Option<i64>> = (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect();
+    fn every_lead_gets_a_same_hour_yesterday_term() {
+        let window = two_days();
+        for lead in [6u32, 12, 24] {
+            let day = reference_from_window(&window[WINDOW_HOURS..], lead as usize).unwrap().unwrap();
+            let got = reference_for_lead(&window, lead).unwrap().unwrap();
+            assert_eq!(got.pairs, 24, "lead {lead}");
+            assert_eq!(got.kind, ReferenceKind::DiurnalPersistence, "lead {lead}");
+            assert!(got.reference < day.reference / 10, "lead {lead}: {} vs {}", got.reference, day.reference);
+            assert_eq!(got.persistence, Some(got.reference));
+            // Pinned; the backend's practice score (referenceForLead) pins the same.
+            assert_eq!((got.reference, got.spread, got.mean24, got.samples), (2, 278, 2_480, 24), "lead {lead}");
+            // Samples, mean and spread are the newest day's, as before.
+            assert_eq!((got.samples, got.mean24, got.spread), (day.samples, day.mean24, day.spread));
+            // "Same hour yesterday" no longer beats the reference by a wide
+            // margin at this lead.
+            let target_slot = DIURNAL_WINDOW_HOURS - 1 + lead as usize;
+            let truth = diurnal(target_slot);
+            let forecast = diurnal(target_slot - 24) + 10;
+            let old = skill_arithmetic(forecast, truth, day.reference, 0, i64::MIN / 2, 0).unwrap();
+            let new = skill_arithmetic(forecast, truth, got.reference, 0, i64::MIN / 2, 0).unwrap();
+            assert!(old.skill > 900_000, "lead {lead}: old rule paid {}", old.skill);
+            assert!(new.skill < old.skill, "lead {lead}: new {} old {}", new.skill, old.skill);
+        }
+        // At 24 h the old 24-slot rule had no pairs at all: the spread.
+        let day = reference_from_window(&window[WINDOW_HOURS..], 24).unwrap().unwrap();
+        assert_eq!((day.pairs, day.persistence, day.kind), (0, None, ReferenceKind::ClimatologySpread));
+    }
+
+    #[test]
+    fn the_diurnal_term_is_taken_only_when_strictly_smaller_with_six_pairs() {
+        // Yesterday far from today: the lag-24 error is larger, so the 24 h
+        // rule stands unchanged.
+        let mut window = two_days();
         for slot in window.iter_mut().take(WINDOW_HOURS) {
             *slot = slot.map(|v| v - 3_000);
         }
-        let got = reference_for_lead(&window, 24).unwrap().unwrap();
-        assert_eq!((got.kind, got.reference), (ReferenceKind::ClimatologySpread, got.spread));
+        for lead in [6u32, 12, 24] {
+            assert_eq!(
+                reference_for_lead(&window, lead).unwrap(),
+                reference_from_window(&window[WINDOW_HOURS..], lead as usize).unwrap(),
+                "lead {lead}"
+            );
+        }
         // Only 5 slots of yesterday: 5 pairs, below the minimum of 6.
-        let mut sparse: Vec<Option<i64>> = (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect();
+        let mut sparse = two_days();
         for slot in sparse.iter_mut().take(WINDOW_HOURS).skip(5) {
             *slot = None;
         }
         let got = reference_for_lead(&sparse, 24).unwrap().unwrap();
-        assert_eq!((got.pairs, got.persistence, got.kind), (5, None, ReferenceKind::ClimatologySpread));
+        assert_eq!((got.pairs, got.persistence, got.kind), (0, None, ReferenceKind::ClimatologySpread));
         sparse[5] = Some(diurnal(5));
         let got = reference_for_lead(&sparse, 24).unwrap().unwrap();
-        assert_eq!((got.pairs, got.kind), (6, ReferenceKind::PersistenceSpread));
+        assert_eq!((got.pairs, got.kind), (6, ReferenceKind::DiurnalPersistence));
     }
 
     #[test]
-    fn lead_24_needs_twelve_samples_in_the_newest_day() {
-        let mut window: Vec<Option<i64>> = (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect();
+    fn the_scored_window_needs_twelve_samples_in_the_newest_day() {
+        let mut window = two_days();
         for slot in window.iter_mut().skip(WINDOW_HOURS + 11) {
             *slot = None;
         }
         // A full yesterday does not make up for 11 samples today.
-        assert_eq!(reference_for_lead(&window, 24).unwrap(), None);
+        for lead in [6u32, 12, 24] {
+            assert_eq!(reference_for_lead(&window, lead).unwrap(), None, "lead {lead}");
+        }
         window[WINDOW_HOURS + 11] = Some(diurnal(WINDOW_HOURS + 11));
         assert!(reference_for_lead(&window, 24).unwrap().is_some());
     }
 
     #[test]
-    fn other_leads_are_the_unchanged_24_slot_rule() {
-        let window: Vec<Option<i64>> = (0..WINDOW_HOURS).map(|i| Some(diurnal(i + 5))).collect();
-        for lead in [1u32, 6, 12] {
+    fn with_no_older_day_every_lead_is_the_24_slot_rule() {
+        let mut window: Vec<Option<i64>> = vec![None; WINDOW_HOURS];
+        window.extend((0..WINDOW_HOURS).map(|i| Some(diurnal(i + 5))));
+        for lead in [1u32, 6, 12, 24] {
             assert_eq!(
                 reference_for_lead(&window, lead).unwrap(),
-                reference_from_window(&window, lead as usize).unwrap(),
+                reference_from_window(&window[WINDOW_HOURS..], lead as usize).unwrap(),
                 "lead {lead}"
             );
         }
-        assert_eq!(window_hours_for_lead(6), WINDOW_HOURS);
-        assert_eq!(window_hours_for_lead(12), WINDOW_HOURS);
-        assert_eq!(window_hours_for_lead(24), DIURNAL_WINDOW_HOURS);
-        // Each lead refuses the other window length.
-        assert_eq!(reference_for_lead(&window, 24), Err(LateScoreError::WindowLength));
-        let long: Vec<Option<i64>> = (0..DIURNAL_WINDOW_HOURS).map(|i| Some(diurnal(i))).collect();
-        assert_eq!(reference_for_lead(&long, 6), Err(LateScoreError::WindowLength));
-        assert_eq!(reference_for_lead(&long[..47], 24), Err(LateScoreError::WindowLength));
+        for lead in [6u32, 12, 24] {
+            assert_eq!(window_hours_for_lead(lead), DIURNAL_WINDOW_HOURS);
+        }
+        // Only the 48-slot window is accepted; a lead outside 1..=24 is not.
+        assert_eq!(reference_for_lead(&window[WINDOW_HOURS..], 6), Err(LateScoreError::WindowLength));
+        assert_eq!(reference_for_lead(&window[..47], 24), Err(LateScoreError::WindowLength));
+        assert_eq!(reference_for_lead(&window, 25), Err(LateScoreError::Lag));
     }
 
     #[test]
