@@ -93,6 +93,8 @@ Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start"; WorkingDir
 [UninstallRun]
 ; Stop a running node cleanly (Ctrl+C on its hidden console) before its files go.
 Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopNode"
+; Remove the receipt Scheduled Task if this user set one up (-Action ReceiptTimer).
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopReceiptTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopReceiptTimer"
 
 [UninstallDelete]
 Type: files; Name: "{app}\WRFCoin Node Status.url"
