@@ -30,10 +30,10 @@ const ROOT_TAG: &[u8] = b"wrfcoin_forecast_late_score_v1";
 
 /// SHA3-256 of `State::state_root_material()` after the transitions below,
 /// on origin/main cd1a82e.
-const ROOT_MATERIAL_SHA3: &str = "242eef6038e230065f949b831f8748ff2478d926d638a58ddfdfc3c471e5b9d3";
+const ROOT_MATERIAL_SHA3: &str = "242eef6038e230065f949b831f8748ff2478d926d638a58ddfdfc3c471e5b9d3"; // pragma: allowlist secret -- state digest, not a secret
 /// SHA3-256 over the snapshot export (each key and value, length-prefixed),
 /// on origin/main cd1a82e.
-const SNAPSHOT_SHA3: &str = "449ae8cf12c747ed304495a4595f0e9840e8a6dff0ff88624ea0cb82ab69162b";
+const SNAPSHOT_SHA3: &str = "449ae8cf12c747ed304495a4595f0e9840e8a6dff0ff88624ea0cb82ab69162b"; // pragma: allowlist secret -- state digest, not a secret
 
 fn key(seed: u8) -> PrivateKey {
     PrivateKey::from_bytes(&[seed; 32]).unwrap()
