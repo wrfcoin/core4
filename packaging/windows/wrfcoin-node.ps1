@@ -53,6 +53,20 @@
   -Action StopAttester
       Sends the attester Ctrl+C on its hidden console and waits for it to exit.
       -Action Stop stops the attester too, before the node.
+  -Action ReceiptTimer
+      For a bonded node (testnet): registers a per-user Scheduled Task,
+      \WRFCoin\WRFCoin receipt, that runs -Action Receipt every 30 minutes
+      while this user is signed in (no admin). Needs bond.conf and owner.key
+      (below); stops with a message if either is missing or bond.conf is wrong.
+      Running it again replaces the task.
+  -Action Receipt
+      One pass of `wrfcoin.exe node receipt auto` for the bond in bond.conf:
+      reads this epoch's claim from the claim mailbox, signs it once with
+      owner.key, keeps the packet in receipts\ and posts it to this node,
+      re-posting the same packet on later passes until it is included. One
+      line per pass in logs\receipt.log. Never shows a window.
+  -Action StopReceiptTimer
+      Removes the Scheduled Task (the uninstaller does this too).
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
 
@@ -89,6 +103,13 @@
     oracle-public.txt  the oracle key's public half (safe to share)
     logs\attester.log  oracle attester output (previous run: attester.log.1)
     reachable.conf     optional: open a P2P port (see above)
+    bond.conf          a bonded node's receipt settings, only these keys:
+                         WRFCOIN_BOND_DEPLOYMENT_ID  the bond id (64 lowercase hex)
+                         WRFCOIN_BOND_OWNER_ADDRESS  the bond owner (0x + 40 lowercase hex)
+                         WRFCOIN_CLAIM_MAILBOX_URL   https://... (the claim mailbox's /claims base)
+    owner.key          the bond owner's key, locked to this user; signs receipts
+    receipts\          one signed receipt packet per epoch (public data)
+    logs\receipt.log   one line per receipt pass
     attester.conf      attester settings the operator chooses (see StartAttester); only
                        these WRFCOIN_ATTESTER_* keys: REFERENCE_MODE, MAX_REFERENCE_KM,
                        NWS_STATION, DEM_ELEVATIONS_FILE, POLL_SECS, MAX_AGE_SECS,
@@ -99,7 +120,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester')]
+    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -150,6 +171,16 @@ $AttesterStartSeconds = 15
 # two switch on bonded mode and are checked together by Resolve-NodeMode.
 $ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID')
 $StopWaitSeconds = 120
+# Bonded node receipts (testnet): -Action ReceiptTimer / Receipt / StopReceiptTimer.
+$BondConfig = Join-Path $Root 'bond.conf'
+$BondKeys = @('WRFCOIN_BOND_DEPLOYMENT_ID', 'WRFCOIN_BOND_OWNER_ADDRESS', 'WRFCOIN_CLAIM_MAILBOX_URL')
+$OwnerKeyFile = Join-Path $Root 'owner.key'
+$ReceiptStateDir = Join-Path $Root 'receipts'
+$ReceiptLog = Join-Path $LogDir 'receipt.log'
+$ReceiptLogMaxBytes = 1MB
+$ReceiptTaskPath = '\WRFCoin\'
+$ReceiptTaskName = 'WRFCoin receipt'
+$ReceiptIntervalMinutes = 30
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
     # Stop detaches from its own console to signal the node's, so writing to
@@ -699,6 +730,130 @@ function Stop-Node {
     Show-Message 'The WRFCoin node has stopped.'
 }
 
+function Read-BondConfig {
+    # Like reachable.conf: per user, comments and blank lines allowed, only
+    # $BondKeys, each exactly once. All three are required.
+    if (-not (Test-Path -LiteralPath $BondConfig)) {
+        Fail "missing $BondConfig. A bonded node needs it to be paid: see windows-node.md, 'Receipts'."
+    }
+    $pairs = [ordered]@{}
+    $n = 0
+    foreach ($raw in [System.IO.File]::ReadAllLines($BondConfig)) {
+        $n++
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { Fail "${BondConfig} line ${n} is not KEY=VALUE" }
+        $key = $line.Substring(0, $eq).Trim()
+        $value = $line.Substring($eq + 1).Trim()
+        if ($BondKeys -cnotcontains $key) { Fail "${BondConfig} line ${n}: $key cannot be set there (only $($BondKeys -join ', '))" }
+        if ($pairs.Contains($key)) { Fail "${BondConfig} defines $key twice" }
+        $ok = switch ($key) {
+            'WRFCOIN_BOND_DEPLOYMENT_ID' { $value -cmatch '^[0-9a-f]{64}$' }
+            'WRFCOIN_BOND_OWNER_ADDRESS' { $value -cmatch '^0x[0-9a-f]{40}$' }
+            'WRFCOIN_CLAIM_MAILBOX_URL' { $value -cmatch '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$' }
+        }
+        if (-not $ok) { Fail "${BondConfig} line ${n}: '$value' is not a valid $key" }
+        $pairs[$key] = $value
+    }
+    foreach ($key in $BondKeys) {
+        if (-not $pairs.Contains($key)) { Fail "${BondConfig} is missing $key" }
+    }
+    return $pairs
+}
+
+function Assert-ReceiptReady {
+    # Everything a receipt pass needs, checked before a task is registered.
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'unattended receipts are for testnet only' }
+    $bond = Read-BondConfig
+    if (-not (Test-Path -LiteralPath $OwnerKeyFile)) { Fail "missing $OwnerKeyFile (the bond owner's key)" }
+    Protect-UserOnly $OwnerKeyFile
+    if (-not (Test-Path -LiteralPath $CliExe)) { Fail "missing $CliExe - reinstall the package" }
+    return @{ Node = $cfg; Bond = $bond }
+}
+
+function Write-ReceiptLog([string]$Line) {
+    if ((Test-Path -LiteralPath $ReceiptLog) -and (Get-Item -LiteralPath $ReceiptLog).Length -gt $ReceiptLogMaxBytes) {
+        Move-Item -LiteralPath $ReceiptLog -Destination "$ReceiptLog.1" -Force
+    }
+    Add-Content -LiteralPath $ReceiptLog -Value "$(Get-Date -Format o) $Line"
+}
+
+function Get-JsonField($Object, [string]$Name) {
+    # StrictMode-safe read of one property of a ConvertFrom-Json object ($null if absent).
+    if ($null -eq $Object) { return $null }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
+function Invoke-Receipt {
+    $ready = Assert-ReceiptReady
+    $cfg = $ready.Node; $bond = $ready.Bond
+    if (-not (Test-Path -LiteralPath $ReceiptStateDir)) { New-Item -ItemType Directory -Path $ReceiptStateDir | Out-Null }
+    Protect-UserOnly $ReceiptStateDir
+    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    # The key and token go by file path only; wrfcoin.exe checks both are
+    # owner-only and never prints them. The mailbox gets no credential.
+    $cliArgs = @('--output', 'json', 'node', 'receipt', 'auto',
+        '--state-dir', $ReceiptStateDir,
+        '--mailbox-url', $bond['WRFCOIN_CLAIM_MAILBOX_URL'],
+        '--deployment-id', $bond['WRFCOIN_BOND_DEPLOYMENT_ID'],
+        '--sender', $bond['WRFCOIN_BOND_OWNER_ADDRESS'],
+        '--genesis-hash', $cfg['WRFCOIN_GENESIS_HASH'],
+        '--chain-id', $cfg['WRFCOIN_CHAIN_ID'],
+        '--network-id', $cfg['WRFCOIN_NETWORK_ID'],
+        '--api-url', $api,
+        '--key-file', $OwnerKeyFile,
+        '--operator-token-file', $TokenFile)
+    # A native command's stderr must not become a terminating error here; the exit code decides.
+    $ErrorActionPreference = 'Continue'
+    $out = & $CliExe @cliArgs 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    # The CLI's last line is its JSON envelope: keep only status fields.
+    $status = ''
+    $last = @($out -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') }) | Select-Object -Last 1
+    if ($last) {
+        try {
+            $j = ConvertFrom-Json $last
+            $data = Get-JsonField $j 'data'
+            $err = Get-JsonField (Get-JsonField $j 'error') 'message'
+            if (Get-JsonField $data 'status') { $status = "status=$(Get-JsonField $data 'status') epoch=$(Get-JsonField $data 'epoch')" }
+            if ($err) { $status = "error=$("$err".Substring(0, [Math]::Min(300, "$err".Length)))" }
+        } catch { }
+    }
+    if ($out -match 'under 0\.05 WRF') { $status += ' LOW_OWNER_BALANCE (top up the owner account: each receipt costs a fee)' }
+    $meaning = switch ($code) { 0 { 'done' } 2 { 'posted, retry later' } default { 'FAILED' } }
+    Write-ReceiptLog "receipt exit=$code ($meaning) $status"
+    # 0 = done or nothing to do, 2 = run again later: both are normal for the timer.
+    if ($code -ne 0 -and $code -ne 2) { exit 1 }
+}
+
+function Register-ReceiptTimer {
+    [void](Assert-ReceiptReady)
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $argLine = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action Receipt -Quiet"
+    $taskAction = New-ScheduledTaskAction -Execute $ps -Argument $argLine -WorkingDirectory $AppDir
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+        -RepetitionInterval (New-TimeSpan -Minutes $ReceiptIntervalMinutes)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskPath $ReceiptTaskPath -TaskName $ReceiptTaskName -Action $taskAction -Trigger $trigger `
+        -Settings $settings -Principal $principal -Description 'WRFCoin bonded node: sign and submit this epoch''s receipt' -Force | Out-Null
+    Show-Message "Receipts are on: every $ReceiptIntervalMinutes minutes while you are signed in. Log: $ReceiptLog"
+}
+
+function Unregister-ReceiptTimer {
+    $task = Get-ScheduledTask -TaskPath $ReceiptTaskPath -TaskName $ReceiptTaskName -ErrorAction SilentlyContinue
+    if (-not $task) { Show-Message 'The WRFCoin receipt timer is not set up.'; return }
+    Unregister-ScheduledTask -TaskPath $ReceiptTaskPath -TaskName $ReceiptTaskName -Confirm:$false
+    Show-Message 'The WRFCoin receipt timer is removed.'
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
     switch ($Action) {
@@ -709,6 +864,9 @@ try {
         'StopAttester' { Stop-Attester }
         'Start' { Initialize-UserState; Start-Node }
         'Stop'  { Stop-Node }
+        'ReceiptTimer' { Initialize-UserState; Register-ReceiptTimer }
+        'Receipt' { Initialize-UserState; Invoke-Receipt }
+        'StopReceiptTimer' { Unregister-ReceiptTimer }
     }
 } catch {
     Fail "$($_.Exception.Message) ($($_.InvocationInfo.PositionMessage))"

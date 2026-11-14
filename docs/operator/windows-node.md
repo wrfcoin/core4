@@ -308,6 +308,54 @@ snapshots and tickets the node serves.
   `"bonded":{"serving":true,"service_id":"tony-laptop","server_key":"<64 hex>"}`;
   `server_key` must be the `--server-key` of your bond.
 
+## Receipts: getting paid each epoch (testnet)
+
+A bonded node is paid for an epoch only if its **owner** signs and submits that
+epoch's receipt before the epoch closes. The launcher can do this for you every
+30 minutes while you are signed in, with no window and no admin rights.
+
+You need:
+
+1. bonded mode working ([Bonded mode](#bonded-mode-testnet));
+2. the bond owner's key as `%LOCALAPPDATA%\WRFCoin\owner.key` (the key file of
+   your bond's `--sender`/owner account). The launcher locks it to your user;
+3. `%LOCALAPPDATA%\WRFCoin\bond.conf` with exactly these three lines:
+
+```
+WRFCOIN_BOND_DEPLOYMENT_ID=<your bond id, 64 lowercase hex>
+WRFCOIN_BOND_OWNER_ADDRESS=<the bond owner, 0x + 40 lowercase hex>
+WRFCOIN_CLAIM_MAILBOX_URL=https://wrfcoin.com/api/claim-mailbox/claims
+```
+
+The claim mailbox is not open yet; this section works once it is.
+
+Then switch the timer on (PowerShell):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin-node.ps1" -Action ReceiptTimer
+```
+
+It checks bond.conf and owner.key first and refuses with a message if anything is
+missing or wrong. It then adds a Scheduled Task, **\WRFCoin\WRFCoin receipt**,
+for your user only. Each run:
+
+- reads this epoch's claim for your bond from the claim mailbox (another bonded
+  node fetched from yours and left it there; nothing is sent to the mailbox);
+- checks it, signs it **once** with owner.key and keeps the signed packet in
+  `%LOCALAPPDATA%\WRFCoin\receipts\`;
+- posts it to your own node, and on later runs posts the **same** packet again
+  until it is included;
+- stops 60 blocks before the epoch closes. A missed epoch costs only that epoch's
+  pay: no penalty, and the bond is untouched.
+
+Each run writes one line to `logs\receipt.log`: `exit=0 (done)` when there was
+nothing to do or the receipt is included, `exit=2 (posted, retry later)` while it
+waits for a block. `LOW_OWNER_BALANCE` means the owner account holds under
+0.05 WRF; each receipt costs a 0.01 WRF fee, so top it up.
+
+The task runs only while you are signed in and the PC is awake. Remove it with
+`-Action StopReceiptTimer` (uninstalling also removes it).
+
 ## The operator CLI (wrfcoin.exe)
 
 The installer also puts `wrfcoin.exe`, the WRFCoin operator command line, in
