@@ -145,7 +145,11 @@ pub fn audit<'a>(
 /// Open the DB COPY at `path`, replay it under the copied chain's own protocol
 /// and feature schedule, verify the reconstruction against the tip commitment,
 /// then count. `Err` carries a reason, never a station id, address or key.
-pub fn run_audit(path: &std::path::Path, recent_blocks: u64) -> Result<(u64, AuditCounts), String> {
+///
+/// The commitment check is the node's #2219 rule: at protocol V2 and later
+/// the tip block's committed post-state root must equal the replayed root; a
+/// V1 tip commits none, so nothing is compared. The report says which.
+pub fn run_audit(path: &std::path::Path, recent_blocks: u64) -> Result<AuditReport, String> {
     let storage = Storage::open(path, 100).map_err(|e| format!("cannot open the block DB copy: {e}"))?;
     // Like the node's boot gate and replay_verify: signing version, activation
     // table and base feature schedule (with the block-1-keyed bootstrap) from
@@ -174,6 +178,8 @@ pub fn run_audit(path: &std::path::Path, recent_blocks: u64) -> Result<(u64, Aud
         Err(GateThenLoadError::Load(e)) => return Err(format!("cannot load state: {e}")),
     };
     // Count only from a verified reconstruction (#2219).
+    let commitment_compared = wrfcoin_shared_protocol::crypto::chain_binding::protocol_version_at(chain.height)
+        >= wrfcoin_shared_protocol::crypto::chain_binding::SigningProtocolVersion::V2;
     verify_tip_state_root_commitment(&chain)
         .map_err(|e| format!("the reconstructed state does not match the tip commitment: {e}"))?;
     let stations: BTreeMap<String, AuditStation> = chain
@@ -193,7 +199,20 @@ pub fn run_audit(path: &std::path::Path, recent_blocks: u64) -> Result<(u64, Aud
             std::ops::ControlFlow::Continue(())
         })
         .map_err(|e| format!("block scan: {e}"))?;
-    Ok((tip, audit(&stations, txs.iter().map(|(h, tx)| (*h, tx)), tip, recent_blocks)))
+    Ok(AuditReport {
+        tip,
+        commitment_compared,
+        counts: audit(&stations, txs.iter().map(|(h, tx)| (*h, tx)), tip, recent_blocks),
+    })
+}
+
+/// What [`run_audit`] found.
+#[derive(Debug)]
+pub struct AuditReport {
+    pub tip: u64,
+    /// The tip's committed state root was compared with the replay (V2+).
+    pub commitment_compared: bool,
+    pub counts: AuditCounts,
 }
 
 #[cfg(test)]

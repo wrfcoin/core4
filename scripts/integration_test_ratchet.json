@@ -805,6 +805,10 @@
       "target": "station_owner_key_audit_3565"
     },
     {
+      "package": "wrfcoin-native-chain",
+      "target": "station_owner_key_audit_v2_3565"
+    },
+    {
       "package": "wrfcoin_cli",
       "target": "station_registrar_cli"
     },

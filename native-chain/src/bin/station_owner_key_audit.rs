@@ -12,12 +12,18 @@ fn main() {
         eprintln!("recent_blocks must be an integer");
         std::process::exit(2);
     });
-    let (tip, counts) = wrfcoin_native_chain::station_owner_audit::run_audit(std::path::Path::new(&db), recent_blocks)
+    let report = wrfcoin_native_chain::station_owner_audit::run_audit(std::path::Path::new(&db), recent_blocks)
         .unwrap_or_else(|e| {
             eprintln!("AUDIT_FAILED: {e}");
             std::process::exit(1);
         });
-    println!("station owner key audit at tip {tip} (recent = last {recent_blocks} blocks; counts only; replayed under the chain's own schedule, tip commitment verified)");
+    let (tip, counts) = (report.tip, &report.counts);
+    let check = if report.commitment_compared {
+        "tip state-root commitment verified"
+    } else {
+        "protocol V1 tip: no state-root commitment to compare"
+    };
+    println!("station owner key audit at tip {tip} (recent = last {recent_blocks} blocks; counts only; replayed under the chain's own schedule; {check})");
     println!("  stations registered:                         {}", counts.stations);
     println!("  stations active:                             {}", counts.active_stations);
     println!("  distinct owners:                             {}", counts.owners);

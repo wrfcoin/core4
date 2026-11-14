@@ -149,8 +149,10 @@ async fn audit_replays_a_wal_tail_across_an_activation_and_counts_the_verified_t
     // The old way: replay with no schedule refuses the post-activation transfer.
     assert!(Storage::open(&path, 100).unwrap().load_state().is_err(), "plain load_state fails on the WAL transfer");
 
-    let (tip, counts) = run_audit(&path, 2_000).expect("the audit replays under block 1's schedule");
-    assert_eq!(tip, TIP);
+    let report = run_audit(&path, 2_000).expect("the audit replays under block 1's schedule");
+    assert_eq!(report.tip, TIP);
+    assert!(!report.commitment_compared, "a V1 copy commits no tip root; the report says so");
+    let counts = report.counts;
     assert_eq!(
         counts,
         AuditCounts {
