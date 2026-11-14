@@ -35,7 +35,9 @@ use wrfcoin_shared_protocol::blockchain::station_owner::{
     StationOwnerRecoveryExecutePayload, StationOwnerRecoveryFilingPayload,
     StationOwnerTransferPayload,
 };
-use wrfcoin_shared_protocol::blockchain::station_owner::is_canonical_submitter_pubkey;
+use wrfcoin_shared_protocol::blockchain::station_owner::{
+    StationSubmitterKeyPayload, is_canonical_submitter_pubkey,
+};
 use wrfcoin_shared_protocol::blockchain::transaction::{
     StationOwnerActionKind, SubmitterClass, Transaction,
 };
@@ -348,7 +350,7 @@ fn build_set_submitter(a: &ActionArgs, submitter: Option<(String, SubmitterClass
         return Err(anyhow!("the owner key already signs for the station; approve a different key"));
     }
     let approved = submitter.clone();
-    let mut payload = StationOwnerActionPayload::set_submitter(
+    let mut payload = StationSubmitterKeyPayload::new(
         &a.station_id,
         address_of(&key),
         owner_pubkey,
