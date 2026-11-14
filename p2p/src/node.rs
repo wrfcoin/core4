@@ -467,8 +467,16 @@ pub enum P2pEvent {
         challenge: DataAvailabilityChallenge,
     },
     /// A keeper's DA challenge response received from the network.
+    ///
+    /// `peer_id` is the gossip propagation source: the peer that forwarded
+    /// the message to us, which may be a relay rather than the keeper.
+    /// `author` is the gossipsub signed message author (`message.source`),
+    /// verified by gossipsub's strict signature mode. A DA response must be
+    /// attributed to `author`, never to `peer_id`; `None` means the message
+    /// carried no authenticated author and must not be credited to anyone.
     DaChallengeResponse {
         peer_id: PeerId,
+        author: Option<PeerId>,
         response: DataAvailabilityChallengeResponse,
     },
     /// A BFT finality vote received from a peer (#1388).
@@ -5890,12 +5898,13 @@ async fn handle_behaviour_event(
                 },
                 WrfcoinMessage::DaChallengeResponse { response } => {
                     debug!(
-                        "Received DA challenge response for {} from keeper {} via {propagation_source}",
-                        response.challenge_id, response.keeper_id
+                        "Received DA challenge response for {} (keeper_id {}, author {:?}) via {propagation_source}",
+                        response.challenge_id, response.keeper_id, message_source
                     );
                     let _ = event_tx
                         .send(P2pEvent::DaChallengeResponse {
                             peer_id: propagation_source,
+                            author: message_source,
                             response,
                         })
                         .await;
