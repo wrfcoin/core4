@@ -661,3 +661,149 @@ fn producer_preserves_outstanding_reserve_at_max_supply_minus_one() {
     assert_eq!(s.mint_headroom(), 0);
     assert!(s.derive_producer_settlement(f::H + 1, &pk).is_none());
 }
+
+// Recipient-level accounting and rollback for the settlement credit loop.
+
+/// A service claim served by `node` (1 or 2) to the other bonded node.
+fn claim_by(s: &State, node: u8, ticket: u8) -> BondedServiceClaim {
+    let mut c = f::claim(s, ticket);
+    if node == 1 {
+        return c;
+    }
+    assert_eq!(node, 2);
+    c.receipt.receipt.server_id = "node-2".into();
+    c.receipt.receipt.consumer_pubkey = f::pk(12);
+    c.manifest.signer_id = hex::encode(f::pk(21));
+    c.ticket.server_id = [2; 32];
+    c.ticket.consumer_id = [1; 32];
+    f::resign_claim(&mut c, 21, 12);
+    c
+}
+
+/// Epoch 1 provisional with the given serving nodes, advanced to the block
+/// before maturity. Returns the state and the provisional epoch record.
+fn matured_minus_one(nodes: &[u8]) -> (State, NodeEpochBudget) {
+    let mut s = funded();
+    // Each node's owner submits its own node's claim (owner 10 runs node 1, owner 20 node 2).
+    for (i, n) in nodes.iter().enumerate() {
+        let mut p = f::submission(vec![claim_by(&s, *n, i as u8 + 1)], 1);
+        let owner = *n * 10;
+        p.authorization.sender = f::bonds::address(owner);
+        p.owner_signature = f::sign(&p.authorization, owner);
+        p.owner_key = f::pk(owner);
+        f::apply(&mut s, p).unwrap();
+    }
+    advance(&mut s, epoch_close(f::bonds::A, 1).unwrap());
+    let r = s.node_settlement.as_ref().unwrap().epochs[&1].clone();
+    assert_eq!(r.status, EpochStatus::Provisional);
+    assert_eq!(r.eligible.len(), nodes.len());
+    advance(&mut s, r.maturity_height - 1);
+    (s, r)
+}
+
+fn current_reserved(s: &State, height: u64) -> u128 {
+    let epoch = wrfcoin_shared_protocol::consensus::node_bond_registry::epoch_at(f::bonds::A, height).unwrap();
+    s.node_settlement
+        .as_ref()
+        .unwrap()
+        .epochs
+        .get(&epoch)
+        .map_or(0, |r| r.reserved)
+}
+
+fn credit_case(shortfall: impl Fn(u128) -> u128) {
+    let (mut s, r) = matured_minus_one(&[1]);
+    let p = r.provisional[&[1; 32]];
+    assert!(p > 1);
+    let d = shortfall(p);
+    let payee = f::bonds::address(10);
+    assert_eq!(r.eligible[&[1; 32]], payee);
+    {
+        let a = s.accounts.get_mut(&payee).unwrap();
+        a.stake_required = a.stake_locked.saturating_add(Balance::new(d));
+    }
+    let before = s.accounts[&payee].clone();
+    let m = r.maturity_height;
+    begin(&mut s, m);
+    let outstanding = s.outstanding_node_reserves();
+    let cur = current_reserved(&s, m);
+    let journal = s.supply_authorized_minting;
+    finish(&mut s, m);
+    let after = s.accounts[&payee].clone();
+    let lock = d.min(p);
+    let delta = |x: Balance, y: Balance| y.checked_sub(x).unwrap().into_inner();
+    assert_eq!(delta(before.balance, after.balance), p, "balance rises by P");
+    assert_eq!(delta(before.earned_balance_total, after.earned_balance_total), p, "earned total rises by P");
+    assert_eq!(delta(before.stake_locked, after.stake_locked), lock, "shortfall is filled first");
+    assert_eq!(delta(before.spendable_balance, after.spendable_balance), p - lock, "only the rest is spendable");
+    assert_eq!(s.supply_authorized_minting - journal, r.reserved);
+    let paid = &s.node_settlement.as_ref().unwrap().epochs[&1];
+    assert_eq!(paid.status, EpochStatus::Paid);
+    assert_eq!(paid.payouts, r.provisional);
+    assert_eq!(
+        s.outstanding_node_reserves(),
+        outstanding - r.reserved + (current_reserved(&s, m) - cur),
+        "the matured reserve is released exactly once"
+    );
+    let material = s.state_root_material();
+    finish(&mut s, m);
+    assert_eq!(s.accounts[&payee], after, "duplicate finalization credits nothing");
+    assert_eq!(s.state_root_material(), material);
+    assert_eq!(s.supply_authorized_minting - journal, r.reserved);
+}
+
+#[test]
+fn node_settlement_credit_fills_stake_before_spendable() {
+    credit_case(|p| p / 2);
+}
+
+#[test]
+fn node_settlement_credit_with_no_stake_shortfall_is_all_spendable() {
+    credit_case(|_| 0);
+}
+
+#[test]
+fn node_settlement_credit_shortfall_above_payout_locks_all_of_it() {
+    credit_case(|p| p + 5);
+}
+
+#[test]
+fn node_settlement_credit_overflow_is_atomic() {
+    let (mut s, r) = matured_minus_one(&[1, 2]);
+    let (a, b) = (f::bonds::address(10), f::bonds::address(20));
+    assert!(r.provisional[&[1; 32]] > 0 && r.provisional[&[2; 32]] > 0);
+    let (earlier, later) = if a < b { (a, b) } else { (b, a) };
+    s.accounts.get_mut(&later).unwrap().earned_balance_total = Balance::new(u128::MAX);
+    let m = r.maturity_height;
+    begin(&mut s, m);
+    let accounts = (s.accounts[&earlier].clone(), s.accounts[&later].clone());
+    let store = s.node_settlement.clone();
+    let outstanding = s.outstanding_node_reserves();
+    let journal = s.supply_authorized_minting;
+    let ledger = |s: &State| {
+        (
+            s.emission_ledger.spent(EmissionRole::Node),
+            s.emission_ledger.reserved(EmissionRole::Node),
+            s.emission_ledger.total_spent(),
+        )
+    };
+    let emission = ledger(&s);
+    let unchanged = |s: &State| {
+        assert_eq!((s.accounts[&earlier].clone(), s.accounts[&later].clone()), accounts, "no recipient is credited");
+        assert_eq!(s.node_settlement, store, "settlement epochs are untouched");
+        assert_eq!(s.outstanding_node_reserves(), outstanding);
+        assert_eq!(s.supply_authorized_minting, journal, "no mint is journaled");
+        assert_eq!(ledger(s), emission, "no emission is charged or reserved");
+    };
+
+    let mut direct = s.clone();
+    assert!(finalize(&mut direct, m).is_err(), "overflow must fail finalization");
+    unchanged(&direct);
+
+    // Production sink: flags the violation, and the checked applier rejects the block.
+    assert!(s.supply_violation.is_none());
+    s.apply_block_finalization(m);
+    assert!(s.supply_violation.is_some(), "the sink must flag the failed settlement");
+    assert!(s.validate_node_finalized(m).is_err(), "the checked applier path must reject this block");
+    unchanged(&s);
+}
