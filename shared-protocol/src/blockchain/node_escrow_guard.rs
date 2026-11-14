@@ -181,6 +181,8 @@ impl State {
             | ApplyForecastScore { .. }
             | CloseForecastBuckets { .. }
             | ApplyStationOwnerAction { .. }
+            // Writes only the station's submitter key and owner nonce.
+            | ApplyStationSubmitterKey { .. }
             | ApplyStationOwnerRecoveryCancel { .. }
             | BeginNodeServiceBlock { .. }
             | ApplyNodeBondLifecycle { .. }

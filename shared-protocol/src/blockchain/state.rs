@@ -1096,6 +1096,7 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "send_allowlists",
     "advisory_proposals",
     "forecast_late_score",
+    "station_submitters",
 ];
 
 /// Global state of the blockchain.
@@ -1547,6 +1548,15 @@ pub struct State {
     /// `#[serde(default)]` so older JSON snapshots deserialize.
     #[serde(default)]
     pub forecast_late_score: crate::consensus::forecast_late_score::ForecastLateScoreState,
+    /// `station_submitter_key` (#3565 design 1): owner-approved submitter keys
+    /// per station, and the signer class of recent accepted commits (written
+    /// only while `device_submission_limit` is active). Empty on every chain
+    /// that has not scheduled those features; while empty it is absent from
+    /// `state_root_material`, from checkpoints (written at format 18) and from
+    /// snapshots. Appended at checkpoint format 19; `#[serde(default)]` so
+    /// older JSON snapshots deserialize.
+    #[serde(default)]
+    pub station_submitters: crate::blockchain::station_owner::StationSubmitterState,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1661,6 +1671,7 @@ impl State {
             send_allowlists: BTreeMap::new(),
             advisory_proposals: BTreeMap::new(),
             forecast_late_score: Default::default(),
+            station_submitters: Default::default(),
         }
     }
 
@@ -2038,12 +2049,19 @@ impl State {
             station.location.latitude,
             station.location.longitude,
         );
+        let (station_id, new_owner) = (station.station_id.clone(), station.owner_address.clone());
 
         let previous = self
             .station_registry
             .upsert(station)
             .map_err(|e| StateError::Governance(format!("station registration failed: {e}")))?;
 
+        if let Some(previous) = &previous {
+            // `station_submitter_key`: a registration that changes the owner
+            // (possible while `station_owner_consent` is off) revokes the
+            // approved submitter key; a no-op while the map is empty.
+            self.revoke_submitter_on_owner_change(&station_id, &previous.owner_address, &new_owner);
+        }
         if let Some(previous) = previous {
             if previous.is_active {
                 let old_cell = crate::consensus::data_desert::cell_for_station(
@@ -3921,6 +3939,18 @@ impl State {
         if !self.forecast_late_score.is_empty() {
             self.forecast_late_score.root_material(&mut material);
         }
+
+        // --- station_submitters (ConsensusFeature::StationSubmitterKey) ---
+        //
+        // CONDITIONAL, like `forecast_late_score`: absent from the pre-image
+        // (not even a tag) while empty, and empty until an owner approves a
+        // key under the unscheduled feature (or a commit is accepted under
+        // `device_submission_limit`), so every root is byte-identical to a
+        // binary without this field until then.
+        if !self.station_submitters.is_empty() {
+            material.extend_from_slice(b"wrfcoin_station_submitters_v1");
+            push_bytes(&mut material, &self.station_submitters.canonical_body());
+        }
         material
     }
 
@@ -4804,6 +4834,7 @@ impl State {
                 // because, from the same activation, the shared classifier refuses
                 // a `ContributionCommit` that declares `"forecast"` (and a
                 // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
+                let mut commit_signer = None;
                 if payload.contribution_type != "forecast"
                     && crate::crypto::chain_binding::feature_active(
                         crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
@@ -4811,19 +4842,19 @@ impl State {
                     )
                 {
                     if let Some(station) = self.station_registry.get(&payload.station_id) {
-                        let owner_signed = payload.auth_pubkey.as_deref().is_some_and(|pk| {
-                            crate::blockchain::transaction::owner_address_bound_to_pubkey(
-                                &station.owner_address,
-                                pk,
-                            )
-                        });
-                        if !owner_signed {
+                        // `station_submitter_key`: the owner key OR the
+                        // station's approved submitter key (none while that
+                        // feature is inactive, so then only the owner key).
+                        let Some(signer) =
+                            self.contribution_commit_signer(station, payload.auth_pubkey.as_deref())
+                        else {
                             return Err(StateError::CommitReveal(format!(
-                                "{}: commit for station {} is not authorized by its registered owner key",
+                                "{}: commit for station {} is not authorized by its registered owner key or approved submitter key",
                                 crate::consensus::proof_of_publishing::SP_DEVICE_COMMIT_NOT_OWNER,
                                 payload.station_id
                             )));
-                        }
+                        };
+                        commit_signer = Some(signer);
                     }
                 }
                 let provenance_class = self
@@ -4834,6 +4865,19 @@ impl State {
                 self.commit_reveal_state
                     .register_commit_with_provenance(&payload, block_height, provenance_class)
                     .map_err(|e| StateError::CommitReveal(e.to_string()))?;
+                // Signer class on chain (owner / device / relay), only for a
+                // commit accepted under `device_submission_limit` once
+                // `station_submitter_key` is active (before it, every such
+                // commit is owner-signed and the map stays empty, so roots
+                // equal a binary without it).
+                if let Some(signer) = commit_signer.filter(|_| {
+                    crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                        block_height,
+                    )
+                }) {
+                    self.record_commit_signer(&payload.commit_id, signer, block_height);
+                }
                 // Forecast late score: remember which key signed a forecast
                 // commit, so the reveal can be recorded for that forecaster.
                 // The key is the one whose signature verifies over the commit;
@@ -6125,6 +6169,30 @@ impl State {
                 );
                 Self::log_station_owner_refusal("action", &station_id, block_height, result);
             }
+            StateTransition::ApplyStationSubmitterKey {
+                station_id,
+                owner_address,
+                action_nonce,
+                submitter,
+                block_height,
+            } => {
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationOwnerActions,
+                    block_height,
+                )?;
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                    block_height,
+                )?;
+                let result = self.apply_station_submitter_key(
+                    &station_id,
+                    &owner_address,
+                    action_nonce,
+                    submitter,
+                    block_height,
+                );
+                Self::log_station_owner_refusal("set submitter key", &station_id, block_height, result);
+            }
             StateTransition::ApplyStationOwnerRecoveryFiling {
                 station_id,
                 from_owner_address,
@@ -6736,6 +6804,9 @@ impl State {
     /// Called once per block instead of per-transaction (#703).
     pub(crate) fn prune_commit_reveal_expired(&mut self, block_height: u64) {
         self.commit_reveal_state.prune_expired(block_height);
+        // `device_submission_limit` signer records age out with the applied
+        // reveals they describe; untouched while empty.
+        self.prune_commit_signers(block_height);
         self.sync_commit_reveal_views();
     }
 
@@ -11527,6 +11598,18 @@ pub enum StateTransition {
     CloseForecastBuckets {
         block_height: u64,
         block_timestamp: i64,
+    },
+    /// `station_submitter_key`: an owner-signed `set_submitter_key` approved
+    /// (`Some`) or cleared (`None`) the station's submitter key. Refused below
+    /// `station_owner_actions` or `station_submitter_key`; stateful refusals
+    /// are inert no-ops. APPENDED LAST (bincode is positional) and never
+    /// emitted while the feature is inactive.
+    ApplyStationSubmitterKey {
+        station_id: String,
+        owner_address: String,
+        action_nonce: u64,
+        submitter: Option<(String, crate::blockchain::transaction::SubmitterClass)>,
+        block_height: u64,
     },
 }
 
@@ -22058,6 +22141,7 @@ mod tests {
     "send_allowlists",
     "advisory_proposals",
     "forecast_late_score",
+    "station_submitters",
         ];
 
         let actual = State::state_root_material_field_names();

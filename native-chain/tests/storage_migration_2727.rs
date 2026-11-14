@@ -32,7 +32,8 @@ fn owner_ledger_checkpoint_allocation_preserves_deployed_weather_format() {
     // advisory proposals 17 (each written only when non-empty). Old deployed
     // fixture headers remain pinned.
     // Format 18 appends the forecast late-score state (written only when non-empty).
-    assert_eq!(CHECKPOINT_FORMAT_VERSION, 18);
+    // Format 19 appends the station submitter state (written only when non-empty).
+    assert_eq!(CHECKPOINT_FORMAT_VERSION, 19);
     let bonded = fixture("checkpoint_state_v12_golden.bin");
     assert_eq!(u32::from_le_bytes(bonded[8..12].try_into().unwrap()), 12);
     assert!(migrations::has_path(12));

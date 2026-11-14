@@ -141,10 +141,10 @@ fn feature_is_registered_appended_unscheduled_by_default_and_schedulable() {
     assert_eq!(ConsensusFeature::parse("passkey_bond_payout"), Some(f));
     // `bond_admission_key` (30), `streak_replay_recipient_parity` (31),
     // `station_registrar_key` (32), `advisory_governance` (33) and
-    // `forecast_late_score` (34) and `late_data_pay` (35) are appended after
-    // this feature.
+    // `forecast_late_score` (34), `late_data_pay` (35) and
+    // `station_submitter_key` (36) are appended after this feature.
     assert_eq!(ConsensusFeature::ALL.get(29), Some(&f));
-    assert_eq!(ConsensusFeature::ALL.len(), 36);
+    assert_eq!(ConsensusFeature::ALL.len(), 37);
     assert_eq!(bincode::serialize(&f).unwrap(), 29u32.to_le_bytes());
     assert!(f.schedulable(None));
     assert!(f.has_behaviour());

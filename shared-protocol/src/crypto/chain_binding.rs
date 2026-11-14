@@ -1294,6 +1294,20 @@ pub enum ConsensusFeature {
     /// live-schedulable; scheduling is the owner's signature only, in a later
     /// release, after `device_submission_limit` is active.
     LateDataPay,
+    /// #3565 design 1: owner-approved submitter keys. From activation an owner
+    /// may sign `station_owner_action_v1` `set_submitter_key` (one key per
+    /// station, class `device` or `relay`; or clear it). While
+    /// `device_submission_limit` is active a contribution commit for a
+    /// registered station applies when its `auth_pubkey` is the owner key OR
+    /// the station's approved key, and the signer class is recorded on chain.
+    /// The key is cleared on report-stolen, self-deactivation, owner transfer
+    /// and executed recovery.
+    ///
+    /// Inactive, `set_submitter_key` is inert (as an unknown action was), the
+    /// key map stays empty and every root, snapshot and checkpoint is
+    /// byte-identical. Wire ordinal 36. Ships UNSCHEDULED and NOT
+    /// live-schedulable in this slice.
+    StationSubmitterKey,
 }
 
 /// Blocks `forecaster_key_binding` must already have been active before
@@ -1395,6 +1409,7 @@ impl ConsensusFeature {
         Self::AdvisoryGovernance,
         Self::ForecastLateScore,
         Self::LateDataPay,
+        Self::StationSubmitterKey,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1436,6 +1451,7 @@ impl ConsensusFeature {
             Self::AdvisoryGovernance => "advisory_governance",
             Self::ForecastLateScore => "forecast_late_score",
             Self::LateDataPay => "late_data_pay",
+            Self::StationSubmitterKey => "station_submitter_key",
         }
     }
 
@@ -1521,7 +1537,10 @@ impl ConsensusFeature {
             | Self::ForecastLateScore
             // #3565 split: the device-signed clock comes first (owner 11-12);
             // a later release makes it schedulable.
-            | Self::LateDataPay => false,
+            | Self::LateDataPay
+            // #3565 design 1: wired; made schedulable together with
+            // `device_submission_limit` and its 2,000-block lead rule.
+            | Self::StationSubmitterKey => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1600,6 +1619,8 @@ impl ConsensusFeature {
             Self::ForecastLateScore => true,
             // The contribution reward reads it (late-data reduction).
             Self::LateDataPay => true,
+            // The owner-action extractor, admission, apply and the commit check read it.
+            Self::StationSubmitterKey => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1691,7 +1712,12 @@ mod forecast_skill_baseline_tests {
             bincode::serialize(&ConsensusFeature::LateDataPay).unwrap(),
             35u32.to_le_bytes()
         );
-        assert_eq!(ConsensusFeature::ALL.len(), 36);
+        assert_eq!(ConsensusFeature::ALL[36], ConsensusFeature::StationSubmitterKey);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::StationSubmitterKey).unwrap(),
+            36u32.to_le_bytes()
+        );
+        assert_eq!(ConsensusFeature::ALL.len(), 37);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3203,6 +3229,7 @@ mod tests {
             ConsensusFeature::TransferFeeBurn,
             ConsensusFeature::ForecastLateScore,
             ConsensusFeature::LateDataPay,
+            ConsensusFeature::StationSubmitterKey,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
