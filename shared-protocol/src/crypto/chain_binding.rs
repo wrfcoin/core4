@@ -1353,8 +1353,9 @@ pub const DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS: u64 = 2_000;
 
 /// Whether `device_submission_limit` is in force at `height`: the feature is
 /// active AND `station_submitter_key` has been active for at least
-/// [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`] blocks (a key flag
-/// active from genesis, height 0, counts as satisfied). Every consensus read of
+/// [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`] blocks, with no
+/// exemption: false below that height even for a key flag active from
+/// genesis, the same rule the admission check applies. Every consensus read of
 /// the limit goes through this, so a schedule that names the limit too early
 /// (or without the key flag), even one a custom producer included past the
 /// admission rule, leaves the limit dormant on every node instead of refusing
@@ -1369,10 +1370,9 @@ pub fn device_submission_limit_active_with(
     height: u64,
 ) -> bool {
     active(ConsensusFeature::DeviceSubmissionLimit, height)
-        && active(
-            ConsensusFeature::StationSubmitterKey,
-            height.saturating_sub(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS),
-        )
+        && height
+            .checked_sub(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS)
+            .is_some_and(|keys_since| active(ConsensusFeature::StationSubmitterKey, keys_since))
 }
 
 /// Admission rule for `device_submission_limit` at `activation_height`:

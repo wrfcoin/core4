@@ -163,9 +163,16 @@ fn the_limit_is_dormant_until_the_keys_have_led_by_2000_blocks() {
     // Properly led (keys at 28_000, limit at 30_000): in force from 30_000.
     assert!(!device_submission_limit_active_with(schedule(Some(28_000), 30_000), 29_999));
     assert!(device_submission_limit_active_with(schedule(Some(28_000), 30_000), 30_000));
-    // Key flag from genesis: the limit is in force from its own activation.
-    assert!(!device_submission_limit_active_with(schedule(Some(0), 5), 4));
-    assert!(device_submission_limit_active_with(schedule(Some(0), 5), 5));
+    // Key flag from genesis: no exemption, the full lead still applies.
+    for h in [0, 1, 5, 1_999] {
+        assert!(!device_submission_limit_active_with(schedule(Some(0), 5), h), "keys at 0, limit at 5, h {h}");
+    }
+    assert!(device_submission_limit_active_with(schedule(Some(0), 5), 2_000));
+    assert!(device_submission_limit_active_with(schedule(Some(0), 0), 2_000));
+    assert!(!device_submission_limit_active_with(schedule(Some(0), 0), 1_999));
+    // Keys at 1: in force from 2_001, not 2_000.
+    assert!(!device_submission_limit_active_with(schedule(Some(1), 1), 2_000));
+    assert!(device_submission_limit_active_with(schedule(Some(1), 1), 2_001));
     // Nothing scheduled in this process: dormant.
     assert!(!device_submission_limit_active(100));
 }

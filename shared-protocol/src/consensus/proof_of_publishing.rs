@@ -27868,7 +27868,9 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let block = [
             reveal("ws-a", "n1", TransactionType::ContributionReveal),
@@ -27951,7 +27953,9 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let txs = [
             typed_3565("ws-a", "c1", TransactionType::ContributionCommit, "forecast"),
@@ -28002,7 +28006,9 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
                 (ConsensusFeature::StationSubmitterKey.name().into(), 0),
@@ -28040,7 +28046,9 @@ mod device_submission_limit_3565 {
         use crate::blockchain::transaction::CommitPayload;
         use crate::crypto::signature::{PrivateKey, PublicKey};
         use crate::station_registry::{ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation};
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let owner = PrivateKey::from_bytes(&[0x51; 32]).unwrap();
         let other = PrivateKey::from_bytes(&[0x52; 32]).unwrap();
         let commit = |station: &str, key: &PrivateKey, n: &str, kind: &str| {
