@@ -1066,6 +1066,10 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "device_submission_limit_lead_rule"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
     },
     {

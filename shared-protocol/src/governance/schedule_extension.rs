@@ -434,6 +434,12 @@ pub enum ScheduleExtensionError {
     /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks, or without the
     /// key binding scheduled at all.
     ForecastLateScoreTooEarly { activation_height: u64, key_binding_activation: Option<u64> },
+    /// ADMISSION POLICY, not validity: `device_submission_limit` named less
+    /// than `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` blocks after
+    /// `station_submitter_key`, or without it scheduled at all (also when an
+    /// extension schedules `station_submitter_key` too late for an already
+    /// scheduled limit).
+    DeviceSubmissionLimitTooEarly { activation_height: u64, submitter_key_activation: Option<u64> },
     /// SIGNING policy: a name held by [`HELD_FEATURE_PREFIXES`] is refused by
     /// every library signer that takes no faucet proof of possession
     /// ([`sign_feature_schedule_extension`] and `…_with_key`); it is signed
@@ -580,6 +586,14 @@ impl std::fmt::Display for ScheduleExtensionError {
                  least {} blocks after forecaster_key_binding ({})",
                 crate::crypto::chain_binding::FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
                 key_binding_activation
+                    .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
+            ),
+            Self::DeviceSubmissionLimitTooEarly { activation_height, submitter_key_activation } => write!(
+                f,
+                "device_submission_limit at height {activation_height} is too early: it must activate at \
+                 least {} blocks after station_submitter_key ({})",
+                crate::crypto::chain_binding::DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS,
+                submitter_key_activation
                     .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
             ),
             Self::FeatureHeld { feature, until } => write!(
@@ -1075,6 +1089,12 @@ pub fn check_admission_policy(
         crate::crypto::chain_binding::effective_feature_schedule()
             .activation_height(ConsensusFeature::ForecasterKeyBinding.name()),
     )?;
+    let schedule = crate::crypto::chain_binding::effective_feature_schedule();
+    check_device_submission_limit_dependency(
+        extension,
+        schedule.activation_height(ConsensusFeature::StationSubmitterKey.name()),
+        schedule.activation_height(ConsensusFeature::DeviceSubmissionLimit.name()),
+    )?;
     if !extension.version_steps.is_empty() {
         return Err(ScheduleExtensionError::VersionStepsNotSupported);
     }
@@ -1113,6 +1133,49 @@ pub fn check_forecast_late_score_dependency(
         Err(ScheduleExtensionError::ForecastLateScoreTooEarly {
             activation_height,
             key_binding_activation,
+        })
+    }
+}
+
+/// `device_submission_limit` refuses contribution commits not signed by the
+/// owner key or the station's approved submitter key, so an extension naming
+/// it is admitted only when `station_submitter_key` activates at least
+/// `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` blocks earlier
+/// (already scheduled, or in the same extension). An extension naming only
+/// `station_submitter_key` is checked against an already scheduled limit the
+/// same way. ADMISSION POLICY: a block already carrying such an extension
+/// stays valid.
+pub fn check_device_submission_limit_dependency(
+    extension: &FeatureScheduleExtension,
+    scheduled_submitter_key: Option<u64>,
+    scheduled_limit: Option<u64>,
+) -> Result<(), ScheduleExtensionError> {
+    let height_of = |feature: ConsensusFeature| {
+        extension
+            .entries
+            .iter()
+            .find(|entry| entry.feature == feature.name())
+            .map(|entry| entry.activation_height)
+    };
+    let named_limit = height_of(ConsensusFeature::DeviceSubmissionLimit);
+    let named_keys = height_of(ConsensusFeature::StationSubmitterKey);
+    let (activation_height, submitter_key_activation) = match (named_limit, named_keys) {
+        (Some(limit), keys) => (limit, scheduled_submitter_key.or(keys)),
+        (None, Some(keys)) => match scheduled_limit {
+            Some(limit) => (limit, Some(keys)),
+            None => return Ok(()),
+        },
+        (None, None) => return Ok(()),
+    };
+    if crate::crypto::chain_binding::device_submission_limit_schedule_allowed(
+        activation_height,
+        submitter_key_activation,
+    ) {
+        Ok(())
+    } else {
+        Err(ScheduleExtensionError::DeviceSubmissionLimitTooEarly {
+            activation_height,
+            submitter_key_activation,
         })
     }
 }

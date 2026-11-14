@@ -10533,6 +10533,12 @@ mod tests {
         (entries[0].amount.0, block.timestamp.timestamp() - reveal.timestamp)
     }
 
+    /// `device_submission_limit` is in force only once `station_submitter_key`
+    /// has been active for 2,000 blocks (`device_submission_limit_active`, no
+    /// exemption at low heights): the ON fixtures key from genesis and mine at
+    /// `DSL_LEAD_BASE_3565 + 1`.
+    const DSL_LEAD_BASE_3565: u64 = 2_000;
+
     fn reexec_child_3565(test: &str, child: &str) -> bool {
         if std::env::var_os(child).is_some() {
             return false;
@@ -10567,6 +10573,7 @@ mod tests {
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
                 (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
                 (ConsensusFeature::LateDataPay.name().to_string(), 1),
             ])
@@ -10576,7 +10583,7 @@ mod tests {
         // Owner-signed commits: from activation a commit must be authorized by
         // the station's registered owner key (#3565 pre-activation fix (a)).
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
@@ -10586,16 +10593,16 @@ mod tests {
             1,
             "gate ON: one reveal per station per block"
         );
-        assert_producer_applier_wal_root_parity_3565(&two, "on-two-reveals").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&two, "on-two-reveals", DSL_LEAD_BASE_3565).await;
         let (fresh_amount, fresh_age) = reward_and_age_3565(&two.block_1);
         assert!(fresh_age <= 600, "fixture: the fresh reading is inside full pay ({fresh_age}s)");
         assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
 
         let late = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 1805, true, &[], &[],
         )
         .await;
-        assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&late, "on-late", DSL_LEAD_BASE_3565).await;
         let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
         let multiplier = late_data_multiplier_bps(late_age);
         assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
@@ -10618,20 +10625,23 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let fresh = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 5, true, &[], &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, fresh.block_1.height));
         assert!(!feature_active(ConsensusFeature::LateDataPay, fresh.block_1.height));
         let late = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 1805, true, &[], &[],
         )
         .await;
-        assert_producer_applier_wal_root_parity_3565(&late, "dsl-only-late").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&late, "dsl-only-late", DSL_LEAD_BASE_3565).await;
         let (fresh_amount, _) = reward_and_age_3565(&fresh.block_1);
         let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
         assert!(fresh_amount > 0 && late_age > 600, "vacuity guard: paid, and the late reading is past full pay");
@@ -10702,7 +10712,7 @@ mod tests {
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
                 (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
-                (ConsensusFeature::StationSubmitterKey.name().to_string(), 1),
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
             ])
             .expect("schedule"),
         );
@@ -10721,7 +10731,7 @@ mod tests {
             );
         });
         let scenario = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, approve, 0, None, 1, 5, false, &[], &[],
+            1.0, ContributionProvenanceClass::Real, approve, DSL_LEAD_BASE_3565, None, 1, 5, false, &[], &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::StationSubmitterKey, scenario.block_1.height));
@@ -10734,7 +10744,7 @@ mod tests {
         }
         let (amount, _) = reward_and_age_3565(&scenario.block_1);
         assert!(amount > 0, "the relayed reading is paid");
-        assert_producer_applier_wal_root_parity_3565(&scenario, "submitter-relay").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "submitter-relay", DSL_LEAD_BASE_3565).await;
     }
 
     /// #3565 gate OFF control (isolated child, nothing scheduled): the same
@@ -10820,12 +10830,15 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
 
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[],
         )
         .await;
         assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "owner-signed commits are mined");
@@ -10834,10 +10847,10 @@ mod tests {
         let pending = pending_reveal_nonces_3565(&two).await;
         assert_eq!(pending.len(), 1, "(b) the extra reveal is deferred, not evicted");
         assert_ne!(pending[0], mined[0].1, "the pending reveal is the one not mined");
-        assert_producer_applier_wal_root_parity_3565(&two, "defer-two").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&two, "defer-two", DSL_LEAD_BASE_3565).await;
 
         let not_owner = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, false, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 5, false, &[], &[],
         )
         .await;
         assert_eq!(
@@ -10846,7 +10859,7 @@ mod tests {
             "(a) a commit not signed by the registered owner key is refused"
         );
         assert_eq!(count_3565(&not_owner.block_1, TransactionType::ContributionReveal), 0, "(a) so its reveal cannot occupy the slot");
-        assert_producer_applier_wal_root_parity_3565(&not_owner, "not-owner").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&not_owner, "not-owner", DSL_LEAD_BASE_3565).await;
     }
 
     /// #3565 (b) with the #2777 fence: gate ON, block at h3000 (the fence's
@@ -10867,7 +10880,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let base = RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1;
@@ -10903,11 +10919,14 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let scenario = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[0],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[0],
         )
         .await;
         let forecast_typed_commits = scenario
@@ -10923,7 +10942,7 @@ mod tests {
         let mined = reveal_ids_3565(&scenario.block_1);
         assert_eq!(mined.len(), 1);
         assert_eq!(mined[0].1, "nonce-attest-1", "the owner's reveal takes the slot");
-        assert_producer_applier_wal_root_parity_3565(&scenario, "forecast-typed").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "forecast-typed", DSL_LEAD_BASE_3565).await;
     }
 
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block

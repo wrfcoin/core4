@@ -1346,6 +1346,49 @@ pub fn forecast_late_score_active_with(
             .is_some_and(|bound_since| active(ConsensusFeature::ForecasterKeyBinding, bound_since))
 }
 
+/// Blocks `station_submitter_key` must already have been active before
+/// `device_submission_limit` activates: the window in which owners approve
+/// their collector / phone keys (#3565 design 1).
+pub const DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS: u64 = 2_000;
+
+/// Whether `device_submission_limit` is in force at `height`: the feature is
+/// active AND `station_submitter_key` has been active for at least
+/// [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`] blocks, with no
+/// exemption: false below that height even for a key flag active from
+/// genesis, the same rule the admission check applies. Every consensus read of
+/// the limit goes through this, so a schedule that names the limit too early
+/// (or without the key flag), even one a custom producer included past the
+/// admission rule, leaves the limit dormant on every node instead of refusing
+/// collected readings.
+pub fn device_submission_limit_active(height: u64) -> bool {
+    device_submission_limit_active_with(feature_active, height)
+}
+
+/// [`device_submission_limit_active`] over an explicit activation predicate.
+pub fn device_submission_limit_active_with(
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+    height: u64,
+) -> bool {
+    active(ConsensusFeature::DeviceSubmissionLimit, height)
+        && height
+            .checked_sub(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS)
+            .is_some_and(|keys_since| active(ConsensusFeature::StationSubmitterKey, keys_since))
+}
+
+/// Admission rule for `device_submission_limit` at `activation_height`:
+/// `station_submitter_key` must be scheduled (already, or in the same
+/// extension) at least [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`]
+/// blocks earlier. Without it the limit would refuse every commit a collector
+/// or phone signs.
+pub fn device_submission_limit_schedule_allowed(
+    activation_height: u64,
+    submitter_key_activation: Option<u64>,
+) -> bool {
+    submitter_key_activation
+        .and_then(|keys| keys.checked_add(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS))
+        .is_some_and(|earliest| activation_height >= earliest)
+}
+
 /// Admission rule for a schedule naming `forecast_late_score` at
 /// `activation_height`: `forecaster_key_binding` must be scheduled (already,
 /// or in the same extension) and the late score must activate at least
@@ -1520,8 +1563,6 @@ impl ConsensusFeature {
             | Self::StakeSubmissionNonce
             // Refusal behaviour exists, but evidence apply is not implemented.
             | Self::SlashEvidenceReports
-            // #3565: behaviour is wired, but activation is an owner decision.
-            | Self::DeviceSubmissionLimit
             // #3591: superseded by `streak_replay_recipient_parity`, which
             // includes its ordering; never scheduled on its own.
             | Self::StreakReplayNodeService
@@ -1537,10 +1578,7 @@ impl ConsensusFeature {
             | Self::ForecastLateScore
             // #3565 split: the device-signed clock comes first (owner 11-12);
             // a later release makes it schedulable.
-            | Self::LateDataPay
-            // #3565 design 1: wired; made schedulable together with
-            // `device_submission_limit` and its 2,000-block lead rule.
-            | Self::StationSubmitterKey => false,
+            | Self::LateDataPay => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1574,7 +1612,15 @@ impl ConsensusFeature {
             // Wired and tested (extractor replay from the producer's pre-reward
             // state and recipient rule; producer, P2P applier, extraction and
             // WAL agree); the binary accepts a schedule, the owner signs it.
-            | Self::StreakReplayRecipientParity => true,
+            | Self::StreakReplayRecipientParity
+            // #3565 design 1: owners approve submitter keys; the binary
+            // accepts a schedule, the owner signs it.
+            | Self::StationSubmitterKey
+            // #3565 (#60, #73) with design 1: schedulable only at least
+            // `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` after
+            // `station_submitter_key` (`device_submission_limit_schedule_allowed`,
+            // enforced at admission), so a schedule cannot refuse collected readings.
+            | Self::DeviceSubmissionLimit => true,
         }
     }
 
@@ -3198,6 +3244,8 @@ mod tests {
         expected.push("node_share_settlement");
         // #3290: the binary accepts a schedule; the owner signs it.
         expected.push("forecaster_key_binding");
+        // #3565: follows it in `ALL`; schedulable under its submitter-key lead rule.
+        expected.push("device_submission_limit");
         // Security-key wallets: the binary accepts a schedule; the owner signs it.
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
@@ -3207,6 +3255,8 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // #3565 design 1: ordinal 36, the binary accepts a schedule.
+        expected.push("station_submitter_key");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -3223,13 +3273,11 @@ mod tests {
             ConsensusFeature::FaucetSinkBinding,
             ConsensusFeature::ScheduleExtension,
             ConsensusFeature::StakeSubmissionNonce,
-            ConsensusFeature::DeviceSubmissionLimit,
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
             ConsensusFeature::ForecastLateScore,
             ConsensusFeature::LateDataPay,
-            ConsensusFeature::StationSubmitterKey,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
@@ -3246,6 +3294,7 @@ mod tests {
         expected.insert(7, "faucet_sink_binding");
         expected.push("node_share_settlement");
         expected.push("forecaster_key_binding");
+        expected.push("device_submission_limit");
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
@@ -3254,6 +3303,8 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // #3565 design 1: ordinal 36, the binary accepts a schedule.
+        expected.push("station_submitter_key");
         assert_eq!(schedulable, expected);
     }
 

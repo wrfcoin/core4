@@ -4092,7 +4092,7 @@ impl ProofOfPublishing {
         // sibling down with it. Extra reveals are removed from the candidate but
         // NOT added to `skipped_mempool_tx_ids`: they stay pending for a later
         // block. Unscheduled this is a no-op.
-        let deferred_device_reveal_count = if feature_active(ConsensusFeature::DeviceSubmissionLimit, next_height) {
+        let deferred_device_reveal_count = if crate::crypto::chain_binding::device_submission_limit_active(next_height) {
             Self::defer_extra_device_reveals(&mut transactions)
         } else {
             0
@@ -10031,7 +10031,7 @@ impl ProofOfPublishing {
         // `"forecast"` bypassed the owner binding, and its reveal took the
         // station's slot. From activation the declared type must match the tx
         // type: contribution txs may not say `"forecast"`, forecast txs must.
-        if feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height) {
+        if crate::crypto::chain_binding::device_submission_limit_active(ctx.height) {
             let declared_forecast = match tx.tx_type {
                 TransactionType::ContributionCommit | TransactionType::ForecastCommit => tx
                     .parse_commit_payload()
@@ -10061,7 +10061,7 @@ impl ProofOfPublishing {
         // same station makes the block invalid. The producer does not drop the
         // later one: it defers it to a later block (`defer_extra_device_reveals`).
         if tx.tx_type == TransactionType::ContributionReveal
-            && feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height)
+            && crate::crypto::chain_binding::device_submission_limit_active(ctx.height)
         {
             if let Some(payload) = tx.parse_reveal_payload() {
                 if !acc.device_reveal_stations.insert(payload.station_id) {
@@ -27838,7 +27838,7 @@ mod device_submission_limit_3565 {
     }
 
     #[test]
-    fn feature_is_registered_last_and_not_schedulable_3565() {
+    fn feature_is_registered_and_schedulable_3565() {
         let f = ConsensusFeature::DeviceSubmissionLimit;
         assert_eq!(f.name(), "device_submission_limit");
         assert_eq!(ConsensusFeature::parse("device_submission_limit"), Some(f));
@@ -27851,7 +27851,10 @@ mod device_submission_limit_3565 {
         let k = known.iter().position(|x| *x == "device_submission_limit").unwrap();
         assert_eq!(known[k - 1], "forecaster_key_binding");
         assert_eq!(bincode::serialize(&f).unwrap(), 23u32.to_le_bytes(), "ordinal after forecaster_key_binding");
-        assert!(!f.schedulable(None), "activation is an owner decision");
+        // The binary accepts a schedule naming it (under the submitter-key lead
+        // rule, enforced at admission); scheduling is the owner's signature.
+        assert!(f.schedulable(None));
+        assert!(f.schedulable(Some("synthetic-genesis")));
         assert!(f.has_behaviour());
     }
 
@@ -27865,7 +27868,9 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let block = [
             reveal("ws-a", "n1", TransactionType::ContributionReveal),
@@ -27877,7 +27882,10 @@ mod device_submission_limit_3565 {
         assert_eq!(refusals(&pop, H, &block), vec![None; 4], "gate OFF control");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         assert_eq!(refusals(&pop, H - 1, &block), vec![None; 4], "below activation: unchanged");
         assert_eq!(
@@ -27945,7 +27953,9 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let txs = [
             typed_3565("ws-a", "c1", TransactionType::ContributionCommit, "forecast"),
@@ -27959,7 +27969,10 @@ mod device_submission_limit_3565 {
         assert_eq!(refusals(&pop, H, &txs), vec![None; 7], "gate OFF control: unchanged");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         assert_eq!(refusals(&pop, H - 1, &txs), vec![None; 7], "below activation: unchanged");
         let mismatch = Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.to_string());
@@ -27993,9 +28006,14 @@ mod device_submission_limit_3565 {
             assert!(status.success());
             return;
         }
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let mut stale = reveal("ws-a", "n1", TransactionType::ContributionReveal);
@@ -28028,7 +28046,9 @@ mod device_submission_limit_3565 {
         use crate::blockchain::transaction::CommitPayload;
         use crate::crypto::signature::{PrivateKey, PublicKey};
         use crate::station_registry::{ContributionProvenanceClass, DataQualityTier, StationLocation, WeatherStation};
-        const H: u64 = 3;
+        // In force only once `station_submitter_key` (from genesis here) has
+        // led by 2,000 blocks.
+        const H: u64 = 2_003;
         let owner = PrivateKey::from_bytes(&[0x51; 32]).unwrap();
         let other = PrivateKey::from_bytes(&[0x52; 32]).unwrap();
         let commit = |station: &str, key: &PrivateKey, n: &str, kind: &str| {
@@ -28070,7 +28090,10 @@ mod device_submission_limit_3565 {
         assert!(apply(&mut state, commit("ws-owned", &other, "off", "contribution"), H).is_ok(), "gate OFF: unchanged");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         let mut state = fresh_state();
         assert!(apply(&mut state, commit("ws-owned", &other, "pre", "contribution"), H - 1).is_ok(), "below activation: unchanged");

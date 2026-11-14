@@ -47,7 +47,9 @@ fn schedule() {
             ("station_owner_consent".to_string(), 1),
             ("station_owner_actions".to_string(), 1),
             ("device_submission_limit".to_string(), 1),
-            ("station_submitter_key".to_string(), 1),
+            // From genesis; the limit is in force from height 2,000 (the
+            // 2,000-block lead, `device_submission_limit_active`).
+            ("station_submitter_key".to_string(), 0),
         ])
         .unwrap(),
     );
@@ -268,7 +270,7 @@ fn approved_keys_commit_revoke_and_round_trip() {
     let relay = key(0x23);
     let stranger = key(0x24);
     let mut state = state_with_station(&owner);
-    let mut h = 10u64;
+    let mut h = 2_010u64; // the limit is in force from 2,000 (keys from genesis)
 
     // No key yet: only the owner may commit.
     assert!(try_commit(&mut state, &owner, "o1", h));
@@ -408,7 +410,7 @@ fn a_registration_that_changes_the_owner_revokes_the_key() {
     let phone = key(0x52);
     let new_owner = key(0x53);
     let mut state = state_with_station(&owner);
-    assert!(step(&mut state, "set", set_json(&owner, Some((&phone, SubmitterClass::Device)), 0), 10));
+    assert!(step(&mut state, "set", set_json(&owner, Some((&phone, SubmitterClass::Device)), 0), 2_010));
     assert!(state.station_submitter(STATION).is_some());
     // A re-registration by the SAME owner (spelled differently) keeps it.
     let same = WeatherStation { owner_address: addr_of(&owner).to_uppercase().replacen("WRF", "wrf", 1), ..station(&owner) };
@@ -420,8 +422,8 @@ fn a_registration_that_changes_the_owner_revokes_the_key() {
         .apply_station_registration(WeatherStation { owner_address: addr_of(&new_owner), ..station(&owner) })
         .expect("owner-changing re-registration");
     assert!(state.station_submitter(STATION).is_none(), "an owner change revokes the key");
-    assert!(!try_commit(&mut state, &phone, "after-owner-change", 11), "the old key's commit is refused");
-    assert!(try_commit(&mut state, &new_owner, "new-owner", 11));
+    assert!(!try_commit(&mut state, &phone, "after-owner-change", 2_011), "the old key's commit is refused");
+    assert!(try_commit(&mut state, &new_owner, "new-owner", 2_011));
 }
 
 #[test]

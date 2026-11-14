@@ -4836,10 +4836,7 @@ impl State {
                 // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
                 let mut commit_signer = None;
                 if payload.contribution_type != "forecast"
-                    && crate::crypto::chain_binding::feature_active(
-                        crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
-                        block_height,
-                    )
+                    && crate::crypto::chain_binding::device_submission_limit_active(block_height)
                 {
                     if let Some(station) = self.station_registry.get(&payload.station_id) {
                         // `station_submitter_key`: the owner key OR the
