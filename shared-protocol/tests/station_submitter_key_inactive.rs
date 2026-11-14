@@ -1,14 +1,17 @@
-//! `station_submitter_key` changes nothing while it is not active, even with
-//! `device_submission_limit` and the owner features active.
+//! With every flag of this stack OFF (`late_data_pay`, `station_submitter_key`,
+//! `device_submission_limit`) and only the existing owner features on, the
+//! stack changes nothing, byte for byte.
 //!
 //! Through the real `State` apply path and the one shared owner-step
-//! extractor: owner-signed contribution commits under the limit, a commit
-//! signed by another key (refused), a `set_submitter_key` owner action (inert),
-//! then report-stolen, unfreeze, deactivate, reactivate and an owner transfer
-//! (each would clear an approved key), and a commit by the new owner. The
-//! state-root material and the snapshot export must be byte-identical to the
-//! ones `origin/main` cd1a82e (before the feature) produces for the same
-//! steps; the pinned digests below were taken there.
+//! extractor: contribution commits by the owner and by another key, a
+//! `set_submitter_key` owner action (inert), the four older owner actions
+//! carrying ODD extra JSON (an unknown `submitter_class` string, a numeric
+//! `submitter_pubkey`, the new field names duplicated), which must still parse
+//! and apply exactly as before (unknown fields were always ignored), a
+//! governance re-registration that changes the owner, an owner transfer and a
+//! commit by the new owner. The state-root material and the snapshot export
+//! must be byte-identical to the ones `origin/main` (before the stack)
+//! produces for the same steps; the pinned digests below were taken there.
 //!
 //! Own test binary: the feature schedule is process-wide, and this file must
 //! never schedule `station_submitter_key`.
@@ -37,10 +40,10 @@ const STATION: &str = "st-submitter-inactive-1";
 
 /// SHA3-256 of `State::state_root_material()` after the steps below, on
 /// origin/main 6ade084.
-const ROOT_MATERIAL_SHA3: &str = "26ec7aca41d988c97870c3924b85f04fd80c4e69eed02a33b86d07ef796efb66"; // pragma: allowlist secret -- state digest, not a secret
+const ROOT_MATERIAL_SHA3: &str = "0452b9008a7bd9b8b1736d286e3a3fe8b1fd8f4bd1965a1deb41637a1cfbf0f5"; // pragma: allowlist secret -- state digest, not a secret
 /// SHA3-256 over the snapshot export (each key and value, length-prefixed), on
 /// origin/main 6ade084.
-const SNAPSHOT_SHA3: &str = "5fdf36ccbbcea0fe243c15a56f85287302c5903130f3946d5ddc527fb0c57f0d"; // pragma: allowlist secret -- state digest, not a secret
+const SNAPSHOT_SHA3: &str = "5ea77be8d5e80e8be4342203332b098bc683c6745021aa7f7e2b77aa54bf38fc"; // pragma: allowlist secret -- state digest, not a secret
 
 fn key(seed: u8) -> PrivateKey {
     PrivateKey::from_bytes(&[seed; 32]).unwrap()
@@ -136,76 +139,100 @@ fn commit(signer: &PrivateKey, tag: &str) -> CommitPayload {
     payload
 }
 
+/// A legacy action whose JSON also carries odd values under the new field
+/// names (variant 0: unknown class string, 1: numeric key, 2: both names
+/// twice). On a binary without the feature these are unknown fields.
+fn odd_action(owner: &PrivateKey, kind: StationOwnerActionKind, nonce: u64, variant: usize) -> String {
+    let clean = action(owner, kind, nonce);
+    let body = clean.trim_end_matches('}');
+    match variant {
+        0 => format!(r#"{body},"submitter_class":"future_class"}}"#),
+        1 => format!(r#"{body},"submitter_pubkey":17}}"#),
+        _ => format!(
+            r#"{body},"submitter_pubkey":"zz","submitter_class":"device","submitter_pubkey":[1],"submitter_class":null}}"#
+        ),
+    }
+}
+
+fn reregistration(new_owner: &PrivateKey) -> WeatherStation {
+    WeatherStation { owner_address: addr_of(new_owner), ..station(&key(0x11)) }
+}
+
+fn station(owner: &PrivateKey) -> WeatherStation {
+    WeatherStation {
+        station_id: STATION.to_string(),
+        owner_address: addr_of(owner),
+        // A 0.1-degree grid point, not a real station.
+        location: StationLocation { latitude: 45.0, longitude: -93.0, elevation_meters: Some(250.0) },
+        hardware_model: "test-station".to_string(),
+        calibration_date: None,
+        is_active: true,
+        reputation_score: 50,
+        data_quality_tier: DataQualityTier::Gold,
+        provenance_class: ContributionProvenanceClass::Real,
+        ring_public_key: None,
+    }
+}
+
 fn run() -> State {
     install_feature_schedule(
         FeatureSchedule::from_entries(vec![
             ("station_owner_consent".to_string(), 1),
             ("station_owner_actions".to_string(), 1),
-            ("device_submission_limit".to_string(), 1),
         ])
         .unwrap(),
     );
     let owner = key(0x11);
     let collect = key(0x22);
+    let gov_owner = key(0x44);
     let next_owner = key(0x33);
     let mut state = State::new();
-    state
-        .register_weather_station(WeatherStation {
-            station_id: STATION.to_string(),
-            owner_address: addr_of(&owner),
-            // A 0.1-degree grid point, not a real station.
-            location: StationLocation { latitude: 45.0, longitude: -93.0, elevation_meters: Some(250.0) },
-            hardware_model: "test-station".to_string(),
-            calibration_date: None,
-            is_active: true,
-            reputation_score: 50,
-            data_quality_tier: DataQualityTier::Gold,
-            provenance_class: ContributionProvenanceClass::Real,
-            ring_public_key: None,
-        })
-        .expect("station registers");
+    state.register_weather_station(station(&owner)).expect("station registers");
 
     let mut h = 10u64;
-    // Owner-signed commit: applies under the limit.
-    state
-        .apply_transition(StateTransition::RegisterCommit { payload: commit(&owner, "owner-1"), block_height: h })
-        .expect("owner-signed commit applies");
-    h += 1;
-    // Collect-key commit: refused (no approved key exists while inactive).
-    assert!(
+    // Contribution commits: the limit is off, so any signing key applies.
+    for (signer, tag) in [(&owner, "owner-1"), (&collect, "collect-1")] {
         state
-            .apply_transition(StateTransition::RegisterCommit { payload: commit(&collect, "collect-1"), block_height: h })
-            .is_err(),
-        "a commit not signed by the owner key is refused"
-    );
-    h += 1;
+            .apply_transition(StateTransition::RegisterCommit { payload: commit(signer, tag), block_height: h })
+            .expect("commit applies");
+        h += 1;
+    }
     // set_submitter_key: inert (no transition).
     assert!(!step(&mut state, "set-submitter", set_submitter_json(&owner, &collect, 0), h), "set_submitter_key is inert");
     h += 1;
-    // The owner steps that clear an approved key; the nonce was not consumed above.
-    for (nonce, kind) in [
-        StationOwnerActionKind::ReportStolen,
-        StationOwnerActionKind::Unfreeze,
-        StationOwnerActionKind::Deactivate,
-        StationOwnerActionKind::Reactivate,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        assert!(step(&mut state, &format!("action-{nonce}"), action(&owner, kind, nonce as u64), h));
-        h += 1;
+    // The four older actions with odd extra JSON: each parses and applies.
+    let mut nonce = 0u64;
+    for variant in 0..3 {
+        for kind in [
+            StationOwnerActionKind::ReportStolen,
+            StationOwnerActionKind::Unfreeze,
+            StationOwnerActionKind::Deactivate,
+            StationOwnerActionKind::Reactivate,
+        ] {
+            let tx = ledger_tx(&format!("odd-{variant}-{nonce}"), odd_action(&owner, kind, nonce, variant));
+            let t = tx.station_owner_ledger_transition(h).unwrap_or_else(|| panic!("{kind:?} variant {variant} extracts"));
+            assert!(matches!(t, StateTransition::ApplyStationOwnerAction { action, .. } if action == kind));
+            state.apply_transition(t).expect("applies");
+            nonce += 1;
+            h += 1;
+        }
     }
+    assert_eq!(state.station_owner_ledger.get(STATION).map(|e| e.owner_nonce), Some(nonce), "all twelve applied");
+    // A governance re-registration that changes the owner (direct apply).
+    state.apply_station_registration(reregistration(&gov_owner)).expect("re-registration applies");
+    h += 1;
+    // An owner transfer from the re-registered owner, then a commit.
     let (c, n) = chain();
     let mut transfer = StationOwnerTransferPayload::new(
         STATION,
-        addr_of(&owner),
-        pk_of(&owner),
+        addr_of(&gov_owner),
+        pk_of(&gov_owner),
         addr_of(&next_owner),
         pk_of(&next_owner),
-        4,
+        nonce,
         5_000,
     );
-    transfer.sign_as_owner_with_domain(&c, &n, &owner);
+    transfer.sign_as_owner_with_domain(&c, &n, &gov_owner);
     transfer.countersign_with_domain(&c, &n, &next_owner);
     assert!(step(&mut state, "transfer", serde_json::to_string(&transfer).unwrap(), h));
     h += 1;
@@ -227,16 +254,14 @@ fn snapshot_digest(state: &State) -> String {
 }
 
 #[test]
-fn inactive_submitter_key_leaves_root_and_snapshot_byte_identical() {
+fn every_stack_flag_off_leaves_root_and_snapshot_byte_identical() {
     let state = run();
-    for height in [0, 10, 100, u64::MAX] {
-        assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, height.max(1)));
+    for name in ["late_data_pay", "station_submitter_key", "device_submission_limit"] {
+        assert!(
+            ConsensusFeature::parse(name).is_none_or(|f| !feature_active(f, 100)),
+            "{name} is never scheduled here"
+        );
     }
-    assert_eq!(
-        ConsensusFeature::parse("station_submitter_key").map(|f| feature_active(f, 100)),
-        ConsensusFeature::parse("station_submitter_key").map(|_| false),
-        "never scheduled here"
-    );
     let root = hex::encode(Sha3_256::digest(state.state_root_material()));
     let snapshot = snapshot_digest(&state);
     println!("root_material_sha3={root} snapshot_sha3={snapshot}");

@@ -2049,12 +2049,19 @@ impl State {
             station.location.latitude,
             station.location.longitude,
         );
+        let (station_id, new_owner) = (station.station_id.clone(), station.owner_address.clone());
 
         let previous = self
             .station_registry
             .upsert(station)
             .map_err(|e| StateError::Governance(format!("station registration failed: {e}")))?;
 
+        if let Some(previous) = &previous {
+            // `station_submitter_key`: a registration that changes the owner
+            // (possible while `station_owner_consent` is off) revokes the
+            // approved submitter key; a no-op while the map is empty.
+            self.revoke_submitter_on_owner_change(&station_id, &previous.owner_address, &new_owner);
+        }
         if let Some(previous) = previous {
             if previous.is_active {
                 let old_cell = crate::consensus::data_desert::cell_for_station(

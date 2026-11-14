@@ -19,6 +19,7 @@ use wrfcoin_shared_protocol::blockchain::state_snapshot::export_state_entries;
 use wrfcoin_shared_protocol::blockchain::station_owner::{
     STATION_OWNER_RECOVERY_NOTICE_BLOCKS, StationOwnerActionPayload, StationOwnerActionRefusal,
     StationOwnerLedgerRefusal, StationOwnerTransferPayload, StationOwnerTxRejection,
+    StationSubmitterKeyPayload,
 };
 use wrfcoin_shared_protocol::blockchain::transaction::{
     CommitPayload, CommitSignerClass, StationOwnerActionKind, SubmitterClass, Transaction,
@@ -100,7 +101,7 @@ fn step(state: &mut State, tag: &str, data: String, height: u64) -> bool {
 
 fn set_json(owner: &PrivateKey, submitter: Option<(&PrivateKey, SubmitterClass)>, nonce: u64) -> String {
     let (c, n) = chain();
-    let mut p = StationOwnerActionPayload::set_submitter(
+    let mut p = StationSubmitterKeyPayload::new(
         STATION,
         addr_of(owner),
         pk_of(owner),
@@ -187,15 +188,20 @@ fn preimage_and_stateless_checks() {
         StationOwnerActionKind::Reactivate,
     ] {
         let mut p = StationOwnerActionPayload::new(STATION, addr_of(&owner), pk_of(&owner), kind, 7, 900);
-        p.submitter_pubkey = Some(pk_of(&phone));
-        p.submitter_class = Some(SubmitterClass::Device);
         assert_eq!(
             p.message_with_domain(&c, &n),
             station_owner_action_message_with_domain(&c, &n, STATION, &addr_of(&owner), kind, 7, 900),
             "{kind:?} preimage unchanged"
         );
         p.sign_with_domain(&c, &n, &owner);
-        assert_eq!(p.verify_stateless_with_domain(&c, &n, 10), Ok(()), "{kind:?} still verifies with extra fields");
+        assert_eq!(p.verify_stateless_with_domain(&c, &n, 10), Ok(()), "{kind:?} verifies");
+        // Odd values under the new field names are unknown fields to the
+        // legacy shape: still parsed, still extracted (all-flags-off parity is
+        // pinned in station_submitter_key_inactive.rs).
+        let body = serde_json::to_string(&p).unwrap();
+        let odd = format!(r#"{},"submitter_class":"future_class","submitter_pubkey":17}}"#, body.trim_end_matches('}'));
+        let back: StationOwnerActionPayload = serde_json::from_str(&odd).expect("legacy shape ignores them");
+        assert_eq!(back, p);
     }
     // set_submitter_key: base bytes with discriminant 5, then flag, key, class.
     let base = station_owner_action_message_with_domain(
@@ -217,7 +223,7 @@ fn preimage_and_stateless_checks() {
     );
     assert_ne!(relay, set, "the class is signed");
 
-    let mut good = StationOwnerActionPayload::set_submitter(
+    let mut good = StationSubmitterKeyPayload::new(
         STATION, addr_of(&owner), pk_of(&owner), Some((pk_of(&phone), SubmitterClass::Device)), 3, 900,
     );
     good.sign_with_domain(&c, &n, &owner);
@@ -393,4 +399,27 @@ fn approved_keys_commit_revoke_and_round_trip() {
     assert!(state.station_submitters.commit_signers.is_empty(), "dropped after it");
     assert!(state.station_submitters.is_empty());
     assert!(!state.state_root_material().windows(ROOT_TAG.len()).any(|w| w == ROOT_TAG), "absent again once empty");
+}
+
+#[test]
+fn a_registration_that_changes_the_owner_revokes_the_key() {
+    schedule();
+    let owner = key(0x51);
+    let phone = key(0x52);
+    let new_owner = key(0x53);
+    let mut state = state_with_station(&owner);
+    assert!(step(&mut state, "set", set_json(&owner, Some((&phone, SubmitterClass::Device)), 0), 10));
+    assert!(state.station_submitter(STATION).is_some());
+    // A re-registration by the SAME owner (spelled differently) keeps it.
+    let same = WeatherStation { owner_address: addr_of(&owner).to_uppercase().replacen("WRF", "wrf", 1), ..station(&owner) };
+    state.apply_station_registration(same).expect("same-owner re-registration");
+    assert!(state.station_submitter(STATION).is_some(), "same owner: the approval stays");
+    // A governance re-registration to another owner (as when owner consent is
+    // off) revokes it: the new owner never approved that key.
+    state
+        .apply_station_registration(WeatherStation { owner_address: addr_of(&new_owner), ..station(&owner) })
+        .expect("owner-changing re-registration");
+    assert!(state.station_submitter(STATION).is_none(), "an owner change revokes the key");
+    assert!(!try_commit(&mut state, &phone, "after-owner-change", 11), "the old key's commit is refused");
+    assert!(try_commit(&mut state, &new_owner, "new-owner", 11));
 }

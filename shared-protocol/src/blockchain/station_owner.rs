@@ -624,18 +624,9 @@ pub struct StationOwnerActionPayload {
     /// transfers and recovery cancels/executions consume).
     pub action_nonce: u64,
     pub expires_at_height: u64,
-    /// Over `station_owner_action_message_with_domain` (for
-    /// `set_submitter_key`: `station_owner_set_submitter_message_with_domain`).
+    /// Over `station_owner_action_message_with_domain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_signature: Option<String>,
-    /// `set_submitter_key` only: the approved key (lowercase hex ed25519), or
-    /// absent to clear it. Ignored by every other action (as before, when the
-    /// field did not exist), so their payloads verify exactly as they did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitter_pubkey: Option<String>,
-    /// `set_submitter_key` only: present exactly when `submitter_pubkey` is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submitter_class: Option<SubmitterClass>,
 }
 
 /// Is `key` a canonical submitter key: 64 lowercase hex digits that decode to
@@ -667,59 +658,10 @@ impl StationOwnerActionPayload {
             action_nonce,
             expires_at_height,
             owner_signature: None,
-            submitter_pubkey: None,
-            submitter_class: None,
-        }
-    }
-
-    /// An UNSIGNED `set_submitter_key` action: `Some((key, class))` approves
-    /// that key, `None` clears the station's key.
-    pub fn set_submitter(
-        station_id: impl Into<String>,
-        owner_address: impl Into<String>,
-        owner_pubkey: impl Into<String>,
-        submitter: Option<(String, SubmitterClass)>,
-        action_nonce: u64,
-        expires_at_height: u64,
-    ) -> Self {
-        let mut payload = Self::new(
-            station_id,
-            owner_address,
-            owner_pubkey,
-            StationOwnerActionKind::SetSubmitterKey,
-            action_nonce,
-            expires_at_height,
-        );
-        if let Some((key, class)) = submitter {
-            payload.submitter_pubkey = Some(key);
-            payload.submitter_class = Some(class);
-        }
-        payload
-    }
-
-    /// The submitter a well-formed `set_submitter_key` names: `Ok(None)` clears,
-    /// `Ok(Some(..))` approves. `Err` when the key/class pair is incomplete or
-    /// the key is not canonical. Meaningless for other actions.
-    pub fn submitter(&self) -> Result<Option<(&str, SubmitterClass)>, StationOwnerActionRefusal> {
-        match (self.submitter_pubkey.as_deref(), self.submitter_class) {
-            (None, None) => Ok(None),
-            (Some(key), Some(class)) if is_canonical_submitter_pubkey(key) => Ok(Some((key, class))),
-            _ => Err(StationOwnerActionRefusal::Malformed),
         }
     }
 
     pub fn message_with_domain(&self, chain_id: &str, network_id: &str) -> Vec<u8> {
-        if self.action == StationOwnerActionKind::SetSubmitterKey {
-            return station_owner_set_submitter_message_with_domain(
-                chain_id,
-                network_id,
-                &self.station_id,
-                &self.owner_address,
-                self.action_nonce,
-                self.expires_at_height,
-                self.submitter().ok().flatten(),
-            );
-        }
         station_owner_action_message_with_domain(
             chain_id,
             network_id,
@@ -745,36 +687,183 @@ impl StationOwnerActionPayload {
         network_id: &str,
         block_height: u64,
     ) -> Result<(), StationOwnerActionRefusal> {
-        use StationOwnerActionRefusal as R;
-        if self.tx_kind != Self::TX_KIND
-            || self.station_id.is_empty()
-            || self.station_id.chars().any(char::is_whitespace)
-        {
-            return Err(R::Malformed);
-        }
-        if self.action == StationOwnerActionKind::SetSubmitterKey {
-            self.submitter()?;
-        }
-        if !owner_address_bound_to_pubkey(&self.owner_address, &self.owner_pubkey) {
-            return Err(R::OwnerKeyNotBound);
-        }
-        if block_height > self.expires_at_height {
-            return Err(R::Expired);
-        }
-        if self.expires_at_height
-            > block_height.saturating_add(STATION_OWNER_ACTION_MAX_VALIDITY_BLOCKS)
-        {
-            return Err(R::ValidityTooLong);
-        }
-        let message = self.message_with_domain(chain_id, network_id);
-        if !verify_hex_signature(
+        verify_owner_action_fields(
+            &self.tx_kind,
+            &self.station_id,
+            &self.owner_address,
             &self.owner_pubkey,
+            self.expires_at_height,
+            self.owner_signature.as_deref(),
+            &self.message_with_domain(chain_id, network_id),
+            block_height,
+        )
+    }
+}
+
+/// The shared stateless checks of an owner action (both payload shapes).
+#[allow(clippy::too_many_arguments)]
+fn verify_owner_action_fields(
+    tx_kind: &str,
+    station_id: &str,
+    owner_address: &str,
+    owner_pubkey: &str,
+    expires_at_height: u64,
+    owner_signature: Option<&str>,
+    message: &[u8],
+    block_height: u64,
+) -> Result<(), StationOwnerActionRefusal> {
+    use StationOwnerActionRefusal as R;
+    if tx_kind != StationOwnerActionPayload::TX_KIND
+        || station_id.is_empty()
+        || station_id.chars().any(char::is_whitespace)
+    {
+        return Err(R::Malformed);
+    }
+    if !owner_address_bound_to_pubkey(owner_address, owner_pubkey) {
+        return Err(R::OwnerKeyNotBound);
+    }
+    if block_height > expires_at_height {
+        return Err(R::Expired);
+    }
+    if expires_at_height > block_height.saturating_add(STATION_OWNER_ACTION_MAX_VALIDITY_BLOCKS) {
+        return Err(R::ValidityTooLong);
+    }
+    if !verify_hex_signature(owner_pubkey, owner_signature, message) {
+        return Err(R::MissingOrBadOwnerSignature);
+    }
+    Ok(())
+}
+
+/// `station_submitter_key` (#3565 design 1): the `set_submitter_key` owner
+/// action. Same `tx_kind` (`station_owner_action_v1`) and the same owner
+/// fields as [`StationOwnerActionPayload`], plus the approved key and class.
+/// A SEPARATE type on purpose: the four older actions keep parsing with the
+/// exact pre-existing shape (any extra JSON field is ignored, as before), and
+/// this shape is used only after routing on `"action": "set_submitter_key"`
+/// ([`owner_action_is_set_submitter`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StationSubmitterKeyPayload {
+    /// Must equal [`StationOwnerActionPayload::TX_KIND`].
+    pub tx_kind: String,
+    pub station_id: String,
+    pub owner_address: String,
+    pub owner_pubkey: String,
+    /// Must be [`StationOwnerActionKind::SetSubmitterKey`].
+    pub action: StationOwnerActionKind,
+    pub action_nonce: u64,
+    pub expires_at_height: u64,
+    /// Over `station_owner_set_submitter_message_with_domain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_signature: Option<String>,
+    /// The approved key (lowercase hex ed25519), or absent to clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitter_pubkey: Option<String>,
+    /// Present exactly when `submitter_pubkey` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitter_class: Option<SubmitterClass>,
+}
+
+/// Does this `station_owner_action_v1` JSON name `"action": "set_submitter_key"`?
+/// Reads ONLY the `action` field, so routing never depends on any other
+/// field's type. `None` when there is no string `action` (such a payload
+/// never parsed as an owner action, before or after this feature).
+pub fn owner_action_is_set_submitter(data: &str) -> Option<bool> {
+    #[derive(Deserialize)]
+    struct ActionProbe {
+        action: String,
+    }
+    serde_json::from_str::<ActionProbe>(data)
+        .ok()
+        .map(|probe| probe.action == "set_submitter_key")
+}
+
+impl StationSubmitterKeyPayload {
+    /// An UNSIGNED `set_submitter_key` action: `Some((key, class))` approves
+    /// that key, `None` clears the station's key.
+    pub fn new(
+        station_id: impl Into<String>,
+        owner_address: impl Into<String>,
+        owner_pubkey: impl Into<String>,
+        submitter: Option<(String, SubmitterClass)>,
+        action_nonce: u64,
+        expires_at_height: u64,
+    ) -> Self {
+        let (submitter_pubkey, submitter_class) = match submitter {
+            Some((key, class)) => (Some(key), Some(class)),
+            None => (None, None),
+        };
+        Self {
+            tx_kind: StationOwnerActionPayload::TX_KIND.to_string(),
+            station_id: station_id.into(),
+            owner_address: owner_address.into(),
+            owner_pubkey: owner_pubkey.into(),
+            action: StationOwnerActionKind::SetSubmitterKey,
+            action_nonce,
+            expires_at_height,
+            owner_signature: None,
+            submitter_pubkey,
+            submitter_class,
+        }
+    }
+
+    /// The submitter a well-formed `set_submitter_key` names: `Ok(None)` clears,
+    /// `Ok(Some(..))` approves. `Err` when the key/class pair is incomplete or
+    /// the key is not canonical. Meaningless for other actions.
+    pub fn submitter(&self) -> Result<Option<(&str, SubmitterClass)>, StationOwnerActionRefusal> {
+        match (self.submitter_pubkey.as_deref(), self.submitter_class) {
+            (None, None) => Ok(None),
+            (Some(key), Some(class)) if is_canonical_submitter_pubkey(key) => Ok(Some((key, class))),
+            _ => Err(StationOwnerActionRefusal::Malformed),
+        }
+    }
+
+    /// `None` for a malformed key/class pair: there is no message to sign,
+    /// and such a payload never verifies (it is never read as a clear).
+    pub fn message_with_domain(&self, chain_id: &str, network_id: &str) -> Option<Vec<u8>> {
+        let submitter = self.submitter().ok()?;
+        Some(station_owner_set_submitter_message_with_domain(
+            chain_id,
+            network_id,
+            &self.station_id,
+            &self.owner_address,
+            self.action_nonce,
+            self.expires_at_height,
+            submitter,
+        ))
+    }
+
+    /// Signs only a well-formed pair (an unsigned malformed payload never verifies).
+    pub fn sign_with_domain(&mut self, chain_id: &str, network_id: &str, owner_key: &PrivateKey) {
+        if let Some(message) = self.message_with_domain(chain_id, network_id) {
+            self.owner_signature = Some(owner_key.sign(&message).to_hex());
+        }
+    }
+
+    /// The action is `set_submitter_key`, the key/class pair is complete and
+    /// canonical, then the shared owner-action checks over this action's
+    /// preimage. The stateful checks belong to `State`.
+    pub fn verify_stateless_with_domain(
+        &self,
+        chain_id: &str,
+        network_id: &str,
+        block_height: u64,
+    ) -> Result<(), StationOwnerActionRefusal> {
+        if self.action != StationOwnerActionKind::SetSubmitterKey {
+            return Err(StationOwnerActionRefusal::Malformed);
+        }
+        let message = self
+            .message_with_domain(chain_id, network_id)
+            .ok_or(StationOwnerActionRefusal::Malformed)?;
+        verify_owner_action_fields(
+            &self.tx_kind,
+            &self.station_id,
+            &self.owner_address,
+            &self.owner_pubkey,
+            self.expires_at_height,
             self.owner_signature.as_deref(),
             &message,
-        ) {
-            return Err(R::MissingOrBadOwnerSignature);
-        }
-        Ok(())
+            block_height,
+        )
     }
 }
 
@@ -973,6 +1062,18 @@ impl State {
         let _ = self
             .station_registry
             .upsert(transferred_station_record(existing, to_owner_address));
+        // A new owner never approved the old owner's submitter key.
+        self.revoke_submitter_on_owner_change(&existing.station_id, &existing.owner_address, to_owner_address);
+    }
+
+    /// `station_submitter_key`: the ONE place an owner change revokes the
+    /// station's approved submitter key (owner transfer, executed recovery and
+    /// any registration that changes `owner_address`). Same owner comparison
+    /// as the registry ([`same_station_owner`]). A no-op while the map is empty.
+    pub(crate) fn revoke_submitter_on_owner_change(&mut self, station_id: &str, from: &str, to: &str) {
+        if !same_station_owner(from, to) {
+            self.clear_station_submitter(station_id);
+        }
     }
 
     /// #3345 §3.2 — stateful half of an owner transfer (stateless half
@@ -996,8 +1097,6 @@ impl State {
         self.set_station_owner(&station, to_owner_address);
         self.station_owner_ledger
             .insert(station_id.to_string(), entry);
-        // The old owner approved the submitter key, not the new one.
-        self.clear_station_submitter(station_id);
         Ok(())
     }
 
@@ -1152,8 +1251,6 @@ impl State {
         self.set_station_owner(&station, &pending.to_owner_address);
         self.station_owner_ledger
             .insert(station_id.to_string(), entry);
-        // A new owner: the old owner's submitter approval does not carry over.
-        self.clear_station_submitter(station_id);
         Ok(())
     }
 
@@ -1432,19 +1529,18 @@ impl Transaction {
                 })
             },
             StationOwnerActionPayload::TX_KIND if actions => {
-                let p: StationOwnerActionPayload =
-                    self.parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)?;
-                // `set_submitter_key` exists only from `station_submitter_key`;
-                // below it the action is inert, exactly as an unknown action
-                // was before (it failed to parse).
-                if p.action == StationOwnerActionKind::SetSubmitterKey
-                    && !feature_active(ConsensusFeature::StationSubmitterKey, block_height)
-                {
-                    return None;
-                }
-                p.verify_stateless_with_domain(chain_id, network_id, block_height)
-                    .ok()?;
-                if p.action == StationOwnerActionKind::SetSubmitterKey {
+                // Route on the action NAME first. `set_submitter_key` exists
+                // only from `station_submitter_key`; below it the action is
+                // inert, exactly as the unknown action name was before. Every
+                // other action parses with the unchanged legacy shape.
+                if owner_action_is_set_submitter(self.data.as_deref()?)? {
+                    if !feature_active(ConsensusFeature::StationSubmitterKey, block_height) {
+                        return None;
+                    }
+                    let p: StationSubmitterKeyPayload =
+                        self.parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)?;
+                    p.verify_stateless_with_domain(chain_id, network_id, block_height)
+                        .ok()?;
                     let submitter = p.submitter().ok()?.map(|(key, class)| (key.to_string(), class));
                     return Some(StateTransition::ApplyStationSubmitterKey {
                         station_id: p.station_id,
@@ -1454,6 +1550,13 @@ impl Transaction {
                         block_height,
                     });
                 }
+                let p: StationOwnerActionPayload =
+                    self.parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)?;
+                if p.action == StationOwnerActionKind::SetSubmitterKey {
+                    return None; // unreachable: routed above
+                }
+                p.verify_stateless_with_domain(chain_id, network_id, block_height)
+                    .ok()?;
                 Some(StateTransition::ApplyStationOwnerAction {
                     station_id: p.station_id,
                     owner_address: p.owner_address,
@@ -1747,18 +1850,16 @@ impl State {
                 if !actions {
                     return Err(Rej::FeatureNotActive);
                 }
-                let p: StationOwnerActionPayload = tx
-                    .parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)
-                    .ok_or(Rej::Malformed)?;
-                if p.action == StationOwnerActionKind::SetSubmitterKey
-                    && !feature_active(ConsensusFeature::StationSubmitterKey, block_height)
-                {
-                    return Err(Rej::FeatureNotActive);
-                }
-                p.verify_stateless_with_domain(chain_id, network_id, block_height)
-                    .map_err(Rej::Action)?;
-                let mut scratch = self.owner_scratch(&p.station_id);
-                if p.action == StationOwnerActionKind::SetSubmitterKey {
+                if owner_action_is_set_submitter(data) == Some(true) {
+                    if !feature_active(ConsensusFeature::StationSubmitterKey, block_height) {
+                        return Err(Rej::FeatureNotActive);
+                    }
+                    let p: StationSubmitterKeyPayload = tx
+                        .parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)
+                        .ok_or(Rej::Malformed)?;
+                    p.verify_stateless_with_domain(chain_id, network_id, block_height)
+                        .map_err(Rej::Action)?;
+                    let mut scratch = self.owner_scratch(&p.station_id);
                     let submitter = p
                         .submitter()
                         .map_err(Rej::Action)?
@@ -1778,6 +1879,12 @@ impl State {
                         nonce: p.action_nonce,
                     });
                 }
+                let p: StationOwnerActionPayload = tx
+                    .parse_station_owner_payload(StationOwnerActionPayload::TX_KIND)
+                    .ok_or(Rej::Malformed)?;
+                p.verify_stateless_with_domain(chain_id, network_id, block_height)
+                    .map_err(Rej::Action)?;
+                let mut scratch = self.owner_scratch(&p.station_id);
                 scratch
                     .apply_station_owner_action(
                         &p.station_id,
