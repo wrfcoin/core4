@@ -74,6 +74,14 @@ const GENESIS: &str = "ababababababababababababababababababababababababababababa
 const H_ENABLE: u64 = 2;
 const STAKE_AMOUNT: u64 = 100;
 
+/// Both tests drive the process-wide extension overlay: the first clears it
+/// (`refresh_feature_schedule_extensions(Vec::new())`) and replays with a
+/// per-block refresh while the second's `persist_chain` needs the overlay its
+/// own state set at `CARRY` still in force at `STAKE_AT`. Run in parallel,
+/// the first can clear it between those heights and the producer then
+/// accepts the Stake. Hold this for each test's whole body (same as
+/// `replay_verify_schedule_extension_3332.rs`).
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn governance() -> PrivateKey {
     PrivateKey::generate(&mut StdRng::seed_from_u64(3277))
@@ -258,6 +266,7 @@ async fn persist_chain(path: &Path) -> String {
 
 #[tokio::test]
 async fn replay_verify_extracts_a_transaction_carried_extension_across_its_activation() {
+    let _g = LOCK.lock().await;
     install_gate();
     // Discrimination guard: under the base schedule alone the Stake extracts,
     // so a replay that never applied the extension would commit a different
@@ -325,6 +334,7 @@ async fn replay_verify_arms_the_protocol_from_block1_itself_3277() {
         }
         return;
     }
+    let _g = LOCK.lock().await;
     install_gate();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("wrfcoin.redb");

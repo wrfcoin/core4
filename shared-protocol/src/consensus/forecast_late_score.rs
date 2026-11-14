@@ -37,7 +37,7 @@
 //!   quorum; and that every window reading LANDED below the forecast's commit
 //!   height, so a reading back-dated after the forecast was revealed can never
 //!   enter the window or become `last`.
-//! - Oracle side: which readings fall in the 24 h window and the 15-minute
+//! - Oracle side: which readings fall in the 48 h window and the 15-minute
 //!   truth window by block time and observation time, quorum as of the closing
 //!   block, the provenance class, the hourly samples, minimum sample counts,
 //!   and the reference arithmetic. The chain never parses or rounds a decimal
@@ -88,16 +88,25 @@ pub const MAX_FORECAST_SCORE_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_FORECASTS_PER_SCORE_TX: usize = 64;
 /// Most score transactions one block may carry.
 pub const MAX_FORECAST_SCORE_TXS_PER_BLOCK: usize = 8;
-/// Most window-reading commit ids one attestation may cite. A station with
-/// more quorum readings than this in 24 h cannot be attested (unscored).
-pub const MAX_WINDOW_READINGS: usize = 512;
+/// Most window-reading commit ids one attestation may cite. The scored
+/// window is 48 h (`late_score::window_hours_for_lead`), so this allows a
+/// reading every 3.75 minutes over 48 h (576 at a 5-minute cadence) while
+/// the payload stays under [`MAX_FORECAST_SCORE_PAYLOAD_BYTES`] for 64-hex
+/// commit ids. A station with more quorum readings than this in the window
+/// cannot be attested (unscored).
+pub const MAX_WINDOW_READINGS: usize = 768;
 /// Most oracle signatures one score transaction may carry.
 pub const MAX_OBSERVATION_SIGNATURES: usize = 16;
 /// Longest station id or commit id accepted in a score transaction.
 pub const MAX_ID_BYTES: usize = 128;
 
-/// The leads a forecast may be scored at, in hours.
-pub const LEAD_HOURS: [u32; 4] = [1, 6, 12, 24];
+/// The leads a forecast may be scored at, in hours. No 1 h lead: at one hour
+/// cheap baselines (persistence or a 3 h trend, nudged past the copy
+/// tolerance) and honest forecasters cannot be told apart (synthetic
+/// backtest 2026-11-12), so a 1 h forecast is not recorded and never paid.
+/// Every lead's reference also has a same-hour-yesterday (lag-24) term from
+/// a 48 h window (`late_score::reference_for_lead`).
+pub const LEAD_HOURS: [u32; 3] = [6, 12, 24];
 /// A forecast may be scored from its target time plus this many seconds:
 /// 15 minutes of readings plus 20 minutes for them to land and reach quorum.
 pub const SCORE_OPENS_AFTER_SECS: i64 = SCORE_DELAY_SECS;
@@ -192,13 +201,15 @@ pub struct ObservationAttestation {
     pub truth: i64,
     /// Commit id of that reading.
     pub truth_commit_id: String,
-    /// The smaller of the window's spread and its lagged-persistence error.
+    /// The smallest of the newest 24 h's spread, its lag-`lead` persistence
+    /// error and the lag-24 error over the 48 h window
+    /// (`late_score::reference_for_lead`).
     pub reference: u64,
     /// Mean of the window's hourly samples.
     pub mean24: i64,
     /// The last reading before the commit.
     pub last: i64,
-    /// Lowercase hex SHA3-256 of the 24 hourly samples
+    /// Lowercase hex SHA3-256 of the 48 hourly samples
     /// (`wrfcoin_forecast_score::late_score::window_hash`).
     pub window_hash: String,
     /// Commit ids of the readings the window and `last` were built from,
@@ -428,7 +439,7 @@ impl ObservationAttestation {
         }
         if target_for(self.commit_time, self.lead_hours) != Some(self.target) {
             return Err(Malformed(
-                "target is not commit_time + a lead of 1, 6, 12 or 24 hours",
+                "target is not commit_time + a lead of 6, 12 or 24 hours",
             ));
         }
         // Rule 1: every reading-derived value is inside the variable's range.
@@ -1826,12 +1837,15 @@ mod tests {
 
     #[test]
     fn target_is_commit_time_plus_lead_and_buckets_are_whole_hours() {
-        assert_eq!(target_for(0, 1), Some(3_600));
+        assert_eq!(target_for(0, 6), Some(6 * 3_600));
+        assert_eq!(target_for(0, 12), Some(12 * 3_600));
         assert_eq!(target_for(1_762_646_461, 24), Some(1_762_732_861));
-        for lead in [0, 2, 3, 5, 7, 23, 25, 48, u32::MAX] {
+        // No 1 h lead: it is never recorded, so never scored or paid.
+        for lead in [0, 1, 2, 3, 5, 7, 23, 25, 48, u32::MAX] {
             assert_eq!(target_for(1_000, lead), None, "lead {lead}");
         }
-        assert_eq!(target_for(-1, 1), None);
+        assert_eq!(LEAD_HOURS, [6, 12, 24]);
+        assert_eq!(target_for(-1, 6), None);
         assert_eq!(target_for(i64::MAX, 24), None);
         assert_eq!(bucket_hour(0), Some(0));
         assert_eq!(bucket_hour(3_599), Some(0));
