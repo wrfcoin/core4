@@ -88,6 +88,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "station_registrar_key",
     "advisory_governance",
     "forecast_late_score",
+    "late_data_pay",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -343,7 +344,8 @@ mod tests {
                 "streak_replay_recipient_parity",
                 "station_registrar_key",
                 "advisory_governance",
-                "forecast_late_score"
+                "forecast_late_score",
+                "late_data_pay"
             ]
         );
     }

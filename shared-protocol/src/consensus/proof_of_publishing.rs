@@ -5615,10 +5615,11 @@ impl ProofOfPublishing {
                 quality_trust_reward,
                 capability_bps,
             );
-            // #3565: late data is paid less. Gated; unscheduled this is the
-            // unchanged amount, byte for byte. Applied last so it scales the
-            // already-capped reward and can only lower it.
-            let reward = if feature_active(ConsensusFeature::DeviceSubmissionLimit, block.height) {
+            // #3565: late data is paid less. Gated by its own flag
+            // (`late_data_pay`, split from `device_submission_limit`);
+            // unscheduled this is the unchanged amount, byte for byte. Applied
+            // last so it scales the already-capped reward and can only lower it.
+            let reward = if feature_active(ConsensusFeature::LateDataPay, block.height) {
                 let age_seconds = block.timestamp.timestamp().saturating_sub(reveal_payload.timestamp);
                 reward * late_data_multiplier_bps(age_seconds) / 10_000
             } else {
