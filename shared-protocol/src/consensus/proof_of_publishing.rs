@@ -4092,7 +4092,7 @@ impl ProofOfPublishing {
         // sibling down with it. Extra reveals are removed from the candidate but
         // NOT added to `skipped_mempool_tx_ids`: they stay pending for a later
         // block. Unscheduled this is a no-op.
-        let deferred_device_reveal_count = if feature_active(ConsensusFeature::DeviceSubmissionLimit, next_height) {
+        let deferred_device_reveal_count = if crate::crypto::chain_binding::device_submission_limit_active(next_height) {
             Self::defer_extra_device_reveals(&mut transactions)
         } else {
             0
@@ -10031,7 +10031,7 @@ impl ProofOfPublishing {
         // `"forecast"` bypassed the owner binding, and its reveal took the
         // station's slot. From activation the declared type must match the tx
         // type: contribution txs may not say `"forecast"`, forecast txs must.
-        if feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height) {
+        if crate::crypto::chain_binding::device_submission_limit_active(ctx.height) {
             let declared_forecast = match tx.tx_type {
                 TransactionType::ContributionCommit | TransactionType::ForecastCommit => tx
                     .parse_commit_payload()
@@ -10061,7 +10061,7 @@ impl ProofOfPublishing {
         // same station makes the block invalid. The producer does not drop the
         // later one: it defers it to a later block (`defer_extra_device_reveals`).
         if tx.tx_type == TransactionType::ContributionReveal
-            && feature_active(ConsensusFeature::DeviceSubmissionLimit, ctx.height)
+            && crate::crypto::chain_binding::device_submission_limit_active(ctx.height)
         {
             if let Some(payload) = tx.parse_reveal_payload() {
                 if !acc.device_reveal_stations.insert(payload.station_id) {
@@ -27880,7 +27880,10 @@ mod device_submission_limit_3565 {
         assert_eq!(refusals(&pop, H, &block), vec![None; 4], "gate OFF control");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         assert_eq!(refusals(&pop, H - 1, &block), vec![None; 4], "below activation: unchanged");
         assert_eq!(
@@ -27962,7 +27965,10 @@ mod device_submission_limit_3565 {
         assert_eq!(refusals(&pop, H, &txs), vec![None; 7], "gate OFF control: unchanged");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         assert_eq!(refusals(&pop, H - 1, &txs), vec![None; 7], "below activation: unchanged");
         let mismatch = Some(SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH.to_string());
@@ -27998,7 +28004,10 @@ mod device_submission_limit_3565 {
         }
         const H: u64 = 3;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         let pop = ProofOfPublishing::new(1, 60, 0, 10);
         let mut stale = reveal("ws-a", "n1", TransactionType::ContributionReveal);
@@ -28073,7 +28082,10 @@ mod device_submission_limit_3565 {
         assert!(apply(&mut state, commit("ws-owned", &other, "off", "contribution"), H).is_ok(), "gate OFF: unchanged");
 
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().into(), H)]).unwrap(),
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().into(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().into(), H),
+            ]).unwrap(),
         );
         let mut state = fresh_state();
         assert!(apply(&mut state, commit("ws-owned", &other, "pre", "contribution"), H - 1).is_ok(), "below activation: unchanged");

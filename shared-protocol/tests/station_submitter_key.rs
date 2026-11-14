@@ -47,7 +47,9 @@ fn schedule() {
             ("station_owner_consent".to_string(), 1),
             ("station_owner_actions".to_string(), 1),
             ("device_submission_limit".to_string(), 1),
-            ("station_submitter_key".to_string(), 1),
+            // From genesis, so the limit is in force from its own activation
+            // (the 2,000-block lead rule, `device_submission_limit_active`).
+            ("station_submitter_key".to_string(), 0),
         ])
         .unwrap(),
     );

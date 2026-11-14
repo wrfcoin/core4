@@ -10,6 +10,7 @@
 
 use wrfcoin_shared_protocol::crypto::chain_binding::{
     ConsensusFeature, DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS,
+    device_submission_limit_active, device_submission_limit_active_with,
     device_submission_limit_schedule_allowed,
 };
 use wrfcoin_shared_protocol::governance::schedule_extension::{
@@ -137,4 +138,34 @@ fn admission_policy_runs_the_dependency_check() {
     let err = check_admission_policy(&extension(&[("device_submission_limit", 30_000)]), None).unwrap_err();
     let text = err.to_string();
     assert!(text.contains("device_submission_limit") && text.contains("station_submitter_key"), "{text}");
+}
+
+/// The consensus half: whatever schedule a block carries (even one a custom
+/// producer included past admission), the limit is in force only once the
+/// key flag has been active for the lead.
+#[test]
+fn the_limit_is_dormant_until_the_keys_have_led_by_2000_blocks() {
+    let schedule = |keys: Option<u64>, limit: u64| {
+        move |f: ConsensusFeature, h: u64| match f {
+            ConsensusFeature::DeviceSubmissionLimit => h >= limit,
+            ConsensusFeature::StationSubmitterKey => keys.is_some_and(|k| h >= k),
+            _ => false,
+        }
+    };
+    // No key flag: never in force.
+    for h in [0, 1, 5_000, u64::MAX] {
+        assert!(!device_submission_limit_active_with(schedule(None, 1), h));
+    }
+    // Scheduled too early (keys at 10, limit at 1_000): dormant until 2_010.
+    assert!(!device_submission_limit_active_with(schedule(Some(10), 1_000), 1_000));
+    assert!(!device_submission_limit_active_with(schedule(Some(10), 1_000), 2_009));
+    assert!(device_submission_limit_active_with(schedule(Some(10), 1_000), 2_010));
+    // Properly led (keys at 28_000, limit at 30_000): in force from 30_000.
+    assert!(!device_submission_limit_active_with(schedule(Some(28_000), 30_000), 29_999));
+    assert!(device_submission_limit_active_with(schedule(Some(28_000), 30_000), 30_000));
+    // Key flag from genesis: the limit is in force from its own activation.
+    assert!(!device_submission_limit_active_with(schedule(Some(0), 5), 4));
+    assert!(device_submission_limit_active_with(schedule(Some(0), 5), 5));
+    // Nothing scheduled in this process: dormant.
+    assert!(!device_submission_limit_active(100));
 }

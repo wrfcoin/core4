@@ -1351,6 +1351,30 @@ pub fn forecast_late_score_active_with(
 /// their collector / phone keys (#3565 design 1).
 pub const DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS: u64 = 2_000;
 
+/// Whether `device_submission_limit` is in force at `height`: the feature is
+/// active AND `station_submitter_key` has been active for at least
+/// [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`] blocks (a key flag
+/// active from genesis, height 0, counts as satisfied). Every consensus read of
+/// the limit goes through this, so a schedule that names the limit too early
+/// (or without the key flag), even one a custom producer included past the
+/// admission rule, leaves the limit dormant on every node instead of refusing
+/// collected readings.
+pub fn device_submission_limit_active(height: u64) -> bool {
+    device_submission_limit_active_with(feature_active, height)
+}
+
+/// [`device_submission_limit_active`] over an explicit activation predicate.
+pub fn device_submission_limit_active_with(
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+    height: u64,
+) -> bool {
+    active(ConsensusFeature::DeviceSubmissionLimit, height)
+        && active(
+            ConsensusFeature::StationSubmitterKey,
+            height.saturating_sub(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS),
+        )
+}
+
 /// Admission rule for `device_submission_limit` at `activation_height`:
 /// `station_submitter_key` must be scheduled (already, or in the same
 /// extension) at least [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`]

@@ -10567,6 +10567,7 @@ mod tests {
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
                 (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
                 (ConsensusFeature::LateDataPay.name().to_string(), 1),
             ])
@@ -10618,7 +10619,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let fresh = mine_attested_reward_block_with_options(
@@ -10702,7 +10706,7 @@ mod tests {
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
                 (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
-                (ConsensusFeature::StationSubmitterKey.name().to_string(), 1),
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
             ])
             .expect("schedule"),
         );
@@ -10820,7 +10824,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
 
@@ -10867,7 +10874,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let base = RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1;
@@ -10903,7 +10913,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let scenario = mine_attested_reward_block_with_options(
