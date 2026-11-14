@@ -1348,6 +1348,16 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// longer co-signs, while blocks below it still verify with it. Then the
 /// service runs on the other slot.
 ///
+/// `MIN_RUNUP_BLOCKS` (2,000 blocks, ~43 h at 77 s/block) is only the FLOOR on
+/// that delay. Extensions are append-only in height (`NotAppendOrder`): a new
+/// extension's first activation may not lie below the latest activation
+/// already scheduled. If anything is scheduled far ahead (up to
+/// `MAX_HORIZON_BLOCKS`), the earliest possible retirement is that far out.
+/// While these pins are live, keep scheduled activations near-term.
+///
+/// A transaction already in a mempool when the retirement activates is not
+/// evicted; it is refused when a block would apply it.
+///
 /// 888/testnet: the owner's two bond admission keys, generated offline on
 /// 2026-11-14. Slot 0 is the online key the bond admission service holds; slot
 /// 1 is the cold spare, which never leaves offline storage. Public keys only.
@@ -1420,6 +1430,10 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// height (at least `MIN_RUNUP_BLOCKS` after the carrying block) that key no
 /// longer authorizes a registration, while blocks below it still verify with
 /// it. Switching the service to the spare alone does not stop a thief.
+/// The same delay rules apply: `MIN_RUNUP_BLOCKS` is a floor, and the
+/// append-order rule (`NotAppendOrder`) pushes the earliest retirement past the
+/// latest activation already scheduled, so keep scheduled activations
+/// near-term while these pins are live.
 ///
 /// 888/testnet: the owner's two registrar keys, generated offline on
 /// 2026-11-13 (`docs/plans/2026-11-08-registrar-key-plan.md`, workspace docs).

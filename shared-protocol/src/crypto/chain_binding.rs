@@ -180,9 +180,10 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
         && !ConsensusFeature::StationRegistrarKey.schedulable(Some(&block.calculate_hash().to_hex())) {
         return Err("station_registrar_key needs a pinned key for this genesis".into());
     }
+    // Every listed retirement, not just the first: each needs its own slot.
     if let Some(feature) = BOND_ADMISSION_KEY_RETIREMENTS.iter().chain(STATION_REGISTRAR_KEY_RETIREMENTS)
-        .find(|f| parsed.features.iter().any(|(name, _)| name == f.name()))
-        .filter(|f| !f.schedulable(Some(&block.calculate_hash().to_hex()))) {
+        .filter(|f| parsed.features.iter().any(|(name, _)| name == f.name()))
+        .find(|f| !f.schedulable(Some(&block.calculate_hash().to_hex()))) {
         return Err(format!("{} needs a pinned key in that slot for this genesis", feature.name()));
     }
     for key in [GENESIS_NODE_EPOCH_KEY, GENESIS_NODE_CHALLENGE_KEY] {
