@@ -660,7 +660,7 @@ def main(argv=None) -> int:
     c.add_argument("--window", required=True, help="window.json from predict")
     c.add_argument("--forecaster", required=True, help="forecaster wallet address (the bearer's wallet, #3070)")
     c.add_argument("--nonce", help="commit nonce; default derives from the forecast digest and timestamp")
-    c.add_argument("--chain-id", default="777")
+    c.add_argument("--chain-id", default="888", help="chain id; the public testnet is 888")
     c.add_argument("--network-id", default="testnet")
     c.add_argument("--node", default=DEFAULT_NODE)
     c.add_argument("--cli", default="wrfcoin", help="path to the wrfcoin CLI binary used in the generated scripts")

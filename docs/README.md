@@ -1,5 +1,12 @@
 # WRFCoin - Weather Forecasting Blockchain Platform
 
+> **Historical guide.** This page describes the old all-in-one repository. Its
+> commands do not start the current public testnet apps.
+>
+> - To use WRFCoin: the [public testnet quickstart](https://github.com/wrfcoin/docs/blob/main/testnet/quickstart.md).
+> - To run a sync node: [JOIN_TESTNET.md](https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md) in wrfcoin/infra.
+> - To work on the website or the API: the README in [wrfcoin/frontend](https://github.com/wrfcoin/frontend) or [wrfcoin/backend](https://github.com/wrfcoin/backend).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
 [![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
@@ -40,47 +47,8 @@ WRFCoin is a comprehensive weather forecasting blockchain platform that rewards 
 
 ## Quick Start
 
-### Prerequisites
-
-- **Node.js 20+** with npm
-- **Rust 1.70+** with Cargo
-- **PostgreSQL 15+**
-- **Docker & Docker Compose**
-- **Redis 7+**
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/wrfcoin/core4.git
-cd wrfcoin
-
-# Install dependencies
-npm install
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Start infrastructure services
-docker-compose up -d
-
-# Run database migrations
-npm run db:migrate
-
-# Start all services
-npm run start:all
-```
-
-### Verify Installation
-
-```bash
-# Check service health
-curl http://localhost:4001/health
-
-# View microservice status
-node scripts/service-control-panel.js
-```
+The monorepo install steps that used to be here no longer work: the website and
+API moved to their own repositories. Use the links at the top of this page.
 
 ---
 
