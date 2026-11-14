@@ -1234,7 +1234,7 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// active. Nothing else reads this table: these keys are not governance keys
 /// and authorize no other action.
 ///
-/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// **ONE ROW: chain 888.** With no row for a chain the feature cannot be
 /// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
 /// the library signers), and if a block schedules it anyway the admission path
 /// accepts nothing. To set one, a reviewed consensus PR appends a row before
@@ -1247,7 +1247,17 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// transactions against this table, so a key is never removed or replaced, and
 /// nodes that disagree on the table disagree on block validity. Adding a key
 /// means every producer upgrades together.
-pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[];
+///
+/// 888/testnet: the owner's two bond admission keys, generated offline on
+/// 2026-11-14. The first is the online key the bond admission service holds; the
+/// second is the cold spare, which never leaves offline storage. Public keys only.
+pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[GovernancePin {
+    genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
+    keys: &[
+        "33cb201615b374b7ab6f9a81e7df8496a254131ae3c130aaf452d3abc34f7825", // pragma: allowlist secret -- public bond admission KEY (ed25519 public key), online
+        "9208bb380159edcbca57abae17d356e5a32e22a4476e32690a28439371b1c00a",  // pragma: allowlist secret -- public bond admission KEY (ed25519 public key), cold spare
+    ],
+}];
 
 #[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_BOND_ADMISSION_PIN: std::sync::OnceLock<(String, Vec<String>)> =
@@ -1594,12 +1604,24 @@ mod tests {
         assert_eq!(row[0].genesis_hash, SCHEDULE_EXTENSION_GOVERNANCE_PINS[0].genesis_hash);
     }
 
-    /// The bond admission table today: no chain has a key. The row that sets
-    /// one changes this test in the same reviewed PR, and it then pins the
-    /// table byte for byte like `governance_pins_are_immutable_3277`.
+    /// The bond admission table, byte for byte. Replay re-verifies historical
+    /// admission co-signs against it, so a key is only ever appended, never
+    /// removed or replaced.
     #[test]
     fn bond_admission_pins_are_immutable() {
-        assert_eq!(BOND_ADMISSION_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        const CHAIN_888_BLOCK1: &str =
+            "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+        const ONLINE: &str = "33cb201615b374b7ab6f9a81e7df8496a254131ae3c130aaf452d3abc34f7825"; // pragma: allowlist secret -- public bond admission KEY
+        const SPARE: &str = "9208bb380159edcbca57abae17d356e5a32e22a4476e32690a28439371b1c00a"; // pragma: allowlist secret -- public bond admission KEY
+        assert_eq!( // secret-leak-ok: test; public block-1 hash and public ed25519 admission keys, no secret material
+            BOND_ADMISSION_KEY_PINS,
+            &[GovernancePin {
+                genesis_hash: CHAIN_888_BLOCK1,
+                keys: &[ONLINE, SPARE],
+            }]
+        );
+        assert_ne!(ONLINE, SPARE, "the spare is a second key, not a copy");
+        // CHAIN_888_BLOCK1 is the hash in packaging/windows/chain-888.conf.
         for pin in BOND_ADMISSION_KEY_PINS {
             assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
             assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message
@@ -1609,6 +1631,10 @@ mod tests {
                 assert!(
                     SCHEDULE_EXTENSION_GOVERNANCE_PINS.iter().all(|g| !g.keys.contains(key)),
                     "an admission key must not be a governance key"
+                );
+                assert!(
+                    STATION_REGISTRAR_KEY_PINS.iter().all(|r| !r.keys.contains(key)),
+                    "an admission key must not be a station registrar key"
                 );
             }
         }

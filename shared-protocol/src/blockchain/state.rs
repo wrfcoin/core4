@@ -8034,9 +8034,24 @@ impl State {
         tx_nonce: u64,
         current_block: u64,
     ) -> Result<Option<u64>, StateError> {
-        if current_block
-            < crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT
-        {
+        self.check_and_reserve_nonce_with_activation(
+            sender,
+            tx_nonce,
+            current_block,
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+        )
+    }
+
+    /// [`Self::check_and_reserve_nonce`] with the activation height passed in,
+    /// so tests can pin the boundary for a non-zero activation. Read-only.
+    fn check_and_reserve_nonce_with_activation(
+        &mut self,
+        sender: &Address,
+        tx_nonce: u64,
+        current_block: u64,
+        activation: u64,
+    ) -> Result<Option<u64>, StateError> {
+        if current_block < activation {
             return Ok(None);
         }
         let account = match self.get_account_mut(sender) {
@@ -21195,25 +21210,65 @@ mod tests {
     }
 
     #[test]
-    fn check_and_reserve_nonce_inactive_before_activation() {
-        // Below NONCE_ENFORCEMENT_ACTIVATION_HEIGHT the helper returns None,
-        // regardless of the submitted tx_nonce value. On WRFCoin mainnet and
-        // testnet this branch is effectively unreachable since activation is 0,
-        // but we pin the behavior in case the constant ever moves forward.
+    fn nonce_policy_nonzero_activation_boundaries() {
+        // Pin the pre-activation branch with an explicit activation height,
+        // independent of the production constant (genesis-active today).
+        const H: u64 = 10;
         let mut state = State::new();
         let sender = addr(80);
         state.create_account(sender, Balance::new(100));
-        let activation =
-            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT;
-        if activation == 0 {
-            // Nothing to exercise; the pre-activation branch is unreachable
-            // on-chain. Test is still valid — just a no-op.
-            return;
+        let before = state.get_account(&sender).unwrap().clone();
+
+        // H-1: a mismatched nonce reserves nothing and does not error.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 999, H - 1, H)
+                .unwrap(),
+            None
+        );
+        // H and H+1: a mismatched nonce is refused.
+        for height in [H, H + 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce_with_activation(&sender, 999, height, H),
+                Err(StateError::InvalidNonce)
+            ));
         }
-        let result = state
-            .check_and_reserve_nonce(&sender, 999, activation - 1)
-            .expect("pre-activation must never error on nonce mismatch");
-        assert_eq!(result, None);
+        // H: the matching zero nonce reserves one.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 0, H, H)
+                .unwrap(),
+            Some(1)
+        );
+        // Checking never mutates the account.
+        assert_eq!(state.get_account(&sender).unwrap(), &before);
+
+        // H: a matching u64::MAX nonce overflows instead of wrapping.
+        state.get_account_mut(&sender).unwrap().nonce = u64::MAX;
+        assert!(matches!(
+            state.check_and_reserve_nonce_with_activation(&sender, u64::MAX, H, H),
+            Err(StateError::NonceOverflow)
+        ));
+        assert_eq!(state.get_account(&sender).unwrap().nonce, u64::MAX);
+    }
+
+    #[test]
+    fn nonce_policy_production_activation_is_genesis_active() {
+        assert_eq!(
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+            0
+        );
+        let mut state = State::new();
+        let sender = addr(80);
+        state.create_account(sender, Balance::new(100));
+        for height in [0, 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce(&sender, 999, height),
+                Err(StateError::InvalidNonce)
+            ));
+            assert_eq!(state.check_and_reserve_nonce(&sender, 0, height).unwrap(), Some(1));
+        }
+        assert_eq!(state.get_account(&sender).unwrap().nonce, 0);
     }
 
     #[test]
