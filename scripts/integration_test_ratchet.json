@@ -798,6 +798,10 @@
     },
     {
       "package": "wrfcoin_cli",
+      "target": "station_submitter_cli"
+    },
+    {
+      "package": "wrfcoin_cli",
       "target": "station_registrar_cli"
     },
     {
