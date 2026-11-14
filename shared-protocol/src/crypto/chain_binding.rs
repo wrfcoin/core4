@@ -1096,11 +1096,9 @@ pub enum ConsensusFeature {
     /// the owner's signature only.
     ForecasterKeyBinding,
     /// #3565 (white paper §4.6 / §9.2): one accepted `ContributionReveal` per
-    /// registered station (the chain's device identity) per block, plus a
-    /// late-data pay reduction keyed on the observation's age at its
-    /// including block (`late_data_multiplier_bps`). Both read only chain data:
-    /// the reveal's committed `timestamp` and the block HEADER timestamp,
-    /// never a node clock. A second reveal for the same station in one block is
+    /// registered station (the chain's device identity) per block. (The
+    /// late-data pay reduction that used to ride this flag is its own feature,
+    /// `late_data_pay`.) A second reveal for the same station in one block is
     /// refused by `classify_block_transaction` (so `verify_block` refuses the
     /// block); the producer defers it to a later block rather than evicting it.
     /// A contribution commit for a registered station must be authorized by its
@@ -1283,6 +1281,19 @@ pub enum ConsensusFeature {
     /// in no genesis, default schedule or cut pin. Scheduling is the owner's
     /// signature only, in a later release that makes it schedulable.
     ForecastLateScore,
+    /// #3565 split (owner 2026-11-14): the late-data pay reduction
+    /// (`late_data_multiplier_bps` of the reveal's age at its including block,
+    /// block HEADER timestamp minus the committed `timestamp`) moves here from
+    /// `device_submission_limit`, so the one-reading-per-block and owner-key
+    /// rules can go live without waiting for a device-signed clock. Reads only
+    /// chain data, never a node clock.
+    ///
+    /// Inactive, a reveal is paid in full, exactly as before (the reduction
+    /// only ever applied while `device_submission_limit` was active, and that
+    /// was never scheduled). Wire ordinal 35. Ships UNSCHEDULED and NOT
+    /// live-schedulable; scheduling is the owner's signature only, in a later
+    /// release, after `device_submission_limit` is active.
+    LateDataPay,
 }
 
 /// Blocks `forecaster_key_binding` must already have been active before
@@ -1383,6 +1394,7 @@ impl ConsensusFeature {
         Self::StationRegistrarKey,
         Self::AdvisoryGovernance,
         Self::ForecastLateScore,
+        Self::LateDataPay,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1423,6 +1435,7 @@ impl ConsensusFeature {
             Self::StationRegistrarKey => "station_registrar_key",
             Self::AdvisoryGovernance => "advisory_governance",
             Self::ForecastLateScore => "forecast_late_score",
+            Self::LateDataPay => "late_data_pay",
         }
     }
 
@@ -1505,7 +1518,10 @@ impl ConsensusFeature {
             // release makes it schedulable, no earlier than the key binding's
             // activation + `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`
             // (`forecast_late_score_schedule_allowed`).
-            | Self::ForecastLateScore => false,
+            | Self::ForecastLateScore
+            // #3565 split: the device-signed clock comes first (owner 11-12);
+            // a later release makes it schedulable.
+            | Self::LateDataPay => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1582,6 +1598,8 @@ impl ConsensusFeature {
             // Reveal records, the score transaction, bucket close and pay, and
             // the baseline-credit switch all read it.
             Self::ForecastLateScore => true,
+            // The contribution reward reads it (late-data reduction).
+            Self::LateDataPay => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1667,7 +1685,13 @@ mod forecast_skill_baseline_tests {
             bincode::serialize(&ConsensusFeature::ForecastLateScore).unwrap(),
             34u32.to_le_bytes()
         );
-        assert_eq!(ConsensusFeature::ALL.len(), 35);
+        // The late-data pay split is appended after it at ordinal 35.
+        assert_eq!(ConsensusFeature::ALL[35], ConsensusFeature::LateDataPay);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::LateDataPay).unwrap(),
+            35u32.to_le_bytes()
+        );
+        assert_eq!(ConsensusFeature::ALL.len(), 36);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3178,6 +3202,7 @@ mod tests {
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
             ConsensusFeature::ForecastLateScore,
+            ConsensusFeature::LateDataPay,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }

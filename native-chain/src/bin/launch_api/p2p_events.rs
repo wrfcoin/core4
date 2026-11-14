@@ -10548,8 +10548,8 @@ mod tests {
     /// process-global). Two quorum-attested reveals from ONE station are staged
     /// in the mempool; the real producer keeps exactly one and both commits.
     /// Producer, P2P applier, extracted transitions and WAL replay agree on the
-    /// root. A 1805 s old reading is paid `late_data_multiplier_bps(age)` of the
-    /// fresh reading's reward, exactly.
+    /// root. With `late_data_pay` also scheduled, a 1805 s old reading is paid
+    /// `late_data_multiplier_bps(age)` of the fresh reading's reward, exactly.
     #[tokio::test]
     async fn device_submission_limit_keeps_one_reveal_per_station_with_parity_3565() {
         if reexec_child_3565(
@@ -10564,10 +10564,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(
-                ConsensusFeature::DeviceSubmissionLimit.name().to_string(),
-                1,
-            )])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+                (ConsensusFeature::LateDataPay.name().to_string(), 1),
+            ])
             .expect("schedule"),
         );
 
@@ -10598,6 +10598,83 @@ mod tests {
         let multiplier = late_data_multiplier_bps(late_age);
         assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
         assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "gate ON: late data is paid less, on the curve");
+    }
+
+    /// #3565 split: `device_submission_limit` ON without `late_data_pay` keeps
+    /// one reveal per station per block but pays an 1805 s old reading exactly
+    /// what a fresh one is (the reduction moved to its own flag). Parity holds.
+    #[tokio::test]
+    async fn device_submission_limit_without_late_data_pay_pays_late_in_full_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_without_late_data_pay_pays_late_in_full_3565",
+            "WRFCOIN_3565_DSL_ONLY_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+                .expect("schedule"),
+        );
+        let fresh = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, true, &[], &[],
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, fresh.block_1.height));
+        assert!(!feature_active(ConsensusFeature::LateDataPay, fresh.block_1.height));
+        let late = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "dsl-only-late").await;
+        let (fresh_amount, _) = reward_and_age_3565(&fresh.block_1);
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        assert!(fresh_amount > 0 && late_age > 600, "vacuity guard: paid, and the late reading is past full pay");
+        assert_eq!(late_amount, fresh_amount, "late_data_pay off: late data is paid in full");
+    }
+
+    /// #3565 split: `late_data_pay` ON alone applies the curve (the
+    /// one-per-block rule stays off: both same-station reveals are mined).
+    #[tokio::test]
+    async fn late_data_pay_alone_applies_the_curve_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::late_data_pay_alone_applies_the_curve_3565",
+            "WRFCOIN_3565_LATE_ONLY_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::late_data_multiplier_bps;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::LateDataPay.name().to_string(), 1)]).expect("schedule"),
+        );
+        let two = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::LateDataPay, two.block_1.height));
+        assert!(!feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(count_3565(&two.block_1, TransactionType::ContributionReveal), 2, "one-per-block stays off");
+        let fresh = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5,
+        )
+        .await;
+        let late = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "late-only").await;
+        let (fresh_amount, _) = reward_and_age_3565(&fresh.block_1);
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        let multiplier = late_data_multiplier_bps(late_age);
+        assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
+        assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "late_data_pay on: late data is paid less");
     }
 
     /// #3565 gate OFF control (isolated child, nothing scheduled): the same
