@@ -27838,7 +27838,7 @@ mod device_submission_limit_3565 {
     }
 
     #[test]
-    fn feature_is_registered_last_and_not_schedulable_3565() {
+    fn feature_is_registered_and_schedulable_3565() {
         let f = ConsensusFeature::DeviceSubmissionLimit;
         assert_eq!(f.name(), "device_submission_limit");
         assert_eq!(ConsensusFeature::parse("device_submission_limit"), Some(f));
@@ -27851,7 +27851,10 @@ mod device_submission_limit_3565 {
         let k = known.iter().position(|x| *x == "device_submission_limit").unwrap();
         assert_eq!(known[k - 1], "forecaster_key_binding");
         assert_eq!(bincode::serialize(&f).unwrap(), 23u32.to_le_bytes(), "ordinal after forecaster_key_binding");
-        assert!(!f.schedulable(None), "activation is an owner decision");
+        // The binary accepts a schedule naming it (under the submitter-key lead
+        // rule, enforced at admission); scheduling is the owner's signature.
+        assert!(f.schedulable(None));
+        assert!(f.schedulable(Some("synthetic-genesis")));
         assert!(f.has_behaviour());
     }
 
