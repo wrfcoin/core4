@@ -27,6 +27,8 @@ pub mod p2p_divergence;
 pub mod security;
 pub mod staking;
 pub mod storage;
+/// `station_submitter_key` rollout: counts-only owner-key audit over a DB copy.
+pub mod station_owner_audit;
 pub mod node_service_archive;
 pub mod schedule_view;
 pub mod upgrade;

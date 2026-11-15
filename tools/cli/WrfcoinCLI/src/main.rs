@@ -288,6 +288,20 @@ enum Commands {
         action: StationCommands,
     },
 
+    /// Session (device) keys: keygen, register / revoke a scoped key, and sign
+    /// a transfer with it, so everyday sends never touch the primary key.
+    SessionKey {
+        #[clap(subcommand)]
+        action: commands::session_key::SessionKeyCommands,
+    },
+
+    /// Chain-enforced send allowlist: enable, add (time-locked), remove,
+    /// cancel, disable (time-locked), show
+    SendAllowlist {
+        #[clap(subcommand)]
+        action: commands::send_allowlist::SendAllowlistCommands,
+    },
+
     /// Governance participation commands
     Governance {
         #[clap(subcommand)]
@@ -573,6 +587,17 @@ async fn run() -> Result<()> {
                     return Ok(());
                 }
 
+                if let WalletCommands::SecurityKey(command) = &action {
+                    match commands::security_key::handle_security_key_command(command).await {
+                        Ok(data) => emit_success(&context, "wallet", &data)?,
+                        Err(err) => {
+                            emit_error(&context, "wallet", &err)?;
+                            return Err(err);
+                        },
+                    }
+                    return Ok(());
+                }
+
                 if let WalletCommands::Price { pair } = &action {
                     match commands::swap::handle_price(pair).await {
                         Ok(data) => emit_success(&context, "wallet", &data)?,
@@ -634,7 +659,8 @@ async fn run() -> Result<()> {
                     WalletCommands::Watch { .. }
                     | WalletCommands::Swap { .. }
                     | WalletCommands::Price { .. }
-                    | WalletCommands::Liquidity { .. } => unreachable!(),
+                    | WalletCommands::Liquidity { .. }
+                    | WalletCommands::SecurityKey(_) => unreachable!(),
                 };
 
                 match handle_wallet_command(&cli_action, wallet).await {
@@ -817,6 +843,24 @@ async fn run() -> Result<()> {
                 Ok(data) => emit_success(&context, "ceremony", &data)?,
                 Err(err) => {
                     emit_error(&context, "ceremony", &err)?;
+                    return Err(err);
+                },
+            }
+        },
+        Commands::SessionKey { action } => {
+            match commands::session_key::handle_session_key_command(&action).await {
+                Ok(data) => emit_success(&context, "session-key", &data)?,
+                Err(err) => {
+                    emit_error(&context, "session-key", &err)?;
+                    return Err(err);
+                },
+            }
+        },
+        Commands::SendAllowlist { action } => {
+            match commands::send_allowlist::handle_send_allowlist_command(&action).await {
+                Ok(data) => emit_success(&context, "send-allowlist", &data)?,
+                Err(err) => {
+                    emit_error(&context, "send-allowlist", &err)?;
                     return Err(err);
                 },
             }

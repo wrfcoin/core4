@@ -672,6 +672,8 @@ async fn wallet_send_posts_signed_transparent_transfer() {
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
+        session_key_auth: None,
     };
     let signature = hex::encode(key.sign(&payload.authorization_message(nonce)).as_ref());
 
@@ -781,10 +783,16 @@ async fn wallet_send_dry_run_preview_shows_no_network_fee() {
         .expect(1).create_async().await;
     let estimate = server.mock("GET", Matcher::Regex("^/transactions/estimate-fee".to_string()))
         .expect(0).create_async().await;
+    // A node that predates the burned transfer fee reports no `transfer_fee`.
+    let info = server.mock("GET", "/network/info")
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(r#"{"network_id":"testnet","chain_height":10}"#)
+        .expect(1).create_async().await;
     let submit = server.mock("POST", "/transactions/submit").expect(0).create_async().await;
     let (ok, stdout, stderr) = run_wrfcoin(
         &["--json", "wallet", "send", "--to", "0x2222222222222222222222222222222222222222", "--amount", "1", "--dry-run"],
         &home, Some(&server.url()));
+    info.assert_async().await;
     assert!(ok, "dry run failed\nstdout={stdout}\nstderr={stderr}");
     let out: Value = serde_json::from_str(&stdout).expect("dry-run json");
     let preview = &out["data"]["preview"];
@@ -798,6 +806,39 @@ async fn wallet_send_dry_run_preview_shows_no_network_fee() {
     assert!(!stdout.contains("HIGH_FEE"), "fee warning survived: {stdout}");
     account.assert_async().await;
     estimate.assert_async().await;
+    submit.assert_async().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_send_dry_run_preview_shows_the_burned_transfer_fee_when_active() {
+    // Once the node reports `transfer_fee_burn` in force at the next block,
+    // the preview shows the burned fee and subtracts it from what remains.
+    let home = temp_home("wallet-send-preview-burned-fee");
+    let (ok, stdout, stderr) = run_wrfcoin(&["--json", "wallet", "new-address"], &home, None);
+    assert!(ok, "wallet creation failed: {stdout} {stderr}");
+    let address = wallet_primary(&home);
+    let mut server = Server::new_async().await;
+    let account = server.mock("GET", format!("/addresses/{address}").as_str())
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(format!(r#"{{"data":{{"address":"{address}","balance":"300000000","spendable_balance":"300000000","stake_locked":"0","earned_balance_total":"0","nonce":"0"}}}}"#))
+        .expect(1).create_async().await;
+    let info = server.mock("GET", "/network/info")
+        .with_status(200).with_header("content-type", "application/json")
+        .with_body(r#"{"network_id":"testnet","chain_height":10,"transfer_fee":{"feature":"transfer_fee_burn","active":true,"scheduled":true,"next_height":11,"base_units":"5000","wrf":"0.00005","burned":true,"sponsorable":true}}"#)
+        .expect(1).create_async().await;
+    let submit = server.mock("POST", "/transactions/submit").expect(0).create_async().await;
+    let (ok, stdout, stderr) = run_wrfcoin(
+        &["--json", "wallet", "send", "--to", "0x2222222222222222222222222222222222222222", "--amount", "1", "--dry-run"],
+        &home, Some(&server.url()));
+    assert!(ok, "dry run failed\nstdout={stdout}\nstderr={stderr}");
+    let out: Value = serde_json::from_str(&stdout).expect("dry-run json");
+    let preview = &out["data"]["preview"];
+    assert_eq!(preview["amount"], 100_000_000u64);
+    assert_eq!(preview["network_fee"], "0.00005000 WRF (burned)");
+    assert_eq!(preview["network_fee_base_units"], 5_000u64);
+    assert_eq!(preview["remaining_balance"], 200_000_000u64 - 5_000);
+    account.assert_async().await;
+    info.assert_async().await;
     submit.assert_async().await;
 }
 
@@ -1411,6 +1452,40 @@ fn setup_genesis_refuses_a_held_feature_before_writing_3299() {
         written["protocol_activation_schedule"],
         Value::String("0:v1,25000:reward_gross_outlier_guard".to_string())
     );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `wrfcoin oracle public-key --key-file` prints the public key of an
+/// owner-only seed file and nothing else; a file other accounts can read is
+/// refused. The seed never appears in stdout or stderr.
+#[cfg(unix)]
+#[test]
+fn oracle_public_key_prints_only_the_public_half() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temp_home("oracle-public-key");
+    let seed = [0x55u8; 32];
+    let seed_hex: String = seed.iter().map(|b| format!("{b:02x}")).collect(); // secret-leak-ok: fixed all-0x55 test fixture
+    let pair = Ed25519KeyPair::from_seed_unchecked(&seed).expect("test seed");
+    let public_hex: String = pair.public_key().as_ref().iter().map(|b| format!("{b:02x}")).collect();
+
+    let key = home.join("oracle.key");
+    fs::write(&key, format!("{seed_hex}\n")).expect("write key");
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).expect("chmod");
+    let key_arg = key.to_str().expect("utf-8 path");
+
+    let (code, stdout, stderr) =
+        run_wrfcoin_exit(&["--json", "oracle", "public-key", "--key-file", key_arg], &home, None);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+    assert_eq!(parsed["data"]["publicKey"], Value::String(public_hex.clone()));
+    assert_eq!(parsed["data"]["oracleId"], Value::String(public_hex));
+    assert!(!stdout.contains(&seed_hex) && !stderr.contains(&seed_hex), "seed leaked");
+
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).expect("chmod");
+    let (code, stdout, stderr) =
+        run_wrfcoin_exit(&["--json", "oracle", "public-key", "--key-file", key_arg], &home, None);
+    assert_ne!(code, 0, "a group/world-readable key file must be refused: {stdout}\n{stderr}");
+    assert!(!stdout.contains(&seed_hex) && !stderr.contains(&seed_hex), "seed leaked");
     let _ = fs::remove_dir_all(&home);
 }
 

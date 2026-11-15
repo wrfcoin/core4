@@ -36,7 +36,11 @@ Forecast submissions are **wallet-scoped** (#3070): the Contributor bearer
 passed as `--token` must carry a wallet claim equal to the forecaster address
 this tool derives from `--forecaster-key` (compared case-insensitively). On the
 node, bind it with `WRFCOIN_CONTRIBUTOR_WALLET_ADDRESS=<forecaster address>`
-next to `WRFCOIN_CONTRIBUTOR_TOKEN`; a bearer with no wallet claim is refused
+next to `WRFCOIN_CONTRIBUTOR_TOKEN`, but only on a node whose Contributor token
+serves that one wallet. On a token shared by many contributors (a backend that
+relays phone readings) the claim makes every contributor one Sybil identity,
+capped at 8 stations by default; a shared relay sends the forecaster's own signature
+(`auth_pubkey`, `auth_signature`) instead. A bearer with no wallet claim is refused
 with `FORECASTER_BEARER_UNBOUND`, and a mismatch with
 `FORECASTER_NOT_BOUND_TO_BEARER`. An operator bearer may submit for any
 forecaster.

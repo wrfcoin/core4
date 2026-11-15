@@ -5,7 +5,7 @@ use super::{GovernanceParameterUpdate, State, StateError, StateTransition};
 use crate::{common::types::Address, crypto::signature::PublicKey};
 
 impl State {
-    fn node_protected_account(&self, address: &Address) -> bool {
+    pub(super) fn node_protected_account(&self, address: &Address) -> bool {
         (self.node_fraud.is_some()
             && *address == crate::consensus::node_fraud::forfeiture_address())
             || self
@@ -79,6 +79,11 @@ impl State {
                 .proposals
                 .get(proposal_id)
                 .is_some_and(|p| self.node_protected_update(&p.update)),
+            // Credits only the proposer's held deposit back.
+            FinalizeAdvisoryProposal { proposal_id, .. } => self
+                .advisory_proposals
+                .get(proposal_id)
+                .is_some_and(|p| protected(&p.proposer)),
             ProcessGovernanceTransaction { tx, .. } | ProcessSlashingReport { tx, .. } => {
                 // Nested typed effects also pass through this guard. Fence the
                 // outer nonce and every parsed account target before dispatch.
@@ -95,6 +100,10 @@ impl State {
                     || tx
                         .parse_slashing_report_payload()
                         .is_some_and(|p| identity(&p.validator_id))
+                    // Security-key action: same fence as DeclareAuthorization.
+                    || tx
+                        .parse_security_key_action_payload()
+                        .is_some_and(|p| identity(&p.account))
             },
             ApplyAccountRecovery {
                 account, action, ..
@@ -123,7 +132,8 @@ impl State {
             },
             ApplyStationRegistration { station }
             | ApplyStationRegistrationWithOwnerConsent { station, .. }
-            | ApplyStationRegistrationV2 { station, .. } => identity(&station.owner_address),
+            | ApplyStationRegistrationV2 { station, .. }
+            | ApplyStationRegistrarRegistration { station, .. } => identity(&station.owner_address),
             ApplyStationOwnerTransfer {
                 to_owner_address, ..
             }
@@ -165,7 +175,14 @@ impl State {
             | LeaveMiningPool { .. }
             | SetLowQualityStreak { .. }
             | ApplySessionKeyAction { .. }
+            // A score writes no account. A bucket close mints to forecasters
+            // it reads from state; it refuses a protected account itself
+            // (`State::close_forecast_buckets`).
+            | ApplyForecastScore { .. }
+            | CloseForecastBuckets { .. }
             | ApplyStationOwnerAction { .. }
+            // Writes only the station's submitter key and owner nonce.
+            | ApplyStationSubmitterKey { .. }
             | ApplyStationOwnerRecoveryCancel { .. }
             | BeginNodeServiceBlock { .. }
             | ApplyNodeBondLifecycle { .. }

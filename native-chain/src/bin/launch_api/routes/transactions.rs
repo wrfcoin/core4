@@ -5,9 +5,9 @@ use crate::helpers::{
     build_transparent_opt_out_payload, enforce_contribution_commit_rate_limit,
     enforce_legacy_authenticated_submit_rate_limit, enforce_legacy_submit_rate_limit,
     enforce_permissionless_replay_protection, enforce_permissionless_submit_rate_limit,
-    enqueue_protocol_transaction, enqueue_protocol_transaction_with_nonce, envelope_error,
+    enqueue_protocol_transaction, enqueue_protocol_transaction_with_nonce_and_fee, envelope_error,
     envelope_success, feature_disabled_envelope_with_hint, refuse_seen_permissionless_replay_key,
-    release_permissionless_replay_key, require_forecaster_bound_to_bearer, require_role,
+    release_permissionless_replay_key, require_role, resolve_forecast_submitter,
     submit_protocol_transaction, validate_commit_hash, validate_nonce, validate_participant_id,
     validate_station_id, validate_timestamp,
 };
@@ -68,6 +68,33 @@ pub struct LegacyTransactionSubmitRequest {
     /// absent, and only once `passkey_p256_auth` is active at tip+1 (#2169).
     #[serde(default)]
     pub passkey_auth: Option<wrfcoin_shared_protocol::accounts::passkey::PasskeyAuthorization>,
+    /// A sponsor's signed promise to pay this transfer's fee (sponsored first
+    /// sends). Accepted only once `paymaster` is active at tip+1, and only
+    /// when it passes every stateless rule for this exact transfer.
+    #[serde(default)]
+    pub sponsorship: Option<wrfcoin_shared_protocol::accounts::paymaster::SponsorAuthorization>,
+    /// A registered session key's signature over the transfer
+    /// (`session_key_transfer_authorization_message`). Used only when neither
+    /// `auth_pubkey`/`auth_signature` nor `passkey_auth` is supplied, and only
+    /// once `session_keys` is active at tip+1. The node also pre-checks the
+    /// key's on-chain scope and limits so an over-limit send fails fast.
+    #[serde(default)]
+    pub session_key_auth: Option<wrfcoin_shared_protocol::blockchain::transaction::SessionKeyTransferAuth>,
+    /// The network fee the wallet showed the user, in base units (burned
+    /// transfer fee, `transfer_fee_burn`). Optional: when absent the node
+    /// declares the fee the chain requires. Once the fee is in force at the
+    /// next block, a value below it is refused with `FEE_BELOW_MINIMUM` before
+    /// any replay or rate state changes. The chain debits exactly its own fee,
+    /// never more, whatever is declared here.
+    #[serde(default)]
+    pub fee: Option<u64>,
+    /// WebAuthn assertion from the account's registered security key
+    /// (`security_key_spend`), over `security_key::spend_challenge(from,
+    /// ed25519 preimage)`. Required, alongside `auth_pubkey`/`auth_signature`,
+    /// when the `from` account has a security-key policy in force at tip+1;
+    /// ignored otherwise.
+    #[serde(default)]
+    pub security_key_auth: Option<wrfcoin_shared_protocol::accounts::security_key::SecurityKeyAssertionWire>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,6 +250,48 @@ pub async fn submit_transaction_compat(
         );
     }
 
+    // Burned transfer fee (`transfer_fee_burn`): what the transfer would pay
+    // in the block it is mined in (tip+1). Refused before replay/rate-limit
+    // state changes, like an unavailable feature (#3235), when the wallet
+    // declared less than the chain requires. `declared_fee` is 0 on a chain
+    // that schedules no fee, so the envelope is unchanged there.
+    let next_height = state.blockchain.read().await.height.saturating_add(1);
+    let required_fee = wrfcoin_shared_protocol::consensus::transfer_fee::transfer_fee_at(next_height);
+    let declared_fee =
+        wrfcoin_shared_protocol::consensus::transfer_fee::transfer_fee_to_declare(next_height);
+    if let Some(required) = required_fee {
+        let format_wrf = wrfcoin_shared_protocol::consensus::transfer_fee::format_wrf;
+        if let Some(offered) = body.fee.filter(|offered| *offered < required) {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "FEE_BELOW_MINIMUM",
+                format!(
+                    "this transfer costs a network fee of {} WRF ({required} base units), which \
+                     is burned; the request offered {offered} base units. Send fee >= {required}, \
+                     or attach a sponsorship that pays it",
+                    format_wrf(required)
+                ),
+            );
+        }
+        if let Some(sponsorship) = body.sponsorship.as_ref().filter(|s| s.fee < required) {
+            return envelope_error(
+                &req,
+                StatusCode::BAD_REQUEST,
+                "FEE_BELOW_MINIMUM",
+                format!(
+                    "the sponsorship pays {} base units; the network fee is {} WRF ({required} \
+                     base units, burned)",
+                    sponsorship.fee,
+                    format_wrf(required)
+                ),
+            );
+        }
+    }
+
+    // Set when the `from` account's security-key policy is in force at tip+1
+    // and the supplied assertion verified; carried as `security_key_auth`.
+    let mut security_key_member = None;
     let (tx_type, payload_value, privacy_mode) = {
         // #1727: a transparent transfer debits `from` with no per-input
         // signature, so it must carry a verifiable `from`-bound authorization.
@@ -266,6 +335,57 @@ pub async fn submit_transaction_compat(
                         "auth_signature does not verify for auth_pubkey over from|to|amount|nonce, \
                          or auth_pubkey does not derive to from",
                     );
+                }
+                // `security_key_spend`: the State-backed debit check at the
+                // height the transfer would be mined at. For an account
+                // without a security-key policy this is the ed25519 check
+                // above again; for a protected account it also needs a valid
+                // `security_key_auth`, so a phrase-only send is refused here
+                // instead of being silently dropped at block assembly.
+                let checked = {
+                    let chain = state.blockchain.read().await;
+                    let next_height = chain.height.saturating_add(1);
+                    let required = wrfcoin_shared_protocol::accounts::security_key::security_key_active(next_height)
+                        && from.parse::<Address>().ok().is_some_and(|account| {
+                            chain.state.authorization_declarations.get(&account)
+                                .and_then(wrfcoin_shared_protocol::accounts::security_key::stored_policy)
+                                .is_some_and(|policy| policy.enforced_at(next_height))
+                        });
+                    let result = payload.authorize_with_view_and_security_key(
+                        &chain.state,
+                        nonce_u64,
+                        next_height,
+                        wrfcoin_shared_protocol::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
+                        body.security_key_auth.as_ref(),
+                    );
+                    (required, result)
+                };
+                match checked {
+                    (required, Ok(())) => {
+                        if required {
+                            security_key_member = body.security_key_auth.clone();
+                        }
+                    },
+                    (_, Err(wrfcoin_shared_protocol::accounts::authorization::AuthorizationError::SecurityKeyRequired)) => {
+                        return envelope_error(
+                            &req,
+                            StatusCode::BAD_REQUEST,
+                            "SECURITY_KEY_REQUIRED",
+                            "this account requires its security key to send: add security_key_auth \
+                             (a WebAuthn assertion over the security-key spend challenge)",
+                        );
+                    },
+                    (_, Err(error)) => {
+                        if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                            return resp;
+                        }
+                        return envelope_error(
+                            &req,
+                            StatusCode::BAD_REQUEST,
+                            "SECURITY_KEY_INVALID",
+                            error.to_string(),
+                        );
+                    },
                 }
                 payload
             },
@@ -313,6 +433,79 @@ pub async fn submit_transaction_compat(
                 }
                 payload
             },
+            (None, None) if body.session_key_auth.is_some() => {
+                let next_height = state.blockchain.read().await.height.saturating_add(1);
+                if !wrfcoin_shared_protocol::accounts::session_keys::session_keys_active(next_height) {
+                    return envelope_error(
+                        &req,
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "FEATURE_NOT_ACTIVE",
+                        format!(
+                            "session_keys is not active at the next block height \
+                             {next_height}; use auth_pubkey/auth_signature (ed25519)"
+                        ),
+                    );
+                }
+                let mut payload = build_transparent_opt_out_payload(
+                    from,
+                    to,
+                    amount,
+                    body.transparent_opt_out_reason.as_deref(),
+                    None,
+                    None,
+                );
+                payload.session_key_auth = body.session_key_auth.clone();
+                if !payload.verify_session_key_signature(nonce_u64) {
+                    // Charged like a failed ed25519 authorization (#3258 R1).
+                    if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                        return resp;
+                    }
+                    return envelope_error(
+                        &req,
+                        StatusCode::BAD_REQUEST,
+                        "AUTHORIZATION_INVALID",
+                        "session_key_auth does not verify over from|to|amount|nonce|session key",
+                    );
+                }
+                // Advisory pre-check against the current state: is the key
+                // registered to `from`, live, and is this send inside its
+                // scope and limits? Consensus re-checks at apply; this only
+                // spares the caller a send that would be dropped.
+                let session_key = payload
+                    .session_key_auth
+                    .as_ref()
+                    .and_then(|auth| auth.session_key_address());
+                let (Ok(from_address), Ok(to_address), Some(session_key)) =
+                    (from.parse::<Address>(), to.parse::<Address>(), session_key)
+                else {
+                    return envelope_error(
+                        &req,
+                        StatusCode::BAD_REQUEST,
+                        "VALIDATION_ERROR",
+                        "invalid session key or address",
+                    );
+                };
+                let precheck = {
+                    let chain = state.blockchain.read().await;
+                    wrfcoin_shared_protocol::accounts::session_keys::check_transfer(
+                        &chain.state.session_keys,
+                        &from_address,
+                        &session_key,
+                        &to_address,
+                        u128::from(amount),
+                        next_height,
+                    )
+                };
+                if let Err(err) = precheck {
+                    return envelope_error(
+                        &req,
+                        StatusCode::FORBIDDEN,
+                        "SESSION_KEY_LIMIT",
+                        format!("session key cannot authorize this transfer: {err}"),
+                    );
+                }
+                payload
+            },
             (None, None) => {
                 // #3258 review R1: a failed authorization is charged to
                 // the caller's budget (see the AUTHORIZATION_INVALID arm).
@@ -329,12 +522,65 @@ pub async fn submit_transaction_compat(
                 );
             },
         };
-        (
-            TransactionType::Transfer,
-            serde_json::to_value(payload).unwrap_or(serde_json::Value::Null),
-            "transparent_opt_out",
-        )
+        let mut payload = payload;
+        if let Some(sponsorship) = body.sponsorship.clone() {
+            // Sponsored first sends: refused before replay/rate-limit state
+            // changes, like an unavailable feature (#3235), unless `paymaster`
+            // is active at the height this transfer would be mined at.
+            let next_height = state.blockchain.read().await.height.saturating_add(1);
+            if !wrfcoin_shared_protocol::accounts::paymaster::sponsorship_active(next_height) {
+                return envelope_error(
+                    &req,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "FEATURE_NOT_ACTIVE",
+                    format!(
+                        "paymaster is not active at the next block height {next_height}; \
+                         send without a sponsorship"
+                    ),
+                );
+            }
+            if let Err(err) = sponsorship.check(from, to, amount, nonce_u64, next_height) {
+                // Charged like a failed authorization (#3258 R1): each attempt
+                // costs an ed25519 verification.
+                if let Err(resp) = enforce_legacy_submit_rate_limit(&req, &state).await {
+                    return resp;
+                }
+                return envelope_error(
+                    &req,
+                    StatusCode::BAD_REQUEST,
+                    "SPONSORSHIP_INVALID",
+                    err.to_string(),
+                );
+            }
+            payload.sponsorship = Some(sponsorship);
+        }
+        let mut value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+        if let (Some(proof), Some(object)) = (security_key_member.take(), value.as_object_mut()) {
+            object.insert(
+                wrfcoin_shared_protocol::accounts::security_key::SECURITY_KEY_AUTH_MEMBER.to_string(),
+                serde_json::to_value(proof).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        (TransactionType::Transfer, value, "transparent_opt_out")
     };
+
+    // Send allowlist: refuse here, with a clear code, a transparent transfer
+    // the sender's policy will refuse at apply. Advisory only: consensus
+    // (`BalanceTransfer`) is the authority whatever app built the transfer.
+    if tx_type == TransactionType::Transfer {
+        let refusal = {
+            let chain = state.blockchain.read().await;
+            super::send_allowlist::transfer_refusal(&chain.state, from, to, chain.height.saturating_add(1))
+        };
+        if let Some(message) = refusal {
+            return envelope_error(
+                &req,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "SEND_ALLOWLIST_DESTINATION_REFUSED",
+                message,
+            );
+        }
+    }
 
     // Deduplicate only after the caller has proved authorization. Recording
     // an unsigned or forged request here earlier let an attacker reserve a
@@ -366,12 +612,13 @@ pub async fn submit_transaction_compat(
             Err(resp) => return resp,
         };
 
-    let accepted = match enqueue_protocol_transaction_with_nonce(
+    let accepted = match enqueue_protocol_transaction_with_nonce_and_fee(
         state.clone(),
         tx_type,
         from,
         payload_value,
         nonce_u64,
+        declared_fee,
     )
     .await
     {
@@ -399,6 +646,17 @@ pub async fn submit_transaction_compat(
             "amount": amount.to_string(),
             "privacy_mode": privacy_mode,
             "transparent_opt_out": transparent_opt_out,
+            "sponsored": body.sponsorship.is_some(),
+            // Burned transfer fee: what this transfer declares and, once the
+            // fee is in force at the next block, who pays it. Base units as a
+            // decimal string, like `amount`.
+            "fee": declared_fee.to_string(),
+            "fee_burned": required_fee.is_some(),
+            "fee_paid_by": match (required_fee, body.sponsorship.is_some()) {
+                (None, _) => serde_json::Value::Null,
+                (Some(_), true) => serde_json::json!("sponsor"),
+                (Some(_), false) => serde_json::json!("sender"),
+            },
             "default_privacy_mode": "feature_disabled",
             "transparent_mode_note": "supported transfers require transparent_opt_out=true with from-account authorization (#1727)",
         }),
@@ -853,6 +1111,14 @@ pub struct ForecastRevealRequest {
     pub compute_receipt: Option<ComputeReceipt>,
     #[serde(default)]
     pub provenance: Option<SensorProvenance>,
+    /// Key-bound relay only: the forecaster's hex ed25519 public key, the same
+    /// `auth_pubkey` its commit carried. Not part of the reveal transaction.
+    #[serde(default)]
+    pub auth_pubkey: Option<String>,
+    /// Key-bound relay only: the commit's `auth_signature` (over this
+    /// `station_id` and `commit_hash`). Not part of the reveal transaction.
+    #[serde(default)]
+    pub auth_signature: Option<String>,
 }
 
 async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &str, reveal: bool) -> Result<(), HttpResponse> {
@@ -873,6 +1139,28 @@ async fn enforce_forecast_quota(req: &HttpRequest, state: &AppState, wallet: &st
     Err(response)
 }
 
+/// A commit id this node already holds: pending in the mempool, or recorded
+/// on chain as committed, revealed or rewarded.
+async fn forecast_commit_already_known(state: &AppState, commit_id: &str) -> bool {
+    if state.mempool.read().await.has_protocol_replay_key(&format!("commit:{commit_id}")) {
+        return true;
+    }
+    let chain = state.blockchain.read().await;
+    chain.state.pending_commits.contains_key(commit_id)
+        || chain.state.pending_reveals.contains_key(commit_id)
+        || chain.state.contribution_reward_records.contains_key(commit_id)
+}
+
+/// A commit id already revealed: pending in the mempool, or on chain.
+async fn forecast_reveal_already_known(state: &AppState, commit_id: &str) -> bool {
+    if state.mempool.read().await.has_protocol_replay_key(&format!("reveal:{commit_id}")) {
+        return true;
+    }
+    let chain = state.blockchain.read().await;
+    chain.state.pending_reveals.contains_key(commit_id)
+        || chain.state.contribution_reward_records.contains_key(commit_id)
+}
+
 pub async fn submit_forecast_commit(
     req: HttpRequest,
     state: web::Data<AppState>,
@@ -889,11 +1177,23 @@ pub async fn submit_forecast_commit(
     // Everything below uses `forecaster`, the canonical identity, never the
     // raw request string: case/whitespace variants must share one rate-limit
     // bucket and one sender (review of core4#3114).
-    let forecaster = match require_forecaster_bound_to_bearer(&req, &state, &request.forecaster) {
-        Ok(canonical) => canonical,
+    // A relay whose bearer is not bound to this forecaster may still submit
+    // when the forecaster's own key signed the commit (key-bound relay).
+    let submitter = match resolve_forecast_submitter(
+        &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
+        request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
+    ) {
+        Ok(submitter) => submitter,
         Err(resp) => return resp,
     };
-    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, false).await {
+    let forecaster = submitter.forecaster.clone();
+    // A relayed authorization may be resent by anyone who has seen it; refuse
+    // a commit id this node already holds before spending any budget on it.
+    if submitter.relayed && forecast_commit_already_known(&state, &request.commit_hash).await {
+        return envelope_error(&req, StatusCode::CONFLICT, "FORECAST_COMMIT_DUPLICATE",
+            "this commit_hash is already pending or on chain");
+    }
+    if let Err(response) = enforce_forecast_quota(&req, &state, &submitter.quota_key, false).await {
         return response;
     }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {
@@ -903,7 +1203,7 @@ pub async fn submit_forecast_commit(
         return resp;
     }
     if let Err(resp) =
-        enforce_contribution_commit_rate_limit(&req, &state, &forecaster).await
+        enforce_contribution_commit_rate_limit(&req, &state, &submitter.quota_key).await
     {
         return resp;
     }
@@ -959,11 +1259,36 @@ pub async fn submit_forecast_reveal(
     // Everything below uses `forecaster`, the canonical identity, never the
     // raw request string: case/whitespace variants must share one rate-limit
     // bucket and one sender (review of core4#3114).
-    let forecaster = match require_forecaster_bound_to_bearer(&req, &state, &request.forecaster) {
-        Ok(canonical) => canonical,
+    // Key-bound relay: the reveal carries the forecaster's commit
+    // authorization, and `commit_hash` must re-derive from the revealed data
+    // below, so it can only reveal a commit that forecaster's key signed.
+    let submitter = match resolve_forecast_submitter(
+        &req, &state, &request.forecaster, &request.station_id, &request.commit_hash,
+        request.auth_pubkey.as_deref(), request.auth_signature.as_deref(),
+    ) {
+        Ok(submitter) => submitter,
         Err(resp) => return resp,
     };
-    if let Err(response) = enforce_forecast_quota(&req, &state, &forecaster, true).await {
+    let forecaster = submitter.forecaster.clone();
+    if submitter.relayed {
+        // Before any budget is spent: the revealed data must re-derive the
+        // signed commit_hash (a relayed reveal must state its timestamp), and
+        // the commit must not already be revealed.
+        let rederives = request.timestamp.is_some_and(|timestamp| {
+            Transaction::compute_commit_id(
+                &request.payload, &request.nonce, &request.station_id, timestamp, "forecast",
+            ) == request.commit_hash
+        });
+        if !rederives {
+            return envelope_error(&req, StatusCode::UNPROCESSABLE_ENTITY, "UNPROCESSABLE_ENTITY",
+                "Reveal payload does not match commit_hash");
+        }
+        if forecast_reveal_already_known(&state, &request.commit_hash).await {
+            return envelope_error(&req, StatusCode::CONFLICT, "FORECAST_REVEAL_DUPLICATE",
+                "this commit_hash is already revealed");
+        }
+    }
+    if let Err(response) = enforce_forecast_quota(&req, &state, &submitter.quota_key, true).await {
         return response;
     }
     if let Err(resp) = validate_station_id(&req, &request.station_id, "station_id") {

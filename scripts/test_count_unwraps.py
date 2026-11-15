@@ -246,6 +246,35 @@ def main() -> int:
                     f"blank real production code"
                 )
 
+    # Out-of-line test modules: excluded only when nothing else can reach them.
+    out_of_line = [
+        ("cfg(test) path module", {"lib.rs": '#[cfg(test)]\n#[path = "t.rs"]\nmod t;\n'}, 0),
+        ("cfg(test) plain module", {"lib.rs": "#[cfg(test)]\nmod t;\n"}, 0),
+        ("no cfg(test)", {"lib.rs": "mod t;\n"}, 1),
+        ("cfg(not(test))", {"lib.rs": "#[cfg(not(test))]\nmod t;\n"}, 1),
+        ("cfg(all(test, ..)) stays counted", {"lib.rs": '#[cfg(all(test, feature = "x"))]\nmod t;\n'}, 1),
+        ("also a production module", {"lib.rs": "#[cfg(test)]\nmod t;\nmod a;\n", "a.rs": "mod t;\n"}, 1),
+        ("also included", {"lib.rs": '#[cfg(test)]\nmod t;\ninclude!("t.rs");\n'}, 1),
+        ("second path to it", {"lib.rs": '#[cfg(test)]\nmod t;\n#[path = "t.rs"]\nmod other;\n'}, 1),
+        ("nested in an inline module", {"lib.rs": "mod inner {\n#[cfg(test)]\nmod t;\n}\n"}, 1),
+        ("commented-out attribute", {"lib.rs": "// #[cfg(test)]\nmod t;\n"}, 1),
+    ]
+    for label, files, want in out_of_line:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, text in files.items():
+                (root / name).write_text(text)
+            (root / "t.rs").write_text(PRODUCTION_ONE)
+            got = count_root(root)
+            if got != want:
+                failures.append(f"out-of-line module, {label}: got {got}, want {want}")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "lib.rs").write_text("#[cfg(test)]\nmod t;\n" + PRODUCTION_ONE)
+        (root / "t.rs").write_text(PRODUCTION_ONE)
+        if count_root(root) != 1:
+            failures.append("production unwrap next to an out-of-line test module must still count")
+
     if failures:
         print("count_unwraps self-test FAILED:", file=sys.stderr)
         for f in failures:

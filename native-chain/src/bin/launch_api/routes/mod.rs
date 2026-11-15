@@ -1,5 +1,11 @@
 pub mod node_receipts;
 pub mod node_bonds;
+pub mod node_fraud;
+pub mod security_key;
+pub mod node_shutdown;
+pub mod send_allowlist;
+pub mod advisory_governance;
+pub mod forecast_late_score;
 pub mod bridge;
 pub mod chain;
 // Dev endpoints (#2139): absent from any build without `--features dev-endpoints`.
@@ -25,6 +31,7 @@ pub mod quality;
 pub mod query_cost;
 pub mod rewards;
 pub mod scarcity;
+pub mod session_keys;
 pub mod schedule_extension;
 pub mod signing_keys;
 pub mod snapshot;
@@ -69,6 +76,7 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         // returns is governance-signed, so a caller verifies the artifact
         // rather than trusting this node's answer.
         .route("/network/upgrade", web::get().to(network::get_network_upgrade))
+        .route("/network/producers", web::get().to(network::get_network_producers))
         // Legacy API compatibility routes retained for smoke-envelope validation.
         .route("/blockchain", web::get().to(chain::get_blockchain_compat))
         .route("/chain/blocks", web::get().to(chain::get_chain_blocks))
@@ -80,6 +88,10 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             "/addresses/{address}/transactions",
             web::get().to(chain::get_address_transactions),
         )
+        .route(
+            "/addresses/{address}/credits",
+            web::get().to(chain::get_address_credits),
+        )
         .route("/mempool/pending", web::get().to(chain::get_mempool_pending))
         .route(
             "/transactions/submit",
@@ -90,13 +102,58 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             web::post().to(transactions::submit_permissionless_transaction),
         )
         .route("/participation/policy", web::get().to(transactions::get_participation_policy))
+        // Session keys: list an account's grants; admit an owner-signed
+        // register/revoke. Spending uses /transactions/submit.
+        .route(
+            "/accounts/{address}/session-keys",
+            web::get().to(session_keys::list_session_keys),
+        )
+        .route(
+            "/session-keys/submit",
+            web::post().to(session_keys::submit_session_key_action),
+        )
         .route("/addresses/{address}", web::get().to(chain::get_address_compat))
+        // Security-key wallets (`security_key_spend`): public status read and
+        // client-signed actions, dry-run against State before enqueueing.
+        .route(
+            "/accounts/{address}/security-key",
+            web::get().to(security_key::get_security_key_status),
+        )
+        .service(
+            web::resource("/accounts/security-key/actions")
+                .app_data(
+                    web::JsonConfig::default()
+                        .limit(security_key::MAX_SECURITY_KEY_ACTION_JSON_BYTES),
+                )
+                .route(web::post().to(security_key::submit_security_key_action)),
+        )
         .route("/prometheus", web::get().to(chain::get_prometheus_metrics))
         .route("/metrics", web::get().to(chain::get_prometheus_metrics))
         .route("/heatmap/json", web::get().to(chain::get_heatmap_json_compat))
         // Explicit fallback handlers used when feature families are disabled.
         .route("/cross_chain", web::get().to(chain::cross_chain_feature_disabled))
         .route("/cross_chain/status", web::get().to(chain::cross_chain_feature_disabled))
+        // Advisory governance (`advisory_governance`): signed text proposals
+        // and votes. Separate from the legacy /governance/proposals routes.
+        // Registered BEFORE the /governance scope: a matched scope prefix
+        // never falls through to later top-level routes.
+        .service(
+            web::resource("/governance/advisory/submit")
+                .app_data(web::JsonConfig::default().limit(advisory_governance::MAX_ADVISORY_JSON_BYTES))
+                .route(web::post().to(advisory_governance::submit)),
+        )
+        .route(
+            "/governance/advisory/proposals",
+            web::get().to(advisory_governance::list),
+        )
+        .route(
+            "/governance/advisory/proposals/{id}",
+            web::get().to(advisory_governance::show),
+        )
+        .route(
+            "/governance/advisory/proposals/{id}/eligibility",
+            web::get().to(advisory_governance::eligibility),
+        )
         .service(
             web::scope("/governance")
                 .route("/proposals", web::get().to(governance::list_governance_proposals))
@@ -135,6 +192,16 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             "/transactions/contribution/reveal",
             web::post().to(transactions::submit_contribution_reveal),
         )
+        // Forecast late score (`forecast_late_score`): relay a quorum-signed
+        // score; read the lane's state. Refused until the feature is in force.
+        .service(
+            web::resource("/forecast/late-score/submit")
+                .app_data(web::JsonConfig::default().limit(forecast_late_score::MAX_FORECAST_SCORE_JSON_BYTES))
+                .route(web::post().to(forecast_late_score::submit)),
+        )
+        .route("/forecast/late-score", web::get().to(forecast_late_score::status))
+        .route("/forecast/late-score/buckets/{id}", web::get().to(forecast_late_score::bucket))
+        .route("/forecast/late-score/records/{commit_id}", web::get().to(forecast_late_score::record))
         .route(
             "/transactions/forecast/commit",
             web::post().to(transactions::submit_forecast_commit),
@@ -190,6 +257,15 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .route(
             "/transactions/station/owner-actions",
             web::post().to(station::submit_station_owner_transactions),
+        )
+        .service(
+            web::resource("/accounts/send-allowlist/submit")
+                .app_data(web::JsonConfig::default().limit(send_allowlist::MAX_SEND_ALLOWLIST_JSON_BYTES))
+                .route(web::post().to(send_allowlist::submit)),
+        )
+        .route(
+            "/accounts/{address}/send-allowlist",
+            web::get().to(send_allowlist::show),
         )
         .route(
             "/transactions/oracle/registrations",
@@ -288,6 +364,10 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
             web::get().to(snapshot::get_state_snapshot_entries),
         )
         .route(
+            "/state/snapshot/prefix-counts",
+            web::get().to(snapshot::get_state_snapshot_prefix_counts),
+        )
+        .route(
             "/state/snapshot/proof/{key_hex}",
             web::get().to(snapshot::get_state_snapshot_proof),
         )
@@ -311,11 +391,20 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .service(web::resource("/network/snapshot-sync/receiver-ingest").guard(actix_web::guard::fn_guard(receipt_consumer_ingest_configured)).app_data(web::JsonConfig::default().limit(node_receipts::MAX_NODE_RECEIVER_SNAPSHOT_INGEST_BYTES)).route(web::post().to(node_receipts::ingest)))
         .service(web::resource("/network/snapshot-sync/receiver-ingest").app_data(web::JsonConfig::default().limit(node_receipts::MAX_NODE_BONDED_SNAPSHOT_INGEST_BYTES)).route(web::post().to(node_receipts::ingest)))
         .service(web::resource("/network/snapshot-sync/bonded-ticket").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(16 * 1024)).route(web::post().to(node_receipts::ticket)))
+        // Receiver side of a P2P bonded fetch (Operator; consumer key signs a fetch-only authorization).
+        .configure(|c| {
+            #[cfg(feature = "p2p")]
+            c.service(web::resource("/network/snapshot-sync/p2p-fetch-auth").app_data(web::JsonConfig::default().limit(1024)).route(web::post().to(node_receipts::fetch_auth)));
+            #[cfg(not(feature = "p2p"))]
+            let _ = c;
+        })
         .service(web::resource("/network/snapshot-sync/bonded-endorsement").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(4096)).route(web::post().to(node_receipts::endorse)))
+        .route("/node/bonds", web::get().to(node_bonds::list))
         .service(web::resource("/node/bonds/submit").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(40 * 1024)).route(web::post().to(node_bonds::submit)))
         .service(web::resource("/node/bonds/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::inspect)))
         .service(web::resource("/node/settlement/{epoch}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_receipts::settlement)))
         .service(web::resource("/node/receipts/submit").guard(actix_web::guard::fn_guard(node_receipts_configured)).app_data(web::JsonConfig::default().limit(40 * 1024)).route(web::post().to(node_receipts::submit)))
+        .service(web::resource("/node/fraud/submit").guard(actix_web::guard::fn_guard(node_fraud::route_enabled)).app_data(web::JsonConfig::default().limit(node_fraud::MAX_NODE_FRAUD_JSON_BYTES)).route(web::post().to(node_fraud::submit)))
         .service(web::resource("/node/receipts/{id}").guard(actix_web::guard::fn_guard(node_receipts_configured)).route(web::get().to(node_bonds::receipt)))
         .route("/state/snapshot/export", web::get().to(snapshot::get_state_snapshot_export))
         .route(
@@ -341,6 +430,8 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         // #3599: the operator status page — one embedded HTML document that
         // renders the routes above in a browser. Carries no data; no token.
         .route("/dashboard", web::get().to(status_page::dashboard))
+        // The page's Stop button: the same graceful shutdown as Ctrl-C. Operator only.
+        .route("/node/shutdown", web::post().to(node_shutdown::shutdown_node))
         // Partition-mode status + operator push (#1217)
         .route(
             "/node/partition-status",

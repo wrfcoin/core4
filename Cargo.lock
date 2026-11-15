@@ -8254,6 +8254,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
+ "sha2",
  "sha3",
  "thiserror 1.0.69",
  "ts-rs",
@@ -8294,7 +8295,7 @@ dependencies = [
 
 [[package]]
 name = "wrfcoin-native-chain"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "actix",
  "actix-cors",
@@ -8509,6 +8510,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "wrf-primitives",
  "wrfcoin-build-provenance",
  "wrfcoin-dataset-manifest",
@@ -8549,6 +8551,7 @@ name = "wrfcoin_cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.21.7",
  "bip39",
  "byteorder",
@@ -8567,6 +8570,7 @@ dependencies = [
  "hex",
  "indicatif",
  "libc",
+ "libp2p",
  "libp2p-identity",
  "log",
  "mockito",
@@ -8585,6 +8589,7 @@ dependencies = [
  "url",
  "uuid",
  "wrfcoin-build-provenance",
+ "wrfcoin-forecast-score",
  "wrfcoin-shared-protocol",
  "zeroize",
 ]

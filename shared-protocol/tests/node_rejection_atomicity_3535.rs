@@ -552,6 +552,13 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
+        StateTransition::ApplyStationRegistrarRegistration { .. } => {
+            "ApplyStationRegistrarRegistration"
+        },
+        StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
+        StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
+        StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
+        StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
     }
 }
 
@@ -751,6 +758,7 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
                 owner_signature: String::new(),
             },
             block_height: fixture::A,
+            security_key_auth: None,
         },
         54 => StateTransition::BeginNodeServiceBlock {
             block_height: fixture::A + 1,
@@ -758,6 +766,56 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
         },
         55 => StateTransition::ApplyNodeBondLifecycle {
             payload: fixture::auth(20, 2, 0, NodeBondAction::Deposit, 1),
+            block_height: fixture::A,
+        },
+        // `station_registrar_key` (unscheduled here, so refused): the station
+        // record of the v2 registration fixture.
+        58 => match sweep_transition(53) {
+            StateTransition::ApplyStationRegistrationV2 { station, block_height, .. } => {
+                StateTransition::ApplyStationRegistrarRegistration { station, block_height }
+            },
+            other => panic!("fixture 53 drifted: {other:?}"),
+        },
+        // `advisory_governance`: no such proposal, so refused.
+        59 => StateTransition::FinalizeAdvisoryProposal {
+            proposal_id: "adv-0000000000000000".into(),
+            current_block: fixture::A,
+        },
+        // `forecast_late_score` (unscheduled here, so both are refused).
+        60 => StateTransition::ApplyForecastScore {
+            payload: serde_json::from_value(serde_json::json!({
+                "attestation": {
+                    "station_id": "sweep",
+                    "variable": "temperature_c",
+                    "lead_hours": 6,
+                    "commit_height": 5,
+                    "commit_time": 3_600,
+                    "target": 25_200,
+                    "truth": 2_000,
+                    "truth_commit_id": "t1",
+                    "reference": 300,
+                    "mean24": 1_900,
+                    "last": 2_100,
+                    "window_hash": "00".repeat(32),
+                    "window_commit_ids": ["r1"],
+                },
+                "signatures": [{ "oracle": hex::encode(fixture::pk(20)), "ed25519": "00".repeat(64) }],
+                "forecast_commit_ids": ["f1"],
+            }))
+            .unwrap(),
+            block_height: fixture::A,
+            block_timestamp: 100_000,
+        },
+        61 => StateTransition::CloseForecastBuckets {
+            block_height: fixture::A,
+            block_timestamp: 10_000,
+        },
+        // `station_submitter_key` (unscheduled here, so refused).
+        62 => StateTransition::ApplyStationSubmitterKey {
+            station_id: "sweep".into(),
+            owner_address: fixture::address(20).to_string(),
+            action_nonce: 0,
+            submitter: None,
             block_height: fixture::A,
         },
         _ => {
@@ -834,6 +892,11 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "ApplyNodeBondLifecycle",
         "ApplyNodeServiceBatch",
         "ApplyNodeFraudReport",
+        "ApplyStationRegistrarRegistration",
+        "FinalizeAdvisoryProposal",
+        "ApplyForecastScore",
+        "CloseForecastBuckets",
+        "ApplyStationSubmitterKey",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {

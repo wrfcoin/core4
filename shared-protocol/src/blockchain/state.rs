@@ -42,6 +42,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use wrfcoin_geo_grid::GeoCell;
 use wrfcoin_reputation_engine::{ContributorRole, ReputationEvent, ReputationSignal};
 
+/// A sponsorship that passed every check and is waiting for its transfer to
+/// apply (sponsored first sends). Private to the transfer apply path.
+struct SponsorshipCharge {
+    sponsor: Address,
+    fee: u64,
+    floor: u64,
+    record: crate::accounts::paymaster::PaymasterAccount,
+}
+
 /// Height at which ring signature cryptographic verification activates.
 const RING_SIG_VERIFICATION_ACTIVATION_HEIGHT: u64 = 0;
 
@@ -1084,6 +1093,10 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "node_receipt_registry",
     "node_settlement",
     "node_fraud",
+    "send_allowlists",
+    "advisory_proposals",
+    "forecast_late_score",
+    "station_submitters",
 ];
 
 /// Global state of the blockchain.
@@ -1500,6 +1513,50 @@ pub struct State {
     pub node_settlement: Option<crate::consensus::node_settlement::NodeSettlement>,
     #[serde(default)]
     pub node_fraud: Option<crate::consensus::node_fraud::NodeFraudState>,
+    /// Per-account send allowlists (`accounts::send_allowlist`). Written only
+    /// by the `TransactionType::SendAllowlist` arm of
+    /// `apply_protocol_transaction`, which is refused below the UNSCHEDULED
+    /// `ConsensusFeature::SendAllowlist` activation, so it is empty on every
+    /// chain that has not scheduled it. While empty it is absent from
+    /// `state_root_material`, from checkpoints (written at the previous
+    /// format) and from snapshots, and every value guard is a no-op. Appended
+    /// at checkpoint format 16; `#[serde(default)]` so older JSON snapshots
+    /// deserialize.
+    #[serde(default)]
+    pub send_allowlists:
+        BTreeMap<Address, crate::accounts::send_allowlist::AccountSendAllowlist>,
+    /// Advisory proposals (`governance::advisory`), by chain-derived id.
+    /// Written only by the `TransactionType::AdvisoryGovernance` arm of
+    /// `apply_protocol_transaction` (refused below the UNSCHEDULED
+    /// `ConsensusFeature::AdvisoryGovernance` activation) and by
+    /// `FinalizeAdvisoryProposal`, so it is empty on every chain that has not
+    /// scheduled it. While empty it is absent from `state_root_material`, from
+    /// checkpoints (written at the previous format) and from snapshots.
+    /// Separate from `governance.proposals` on purpose: no legacy vote,
+    /// finalize or parameter path reads it. Appended at checkpoint format 17;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub advisory_proposals:
+        BTreeMap<String, crate::governance::advisory::AdvisoryProposal>,
+    /// Forecast late score (`consensus::forecast_late_score`): forecast
+    /// commits waiting for a reveal, recorded forecasts, open buckets and the
+    /// per-epoch pool ledger. Written only while
+    /// `forecast_late_score_active(height)`, so it is empty on every chain
+    /// that has not scheduled the feature. While empty it is absent from
+    /// `state_root_material`, from checkpoints (written at the previous
+    /// format) and from snapshots. Appended at checkpoint format 18;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub forecast_late_score: crate::consensus::forecast_late_score::ForecastLateScoreState,
+    /// `station_submitter_key` (#3565 design 1): owner-approved submitter keys
+    /// per station, and the signer class of recent accepted commits (written
+    /// only while `device_submission_limit` is active). Empty on every chain
+    /// that has not scheduled those features; while empty it is absent from
+    /// `state_root_material`, from checkpoints (written at format 18) and from
+    /// snapshots. Appended at checkpoint format 19; `#[serde(default)]` so
+    /// older JSON snapshots deserialize.
+    #[serde(default)]
+    pub station_submitters: crate::blockchain::station_owner::StationSubmitterState,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1611,6 +1668,10 @@ impl State {
             node_receipt_registry: None,
             node_settlement: None,
             node_fraud: None,
+            send_allowlists: BTreeMap::new(),
+            advisory_proposals: BTreeMap::new(),
+            forecast_late_score: Default::default(),
+            station_submitters: Default::default(),
         }
     }
 
@@ -1797,6 +1858,21 @@ impl State {
 
     fn apply_node_bond_lifecycle(&mut self, payload: &crate::consensus::node_bond_registry::NodeBondLifecycle, height: u64) -> Result<(), StateError> {
         if !self.node_share_activation_height().is_some_and(|activation| height >= activation) { return Err(StateError::InvalidTransition); }
+        // Send allowlist: Deposit/Update bind a payout account that receives
+        // the bond's rewards, so it must be a permitted destination of the
+        // owner. Exit/Withdraw return principal to the owner and are allowed.
+        // A no-op while no account has a policy (always, pre-activation).
+        if !self.send_allowlists.is_empty() {
+            let a = &payload.signed.authorization;
+            if matches!(a.action, crate::consensus::node_share_contracts::NodeBondAction::Deposit
+                | crate::consensus::node_share_contracts::NodeBondAction::Update)
+                && !crate::accounts::send_allowlist::permits(&self.send_allowlists, &a.owner_account, &a.payout_account, height)
+            {
+                return Err(StateError::Governance(crate::accounts::send_allowlist::destination_refusal(
+                    &a.owner_account, &a.payout_account, height,
+                )));
+            }
+        }
         let authority = crate::governance::schedule_extension::schedule_extension_authority().ok_or(StateError::InvalidTransition)?;
         let context = authority.context();
         let genesis: [u8; 32] = hex::decode(context.genesis_hash).map_err(|_| StateError::InvalidTransition)?
@@ -1973,12 +2049,19 @@ impl State {
             station.location.latitude,
             station.location.longitude,
         );
+        let (station_id, new_owner) = (station.station_id.clone(), station.owner_address.clone());
 
         let previous = self
             .station_registry
             .upsert(station)
             .map_err(|e| StateError::Governance(format!("station registration failed: {e}")))?;
 
+        if let Some(previous) = &previous {
+            // `station_submitter_key`: a registration that changes the owner
+            // (possible while `station_owner_consent` is off) revokes the
+            // approved submitter key; a no-op while the map is empty.
+            self.revoke_submitter_on_owner_change(&station_id, &previous.owner_address, &new_owner);
+        }
         if let Some(previous) = previous {
             if previous.is_active {
                 let old_cell = crate::consensus::data_desert::cell_for_station(
@@ -2528,7 +2611,13 @@ impl State {
                 | TransactionType::ConfidentialTransfer
                 | TransactionType::ShieldedDeposit
                 | TransactionType::ShieldedWithdrawal
-                | TransactionType::RewardClaim => {
+                | TransactionType::RewardClaim
+                | TransactionType::SecurityKeyAction
+                // Applied through the same shared sink as Transfer, so producer
+                // == applier == WAL replay. Its arm refuses it pre-activation.
+                | TransactionType::SendAllowlist
+                // Advisory governance: same shared sink; refused pre-activation.
+                | TransactionType::AdvisoryGovernance => {
                     let transition = StateTransition::ProcessGovernanceTransaction {
                         tx: tx.clone(),
                         current_block,
@@ -2569,6 +2658,15 @@ impl State {
                 current_block,
                 current_timestamp,
             });
+        }
+
+        // Advisory proposals due at this height, in id order. Always empty
+        // before `advisory_governance` activates (the map is empty), so no
+        // transition is added and pre-activation blocks are unchanged.
+        for proposal_id in
+            crate::governance::advisory::due_proposal_ids(&simulated.advisory_proposals, current_block)
+        {
+            transitions.push(StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block });
         }
 
         transitions
@@ -3553,8 +3651,13 @@ impl State {
         // refuses every `ApplySessionKeyAction` transition, so this map is
         // provably empty and every historical `expected_roots.json` entry is
         // byte-identical whether this section exists in the code or not.
+        //
+        // v2 (session-key transfers): each record also folds the optional
+        // spend window and its counters. The section has never been emitted
+        // on any chain (the map is empty while the feature is unscheduled),
+        // so the tag bump changes no historical root.
         if !self.session_keys.is_empty() {
-            material.extend_from_slice(b"wrfcoin_session_keys_v1");
+            material.extend_from_slice(b"wrfcoin_session_keys_v2");
             push_u64(&mut material, self.session_keys.len() as u64);
             for (owner, owner_state) in &self.session_keys {
                 push_bytes(&mut material, &owner.0);
@@ -3580,6 +3683,16 @@ impl State {
                     push_u32(&mut material, record.uses_so_far);
                     push_u128(&mut material, record.cumulative_value_used);
                     push_bool(&mut material, record.revoked);
+                    match record.grant.scope.window {
+                        Some(window) => {
+                            push_bool(&mut material, true);
+                            push_u64(&mut material, window.blocks);
+                            push_u128(&mut material, window.max_value);
+                        },
+                        None => push_bool(&mut material, false),
+                    }
+                    push_u64(&mut material, record.window_index);
+                    push_u128(&mut material, record.window_value_used);
                 }
             }
         }
@@ -3599,6 +3712,24 @@ impl State {
                             crate::accounts::authorization::AuthorizationRule::SignerIsSender => push_u64(&mut material, 0),
                             crate::accounts::authorization::AuthorizationRule::SmartAccount { program } => { push_u64(&mut material, 1); push_bytes(&mut material, program); },
                             crate::accounts::authorization::AuthorizationRule::Delegated { program, valid_until } => { push_u64(&mut material, 2); push_bytes(&mut material, program); push_optional_u64(&mut material, valid_until.map(|v| v.into_inner())); },
+                            // `security_key_spend`: storable only once the
+                            // feature is active, so absent from every
+                            // pre-activation root.
+                            crate::accounts::authorization::AuthorizationRule::SignerPlusSecurityKey { policy } => {
+                                push_u64(&mut material, 3);
+                                push_u64(&mut material, policy.keys.len() as u64);
+                                for key in &policy.keys {
+                                    push_bytes(&mut material, &key.public_key_p256);
+                                    push_bytes(&mut material, &key.rp_id_hash);
+                                    push_bytes(&mut material, &key.credential_id);
+                                }
+                                push_u64(&mut material, policy.escape_delay_blocks);
+                                push_bool(&mut material, policy.pending_escape.is_some());
+                                if let Some(escape) = &policy.pending_escape {
+                                    push_u64(&mut material, escape.initiated_at_height);
+                                    push_u64(&mut material, escape.executable_at_height);
+                                }
+                            },
                         }
                     }
                 }
@@ -3745,6 +3876,81 @@ impl State {
             material.extend_from_slice(b"wrfcoin_node_bond_registry_v1");
             push_bytes(&mut material, &registry.canonical_body());
         }
+
+        // --- send_allowlists (ConsensusFeature::SendAllowlist) ---
+        //
+        // CONDITIONAL, like `station_owner_ledger`: absent from the pre-image
+        // (not even a tag) while empty, and empty until the unscheduled
+        // feature activates and an owner acts, so every root is byte-identical
+        // to a binary without this field until then. Explicit length-prefixed
+        // encoding in BTreeMap/BTreeSet order.
+        if !self.send_allowlists.is_empty() {
+            material.extend_from_slice(b"wrfcoin_send_allowlists_v1");
+            push_u64(&mut material, self.send_allowlists.len() as u64);
+            for (account, entry) in &self.send_allowlists {
+                push_bytes(&mut material, &account.0);
+                push_u64(&mut material, entry.action_nonce);
+                match &entry.policy {
+                    None => push_u8(&mut material, 0),
+                    Some(policy) => {
+                        push_u8(&mut material, 1);
+                        push_u64(&mut material, policy.enabled_at_height);
+                        push_u64(&mut material, policy.add_delay_blocks);
+                        push_u64(&mut material, policy.allowed.len() as u64);
+                        for address in &policy.allowed {
+                            push_bytes(&mut material, &address.0);
+                        }
+                        push_u64(&mut material, policy.pending_additions.len() as u64);
+                        for (address, pending) in &policy.pending_additions {
+                            push_bytes(&mut material, &address.0);
+                            push_u64(&mut material, pending.requested_at_height);
+                            push_u64(&mut material, pending.effective_at_height);
+                        }
+                        match &policy.pending_disable {
+                            None => push_u8(&mut material, 0),
+                            Some(pending) => {
+                                push_u8(&mut material, 1);
+                                push_u64(&mut material, pending.requested_at_height);
+                                push_u64(&mut material, pending.effective_at_height);
+                            },
+                        }
+                        push_optional_u64(&mut material, policy.requests_blocked_until_height);
+                    },
+                }
+            }
+        }
+
+        // --- advisory_proposals (ConsensusFeature::AdvisoryGovernance) ---
+        //
+        // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
+        // even a tag) while empty, and empty until the unscheduled feature
+        // activates and someone proposes, so every root is byte-identical to
+        // a binary without this field until then.
+        if !self.advisory_proposals.is_empty() {
+            crate::governance::advisory::root_material(&self.advisory_proposals, &mut material);
+        }
+
+        // --- forecast_late_score (ConsensusFeature::ForecastLateScore) ---
+        //
+        // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
+        // even a tag) while empty, and empty until the unscheduled feature is
+        // in force and a forecast is committed, so every root is
+        // byte-identical to a binary without this field until then.
+        if !self.forecast_late_score.is_empty() {
+            self.forecast_late_score.root_material(&mut material);
+        }
+
+        // --- station_submitters (ConsensusFeature::StationSubmitterKey) ---
+        //
+        // CONDITIONAL, like `forecast_late_score`: absent from the pre-image
+        // (not even a tag) while empty, and empty until an owner approves a
+        // key under the unscheduled feature (or a commit is accepted under
+        // `device_submission_limit`), so every root is byte-identical to a
+        // binary without this field until then.
+        if !self.station_submitters.is_empty() {
+            material.extend_from_slice(b"wrfcoin_station_submitters_v1");
+            push_bytes(&mut material, &self.station_submitters.canonical_body());
+        }
         material
     }
 
@@ -3883,6 +4089,17 @@ impl State {
                 nonce,
                 current_block,
             } => {
+                // Send allowlist: the one debit-to-destination seam. Every
+                // transparent transfer (ed25519, passkey or authority signed)
+                // and any future emitter reaches it. Checked before any
+                // mutation; a no-op while no account has a policy.
+                if !self.send_allowlists.is_empty()
+                    && !crate::accounts::send_allowlist::permits(&self.send_allowlists, &from, &to, current_block)
+                {
+                    return Err(StateError::Governance(
+                        crate::accounts::send_allowlist::destination_refusal(&from, &to, current_block),
+                    ));
+                }
                 {
                     let sender = self
                         .get_account_mut(&from)
@@ -4113,6 +4330,21 @@ impl State {
                 if record.station_id.trim().is_empty() {
                     return Err(StateError::ContributionReward(
                         "station_id is required".to_string(),
+                    ));
+                }
+                // `forecast_late_score`: once it is in force a forecast reveal
+                // earns nothing through this path; forecasts are paid at
+                // bucket close only. The producer emits no such record, so a
+                // block carrying one is refused.
+                if record.amount.0 != 0
+                    && record.reason.starts_with(
+                        crate::consensus::proof_of_publishing::FORECAST_REWARD_REASON_PREFIX,
+                    )
+                    && crate::crypto::chain_binding::forecast_late_score_active(current_block)
+                {
+                    return Err(StateError::ContributionReward(
+                        "forecast reveal credits are off while forecast_late_score is in force"
+                            .to_string(),
                     ));
                 }
                 if !record.provenance_class.is_reward_eligible() && record.amount.0 != 0 {
@@ -4590,6 +4822,38 @@ impl State {
                 payload,
                 block_height,
             } => {
+                // #3565 (a), gated: from `device_submission_limit`'s activation a
+                // contribution commit for a REGISTERED station must be authorized
+                // by that station's registered owner key, so only the owner can
+                // occupy the station's one-per-block reveal slot. The commit's
+                // `auth_pubkey` already signs (station_id, commit_id, type); this
+                // binds that key to `owner_address` with the #2742 rule. An
+                // unregistered station has no owner to bind and is unchanged.
+                // Forecast commits are #3290's surface and are untouched here. The
+                // exemption keys on the payload string, so it is sound only
+                // because, from the same activation, the shared classifier refuses
+                // a `ContributionCommit` that declares `"forecast"` (and a
+                // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
+                let mut commit_signer = None;
+                if payload.contribution_type != "forecast"
+                    && crate::crypto::chain_binding::device_submission_limit_active(block_height)
+                {
+                    if let Some(station) = self.station_registry.get(&payload.station_id) {
+                        // `station_submitter_key`: the owner key OR the
+                        // station's approved submitter key (none while that
+                        // feature is inactive, so then only the owner key).
+                        let Some(signer) =
+                            self.contribution_commit_signer(station, payload.auth_pubkey.as_deref())
+                        else {
+                            return Err(StateError::CommitReveal(format!(
+                                "{}: commit for station {} is not authorized by its registered owner key or approved submitter key",
+                                crate::consensus::proof_of_publishing::SP_DEVICE_COMMIT_NOT_OWNER,
+                                payload.station_id
+                            )));
+                        };
+                        commit_signer = Some(signer);
+                    }
+                }
                 let provenance_class = self
                     .station_registry
                     .get(&payload.station_id)
@@ -4598,6 +4862,47 @@ impl State {
                 self.commit_reveal_state
                     .register_commit_with_provenance(&payload, block_height, provenance_class)
                     .map_err(|e| StateError::CommitReveal(e.to_string()))?;
+                // Signer class on chain (owner / device / relay), only for a
+                // commit accepted under `device_submission_limit` once
+                // `station_submitter_key` is active (before it, every such
+                // commit is owner-signed and the map stays empty, so roots
+                // equal a binary without it).
+                if let Some(signer) = commit_signer.filter(|_| {
+                    crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                        block_height,
+                    )
+                }) {
+                    self.record_commit_signer(&payload.commit_id, signer, block_height);
+                }
+                // Forecast late score: remember which key signed a forecast
+                // commit, so the reveal can be recorded for that forecaster.
+                // The key is the one whose signature verifies over the commit;
+                // nothing is taken from the transaction's sender. Inactive:
+                // never reached, the map stays empty.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                    && payload.verify_authorization()
+                {
+                    let forecaster = payload
+                        .auth_pubkey
+                        .as_deref()
+                        .and_then(|key| PublicKey::from_hex(key).ok())
+                        .map(|key| Address::from_public_key(&key));
+                    let expires_at = self
+                        .commit_reveal_state
+                        .pending_commits
+                        .get(&payload.commit_id)
+                        .map(|commit| commit.reveal_expires_at);
+                    if let (Some(forecaster), Some(expires_at)) = (forecaster, expires_at) {
+                        self.forecast_late_score.note_commit(
+                            &payload.commit_id,
+                            forecaster,
+                            block_height,
+                            expires_at,
+                        );
+                    }
+                }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
             },
@@ -4838,6 +5143,23 @@ impl State {
                     self.station_weather_accepted_block_unix
                         .insert(payload.station_id.clone(), block_timestamp);
                 }
+                // Forecast late score: record the revealed forecast for its
+                // key-bound forecaster. Never changes whether the reveal
+                // applies. Inactive: never reached, nothing is written.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                {
+                    let station_owner = self
+                        .station_registry
+                        .get(&payload.station_id)
+                        .and_then(|station| station.owner_address.parse::<Address>().ok());
+                    self.forecast_late_score.note_reveal(
+                        &payload,
+                        block_height,
+                        block_timestamp,
+                        station_owner,
+                    );
+                }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
             },
@@ -4848,6 +5170,12 @@ impl State {
                 self.apply_confidential_transfer(payload, current_block)?;
             },
             StateTransition::ApplyShieldedDeposit { from, payload, current_block } => {
+                // Send allowlist: a pool deposit has no listable destination.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &from, current_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &from, "a shielded deposit", current_block,
+                    )));
+                }
                 self.apply_shielded_deposit(from, payload, current_block)?;
             },
             StateTransition::ApplyShieldedWithdrawal {
@@ -5096,6 +5424,12 @@ impl State {
                 }
                 if deposit < Balance::new(GOVERNANCE_DEFAULT_DEPOSIT) {
                     return Err(StateError::Governance("Deposit below minimum".to_string()));
+                }
+                // Send allowlist: the deposit is held, never refunded.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &proposer, created_at_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &proposer, "a governance proposal deposit", created_at_block,
+                    )));
                 }
                 let (eligible_voting_power, eligible_voting_power_by_voter) =
                     self.governance_electorate_snapshot()?;
@@ -5621,12 +5955,54 @@ impl State {
                     self.move_recovered_account(account, public_key)?;
                 }
             },
-            StateTransition::ApplySessionKeyAction { action, block_height } => {
+            StateTransition::ApplySessionKeyAction { action, block_height, security_key_auth } => {
                 if !crate::crypto::chain_binding::feature_active(
                     crate::crypto::chain_binding::ConsensusFeature::SessionKeys,
                     block_height,
                 ) {
                     return Err(StateError::InvalidTransition);
+                }
+                // `security_key_spend`: a session key is a delegated spender,
+                // so on an account whose security-key rule is in force it can
+                // only be registered with the key co-signing (otherwise a
+                // phrase-only thief could register one and spend around the
+                // key). Revocation stays phrase-only: it only removes power.
+                if let crate::accounts::session_keys::SessionKeyAction::Register {
+                    owner,
+                    registration_nonce,
+                    grant,
+                    ..
+                } = &action
+                {
+                    let message = crate::accounts::session_keys::session_key_register_message(
+                        &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                        owner,
+                        *registration_nonce,
+                        grant,
+                    );
+                    crate::accounts::security_key::delegation_gate(
+                        &self.authorization_declarations,
+                        owner,
+                        &message,
+                        security_key_auth.as_ref(),
+                        block_height,
+                    )
+                    .map_err(|e| {
+                        StateError::Governance(format!(
+                            "SP_SECURITY_KEY_REQUIRED: session key registration on a security-key account: {e}"
+                        ))
+                    })?;
+                }
+                // Send allowlist: a session key spends the owner's value to
+                // `target`; the owner's list binds it like any other signer.
+                if let crate::accounts::session_keys::SessionKeyAction::Use { owner, target, value, .. } = &action {
+                    if *value > 0
+                        && !crate::accounts::send_allowlist::permits(&self.send_allowlists, owner, target, block_height)
+                    {
+                        return Err(StateError::Governance(
+                            crate::accounts::send_allowlist::destination_refusal(owner, target, block_height),
+                        ));
+                    }
                 }
                 crate::accounts::session_keys::apply(
                     &mut self.session_keys,
@@ -5708,6 +6084,49 @@ impl State {
                     },
                 }
             }
+            StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block } => {
+                self.finalize_advisory_proposal(&proposal_id, current_block)?;
+            },
+            StateTransition::ApplyForecastScore { payload, block_height, block_timestamp } => {
+                self.apply_forecast_score(&payload, block_height, block_timestamp)?;
+            },
+            StateTransition::CloseForecastBuckets { block_height, block_timestamp } => {
+                self.close_forecast_buckets(block_height, block_timestamp)?;
+            },
+            StateTransition::ApplyStationRegistrarRegistration {
+                station,
+                block_height,
+            } => {
+                // Never emitted below activation; refusing it there keeps a
+                // forged or mis-built transition from changing state.
+                if !crate::consensus::station_registrar::station_registrar_key_active(block_height)
+                    || !crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationRegistrationNonce,
+                        block_height,
+                    )
+                {
+                    return Err(StateError::InvalidTransition);
+                }
+                let station_id = station.station_id.clone();
+                let refusal =
+                    crate::consensus::station_registrar::registrar_state_refusal(self, &station);
+                match (refusal, self.precheck_station_registration_v2(&station, 0, block_height)) {
+                    (None, Ok(mut entry)) => {
+                        self.apply_station_registration(station)?;
+                        let _ = entry.advance_nonce_for_registration();
+                        self.station_owner_ledger.insert(station_id, entry);
+                    },
+                    (refusal, precheck) => {
+                        tracing::warn!(
+                            station_id = %station_id,
+                            block_height,
+                            ?refusal,
+                            precheck = ?precheck.err(),
+                            "station registrar registration refused (inert no-op)"
+                        );
+                    },
+                }
+            }
             StateTransition::ApplyStationOwnerTransfer {
                 station_id,
                 from_owner_address,
@@ -5746,6 +6165,30 @@ impl State {
                     block_height,
                 );
                 Self::log_station_owner_refusal("action", &station_id, block_height, result);
+            }
+            StateTransition::ApplyStationSubmitterKey {
+                station_id,
+                owner_address,
+                action_nonce,
+                submitter,
+                block_height,
+            } => {
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationOwnerActions,
+                    block_height,
+                )?;
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                    block_height,
+                )?;
+                let result = self.apply_station_submitter_key(
+                    &station_id,
+                    &owner_address,
+                    action_nonce,
+                    submitter,
+                    block_height,
+                );
+                Self::log_station_owner_refusal("set submitter key", &station_id, block_height, result);
             }
             StateTransition::ApplyStationOwnerRecoveryFiling {
                 station_id,
@@ -5843,6 +6286,13 @@ impl State {
                 if let crate::accounts::paymaster::PaymasterAction::Stake {
                     paymaster, amount, unstake_delay_blocks,
                 } = &action {
+                    // Send allowlist: a sponsorship deposit pays other
+                    // accounts' costs, so it has no listable destination.
+                    if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, paymaster, block_height).is_some() {
+                        return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                            paymaster, "a paymaster stake", block_height,
+                        )));
+                    }
                     if let Some(existing) = self.paymasters.get(paymaster) {
                         if existing.unstake_delay_blocks != *unstake_delay_blocks {
                             return Err(StateError::Governance(format!(
@@ -5910,6 +6360,19 @@ impl State {
         }
         self.accounts.insert(new_owner, recovered_account);
         self.account_recovery.insert(new_owner, recovery_state);
+        // Send allowlist: the policy protects the funds, so it moves with
+        // them. If the destination key had its own entry, the recovered
+        // account's policy wins (it is the one guarding this balance) and the
+        // larger nonce is kept so no signed action can be replayed.
+        if let Some(mut moved) = self.send_allowlists.remove(&account) {
+            if let Some(existing) = self.send_allowlists.remove(&new_owner) {
+                moved.action_nonce = moved.action_nonce.max(existing.action_nonce);
+                if moved.policy.is_none() {
+                    moved.policy = existing.policy;
+                }
+            }
+            self.send_allowlists.insert(new_owner, moved);
+        }
         Ok(())
     }
 
@@ -6338,6 +6801,9 @@ impl State {
     /// Called once per block instead of per-transaction (#703).
     pub(crate) fn prune_commit_reveal_expired(&mut self, block_height: u64) {
         self.commit_reveal_state.prune_expired(block_height);
+        // `device_submission_limit` signer records age out with the applied
+        // reveals they describe; untouched while empty.
+        self.prune_commit_signers(block_height);
         self.sync_commit_reveal_views();
     }
 
@@ -6381,6 +6847,13 @@ impl State {
         // proposal submission, exactly as the shielded pool did (#2250 review).
         let mut proposal_deposits: u128 = 0;
         for record in self.governance.proposals.values() {
+            proposal_deposits = proposal_deposits
+                .checked_add(record.deposit.into_inner())
+                .ok_or(StateError::ArithmeticOverflow)?;
+        }
+        // Advisory deposits (`advisory_governance`) are the same shape: held
+        // in the record until returned (or for good after a failed quorum).
+        for record in self.advisory_proposals.values() {
             proposal_deposits = proposal_deposits
                 .checked_add(record.deposit.into_inner())
                 .ok_or(StateError::ArithmeticOverflow)?;
@@ -7629,9 +8102,24 @@ impl State {
         tx_nonce: u64,
         current_block: u64,
     ) -> Result<Option<u64>, StateError> {
-        if current_block
-            < crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT
-        {
+        self.check_and_reserve_nonce_with_activation(
+            sender,
+            tx_nonce,
+            current_block,
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+        )
+    }
+
+    /// [`Self::check_and_reserve_nonce`] with the activation height passed in,
+    /// so tests can pin the boundary for a non-zero activation. Read-only.
+    fn check_and_reserve_nonce_with_activation(
+        &mut self,
+        sender: &Address,
+        tx_nonce: u64,
+        current_block: u64,
+        activation: u64,
+    ) -> Result<Option<u64>, StateError> {
+        if current_block < activation {
             return Ok(None);
         }
         let account = match self.get_account_mut(sender) {
@@ -7657,6 +8145,350 @@ impl State {
         }
     }
 
+    /// `TransactionType::AdvisoryGovernance` (`governance::advisory`).
+    ///
+    /// [`Self::advisory_governance_check`] runs every check read-only, then
+    /// this writes its result, so a refused action leaves state untouched
+    /// (assembly drops it; a block carrying it fails apply). The only balance
+    /// this touches is the signer's own: the deposit is debited from
+    /// `tx.sender_address`, which `parse` binds to the payload account, which
+    /// `verify` binds to the signing key.
+    fn apply_advisory_governance(&mut self, tx: &Transaction, current_block: u64) -> Result<(), StateError> {
+        let effect = self.advisory_governance_check(tx, current_block)?;
+        let signer = effect.signer;
+        let next_nonce = effect.next_nonce;
+        let account = self.get_account_mut(&signer).ok_or(StateError::AccountNotFound)?;
+        if let Some(deposit) = effect.deposit {
+            account.spendable_balance =
+                account.spendable_balance.checked_sub(deposit).ok_or(StateError::ArithmeticOverflow)?;
+            account.balance = account.balance.checked_sub(deposit).ok_or(StateError::ArithmeticOverflow)?;
+        }
+        account.nonce = next_nonce;
+        self.advisory_proposals.insert(effect.proposal.id.clone(), effect.proposal);
+        Ok(())
+    }
+
+    /// Every consensus check of an advisory action at `current_block`,
+    /// read-only, returning what applying it would write. The node's submit
+    /// route calls this for an advisory dry run at tip + 1; consensus calls
+    /// it from the apply arm, so both always agree.
+    pub fn advisory_governance_check(
+        &self,
+        tx: &Transaction,
+        current_block: u64,
+    ) -> Result<crate::governance::advisory::AdvisoryEffect, StateError> {
+        use crate::governance::advisory::{
+            self as advisory, AdvisoryAction, AdvisoryEffect, AdvisoryProposal, AdvisoryStatus,
+            SignedAdvisoryAction,
+        };
+        fn refuse(message: impl std::fmt::Display) -> StateError {
+            StateError::Governance(format!("SP_ADVISORY_GOVERNANCE_REFUSED: {message}"))
+        }
+        if !crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::AdvisoryGovernance,
+            current_block,
+        ) {
+            return Err(StateError::InvalidTransition);
+        }
+        let signed = SignedAdvisoryAction::parse(tx).ok_or_else(|| {
+            StateError::Governance("SP_ADVISORY_GOVERNANCE_PAYLOAD_INVALID: invalid advisory payload".to_string())
+        })?;
+        let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        signed.verify(&identity.chain_id, &identity.network_id).map_err(refuse)?;
+        let signer = signed.account;
+
+        // Strict nonce: the account must exist and the signed nonce (equal to
+        // `tx.nonce` by `parse`) must be its current nonce. Not the
+        // height-gated `check_and_reserve_nonce`, which skips absent accounts.
+        let account = self.accounts.get(&signer).ok_or_else(|| refuse("unknown account"))?;
+        if signed.nonce != account.nonce {
+            return Err(StateError::InvalidNonce);
+        }
+        let next_nonce = account.nonce.checked_add(1).ok_or(StateError::NonceOverflow)?;
+
+        match signed.action {
+            AdvisoryAction::Propose { title, summary } => {
+                let id = advisory::proposal_id(&signer, signed.nonce);
+                if self.advisory_proposals.contains_key(&id) {
+                    return Err(refuse("proposal id already used"));
+                }
+                let (active, mine) = advisory::active_counts(&self.advisory_proposals, &signer);
+                if mine >= advisory::MAX_ACTIVE_PER_PROPOSER {
+                    return Err(refuse("this wallet already has an active proposal"));
+                }
+                if active >= advisory::MAX_ACTIVE_PROPOSALS {
+                    return Err(refuse("the chain already has the maximum number of active proposals"));
+                }
+                // The deposit is a debit: an account whose spends are guarded
+                // (send allowlist in force, security-key rule in force) cannot
+                // pay it from this path.
+                if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &signer, current_block).is_some() {
+                    return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                        &signer, "an advisory proposal deposit", current_block,
+                    )));
+                }
+                if self
+                    .authorization_declarations
+                    .get(&signer)
+                    .and_then(crate::accounts::security_key::stored_policy)
+                    .is_some_and(|policy| policy.enforced_at(current_block))
+                {
+                    return Err(refuse("accounts with a security key cannot pay a proposal deposit yet"));
+                }
+                let deposit = Balance::new(u128::from(advisory::ADVISORY_DEPOSIT));
+                if account.spendable_balance < deposit || account.balance < deposit {
+                    return Err(StateError::InsufficientSpendableBalance);
+                }
+                let voting_deadline = current_block
+                    .checked_add(advisory::ADVISORY_VOTING_PERIOD_BLOCKS)
+                    .ok_or(StateError::ArithmeticOverflow)?;
+                // Electorate snapshot: the state immediately before this
+                // transaction applies. Bond escrows and the faucet sink hold
+                // no key and are excluded.
+                let eligible_voters = self.advisory_electorate_snapshot(current_block);
+                let eligible_count = eligible_voters.len() as u64;
+                Ok(AdvisoryEffect {
+                    signer,
+                    next_nonce,
+                    deposit: Some(deposit),
+                    proposal: AdvisoryProposal {
+                        id,
+                        proposer: signer,
+                        title,
+                        summary,
+                        created_at_block: current_block,
+                        voting_deadline,
+                        deposit,
+                        eligible_voters,
+                        eligible_count,
+                        votes: BTreeMap::new(),
+                        yes_votes: 0,
+                        no_votes: 0,
+                        status: AdvisoryStatus::Active,
+                        finalized_at_block: None,
+                    },
+                })
+            },
+            AdvisoryAction::Vote { proposal_id, approve } => {
+                let mut proposal =
+                    self.advisory_proposals.get(&proposal_id).cloned().ok_or_else(|| refuse("unknown proposal"))?;
+                advisory::record_vote(&mut proposal, &signer, approve, current_block).map_err(refuse)?;
+                Ok(AdvisoryEffect { signer, next_nonce, deposit: None, proposal })
+            },
+        }
+    }
+
+    /// Wallets whose spendable balance is at least 1 WRF now, minus bond
+    /// escrows and the faucet sink. Deterministic: a pure function of state
+    /// and height, collected into a sorted set.
+    fn advisory_electorate_snapshot(&self, height: u64) -> BTreeSet<Address> {
+        let minimum = Balance::new(u128::from(crate::governance::advisory::MIN_VOTER_SPENDABLE));
+        let faucet = crate::crypto::chain_binding::resolve_faucet_sink(
+            self.genesis_emission_config.as_ref(),
+            height,
+            crate::crypto::chain_binding::LEGACY_FAUCET_BINDINGS,
+            crate::crypto::chain_binding::feature_active,
+        );
+        let escrows: BTreeSet<Address> = self
+            .node_bond_registry
+            .as_ref()
+            .map(|registry| registry.registrations.values().map(|r| r.binding.escrow_account).collect())
+            .unwrap_or_default();
+        self.accounts
+            .iter()
+            .filter(|(address, account)| {
+                account.spendable_balance >= minimum && Some(**address) != faucet && !escrows.contains(*address)
+            })
+            .map(|(address, _)| *address)
+            .collect()
+    }
+
+    /// `StateTransition::FinalizeAdvisoryProposal`. Records the outcome and,
+    /// for a decided proposal, credits exactly the held deposit back to the
+    /// proposer. Nothing else: no parameter, no law, no other account.
+    fn finalize_advisory_proposal(&mut self, proposal_id: &str, current_block: u64) -> Result<(), StateError> {
+        let mut proposal = self
+            .advisory_proposals
+            .get(proposal_id)
+            .cloned()
+            .ok_or_else(|| StateError::Governance("advisory proposal not found".to_string()))?;
+        let refund = crate::governance::advisory::finalize(&mut proposal, current_block)
+            .map_err(StateError::Governance)?;
+        if refund > Balance::new(0) {
+            // A proposer account that no longer exists (moved by recovery)
+            // keeps the deposit held rather than minting a new account.
+            if let Some(account) = self.accounts.get_mut(&proposal.proposer) {
+                let balance = account.balance.checked_add(refund);
+                let spendable = account.spendable_balance.checked_add(refund);
+                if let (Some(balance), Some(spendable)) = (balance, spendable) {
+                    account.balance = balance;
+                    account.spendable_balance = spendable;
+                    proposal.deposit = Balance::new(0);
+                }
+            }
+        }
+        self.advisory_proposals.insert(proposal_id.to_string(), proposal);
+        Ok(())
+    }
+
+    /// `StateTransition::ApplyForecastScore`: every consensus check of a
+    /// forecast score at this block, then the write. Read-only until the last
+    /// step, so a refused score leaves state untouched (assembly drops the
+    /// transaction; a block carrying it fails apply).
+    fn apply_forecast_score(
+        &mut self,
+        payload: &crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        fn refuse(error: late::ForecastLateScoreError) -> StateError {
+            StateError::CommitReveal(format!("SP_FORECAST_LATE_SCORE_REFUSED: {error}"))
+        }
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height) {
+            return Err(StateError::InvalidTransition);
+        }
+        let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        // Oracle keys come from the chain's signing-key registry at the
+        // block's time, so a rotated-in key signs and a revoked key does not.
+        payload
+            .verify_quorum(
+                &identity.chain_id,
+                &identity.network_id,
+                &self.signing_keys,
+                |oracle| self.oracle_set.contains(oracle),
+                self.oracle_quorum,
+                block_timestamp,
+            )
+            .map_err(refuse)?;
+        // The truth and every window reading must be readings of this station
+        // that are on chain and at the oracle quorum in force now, and every
+        // window reading must have landed below the forecasts' commit height.
+        let quorum = self.oracle_quorum.max(1);
+        late::check_cited_readings(&payload.attestation, |commit_id| {
+            let reveal = self.commit_reveal_state.applied_reveals.get(commit_id)?;
+            Some(late::CitedReading {
+                station_id: reveal.station_id.clone(),
+                landed_at_height: reveal.revealed_at,
+                synthetic: reveal.provenance_class == ContributionProvenanceClass::Synthetic,
+                // A station reading is a reveal that carried a weather
+                // observation; only those get a quality score. While this
+                // feature is in force a forecast-type reveal never gets one,
+                // whatever its data carries (`CommitRevealState` skips the
+                // weather parse for it).
+                is_weather_reading: reveal.quality_score.is_some(),
+                has_quorum: self
+                    .attestations
+                    .get(commit_id)
+                    .is_some_and(|set| set.has_quorum(quorum)),
+            })
+        })
+        .map_err(refuse)?;
+        let digest =
+            late::observation_digest(&identity.chain_id, &identity.network_id, &payload.attestation);
+        self.forecast_late_score
+            .apply_score(payload, &digest, block_timestamp)
+            .map_err(refuse)?;
+        Ok(())
+    }
+
+    /// What crediting a forecast payment of `amount` to `forecaster` would
+    /// leave: (minted supply, earned total, balance, stake locked, spendable),
+    /// with the same stake-first rule as any earned credit. `None` when any
+    /// of them does not fit; nothing is written here.
+    fn forecast_payment_credit(
+        &self,
+        forecaster: &Address,
+        amount: u128,
+    ) -> Option<(u128, Balance, Balance, Balance, Balance)> {
+        let supply = self.supply_authorized_minting.checked_add(amount)?;
+        let amount = Balance::new(amount);
+        let zero = Balance::new(0);
+        let (earned, balance, locked, spendable, required) =
+            self.accounts.get(forecaster).map_or((zero, zero, zero, zero, zero), |a| {
+                (a.earned_balance_total, a.balance, a.stake_locked, a.spendable_balance, a.stake_required)
+            });
+        let lock = min(required.saturating_sub(locked), amount);
+        Some((
+            supply,
+            earned.checked_add(amount)?,
+            balance.checked_add(amount)?,
+            locked.checked_add(lock)?,
+            spendable.checked_add(amount.checked_sub(lock)?)?,
+        ))
+    }
+
+    /// `StateTransition::CloseForecastBuckets`: close the buckets due at this
+    /// block and mint what they earned, inside every limit: the per-bucket
+    /// and per-forecaster caps and the epoch budget (in
+    /// `ForecastLateScoreState`), a share of this block's Contribution slice,
+    /// what is left of that slice, and the supply headroom. Whatever does not
+    /// fit is recorded as unissued and never minted.
+    fn close_forecast_buckets(
+        &mut self,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        // The mint is charged to the block being applied; a close for any
+        // other height is a mis-built transition.
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height)
+            || self.emission_ledger.height() != block_height
+        {
+            return Err(StateError::InvalidTransition);
+        }
+        let station_registry = &self.station_registry;
+        let awards = self.forecast_late_score.close_due(block_height, block_timestamp, |station_id| {
+            station_registry
+                .get(station_id)
+                .and_then(|station| station.owner_address.parse::<Address>().ok())
+        });
+        if awards.is_empty() {
+            return Ok(());
+        }
+        // From here on a limit that cannot be computed is a limit of zero:
+        // the buckets are closed and nothing is paid. A bucket close never
+        // stops a block.
+        let slice = self.emission_ledger.partition().slice(EmissionRole::Contribution);
+        let epoch_budget = late::epoch_budget(slice).unwrap_or(0);
+        let block_budget = late::block_share(slice)
+            .unwrap_or(0)
+            .min(self.emission_ledger.remaining(EmissionRole::Contribution))
+            .min(self.mint_headroom());
+        let payments = self
+            .forecast_late_score
+            .settle_awards(block_height, &awards, epoch_budget, block_budget)
+            .unwrap_or_default();
+        for payment in payments {
+            // Everything the credit needs is computed first with checked
+            // arithmetic. A bond escrow is never a mint target; a result that
+            // does not fit, or a refused slice charge, means this mint does
+            // not happen. In each case the amount goes back to unissued and
+            // the block goes on: a bucket close never stops a block.
+            let credit = self.forecast_payment_credit(&payment.forecaster, payment.amount);
+            let minted = match credit {
+                Some(credit)
+                    if !self.node_protected_account(&payment.forecaster)
+                        && self.charge_emission_slice(EmissionRole::Contribution, payment.amount) =>
+                {
+                    Some(credit)
+                },
+                _ => None,
+            };
+            let Some((supply, earned, balance, locked, spendable)) = minted else {
+                self.forecast_late_score.mark_unminted(block_height, &payment.forecaster, payment.amount);
+                continue;
+            };
+            self.supply_authorized_minting = supply;
+            let account = self.create_account(payment.forecaster, Balance::new(0));
+            account.earned_balance_total = earned;
+            account.balance = balance;
+            account.stake_locked = locked;
+            account.spendable_balance = spendable;
+        }
+        Ok(())
+    }
+
     fn apply_protocol_transaction(
         &mut self,
         tx: &Transaction,
@@ -7666,6 +8498,37 @@ impl State {
             // Node effects derive only from actual carrying transactions in
             // launch extraction; governance metadata cannot add another intent.
             TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => Err(StateError::InvalidTransition),
+            // Session-key register/revoke derive only from launch extraction
+            // (`StateTransition::ApplySessionKeyAction`), never from this sink.
+            TransactionType::SessionKeyAction => Err(StateError::InvalidTransition),
+            // A forecast score derives only from launch extraction
+            // (`StateTransition::ApplyForecastScore`, which carries the block
+            // timestamp), never from this sink.
+            TransactionType::ForecastScore => Err(StateError::InvalidTransition),
+            // Owner-signed send-allowlist action. Refused below the
+            // unscheduled activation, so `send_allowlists` stays empty there.
+            TransactionType::SendAllowlist => {
+                if !crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::SendAllowlist,
+                    current_block,
+                ) {
+                    return Err(StateError::InvalidTransition);
+                }
+                let signed = crate::accounts::send_allowlist::SignedSendAllowlistAction::parse(tx)
+                    .ok_or_else(|| StateError::Governance(
+                        "SP_SEND_ALLOWLIST_PAYLOAD_INVALID: invalid send allowlist payload".to_string(),
+                    ))?;
+                crate::accounts::send_allowlist::apply(
+                    &mut self.send_allowlists,
+                    &signed,
+                    current_block,
+                    &crate::crypto::chain_binding::ChainIdentity::active().chain_id,
+                )
+                .map_err(|e| StateError::Governance(format!("SP_SEND_ALLOWLIST_ACTION_REFUSED: {e}")))
+            },
+            // Signed advisory proposal or vote. Refused below the unscheduled
+            // activation, so `advisory_proposals` stays empty there.
+            TransactionType::AdvisoryGovernance => self.apply_advisory_governance(tx, current_block),
             TransactionType::Transfer => {
                 let payload = tx.parse_transparent_transfer_payload().ok_or_else(|| {
                     StateError::Privacy(
@@ -7673,7 +8536,42 @@ impl State {
                             .to_string(),
                     )
                 })?;
-                self.apply_transparent_transfer(payload, tx.nonce, current_block)
+                let security_key = tx.security_key_spend_proof();
+                self.apply_transparent_transfer(payload, tx.nonce, tx.fee, current_block, security_key.as_ref())
+            },
+            // Security-key wallets: one signed action against the account's
+            // declaration (`accounts::security_key::apply_action`). Refused
+            // below `security_key_spend`, so pre-activation state is untouched.
+            TransactionType::SecurityKeyAction => {
+                if !crate::accounts::security_key::security_key_active(current_block) {
+                    return Err(StateError::InvalidTransition);
+                }
+                let payload = tx.parse_security_key_action_payload().ok_or_else(|| {
+                    StateError::Governance(
+                        "SP_SECURITY_KEY_ACTION_PAYLOAD_INVALID: invalid security key action payload"
+                            .to_string(),
+                    )
+                })?;
+                let identity = crate::crypto::chain_binding::ChainIdentity::active();
+                crate::accounts::security_key::apply_action(
+                    &mut self.authorization_declarations,
+                    &payload,
+                    current_block,
+                    &identity.chain_id,
+                    &identity.network_id,
+                )
+                .map_err(|e| {
+                    StateError::Governance(format!("SP_SECURITY_KEY_ACTION_REJECTED: {e}"))
+                })?;
+                // Turning the rule on revokes every session key the account
+                // registered while it was off: none of them was co-signed by
+                // the security key, and any of them could be a thief's.
+                if matches!(payload.action, crate::accounts::security_key::SecurityKeyActionBody::Enable { .. }) {
+                    if let Ok(account) = payload.account.trim().parse::<Address>() {
+                        crate::accounts::session_keys::revoke_all(&mut self.session_keys, &account);
+                    }
+                }
+                Ok(())
             },
             TransactionType::GovernanceProposal => {
                 let payload = tx.parse_governance_proposal_payload().ok_or_else(|| {
@@ -8036,7 +8934,9 @@ impl State {
         &mut self,
         payload: TransparentTransferPayload,
         tx_nonce: u64,
+        declared_fee: u64,
         current_block: u64,
+        security_key: Option<&crate::accounts::security_key::SecurityKeyAssertionWire>,
     ) -> Result<(), StateError> {
         if !payload.transparent_opt_out {
             return Err(StateError::Privacy(
@@ -8060,12 +8960,31 @@ impl State {
         // `current_block`, a WebAuthn P-256 passkey assertion bound to `from`
         // is an equally valid authorization; below activation this is the
         // ed25519 rule exactly as before.
-        if !payload.verify_authorization_at_height_with_view(
+        //
+        // `security_key_spend`: an account whose declared rule requires a
+        // security key also needs the transaction's `security_key_auth`
+        // assertion for the OWNER path; for every other account it is ignored.
+        //
+        // Session keys: once `ConsensusFeature::SessionKeys` is active, and
+        // ONLY when neither owner authorization above verifies, a signature
+        // by a session key registered to `from` authorizes the debit within
+        // that key's scope and limits. Inactive (every chain today) this
+        // branch is never taken, so the arm is the pre-session-key rule
+        // byte for byte; an owner-signed transfer never consumes a session use.
+        // A protected account's session keys were all co-signed by its
+        // security key (registration gate + revoke-on-enable in the
+        // `ApplySessionKeyAction` and `SecurityKeyAction` arms).
+        let owner_authorized = payload.verify_owner_authorization_at_height_with_view_and_security_key(
             self,
             tx_nonce,
             current_block,
             crate::accounts::authorization::DEBIT_TIME_UNPLUMBED_2168,
-        ) {
+            security_key,
+        );
+        let session_authorized = !owner_authorized
+            && crate::accounts::session_keys::session_keys_active(current_block)
+            && payload.verify_session_key_signature(tx_nonce);
+        if !owner_authorized && !session_authorized {
             return Err(StateError::Privacy(
                 "SP_PRIVACY_TRANSPARENT_TRANSFER_UNAUTHORIZED: transparent transfer requires a valid from-account authorization signature"
                     .to_string(),
@@ -8083,13 +9002,224 @@ impl State {
                     .to_string(),
             )
         })?;
-        self.apply_transition(StateTransition::BalanceTransfer {
-            from,
-            to,
-            amount: Balance::new(payload.amount as u128),
-            nonce: Some(tx_nonce),
+        // Burned transfer fee: `None` (and `declared_fee` never read) until
+        // `ConsensusFeature::TransferFeeBurn` is active at this block, so
+        // below activation this path is byte for byte the pre-fee one.
+        let transfer_fee = crate::consensus::transfer_fee::check_declared_fee(
+            declared_fee,
             current_block,
-        })
+        )
+        .map_err(|e| StateError::Governance(e.to_string()))?;
+        // Sponsored first sends: read ONLY once `ConsensusFeature::Paymaster`
+        // is active. Before that the field is ignored, so this path is byte
+        // for byte the unsponsored one and `paymasters` stays empty.
+        let sponsorship = match payload.sponsorship.as_ref() {
+            Some(auth) if crate::accounts::paymaster::sponsorship_active(current_block) => {
+                Some(self.check_sponsorship(auth, &payload, from, tx_nonce, current_block)?)
+            },
+            _ => None,
+        };
+        let amount = Balance::new(payload.amount as u128);
+        // Who burns the fee: a sponsor whose signed fee covers it, else the
+        // sender. Every check runs before the transfer mutates anything.
+        let sender_fee = match (transfer_fee, sponsorship.as_ref()) {
+            (None, _) => None,
+            (Some(required), Some(charge)) => {
+                if charge.fee < required {
+                    return Err(StateError::Governance(
+                        crate::consensus::transfer_fee::TransferFeeError::SponsorBelowMinimum {
+                            signed: charge.fee,
+                            required,
+                        }
+                        .to_string(),
+                    ));
+                }
+                None
+            },
+            (Some(required), None) => {
+                let fee = Balance::new(u128::from(required));
+                self.check_sender_covers_amount_and_fee(&from, amount, fee)?;
+                Some(fee)
+            },
+        };
+        // Session keys: charge the key first (all-or-nothing: a key over its
+        // limit or out of scope writes nothing and moves no value), then move
+        // the value. The key's limits count the transfer AMOUNT only, never
+        // the burned fee: the fee is a protocol charge the chain sets, so a
+        // fee change can never push a key over a limit its owner chose. The
+        // fee itself is still debited from the sender's balance (or paid by a
+        // sponsor), and the fee pre-check above already ran, so a sender who
+        // cannot cover amount + fee spends no session use. If the move (bad
+        // nonce, insufficient balance), the sponsorship commit or the fee burn
+        // fails, the owner's grants are restored exactly, so a failed
+        // transfer never spends a use or allowance.
+        let original_grants = if session_authorized {
+            let session_key = payload
+                .session_key_auth
+                .as_ref()
+                .and_then(|auth| auth.session_key_address())
+                .ok_or(StateError::InvalidTransition)?;
+            let original = self.session_keys.get(&from).cloned();
+            crate::accounts::session_keys::consume_transfer(
+                &mut self.session_keys,
+                &from,
+                &session_key,
+                &to,
+                payload.amount as u128,
+                current_block,
+            )
+            .map_err(|e| {
+                StateError::Privacy(format!(
+                    "SP_SESSION_KEY_TRANSFER_REFUSED: session key cannot authorize this transfer: {e}"
+                ))
+            })?;
+            Some(original)
+        } else {
+            None
+        };
+        let result = self
+            .apply_transition(StateTransition::BalanceTransfer {
+                from,
+                to,
+                amount,
+                nonce: Some(tx_nonce),
+                current_block,
+            })
+            .and_then(|()| match sponsorship {
+                Some(charge) => self.commit_sponsorship(charge),
+                None => Ok(()),
+            })
+            .and_then(|()| match sender_fee {
+                Some(fee) => self.burn_transfer_fee(&from, fee),
+                None => Ok(()),
+            });
+        if result.is_err() {
+            // `consume_transfer` succeeded, so the owner had an entry.
+            if let Some(Some(original)) = original_grants {
+                self.session_keys.insert(from, original);
+            }
+        }
+        result
+    }
+
+    /// Transfer fee pre-check: the sender's spendable balance and balance
+    /// each cover `amount + fee`, so the transfer and the fee debit either
+    /// both apply or neither does. An absent sender is left to the transfer
+    /// itself (`AccountNotFound`), exactly as without a fee.
+    fn check_sender_covers_amount_and_fee(
+        &self,
+        from: &Address,
+        amount: Balance,
+        fee: Balance,
+    ) -> Result<(), StateError> {
+        let Some(account) = self.accounts.get(from) else {
+            return Ok(());
+        };
+        let needed = amount.0.checked_add(fee.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance.0 < needed {
+            return Err(StateError::InsufficientBalance);
+        }
+        Ok(())
+    }
+
+    /// Debit the transfer fee from the sender and burn it: the value is
+    /// credited to nobody and journalled in `supply_authorized_burning`, so
+    /// INV-SUPPLY-1 reads it as an authorized burn and the circulating supply
+    /// (`issuance_committed_supply`) drops by exactly the fee.
+    fn burn_transfer_fee(&mut self, from: &Address, fee: Balance) -> Result<(), StateError> {
+        let account = self.get_account_mut(from).ok_or(StateError::AccountNotFound)?;
+        if account.spendable_balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        if account.balance < fee {
+            return Err(StateError::InsufficientBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        Ok(())
+    }
+
+    /// Every check a sponsorship must pass before its transfer applies,
+    /// without mutating state: the sponsor's signature and stateless rules
+    /// (`SponsorAuthorization::check`), the sponsor's balance against its
+    /// fee and floor, and the protocol rate limits on its record.
+    fn check_sponsorship(
+        &self,
+        auth: &crate::accounts::paymaster::SponsorAuthorization,
+        payload: &TransparentTransferPayload,
+        from: Address,
+        tx_nonce: u64,
+        current_block: u64,
+    ) -> Result<SponsorshipCharge, StateError> {
+        let refuse = |reason: String| {
+            StateError::Governance(format!("SP_SPONSORED_SEND_REFUSED: {reason}"))
+        };
+        let sponsor = auth
+            .check(&payload.from, &payload.to, payload.amount, tx_nonce, current_block)
+            .map_err(|e| refuse(e.to_string()))?;
+        // Send allowlist: a sponsorship fee is debited and burned, so it has
+        // no listable destination. A no-op while no account has a policy.
+        if crate::accounts::send_allowlist::restricting_policy(&self.send_allowlists, &sponsor, current_block).is_some() {
+            return Err(StateError::Governance(crate::accounts::send_allowlist::movement_refusal(
+                &sponsor, "a sponsored-send fee", current_block,
+            )));
+        }
+        let fee = u128::from(auth.fee);
+        let available = self
+            .accounts
+            .get(&sponsor)
+            .map(|account| account.spendable_balance.0)
+            .unwrap_or(0);
+        if available < fee.saturating_add(u128::from(auth.balance_floor)) {
+            return Err(refuse(
+                crate::accounts::paymaster::SponsorshipError::SponsorBalanceBelowFloor {
+                    available,
+                    fee: auth.fee,
+                    floor: auth.balance_floor,
+                }
+                .to_string(),
+            ));
+        }
+        let record = crate::accounts::paymaster::charge_balance_sponsorship(
+            &self.paymasters,
+            sponsor,
+            from,
+            fee,
+            current_block,
+        )
+        .map_err(|e| refuse(e.to_string()))?;
+        Ok(SponsorshipCharge { sponsor, fee: auth.fee, floor: auth.balance_floor, record })
+    }
+
+    /// Debit the sponsor's fee, burn it and store its updated record. Runs
+    /// after the transfer applied. The transfer can only have RAISED the
+    /// sponsor's balance (the sponsor is never `from`), but the floor is
+    /// re-checked here so the rule holds on the post-transfer balance too.
+    fn commit_sponsorship(&mut self, charge: SponsorshipCharge) -> Result<(), StateError> {
+        let fee = Balance::new(u128::from(charge.fee));
+        let floor = Balance::new(u128::from(charge.floor));
+        let account = self.get_account_mut(&charge.sponsor).ok_or(StateError::AccountNotFound)?;
+        let needed = fee.0.checked_add(floor.0).ok_or(StateError::ArithmeticOverflow)?;
+        if account.spendable_balance.0 < needed || account.balance < fee {
+            return Err(StateError::InsufficientSpendableBalance);
+        }
+        account.spendable_balance =
+            account.spendable_balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        account.balance = account.balance.checked_sub(fee).ok_or(StateError::ArithmeticOverflow)?;
+        self.supply_authorized_burning = self
+            .supply_authorized_burning
+            .checked_add(fee.0)
+            .ok_or(StateError::ArithmeticOverflow)?;
+        self.paymasters.insert(charge.sponsor, charge.record);
+        Ok(())
     }
 
     fn apply_confidential_transfer(
@@ -10313,6 +11443,12 @@ pub enum StateTransition {
     ApplySessionKeyAction {
         action: crate::accounts::session_keys::SessionKeyAction,
         block_height: u64,
+        /// `security_key_spend`: the owner's security-key assertion over the
+        /// registration, read from the carrying transaction's
+        /// `security_key_auth` member. Required to REGISTER a session key on an
+        /// account whose security-key rule is in force; ignored otherwise.
+        #[serde(default)]
+        security_key_auth: Option<crate::accounts::security_key::SecurityKeyAssertionWire>,
     },
     /// Signed AA declaration state transition (#2168); not extracted from
     /// transactions until the feature's explicit scheduling work.
@@ -10420,6 +11556,58 @@ pub enum StateTransition {
     ApplyNodeBondLifecycle { payload: crate::consensus::node_bond_registry::NodeBondLifecycle, block_height: u64 },
     ApplyNodeServiceBatch { payload: crate::consensus::node_receipt_registry::NodeReceiptSubmission, block_height: u64 },
     ApplyNodeFraudReport { payload: crate::consensus::node_fraud::NodeFraudReport, block_height: u64 },
+    /// `station_registrar_key`: a NEW phone-class station registered by a
+    /// pinned registrar key (`consensus::station_registrar`). Applies like a
+    /// v2 registration with nonce 0 only when the station is not registered
+    /// and the phone-station ceiling has room; otherwise an inert no-op.
+    /// Refused below `station_registrar_key` or `station_registration_nonce`.
+    /// APPENDED LAST (bincode is positional) and never emitted while the
+    /// feature is inactive.
+    ApplyStationRegistrarRegistration {
+        station: WeatherStation,
+        block_height: u64,
+    },
+    /// `advisory_governance`: record the outcome of an advisory proposal whose
+    /// voting period has ended, and return its deposit unless it failed
+    /// quorum. Emitted by `governance_transitions_for_block` only; never
+    /// executes anything. APPENDED LAST (bincode is positional) and never
+    /// emitted while the feature is inactive (the map is empty).
+    FinalizeAdvisoryProposal {
+        proposal_id: String,
+        current_block: u64,
+    },
+    /// `forecast_late_score`: score stored forecasts against an
+    /// oracle-quorum-signed observation
+    /// (`consensus::forecast_late_score`). Derived from a
+    /// `TransactionType::ForecastScore` transaction with the block's own
+    /// height and timestamp. Refused while the feature is not in force.
+    /// APPENDED (bincode is positional).
+    ApplyForecastScore {
+        payload: crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    },
+    /// `forecast_late_score`: close the buckets whose scoring window has
+    /// ended at `block_timestamp`, pay their top forecasters from the
+    /// Contribution slice within the pool limits, and drop expired entries.
+    /// One per block, after the block's transactions, only while the feature
+    /// is in force. APPENDED LAST (bincode is positional).
+    CloseForecastBuckets {
+        block_height: u64,
+        block_timestamp: i64,
+    },
+    /// `station_submitter_key`: an owner-signed `set_submitter_key` approved
+    /// (`Some`) or cleared (`None`) the station's submitter key. Refused below
+    /// `station_owner_actions` or `station_submitter_key`; stateful refusals
+    /// are inert no-ops. APPENDED LAST (bincode is positional) and never
+    /// emitted while the feature is inactive.
+    ApplyStationSubmitterKey {
+        station_id: String,
+        owner_address: String,
+        action_nonce: u64,
+        submitter: Option<(String, crate::blockchain::transaction::SubmitterClass)>,
+        block_height: u64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
@@ -10579,7 +11767,8 @@ mod tests {
     /// state-mutating variant back into silent default-allow behavior.
     fn protocol_dispatch_intent(tx_type: TransactionType) -> ProtocolDispatchIntent {
         match tx_type {
-            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport => ProtocolDispatchIntent::Refused,
+            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction
+            | TransactionType::ForecastScore => ProtocolDispatchIntent::Refused,
             TransactionType::Transfer
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -10588,7 +11777,10 @@ mod tests {
             | TransactionType::ShieldedWithdrawal
             | TransactionType::Layer2BatchSubmit
             | TransactionType::RewardClaim
-            | TransactionType::SlashingReport => ProtocolDispatchIntent::AppliesState,
+            | TransactionType::SlashingReport
+            | TransactionType::SecurityKeyAction
+            | TransactionType::SendAllowlist
+            | TransactionType::AdvisoryGovernance => ProtocolDispatchIntent::AppliesState,
             TransactionType::Regular
             | TransactionType::Coinbase
             | TransactionType::Stake
@@ -10663,8 +11855,9 @@ mod tests {
             TransactionType::SlashEvidenceReport,
             TransactionType::NodeBondLifecycle,
             TransactionType::NodeServiceBatch,
+            TransactionType::SessionKeyAction,
         ];
-        assert_eq!(inventory.len(), 39, "update the named dispatch inventory");
+        assert_eq!(inventory.len(), 40, "update the named dispatch inventory");
         assert_eq!(
             protocol_dispatch_intent(TransactionType::SlashEvidenceReport),
             ProtocolDispatchIntent::Refused
@@ -10784,6 +11977,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             };
             payload.sign_authorization(&from_key, 0);
             let mut tx = Transaction::new(
@@ -12735,6 +13930,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
@@ -12790,6 +13987,8 @@ mod tests {
                 authority: None,
                 authority_signature: None,
                 passkey_auth: None,
+                sponsorship: None,
+                session_key_auth: None,
             })
             .unwrap(),
         );
@@ -20091,25 +21290,65 @@ mod tests {
     }
 
     #[test]
-    fn check_and_reserve_nonce_inactive_before_activation() {
-        // Below NONCE_ENFORCEMENT_ACTIVATION_HEIGHT the helper returns None,
-        // regardless of the submitted tx_nonce value. On WRFCoin mainnet and
-        // testnet this branch is effectively unreachable since activation is 0,
-        // but we pin the behavior in case the constant ever moves forward.
+    fn nonce_policy_nonzero_activation_boundaries() {
+        // Pin the pre-activation branch with an explicit activation height,
+        // independent of the production constant (genesis-active today).
+        const H: u64 = 10;
         let mut state = State::new();
         let sender = addr(80);
         state.create_account(sender, Balance::new(100));
-        let activation =
-            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT;
-        if activation == 0 {
-            // Nothing to exercise; the pre-activation branch is unreachable
-            // on-chain. Test is still valid — just a no-op.
-            return;
+        let before = state.get_account(&sender).unwrap().clone();
+
+        // H-1: a mismatched nonce reserves nothing and does not error.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 999, H - 1, H)
+                .unwrap(),
+            None
+        );
+        // H and H+1: a mismatched nonce is refused.
+        for height in [H, H + 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce_with_activation(&sender, 999, height, H),
+                Err(StateError::InvalidNonce)
+            ));
         }
-        let result = state
-            .check_and_reserve_nonce(&sender, 999, activation - 1)
-            .expect("pre-activation must never error on nonce mismatch");
-        assert_eq!(result, None);
+        // H: the matching zero nonce reserves one.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 0, H, H)
+                .unwrap(),
+            Some(1)
+        );
+        // Checking never mutates the account.
+        assert_eq!(state.get_account(&sender).unwrap(), &before);
+
+        // H: a matching u64::MAX nonce overflows instead of wrapping.
+        state.get_account_mut(&sender).unwrap().nonce = u64::MAX;
+        assert!(matches!(
+            state.check_and_reserve_nonce_with_activation(&sender, u64::MAX, H, H),
+            Err(StateError::NonceOverflow)
+        ));
+        assert_eq!(state.get_account(&sender).unwrap().nonce, u64::MAX);
+    }
+
+    #[test]
+    fn nonce_policy_production_activation_is_genesis_active() {
+        assert_eq!(
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+            0
+        );
+        let mut state = State::new();
+        let sender = addr(80);
+        state.create_account(sender, Balance::new(100));
+        for height in [0, 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce(&sender, 999, height),
+                Err(StateError::InvalidNonce)
+            ));
+            assert_eq!(state.check_and_reserve_nonce(&sender, 0, height).unwrap(), Some(1));
+        }
+        assert_eq!(state.get_account(&sender).unwrap().nonce, 0);
     }
 
     #[test]
@@ -20896,6 +22135,10 @@ mod tests {
     "node_receipt_registry",
     "node_settlement",
     "node_fraud",
+    "send_allowlists",
+    "advisory_proposals",
+    "forecast_late_score",
+    "station_submitters",
         ];
 
         let actual = State::state_root_material_field_names();

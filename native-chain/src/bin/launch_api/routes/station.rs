@@ -1140,8 +1140,8 @@ pub struct CanonicalStationListResponse {
 ///
 /// Why Operator and not Reader, like the per-station read above: this is the
 /// first surface that echoes registry coordinates unrounded. The Reader-level
-/// precedent (`GET /transactions/oracle/pending`, #3240) rounds them to 0.01°
-/// precisely because every Contributor and Oracle bearer satisfies Reader.
+/// precedent (`GET /transactions/oracle/pending`, #3240) gives non-operators
+/// only 0.1° precisely because every Contributor and Oracle bearer satisfies Reader.
 /// Exact coordinates go only to the node operator's own services; the backend's
 /// anonymous map projection still coarsens them (backend#1237), and the node
 /// API itself is never proxied publicly (#658).

@@ -6,6 +6,7 @@ use std::{fs, io::Read, path::{Path, PathBuf}};
 use wrfcoin_shared_protocol::{
     blockchain::transaction::{Transaction, ForecastArtifactManifest, ForecastVerificationReceipt,
         commit_authorization_message_with_domain},
+    common::types::Address,
     crypto::signature::{PrivateKey, PublicKey, Signature},
 };
 use crate::{ApiClient, ApiConfig};
@@ -85,9 +86,33 @@ pub fn read_signer(path: &Path) -> Result<PrivateKey> {
     PrivateKey::from_hex(raw.trim()).map_err(|_| anyhow!("invalid private key file"))
 }
 
+/// Refuse a commit whose `--forecaster` is not the address of `--signer-key`.
+///
+/// The node names the transaction sender (and its payee output) after
+/// `--forecaster`, while the commit authorization is signed by `--signer-key`.
+/// Under `forecaster_key_binding` (#3290) a forecast commit is valid only when
+/// that sender is `Address::from_public_key(auth_pubkey)`, so a mismatched pair
+/// would be refused once the feature is active. Catch it here, before signing.
+pub fn require_signer_is_forecaster(forecaster: &str, signer: &PrivateKey) -> Result<()> {
+    let key_address = Address::from_public_key(&PublicKey::from_private_key(signer));
+    match forecaster.trim().parse::<Address>() {
+        Ok(address) if address == key_address => Ok(()),
+        Ok(_) => bail!(
+            "--forecaster {} is not the address of --signer-key (that key's address is {}); \
+             a forecast commit must be signed by the forecaster's own key",
+            forecaster.trim(), key_address.to_hex()
+        ),
+        Err(_) => bail!(
+            "--forecaster must be a 0x wallet address (the address of --signer-key is {})",
+            key_address.to_hex()
+        ),
+    }
+}
+
 pub fn commit_body(input: &ForecastInput, signer: &PrivateKey, chain_id: &str,
     network_id: &str) -> Result<Value> {
     let (_, id) = input.payload_and_id()?;
+    require_signer_is_forecaster(&input.forecaster, signer)?;
     let message = commit_authorization_message_with_domain(chain_id, network_id,
         &input.station_id, &id, "forecast");
     Ok(json!({"forecaster": input.forecaster, "station_id": input.station_id,

@@ -39,6 +39,38 @@ paths:
       operationId: networkInfo
       responses:
         '200': {description: Chain identity and sync information}
+  /network/producers:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: listNetworkProducers
+      description: >-
+        Authorized producer set that signs the next block (producer_id, hex public_key,
+        payout_address from State.producer_set_history), with per-key last_produced_height
+        and blocks_in_window over the newest in-memory blocks.
+      parameters:
+        - {name: window, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 2048, default: 256}, description: Recent blocks to scan for activity (clamped)}
+      responses:
+        '200': {description: Producer set at the tip with bounded recent activity}
+        '401': {description: Missing bearer token}
+        '500': {description: Producer set history invalid}
+  /node/bonds:
+    get:
+      tags: [Reader]
+      security: [{bearerAuth: []}]
+      operationId: listNodeBonds
+      description: >-
+        Registered node bonds in deployment-id order (keyset pagination). Returns 404 while
+        the Node feature is not scheduled on this process.
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200, default: 50}, description: Page size (clamped)}
+        - {name: after, in: query, required: false, schema: {type: string, pattern: '^[0-9a-fA-F]{64}$'}, description: next_after from the previous page}
+      responses:
+        '200': {description: One page of registered bonds plus next_after cursor}
+        '400': {description: Malformed after cursor}
+        '401': {description: Missing bearer token}
+        '404': {description: Node feature not scheduled}
+        '503': {description: Node bond state unavailable}
   /chain/blocks:
     get:
       tags: [Reader]

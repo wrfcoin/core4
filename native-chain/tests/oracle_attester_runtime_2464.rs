@@ -920,7 +920,7 @@ impl Harness3240 {
 }
 
 /// #3240 route surface: a registered station's entry carries
-/// `station_location` (coarsened to 0.01°), an unregistered station's entry
+/// `station_location` (0.1° for this Reader token), an unregistered station's entry
 /// omits the key entirely. Asserted on the raw JSON so the same test runs
 /// against main (where it is RED: the key does not exist there).
 #[actix_web::test]
@@ -939,8 +939,8 @@ async fn pending_route_exposes_station_location_for_registered_only_3240() {
     let reg = entry(&registered);
     assert_eq!(
         reg["station_location"],
-        serde_json::json!({"latitude": 46.79, "longitude": -92.1}),
-        "registered station must expose its COARSENED registry location: {reg}"
+        serde_json::json!({"latitude": 46.8, "longitude": -92.1}),
+        "registered station must expose its registry location at 0.1 degree: {reg}"
     );
     let unreg = entry(&unknown);
     assert!(
