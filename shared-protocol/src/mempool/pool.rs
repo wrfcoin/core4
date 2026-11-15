@@ -261,7 +261,18 @@ impl Mempool {
     /// Sender key for the per-sender admission cap (#2039). Uses the hex sender
     /// address; a single, central definition so admission and every removal
     /// path agree on the key.
+    ///
+    /// An oracle attestation is keyed on the oracle id in its payload instead.
+    /// Its sender address is the zero address whenever the oracle id is a
+    /// 64-hex key rather than an address, and the zero address is shared by
+    /// every transaction built without a sender, so under the address key a
+    /// full zero bucket would refuse attestations. Only an attestation signed
+    /// by a registered oracle key is ever stored, so the oracle id cannot be
+    /// used to open extra buckets.
     fn sender_key(tx: &Transaction) -> String {
+        if let Some(attestation) = tx.parse_oracle_attestation_payload() {
+            return format!("oracle-attestation:{}", attestation.oracle_id);
+        }
         tx.sender_address.to_hex()
     }
 
@@ -661,6 +672,49 @@ impl Mempool {
             ));
         }
 
+        // Forecast late score: refused until the feature is in force at the
+        // next height. Checked after the occupancy caps above, so a full pool
+        // or a sender at its limit costs no signature work. Fail closed
+        // without the signing-key registry: every signer must be an
+        // explicitly registered oracle identity (checked for all signers
+        // before the first signature), and every signature must verify
+        // against a key the registry holds for that identity. The oracle set
+        // and quorum, timing and bucket rules are state's (apply refuses,
+        // assembly drops).
+        // A pending score this one replaces (more valid signatures over the
+        // same signed payload). Removed only once every fallible step passed.
+        let mut replaced_score: Option<Hash> = None;
+        if tx.tx_type == TransactionType::ForecastScore {
+            let height =
+                current_height.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_HEIGHT_REQUIRED"))?;
+            if !crate::crypto::chain_binding::forecast_late_score_active(height.saturating_add(1)) {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_INACTIVE"));
+            }
+            let payload = crate::consensus::forecast_late_score::ForecastScorePayload::parse(&tx)
+                .ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_PAYLOAD"))?;
+            let identity = crate::crypto::chain_binding::ChainIdentity::active();
+            // One input, the outpoint derived from the signed score message:
+            // every transaction carrying the same signed payload spends it, so
+            // the pool holds at most one of them. Checked before any signature
+            // work; a second one is refused here instead of as a double spend.
+            let outpoint = crate::consensus::forecast_late_score::score_outpoint(
+                &identity.chain_id,
+                &identity.network_id,
+                &payload,
+            );
+            if tx.inputs.len() != 1 || tx.inputs[0].txid != outpoint || tx.inputs[0].vout != 0 {
+                return Err(anyhow!("SP_FORECAST_LATE_SCORE_OUTPOINT: the input must be the score's own outpoint"));
+            }
+            // A score with more valid signatures replaces a pending one with
+            // fewer; any other second carrier of the same payload is refused.
+            replaced_score = self.forecast_score_replaces(&payload, &outpoint)?;
+            let registry =
+                signing_keys.ok_or_else(|| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: no key registry"))?;
+            payload
+                .verify_registered_signers(&identity.chain_id, &identity.network_id, registry, tx.timestamp.timestamp())
+                .map_err(|e| anyhow!("SP_FORECAST_LATE_SCORE_AUTHORIZATION: {e}"))?;
+        }
+
         // Commit/reveal payloads are constrained separately from full transaction size.
         if matches!(
             tx.tx_type,
@@ -810,7 +864,9 @@ impl Mempool {
                 continue;
             }
             if let Some(spending_txs) = self.double_spends.get(&outpoint) {
-                if !spending_txs.is_empty() {
+                // The score being replaced is the one spender allowed here.
+                let replaced = replaced_score.is_some_and(|old| spending_txs.iter().all(|id| *id == old));
+                if !spending_txs.is_empty() && !replaced {
                     return Err(anyhow!("Double spend detected in mempool"));
                 }
             }
@@ -828,6 +884,9 @@ impl Mempool {
         }
         if let Some(copy) = replaced_node_copy {
             self.remove_transaction(&copy);
+        }
+        if let Some(old) = replaced_score {
+            self.remove_transaction(&old);
         }
 
         // Dependencies are computed AFTER the capacity decision, from the
@@ -1178,6 +1237,38 @@ impl Mempool {
     }
 
     /// Returns true when `tx_id` is currently held.
+    /// `forecast_late_score` admission policy (no consensus effect) for a
+    /// score whose signed payload spends `outpoint`: `Ok(None)` when no score
+    /// with that payload is pending; `Ok(Some(id))` when the pending one has a
+    /// STRICT SUBSET of `payload`'s signers (the caller verifies the incoming
+    /// signatures, then replaces it); otherwise refused as a duplicate.
+    pub fn forecast_score_replaces(
+        &self,
+        payload: &crate::consensus::forecast_late_score::ForecastScorePayload,
+        outpoint: &Hash,
+    ) -> Result<Option<Hash>> {
+        let Some(pending) = self.double_spends.get(&(*outpoint, 0)).and_then(|spenders| spenders.first().copied())
+        else {
+            return Ok(None);
+        };
+        let strict_superset = self
+            .transactions
+            .get(&pending)
+            .and_then(|old| crate::consensus::forecast_late_score::ForecastScorePayload::parse(old))
+            .is_some_and(|old| {
+                old.signatures.len() < payload.signatures.len()
+                    && old
+                        .signatures
+                        .iter()
+                        .all(|o| payload.signatures.iter().any(|n| n.oracle == o.oracle))
+            });
+        if strict_superset {
+            Ok(Some(pending))
+        } else {
+            Err(anyhow!("SP_FORECAST_LATE_SCORE_DUPLICATE: this signed score is already pending"))
+        }
+    }
+
     pub fn contains(&self, tx_id: &Hash) -> bool {
         self.transactions.contains_key(tx_id)
     }
@@ -2615,6 +2706,48 @@ mod tests {
         other.set_id();
         mp.add_transaction(other)
             .expect("a different sender must still be admitted");
+    }
+
+    /// Oracle attestations are counted per oracle, not under the zero sender
+    /// address they share with every other transaction built without one. A
+    /// full zero-sender bucket must not keep a registered oracle's attestation
+    /// out, and each oracle is still bounded by the same cap.
+    #[test]
+    fn oracle_attestation_is_admitted_when_the_zero_sender_bucket_is_full() {
+        let config = Config {
+            mempool_max_txs_per_sender: 2,
+            ..Config::default()
+        };
+        let mut mp = Mempool::new(&config);
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-a"))
+            .expect("1st zero-sender tx admitted");
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-b"))
+            .expect("2nd zero-sender tx admitted");
+        mp.add_transaction(build_regular_tx_with_fee(10, "fill-c"))
+            .expect_err("vacuity guard: the zero-sender bucket is full");
+
+        let mut registry = SigningKeyRegistry::default();
+        let mut attest = |commit: &str| {
+            let (tx, oracle_id) = signed_oracle_attestation(7101, commit, commit);
+            assert_eq!(
+                tx.sender_address,
+                Address([0u8; 20]),
+                "the attestation carries the zero sender address, as on chain 888"
+            );
+            registry
+                .ensure_legacy_identity_key(&oracle_id, SigningRole::Oracle, 0)
+                .expect("register the oracle signing key");
+            mp.add_transaction_with_signing_keys(tx, Some(&registry))
+        };
+
+        attest("crowd-1")
+            .expect("a registered oracle's attestation is admitted while the zero-sender bucket is full");
+        attest("crowd-2").expect("the oracle's 2nd attestation is admitted");
+        let err = attest("crowd-3").expect_err("one oracle is still bounded by the per-sender cap");
+        assert!(
+            err.to_string().contains("per-sender limit"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Removing a transaction frees its sender's slot (#2039 — the count is

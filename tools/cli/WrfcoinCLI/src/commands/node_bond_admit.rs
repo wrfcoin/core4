@@ -334,7 +334,7 @@ mod tests {
     fn pin() {
         install_bond_admission_pin_for_tests(
             &hex::encode([7u8; 32]),
-            vec![hex::encode(fixture::pk(60))],
+            vec![hex::encode(fixture::pk(60)), hex::encode(fixture::pk(62))],
         );
     }
     fn identity() -> ChainIdentity {

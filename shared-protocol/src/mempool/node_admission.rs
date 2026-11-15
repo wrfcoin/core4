@@ -328,7 +328,7 @@ pub fn node_kinds_first<'a>(
 
 /// The account whose nonce a transaction spends: the transfer's payer, the stake's account, else
 /// the sender field the node-service kinds and nonce-checked kinds read.
-fn nonce_account(tx: &Transaction) -> Address {
+pub(crate) fn nonce_account(tx: &Transaction) -> Address {
     let named = match tx.tx_type {
         TransactionType::Transfer => tx.parse_transparent_transfer_payload().map(|p| p.from),
         TransactionType::Stake | TransactionType::Unstake => {

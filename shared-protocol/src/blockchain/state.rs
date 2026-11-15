@@ -1095,6 +1095,8 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "node_fraud",
     "send_allowlists",
     "advisory_proposals",
+    "forecast_late_score",
+    "station_submitters",
 ];
 
 /// Global state of the blockchain.
@@ -1536,6 +1538,25 @@ pub struct State {
     #[serde(default)]
     pub advisory_proposals:
         BTreeMap<String, crate::governance::advisory::AdvisoryProposal>,
+    /// Forecast late score (`consensus::forecast_late_score`): forecast
+    /// commits waiting for a reveal, recorded forecasts, open buckets and the
+    /// per-epoch pool ledger. Written only while
+    /// `forecast_late_score_active(height)`, so it is empty on every chain
+    /// that has not scheduled the feature. While empty it is absent from
+    /// `state_root_material`, from checkpoints (written at the previous
+    /// format) and from snapshots. Appended at checkpoint format 18;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub forecast_late_score: crate::consensus::forecast_late_score::ForecastLateScoreState,
+    /// `station_submitter_key` (#3565 design 1): owner-approved submitter keys
+    /// per station, and the signer class of recent accepted commits (written
+    /// only while `device_submission_limit` is active). Empty on every chain
+    /// that has not scheduled those features; while empty it is absent from
+    /// `state_root_material`, from checkpoints (written at format 18) and from
+    /// snapshots. Appended at checkpoint format 19; `#[serde(default)]` so
+    /// older JSON snapshots deserialize.
+    #[serde(default)]
+    pub station_submitters: crate::blockchain::station_owner::StationSubmitterState,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1649,6 +1670,8 @@ impl State {
             node_fraud: None,
             send_allowlists: BTreeMap::new(),
             advisory_proposals: BTreeMap::new(),
+            forecast_late_score: Default::default(),
+            station_submitters: Default::default(),
         }
     }
 
@@ -2026,12 +2049,19 @@ impl State {
             station.location.latitude,
             station.location.longitude,
         );
+        let (station_id, new_owner) = (station.station_id.clone(), station.owner_address.clone());
 
         let previous = self
             .station_registry
             .upsert(station)
             .map_err(|e| StateError::Governance(format!("station registration failed: {e}")))?;
 
+        if let Some(previous) = &previous {
+            // `station_submitter_key`: a registration that changes the owner
+            // (possible while `station_owner_consent` is off) revokes the
+            // approved submitter key; a no-op while the map is empty.
+            self.revoke_submitter_on_owner_change(&station_id, &previous.owner_address, &new_owner);
+        }
         if let Some(previous) = previous {
             if previous.is_active {
                 let old_cell = crate::consensus::data_desert::cell_for_station(
@@ -3899,6 +3929,28 @@ impl State {
         if !self.advisory_proposals.is_empty() {
             crate::governance::advisory::root_material(&self.advisory_proposals, &mut material);
         }
+
+        // --- forecast_late_score (ConsensusFeature::ForecastLateScore) ---
+        //
+        // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
+        // even a tag) while empty, and empty until the unscheduled feature is
+        // in force and a forecast is committed, so every root is
+        // byte-identical to a binary without this field until then.
+        if !self.forecast_late_score.is_empty() {
+            self.forecast_late_score.root_material(&mut material);
+        }
+
+        // --- station_submitters (ConsensusFeature::StationSubmitterKey) ---
+        //
+        // CONDITIONAL, like `forecast_late_score`: absent from the pre-image
+        // (not even a tag) while empty, and empty until an owner approves a
+        // key under the unscheduled feature (or a commit is accepted under
+        // `device_submission_limit`), so every root is byte-identical to a
+        // binary without this field until then.
+        if !self.station_submitters.is_empty() {
+            material.extend_from_slice(b"wrfcoin_station_submitters_v1");
+            push_bytes(&mut material, &self.station_submitters.canonical_body());
+        }
         material
     }
 
@@ -4278,6 +4330,21 @@ impl State {
                 if record.station_id.trim().is_empty() {
                     return Err(StateError::ContributionReward(
                         "station_id is required".to_string(),
+                    ));
+                }
+                // `forecast_late_score`: once it is in force a forecast reveal
+                // earns nothing through this path; forecasts are paid at
+                // bucket close only. The producer emits no such record, so a
+                // block carrying one is refused.
+                if record.amount.0 != 0
+                    && record.reason.starts_with(
+                        crate::consensus::proof_of_publishing::FORECAST_REWARD_REASON_PREFIX,
+                    )
+                    && crate::crypto::chain_binding::forecast_late_score_active(current_block)
+                {
+                    return Err(StateError::ContributionReward(
+                        "forecast reveal credits are off while forecast_late_score is in force"
+                            .to_string(),
                     ));
                 }
                 if !record.provenance_class.is_reward_eligible() && record.amount.0 != 0 {
@@ -4767,26 +4834,24 @@ impl State {
                 // because, from the same activation, the shared classifier refuses
                 // a `ContributionCommit` that declares `"forecast"` (and a
                 // forecast tx that does not): `SP_DEVICE_CONTRIBUTION_TYPE_MISMATCH`.
+                let mut commit_signer = None;
                 if payload.contribution_type != "forecast"
-                    && crate::crypto::chain_binding::feature_active(
-                        crate::crypto::chain_binding::ConsensusFeature::DeviceSubmissionLimit,
-                        block_height,
-                    )
+                    && crate::crypto::chain_binding::device_submission_limit_active(block_height)
                 {
                     if let Some(station) = self.station_registry.get(&payload.station_id) {
-                        let owner_signed = payload.auth_pubkey.as_deref().is_some_and(|pk| {
-                            crate::blockchain::transaction::owner_address_bound_to_pubkey(
-                                &station.owner_address,
-                                pk,
-                            )
-                        });
-                        if !owner_signed {
+                        // `station_submitter_key`: the owner key OR the
+                        // station's approved submitter key (none while that
+                        // feature is inactive, so then only the owner key).
+                        let Some(signer) =
+                            self.contribution_commit_signer(station, payload.auth_pubkey.as_deref())
+                        else {
                             return Err(StateError::CommitReveal(format!(
-                                "{}: commit for station {} is not authorized by its registered owner key",
+                                "{}: commit for station {} is not authorized by its registered owner key or approved submitter key",
                                 crate::consensus::proof_of_publishing::SP_DEVICE_COMMIT_NOT_OWNER,
                                 payload.station_id
                             )));
-                        }
+                        };
+                        commit_signer = Some(signer);
                     }
                 }
                 let provenance_class = self
@@ -4797,6 +4862,47 @@ impl State {
                 self.commit_reveal_state
                     .register_commit_with_provenance(&payload, block_height, provenance_class)
                     .map_err(|e| StateError::CommitReveal(e.to_string()))?;
+                // Signer class on chain (owner / device / relay), only for a
+                // commit accepted under `device_submission_limit` once
+                // `station_submitter_key` is active (before it, every such
+                // commit is owner-signed and the map stays empty, so roots
+                // equal a binary without it).
+                if let Some(signer) = commit_signer.filter(|_| {
+                    crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                        block_height,
+                    )
+                }) {
+                    self.record_commit_signer(&payload.commit_id, signer, block_height);
+                }
+                // Forecast late score: remember which key signed a forecast
+                // commit, so the reveal can be recorded for that forecaster.
+                // The key is the one whose signature verifies over the commit;
+                // nothing is taken from the transaction's sender. Inactive:
+                // never reached, the map stays empty.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                    && payload.verify_authorization()
+                {
+                    let forecaster = payload
+                        .auth_pubkey
+                        .as_deref()
+                        .and_then(|key| PublicKey::from_hex(key).ok())
+                        .map(|key| Address::from_public_key(&key));
+                    let expires_at = self
+                        .commit_reveal_state
+                        .pending_commits
+                        .get(&payload.commit_id)
+                        .map(|commit| commit.reveal_expires_at);
+                    if let (Some(forecaster), Some(expires_at)) = (forecaster, expires_at) {
+                        self.forecast_late_score.note_commit(
+                            &payload.commit_id,
+                            forecaster,
+                            block_height,
+                            expires_at,
+                        );
+                    }
+                }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
             },
@@ -5036,6 +5142,23 @@ impl State {
                 if halt_aware_skew && applied.weather_point_recorded {
                     self.station_weather_accepted_block_unix
                         .insert(payload.station_id.clone(), block_timestamp);
+                }
+                // Forecast late score: record the revealed forecast for its
+                // key-bound forecaster. Never changes whether the reveal
+                // applies. Inactive: never reached, nothing is written.
+                if payload.contribution_type == "forecast"
+                    && crate::crypto::chain_binding::forecast_late_score_active(block_height)
+                {
+                    let station_owner = self
+                        .station_registry
+                        .get(&payload.station_id)
+                        .and_then(|station| station.owner_address.parse::<Address>().ok());
+                    self.forecast_late_score.note_reveal(
+                        &payload,
+                        block_height,
+                        block_timestamp,
+                        station_owner,
+                    );
                 }
                 // prune_expired removed: batched per-block, not per-transaction (#703)
                 self.sync_commit_reveal_views();
@@ -5964,6 +6087,12 @@ impl State {
             StateTransition::FinalizeAdvisoryProposal { proposal_id, current_block } => {
                 self.finalize_advisory_proposal(&proposal_id, current_block)?;
             },
+            StateTransition::ApplyForecastScore { payload, block_height, block_timestamp } => {
+                self.apply_forecast_score(&payload, block_height, block_timestamp)?;
+            },
+            StateTransition::CloseForecastBuckets { block_height, block_timestamp } => {
+                self.close_forecast_buckets(block_height, block_timestamp)?;
+            },
             StateTransition::ApplyStationRegistrarRegistration {
                 station,
                 block_height,
@@ -6036,6 +6165,30 @@ impl State {
                     block_height,
                 );
                 Self::log_station_owner_refusal("action", &station_id, block_height, result);
+            }
+            StateTransition::ApplyStationSubmitterKey {
+                station_id,
+                owner_address,
+                action_nonce,
+                submitter,
+                block_height,
+            } => {
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationOwnerActions,
+                    block_height,
+                )?;
+                Self::require_station_owner_feature(
+                    crate::crypto::chain_binding::ConsensusFeature::StationSubmitterKey,
+                    block_height,
+                )?;
+                let result = self.apply_station_submitter_key(
+                    &station_id,
+                    &owner_address,
+                    action_nonce,
+                    submitter,
+                    block_height,
+                );
+                Self::log_station_owner_refusal("set submitter key", &station_id, block_height, result);
             }
             StateTransition::ApplyStationOwnerRecoveryFiling {
                 station_id,
@@ -6648,6 +6801,9 @@ impl State {
     /// Called once per block instead of per-transaction (#703).
     pub(crate) fn prune_commit_reveal_expired(&mut self, block_height: u64) {
         self.commit_reveal_state.prune_expired(block_height);
+        // `device_submission_limit` signer records age out with the applied
+        // reveals they describe; untouched while empty.
+        self.prune_commit_signers(block_height);
         self.sync_commit_reveal_views();
     }
 
@@ -7946,9 +8102,24 @@ impl State {
         tx_nonce: u64,
         current_block: u64,
     ) -> Result<Option<u64>, StateError> {
-        if current_block
-            < crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT
-        {
+        self.check_and_reserve_nonce_with_activation(
+            sender,
+            tx_nonce,
+            current_block,
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+        )
+    }
+
+    /// [`Self::check_and_reserve_nonce`] with the activation height passed in,
+    /// so tests can pin the boundary for a non-zero activation. Read-only.
+    fn check_and_reserve_nonce_with_activation(
+        &mut self,
+        sender: &Address,
+        tx_nonce: u64,
+        current_block: u64,
+        activation: u64,
+    ) -> Result<Option<u64>, StateError> {
+        if current_block < activation {
             return Ok(None);
         }
         let account = match self.get_account_mut(sender) {
@@ -8160,6 +8331,164 @@ impl State {
         Ok(())
     }
 
+    /// `StateTransition::ApplyForecastScore`: every consensus check of a
+    /// forecast score at this block, then the write. Read-only until the last
+    /// step, so a refused score leaves state untouched (assembly drops the
+    /// transaction; a block carrying it fails apply).
+    fn apply_forecast_score(
+        &mut self,
+        payload: &crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        fn refuse(error: late::ForecastLateScoreError) -> StateError {
+            StateError::CommitReveal(format!("SP_FORECAST_LATE_SCORE_REFUSED: {error}"))
+        }
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height) {
+            return Err(StateError::InvalidTransition);
+        }
+        let identity = crate::crypto::chain_binding::ChainIdentity::active();
+        // Oracle keys come from the chain's signing-key registry at the
+        // block's time, so a rotated-in key signs and a revoked key does not.
+        payload
+            .verify_quorum(
+                &identity.chain_id,
+                &identity.network_id,
+                &self.signing_keys,
+                |oracle| self.oracle_set.contains(oracle),
+                self.oracle_quorum,
+                block_timestamp,
+            )
+            .map_err(refuse)?;
+        // The truth and every window reading must be readings of this station
+        // that are on chain and at the oracle quorum in force now, and every
+        // window reading must have landed below the forecasts' commit height.
+        let quorum = self.oracle_quorum.max(1);
+        late::check_cited_readings(&payload.attestation, |commit_id| {
+            let reveal = self.commit_reveal_state.applied_reveals.get(commit_id)?;
+            Some(late::CitedReading {
+                station_id: reveal.station_id.clone(),
+                landed_at_height: reveal.revealed_at,
+                synthetic: reveal.provenance_class == ContributionProvenanceClass::Synthetic,
+                // A station reading is a reveal that carried a weather
+                // observation; only those get a quality score. While this
+                // feature is in force a forecast-type reveal never gets one,
+                // whatever its data carries (`CommitRevealState` skips the
+                // weather parse for it).
+                is_weather_reading: reveal.quality_score.is_some(),
+                has_quorum: self
+                    .attestations
+                    .get(commit_id)
+                    .is_some_and(|set| set.has_quorum(quorum)),
+            })
+        })
+        .map_err(refuse)?;
+        let digest =
+            late::observation_digest(&identity.chain_id, &identity.network_id, &payload.attestation);
+        self.forecast_late_score
+            .apply_score(payload, &digest, block_timestamp)
+            .map_err(refuse)?;
+        Ok(())
+    }
+
+    /// What crediting a forecast payment of `amount` to `forecaster` would
+    /// leave: (minted supply, earned total, balance, stake locked, spendable),
+    /// with the same stake-first rule as any earned credit. `None` when any
+    /// of them does not fit; nothing is written here.
+    fn forecast_payment_credit(
+        &self,
+        forecaster: &Address,
+        amount: u128,
+    ) -> Option<(u128, Balance, Balance, Balance, Balance)> {
+        let supply = self.supply_authorized_minting.checked_add(amount)?;
+        let amount = Balance::new(amount);
+        let zero = Balance::new(0);
+        let (earned, balance, locked, spendable, required) =
+            self.accounts.get(forecaster).map_or((zero, zero, zero, zero, zero), |a| {
+                (a.earned_balance_total, a.balance, a.stake_locked, a.spendable_balance, a.stake_required)
+            });
+        let lock = min(required.saturating_sub(locked), amount);
+        Some((
+            supply,
+            earned.checked_add(amount)?,
+            balance.checked_add(amount)?,
+            locked.checked_add(lock)?,
+            spendable.checked_add(amount.checked_sub(lock)?)?,
+        ))
+    }
+
+    /// `StateTransition::CloseForecastBuckets`: close the buckets due at this
+    /// block and mint what they earned, inside every limit: the per-bucket
+    /// and per-forecaster caps and the epoch budget (in
+    /// `ForecastLateScoreState`), a share of this block's Contribution slice,
+    /// what is left of that slice, and the supply headroom. Whatever does not
+    /// fit is recorded as unissued and never minted.
+    fn close_forecast_buckets(
+        &mut self,
+        block_height: u64,
+        block_timestamp: i64,
+    ) -> Result<(), StateError> {
+        use crate::consensus::forecast_late_score as late;
+        // The mint is charged to the block being applied; a close for any
+        // other height is a mis-built transition.
+        if !crate::crypto::chain_binding::forecast_late_score_active(block_height)
+            || self.emission_ledger.height() != block_height
+        {
+            return Err(StateError::InvalidTransition);
+        }
+        let station_registry = &self.station_registry;
+        let awards = self.forecast_late_score.close_due(block_height, block_timestamp, |station_id| {
+            station_registry
+                .get(station_id)
+                .and_then(|station| station.owner_address.parse::<Address>().ok())
+        });
+        if awards.is_empty() {
+            return Ok(());
+        }
+        // From here on a limit that cannot be computed is a limit of zero:
+        // the buckets are closed and nothing is paid. A bucket close never
+        // stops a block.
+        let slice = self.emission_ledger.partition().slice(EmissionRole::Contribution);
+        let epoch_budget = late::epoch_budget(slice).unwrap_or(0);
+        let block_budget = late::block_share(slice)
+            .unwrap_or(0)
+            .min(self.emission_ledger.remaining(EmissionRole::Contribution))
+            .min(self.mint_headroom());
+        let payments = self
+            .forecast_late_score
+            .settle_awards(block_height, &awards, epoch_budget, block_budget)
+            .unwrap_or_default();
+        for payment in payments {
+            // Everything the credit needs is computed first with checked
+            // arithmetic. A bond escrow is never a mint target; a result that
+            // does not fit, or a refused slice charge, means this mint does
+            // not happen. In each case the amount goes back to unissued and
+            // the block goes on: a bucket close never stops a block.
+            let credit = self.forecast_payment_credit(&payment.forecaster, payment.amount);
+            let minted = match credit {
+                Some(credit)
+                    if !self.node_protected_account(&payment.forecaster)
+                        && self.charge_emission_slice(EmissionRole::Contribution, payment.amount) =>
+                {
+                    Some(credit)
+                },
+                _ => None,
+            };
+            let Some((supply, earned, balance, locked, spendable)) = minted else {
+                self.forecast_late_score.mark_unminted(block_height, &payment.forecaster, payment.amount);
+                continue;
+            };
+            self.supply_authorized_minting = supply;
+            let account = self.create_account(payment.forecaster, Balance::new(0));
+            account.earned_balance_total = earned;
+            account.balance = balance;
+            account.stake_locked = locked;
+            account.spendable_balance = spendable;
+        }
+        Ok(())
+    }
+
     fn apply_protocol_transaction(
         &mut self,
         tx: &Transaction,
@@ -8172,6 +8501,10 @@ impl State {
             // Session-key register/revoke derive only from launch extraction
             // (`StateTransition::ApplySessionKeyAction`), never from this sink.
             TransactionType::SessionKeyAction => Err(StateError::InvalidTransition),
+            // A forecast score derives only from launch extraction
+            // (`StateTransition::ApplyForecastScore`, which carries the block
+            // timestamp), never from this sink.
+            TransactionType::ForecastScore => Err(StateError::InvalidTransition),
             // Owner-signed send-allowlist action. Refused below the
             // unscheduled activation, so `send_allowlists` stays empty there.
             TransactionType::SendAllowlist => {
@@ -11243,6 +11576,38 @@ pub enum StateTransition {
         proposal_id: String,
         current_block: u64,
     },
+    /// `forecast_late_score`: score stored forecasts against an
+    /// oracle-quorum-signed observation
+    /// (`consensus::forecast_late_score`). Derived from a
+    /// `TransactionType::ForecastScore` transaction with the block's own
+    /// height and timestamp. Refused while the feature is not in force.
+    /// APPENDED (bincode is positional).
+    ApplyForecastScore {
+        payload: crate::consensus::forecast_late_score::ForecastScorePayload,
+        block_height: u64,
+        block_timestamp: i64,
+    },
+    /// `forecast_late_score`: close the buckets whose scoring window has
+    /// ended at `block_timestamp`, pay their top forecasters from the
+    /// Contribution slice within the pool limits, and drop expired entries.
+    /// One per block, after the block's transactions, only while the feature
+    /// is in force. APPENDED LAST (bincode is positional).
+    CloseForecastBuckets {
+        block_height: u64,
+        block_timestamp: i64,
+    },
+    /// `station_submitter_key`: an owner-signed `set_submitter_key` approved
+    /// (`Some`) or cleared (`None`) the station's submitter key. Refused below
+    /// `station_owner_actions` or `station_submitter_key`; stateful refusals
+    /// are inert no-ops. APPENDED LAST (bincode is positional) and never
+    /// emitted while the feature is inactive.
+    ApplyStationSubmitterKey {
+        station_id: String,
+        owner_address: String,
+        action_nonce: u64,
+        submitter: Option<(String, crate::blockchain::transaction::SubmitterClass)>,
+        block_height: u64,
+    },
 }
 
 /// #3345: do two registered `owner_address` strings name the same owner?
@@ -11402,7 +11767,8 @@ mod tests {
     /// state-mutating variant back into silent default-allow behavior.
     fn protocol_dispatch_intent(tx_type: TransactionType) -> ProtocolDispatchIntent {
         match tx_type {
-            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction => ProtocolDispatchIntent::Refused,
+            TransactionType::SlashEvidenceReport | TransactionType::NodeBondLifecycle | TransactionType::NodeServiceBatch | TransactionType::NodeFraudReport | TransactionType::SessionKeyAction
+            | TransactionType::ForecastScore => ProtocolDispatchIntent::Refused,
             TransactionType::Transfer
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -20924,25 +21290,65 @@ mod tests {
     }
 
     #[test]
-    fn check_and_reserve_nonce_inactive_before_activation() {
-        // Below NONCE_ENFORCEMENT_ACTIVATION_HEIGHT the helper returns None,
-        // regardless of the submitted tx_nonce value. On WRFCoin mainnet and
-        // testnet this branch is effectively unreachable since activation is 0,
-        // but we pin the behavior in case the constant ever moves forward.
+    fn nonce_policy_nonzero_activation_boundaries() {
+        // Pin the pre-activation branch with an explicit activation height,
+        // independent of the production constant (genesis-active today).
+        const H: u64 = 10;
         let mut state = State::new();
         let sender = addr(80);
         state.create_account(sender, Balance::new(100));
-        let activation =
-            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT;
-        if activation == 0 {
-            // Nothing to exercise; the pre-activation branch is unreachable
-            // on-chain. Test is still valid — just a no-op.
-            return;
+        let before = state.get_account(&sender).unwrap().clone();
+
+        // H-1: a mismatched nonce reserves nothing and does not error.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 999, H - 1, H)
+                .unwrap(),
+            None
+        );
+        // H and H+1: a mismatched nonce is refused.
+        for height in [H, H + 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce_with_activation(&sender, 999, height, H),
+                Err(StateError::InvalidNonce)
+            ));
         }
-        let result = state
-            .check_and_reserve_nonce(&sender, 999, activation - 1)
-            .expect("pre-activation must never error on nonce mismatch");
-        assert_eq!(result, None);
+        // H: the matching zero nonce reserves one.
+        assert_eq!(
+            state
+                .check_and_reserve_nonce_with_activation(&sender, 0, H, H)
+                .unwrap(),
+            Some(1)
+        );
+        // Checking never mutates the account.
+        assert_eq!(state.get_account(&sender).unwrap(), &before);
+
+        // H: a matching u64::MAX nonce overflows instead of wrapping.
+        state.get_account_mut(&sender).unwrap().nonce = u64::MAX;
+        assert!(matches!(
+            state.check_and_reserve_nonce_with_activation(&sender, u64::MAX, H, H),
+            Err(StateError::NonceOverflow)
+        ));
+        assert_eq!(state.get_account(&sender).unwrap().nonce, u64::MAX);
+    }
+
+    #[test]
+    fn nonce_policy_production_activation_is_genesis_active() {
+        assert_eq!(
+            crate::consensus::proof_of_publishing::NONCE_ENFORCEMENT_ACTIVATION_HEIGHT,
+            0
+        );
+        let mut state = State::new();
+        let sender = addr(80);
+        state.create_account(sender, Balance::new(100));
+        for height in [0, 1] {
+            assert!(matches!(
+                state.check_and_reserve_nonce(&sender, 999, height),
+                Err(StateError::InvalidNonce)
+            ));
+            assert_eq!(state.check_and_reserve_nonce(&sender, 0, height).unwrap(), Some(1));
+        }
+        assert_eq!(state.get_account(&sender).unwrap().nonce, 0);
     }
 
     #[test]
@@ -21731,6 +22137,8 @@ mod tests {
     "node_fraud",
     "send_allowlists",
     "advisory_proposals",
+    "forecast_late_score",
+    "station_submitters",
         ];
 
         let actual = State::state_root_material_field_names();

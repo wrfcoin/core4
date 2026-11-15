@@ -117,6 +117,12 @@ const MIN_PRODUCTION_RUST_SOURCE_FILES: usize = 400;
 ///   the issue named in the reason rather than silently dropped.
 const UNREGISTERED: &[(&str, &str)] = &[
     (
+        "StationSubmitterKeyPayload",
+        "the `set_submitter_key` shape of `station_owner_action_v1`: signed under the SAME tag as \
+         StationOwnerActionPayload (registered), with action discriminant 5 then the key and class in \
+         the preimage, so it is not a second tag",
+    ),
+    (
         "SecurityKeyAssertionWire",
         "WebAuthn P-256 assertion, not an ed25519 signed object: the authenticator signs \
          authenticatorData || SHA-256(clientDataJSON) whose challenge is SHA3 of a preimage \
@@ -740,6 +746,14 @@ const AUTHORIZATION_MESSAGE_SURFACES: &[AuthSurface] = &[
         rust_type: "DeclareAuthorization",
         domain_tag: "wrfcoin.declare_authorization.v1",
         golden_kind: "declare_authorization_v2",
+    },
+    // Forecast late score: what an oracle quorum signs, the full score payload
+    // (observation and forecast commit ids), carried by
+    // `TransactionType::ForecastScore`.
+    AuthSurface {
+        rust_type: "ForecastScorePayload",
+        domain_tag: "wrfcoin.forecast_score_attestation.v2",
+        golden_kind: "forecast_score_attestation_v2",
     },
     AuthSurface {
         rust_type: "SignedAdvisoryAction",

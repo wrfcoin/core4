@@ -798,6 +798,18 @@
     },
     {
       "package": "wrfcoin_cli",
+      "target": "station_submitter_cli"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "station_owner_key_audit_3565"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "station_owner_key_audit_v2_3565"
+    },
+    {
+      "package": "wrfcoin_cli",
       "target": "station_registrar_cli"
     },
     {
@@ -1050,11 +1062,51 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score_lead_rule_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_submitter_key"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "station_submitter_key_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement_slots"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "pinned_key_retirement_genesis"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "device_submission_limit_lead_rule"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "send_allowlist_interactions"
     },
     {
       "package": "wrfcoin-native-chain",
       "target": "advisory_governance_parity"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "forecast_late_score_parity"
     },
     {
       "package": "wrfcoin-shared-protocol",

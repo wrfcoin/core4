@@ -46,6 +46,17 @@ async fn node_bond_s6a_authenticated_submit_and_truthful_reads() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = test::read_body_json(response).await;
     assert_eq!(body["principal_base_units"], "25000000000");
+    // The close of the current epoch, from the same consensus geometry the chain uses.
+    {
+        use wrfcoin_shared_protocol::consensus::node_bond_registry::{epoch_at, epoch_close};
+        let activation: u64 = body["activation_height"].as_str().unwrap().parse().unwrap();
+        let height: u64 = body["height"].as_str().unwrap().parse().unwrap();
+        let epoch = epoch_at(activation, height).unwrap();
+        assert_eq!(body["epoch"], epoch.to_string());
+        let close = epoch_close(activation, epoch).unwrap();
+        assert_eq!(body["epoch_close_height"], close.to_string());
+        assert!(close >= height);
+    }
     let unknown_path = format!("/node/bonds/{}", hex::encode([88; 32]));
     let response = test::call_service(
         &app,

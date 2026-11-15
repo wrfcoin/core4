@@ -17,6 +17,7 @@
 pub mod api;
 pub mod bond_grant;
 pub mod forecast_receipt;
+pub mod forecast_late_score;
 pub mod config;
 pub mod consensus;
 pub mod crypto;

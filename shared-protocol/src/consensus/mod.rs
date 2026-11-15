@@ -2,6 +2,7 @@ pub mod block_producer_auth;
 pub mod capability;
 pub mod data_desert;
 pub mod finality;
+pub mod forecast_late_score;
 pub mod forecast_verification;
 pub mod hyper_local;
 pub mod partition_policy;

@@ -4240,6 +4240,8 @@ mod tests {
     }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
+    #[cfg(feature = "p2p")]
+    mod producer_persist_3544;
     #[path = "reward_address_index.rs"]
     mod reward_address_index;
     #[path = "reward_history_newest.rs"]
@@ -4370,6 +4372,8 @@ mod tests {
     mod node_fraud_route;
     #[path = "security_key_route.rs"]
     mod security_key_route;
+    #[path = "forecast_late_score_route.rs"]
+    mod forecast_late_score_route;
 
     #[cfg(unix)]
     #[path = "payout_signer_3499.rs"]
@@ -5541,6 +5545,22 @@ mod tests {
                 "parsed signers should NOT contain uppercase input");
     }
 
+    /// Fresh redb storage for one test state. The file is created with
+    /// O_EXCL under an OS-random name (tempfile), so two tests or two test
+    /// processes can never open the same database, then unlinked right after
+    /// redb opens it: the open handle keeps the inode alive and nothing is
+    /// left in the temp dir. The old `wrfcoin-test-<fastrand u64>.redb`
+    /// names were never removed and were not guaranteed unique.
+    fn test_storage() -> Storage {
+        let file = tempfile::Builder::new()
+            .prefix("wrfcoin-test-")
+            .suffix(".redb")
+            .tempfile()
+            .expect("test storage file should be created");
+        let path = file.into_temp_path();
+        Storage::open(&path, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open")
+    }
+
     fn test_token_store() -> Arc<FxHashMap<String, AuthPrincipal>> {
         let mut store = FxHashMap::default();
         store.insert(
@@ -5696,9 +5716,7 @@ mod tests {
         zk_max_provers: usize,
     ) -> web::Data<AppState> {
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let mut blockchain = Blockchain::default();
         let zk_verifier: Arc<dyn wrfcoin_shared_protocol::consensus::zk_verification::ZkVerifier> =
             Arc::new(wrfcoin_native_chain::zk_service::ArkworksZkVerifier);
@@ -5807,9 +5825,7 @@ mod tests {
         // and `test_state_with_block_capacity`.
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
 
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let blockchain = {
             #[cfg(feature = "zk")]
             {
@@ -5932,9 +5948,7 @@ mod tests {
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
         #[cfg(feature = "zk")]
         {
-            let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-            let storage =
-                Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+            let storage = test_storage();
             let mut blockchain = Blockchain::with_capacity(max_in_memory_blocks);
             let zk_verifier: Arc<
                 dyn wrfcoin_shared_protocol::consensus::zk_verification::ZkVerifier,
@@ -6030,9 +6044,7 @@ mod tests {
         });
         }
 
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let blockchain = Blockchain::with_capacity(max_in_memory_blocks);
         let (finality_signal_tx, _rx) =
             wrfcoin_shared_protocol::consensus::finality::finality_signal_channel();

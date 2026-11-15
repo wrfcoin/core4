@@ -553,3 +553,138 @@ async fn r3_reveal_is_never_dropped_and_measure_delay() {
         println!("REVEAL {case}: commit {} expires {} mined {} (slack left {}, {} node blocks first)", r.commit_at, r.expires, r.mined_at, r.expires - r.mined_at, r.blocks_with_node);
     }
 }
+
+// ---- The separation guard must not strand a same-owner later nonce ----
+
+fn owner_transfer(owner_id: u8, to_id: u8, nonce: u64, tag: &[u8]) -> Transaction {
+    let owner = f::bonds::address(owner_id);
+    let mut payload = crate::blockchain::transaction::TransparentTransferPayload {
+        from: owner.to_hex(),
+        to: f::bonds::address(to_id).to_hex(),
+        amount: 1,
+        transparent_opt_out: true,
+        opt_out_audit_tag: None,
+        auth_pubkey: None,
+        auth_signature: None,
+        authority: None,
+        authority_signature: None,
+        passkey_auth: None,
+        sponsorship: None,
+        session_key_auth: None,
+    };
+    payload.sign_authorization(&f::key(owner_id), nonce);
+    let mut transfer = Transaction::new(
+        vec![crate::blockchain::transaction::TransactionInput {
+            txid: crate::crypto::hash::hash_bytes(tag),
+            vout: 0,
+            signature: None,
+            public_key: None,
+            coinbase_data: None,
+        }],
+        vec![crate::blockchain::transaction::TransactionOutput { amount: 0, address: owner.to_hex(), script: "OP_TRUE".into(), nft_data: None }],
+    );
+    transfer.tx_type = TransactionType::Transfer;
+    transfer.data = Some(serde_json::to_string(&payload).unwrap());
+    transfer.nonce = nonce;
+    with_fee(transfer, 1_000)
+}
+
+/// The owner's receipt batch at nonce n and transfer at n+1 are pending with a contribution
+/// reveal. The node-service / reveal separation guard holds the batch for a later block. The
+/// transfer must wait with it: mined in this block it fails its nonce check, does nothing, and
+/// leaves the pool as "confirmed", so the owner's payment is silently lost.
+#[tokio::test]
+async fn guard_held_node_tx_holds_the_owners_next_nonce_transfer() {
+    const NAME: &str = "consensus::proof_of_publishing::node_settlement_producer_tests::guard_held_node_tx_holds_the_owners_next_nonce_transfer";
+    if isolated(NAME) {
+        return;
+    }
+    let mut initial = Blockchain::default();
+    let mut st = licensed_state();
+    let start = f::H + 20;
+    advance_state(&mut st, start);
+    initial.height = start;
+    initial.tip = Hash::from_bytes([4; 32]);
+    initial.state = st;
+    super::tests::register_real_test_station(&mut initial, "station-edge", f::bonds::address(30));
+    let owner = f::bonds::address(10);
+    let payee = f::bonds::address(20);
+    let s = initial.state.clone();
+    let n = s.accounts[&owner].nonce;
+    let payee_before = s.accounts[&payee].balance;
+    let chain = Arc::new(RwLock::new(initial));
+    let pool = Arc::new(RwLock::new(Mempool::new(&Config::default())));
+    let (commit, mut reveal, _) = super::tests::build_commit_and_reveal(
+        TransactionType::ContributionReveal,
+        "station-edge",
+        "contribution",
+        chrono::Utc::now().timestamp(),
+        serde_json::json!({ "quality": 0.9 }),
+        "edge",
+    );
+    reveal.fee = 1;
+    reveal.set_id();
+    let reveal_id = reveal.id;
+    let receipt = with_fee(batch(&s, 1, 1, n), 900_000);
+    let transfer = owner_transfer(10, 20, n + 1, b"edge-transfer");
+    {
+        let mut p = pool.write().await;
+        p.add_transaction(commit).unwrap();
+        p.add_transaction(reveal).unwrap();
+        p.add_transaction_with_signing_keys_at_height(receipt.clone(), None, Some(start)).unwrap();
+        p.add_transaction_with_signing_keys_at_height(transfer.clone(), None, Some(start)).unwrap();
+    }
+    let mut pop = ProofOfPublishing::new(1, 60, 0, 100);
+    let producer = f::bonds::address(10).to_string();
+    let has = |block: &Block, id| block.transactions.iter().any(|t| t.id == id);
+    let first = pop.create_next_block(chain.clone(), pool.clone(), &producer).await.unwrap();
+    assert!(has(&first, reveal_id), "fixture: the reveal is mined first");
+    assert!(!has(&first, receipt.id), "fixture: the guard holds the batch back");
+    assert!(
+        !has(&first, transfer.id),
+        "the transfer at n+1 was mined while its owner's nonce-n batch was held back"
+    );
+    assert!(pool.read().await.contains(&transfer.id.unwrap()), "the transfer must stay pending");
+    for _ in 0..3 {
+        if pool.read().await.get_all_transactions().is_empty() {
+            break;
+        }
+        pop.create_next_block(chain.clone(), pool.clone(), &producer).await.unwrap();
+    }
+    let state = chain.read().await.state.clone();
+    assert_eq!(state.accounts[&owner].nonce, n + 2, "both of the owner's nonces were spent");
+    assert_eq!(
+        state.accounts[&payee].balance.0,
+        payee_before.0 + 1,
+        "the payment arrived"
+    );
+}
+
+/// No reveal, no guard. The owner's batch at n and transfer at n+1 are both pending. A
+/// block applies transfers before node-service transactions, so mined together the transfer
+/// fails its nonce check and is lost. The transfer must wait one block and then land.
+#[tokio::test]
+async fn a_batch_at_n_and_a_transfer_at_n_plus_one_both_apply() {
+    const NAME: &str = "consensus::proof_of_publishing::node_settlement_producer_tests::a_batch_at_n_and_a_transfer_at_n_plus_one_both_apply";
+    if isolated(NAME) {
+        return;
+    }
+    let s = licensed_state();
+    let owner = f::bonds::address(10);
+    let payee = f::bonds::address(20);
+    let n = s.accounts[&owner].nonce;
+    let payee_before = s.accounts[&payee].balance.0;
+    let receipt = with_fee(batch(&s, 1, 1, n), 900_000);
+    let transfer = owner_transfer(10, 20, n + 1, b"probe-transfer");
+    let (chain, pool, mut pop) = producer_with(vec![receipt.clone(), transfer.clone()]).await;
+    let producer = f::bonds::address(10).to_string();
+    for _ in 0..3 {
+        if pool.read().await.get_all_transactions().is_empty() {
+            break;
+        }
+        pop.create_next_block(chain.clone(), pool.clone(), &producer).await.unwrap();
+    }
+    let state = chain.read().await.state.clone();
+    assert_eq!(state.accounts[&owner].nonce, n + 2);
+    assert_eq!(state.accounts[&payee].balance.0, payee_before + 1);
+}

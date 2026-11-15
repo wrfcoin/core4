@@ -13,7 +13,7 @@ use libp2p::{
     futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     request_response::{self, OutboundRequestId},
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use wrfcoin_shared_protocol::blockchain::{block::Block, chain::Blockchain};
@@ -62,6 +62,10 @@ pub const MAX_SYNC_TARGET_ADVANCE_BLOCKS: u64 =
 const MAX_PARALLEL_PEERS: usize = 4;
 pub const BLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_RETRY_BASE_DELAY: Duration = Duration::from_secs(10);
+/// Consecutive undelivered requests covering a height after which a peer
+/// counts as asked for it when corroborating a validation halt. Two, so one
+/// transient timeout from a healthy peer is not enough.
+const UNANSWERED_ASKS_TO_COUNT: u32 = 2;
 const SYNC_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 const SYNC_RETRY_MAX_JITTER: Duration = Duration::from_millis(250);
 /// #2807: cadence floor for retrying a banned peer when it is the only
@@ -526,8 +530,8 @@ pub enum AuthoritativeSyncRejectionAttribution {
     /// canonical (#2807) — so this class never penalizes externally.
     /// Instead the node loop feeds it to
     /// [`SyncManager::note_rule_rejection`], which rotates away from the
-    /// serving peer and latches a loud validation halt once a second
-    /// distinct peer corroborates the same data.
+    /// serving peer and latches a loud validation halt once at least two
+    /// peers served the same block and every advertising peer was asked.
     LocalRuleRejection,
 }
 
@@ -553,6 +557,11 @@ struct PeerSyncHealth {
     retry_not_before: Option<Instant>,
     last_failure_at: Option<Instant>,
     last_failed_range: Option<HeightRange>,
+    /// Consecutive requests to this peer that delivered no block, and the
+    /// range of the latest one (validation-halt evidence; reset by any
+    /// reply carrying blocks).
+    unanswered_asks: u32,
+    unanswered_range: Option<HeightRange>,
 }
 
 #[derive(Debug, Clone)]
@@ -572,11 +581,12 @@ pub struct ValidationHalt {
 }
 
 /// Pre-halt corroboration state: which distinct peers have served a
-/// rule-failing block at `height` so far (#2807).
+/// rule-failing block at `height` so far, and the header hash of the block
+/// each one served (#2807).
 #[derive(Debug, Clone)]
 struct RuleRejectionWatch {
     height: u64,
-    peers: Vec<PeerId>,
+    served: Vec<(PeerId, [u8; 32])>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -799,8 +809,8 @@ impl SyncManager {
         self.validation_halt
     }
 
-    pub fn note_rule_rejection(&mut self, peer_id: &PeerId, block_height: u64) {
-        self.note_rule_rejection_at(peer_id, block_height, Instant::now());
+    pub fn note_rule_rejection(&mut self, peer_id: &PeerId, block_height: u64, block_hash: [u8; 32]) {
+        self.note_rule_rejection_at(peer_id, block_height, block_hash, Instant::now());
     }
 
     /// Record that authoritative validation deterministically rejected the
@@ -812,15 +822,14 @@ impl SyncManager {
     /// when the block is canonical the identical rejection reproduces
     /// against every honest peer. The serving peer instead gets a
     /// sync-local cooldown and priority knock so planning rotates to
-    /// someone else; a SECOND distinct peer serving rule-failing data at
-    /// the same height corroborates that this is what the network actually
-    /// holds, which latches the loud `ValidationHalted` state instead of
-    /// graylisting the peer set.
+    /// someone else. The loud `ValidationHalted` state latches only once the
+    /// rejection is corroborated, see [`Self::try_latch_validation_halt`].
     #[doc(hidden)]
     pub fn note_rule_rejection_at(
         &mut self,
         peer_id: &PeerId,
         block_height: u64,
+        block_hash: [u8; 32],
         now: Instant,
     ) {
         if self.validation_halt.is_some() {
@@ -834,44 +843,105 @@ impl SyncManager {
         let watch = match &mut self.rule_rejection_watch {
             Some(watch) if watch.height == block_height => watch,
             _ => {
-                // #2981: the old `.expect("watch was just latched above")` was a true
-                // claim — this is `&mut self`, so the assignment and the read are
-                // straight-line under exclusive access and no other thread can clear
-                // the field between them. But a comment asserting an invariant is
-                // weaker than not needing one: `Option::insert` stores the value and
-                // returns `&mut T` directly, so there is no Option to unwrap and the
-                // panic cannot exist regardless of how this function is later edited.
+                // #2981: `Option::insert` returns `&mut T` directly, so there is
+                // no Option to unwrap and no panic path.
                 self.rule_rejection_watch.insert(RuleRejectionWatch {
                     height: block_height,
-                    peers: Vec::new(),
+                    served: Vec::new(),
                 })
             },
         };
-        if !watch.peers.contains(peer_id) {
-            watch.peers.push(*peer_id);
+        if !watch.served.iter().any(|(p, _)| p == peer_id) {
+            watch.served.push((*peer_id, block_hash));
         }
-        if watch.peers.len() < 2 {
-            return;
+        self.try_latch_validation_halt();
+    }
+
+    /// Latch `ValidationHalted` when the open rule-rejection watch is
+    /// corroborated. Both conditions are required:
+    ///
+    /// 1. At least two distinct peers served the SAME block (header hash) at
+    ///    the watched height. Different rule-failing blocks at one height are
+    ///    not evidence of what the network holds.
+    /// 2. Every connected peer advertising that height was asked for it: it
+    ///    either served a rejected block there, or was asked for a range
+    ///    covering the height and delivered no block
+    ///    [`UNANSWERED_ASKS_TO_COUNT`] times in a row (timeout, transport
+    ///    failure, or an empty reply without `retry_after_ms`; a busy or
+    ///    refusing reply never counts). Until then the serving peers are
+    ///    cooling down, so planning asks the remaining peers next.
+    ///
+    /// Called after every rule rejection and every undelivered request, so
+    /// the last outcome that completes the evidence latches it.
+    fn try_latch_validation_halt(&mut self) -> bool {
+        if self.validation_halt.is_some() {
+            return true;
+        }
+        let Some(watch) = self.rule_rejection_watch.as_ref() else {
+            return false;
+        };
+        let height = watch.height;
+        // The most-served block; ties keep the first served (deterministic).
+        let mut corroborating = 0usize;
+        for (_, hash) in &watch.served {
+            let n = watch.served.iter().filter(|(_, h)| h == hash).count();
+            if n > corroborating {
+                corroborating = n;
+            }
+        }
+        if corroborating < 2 {
+            return false;
+        }
+        let not_asked = self
+            .peer_chains
+            .iter()
+            .filter(|(id, info)| {
+                info.height >= height
+                    && !watch.served.iter().any(|(p, _)| p == *id)
+                    && !(info.health.unanswered_asks >= UNANSWERED_ASKS_TO_COUNT
+                        && info
+                            .health
+                            .unanswered_range
+                            .is_some_and(|r| r.start <= height && height <= r.end))
+            })
+            .count();
+        if not_asked > 0 {
+            debug!(
+                "P2P sync: {corroborating} peers served the same rule-failing block at height \
+                 {height}; {not_asked} peer(s) advertising that height not asked yet, rotating"
+            );
+            return false;
         }
         let halt = ValidationHalt {
-            height: block_height,
-            distinct_peers: watch.peers.len() as u32,
+            height,
+            distinct_peers: corroborating as u32,
         };
         warn!(
-            "P2P sync VALIDATION HALT at height {}: blocks served by {} distinct peers each \
-             failed local authoritative validation. This is canonical-chain divergence from \
-             this node's rules, not peer misbehaviour — no peer was penalized. Sync holds \
-             here until local height passes the rejected block (snapshot restore, reorg, or \
-             a fixed validator) (#2807)",
+            "P2P sync VALIDATION HALT at height {}: the same block served by {} distinct peers \
+             failed local authoritative validation, and every peer advertising that height \
+             was asked. This is canonical-chain divergence from this node's rules, not peer \
+             misbehaviour — no peer was penalized. Sync holds here until local height passes \
+             the rejected block (snapshot restore, reorg, or a fixed validator) (#2807)",
             halt.height, halt.distinct_peers
         );
         self.validation_halt = Some(halt);
-        self.state = SyncState::ValidationHalted {
-            height: block_height,
-        };
+        self.state = SyncState::ValidationHalted { height };
         self.pending_ranges.clear();
         self.deferred_ranges.clear();
         self.in_flight.clear();
+        true
+    }
+
+    /// A request covering `range` to `peer_id` delivered no block (timeout,
+    /// transport failure, or an empty reply without `retry_after_ms`).
+    fn note_unanswered_ask(&mut self, peer_id: PeerId, range: HeightRange) {
+        if let Some(info) = self.peer_chains.get_mut(&peer_id) {
+            info.health.unanswered_asks = info.health.unanswered_asks.saturating_add(1);
+            info.health.unanswered_range = Some(range);
+        }
+        if self.rule_rejection_watch.is_some() {
+            self.try_latch_validation_halt();
+        }
     }
 
     /// Hint to the sync manager that a block has been observed at `height`
@@ -1223,6 +1293,10 @@ impl SyncManager {
         }
 
         self.handle_stalls(now);
+        if self.validation_halt.is_some() {
+            // A timeout just completed the halt evidence.
+            return Vec::new();
+        }
         let mut ready = Vec::new();
         self.deferred_ranges.retain(|(range, not_before)| {
             if *not_before <= now {
@@ -1371,7 +1445,9 @@ impl SyncManager {
     pub fn note_request_failure_at(&mut self, request_id: OutboundRequestId, now: Instant) {
         if let Some(entry) = self.in_flight.remove(&request_id) {
             self.record_transport_failure(entry.peer_id, entry.range, now);
-            self.requeue_range(entry.range);
+            if self.validation_halt.is_none() {
+                self.requeue_range(entry.range);
+            }
         }
     }
 
@@ -1523,6 +1599,35 @@ impl SyncManager {
             info.health.consecutive_transport_failures = 0;
             info.health.retry_not_before = None;
             info.health.last_failed_range = None;
+            if !response.blocks.is_empty() {
+                info.health.unanswered_asks = 0;
+                info.health.unanswered_range = None;
+            }
+        }
+        // A reply with no blocks and no `retry_after_ms` is an unanswered ask. A
+        // busy or refusing reply (`retry_after_ms: Some(_)`: serve slots full,
+        // the serve governor) is not: the peer may hold the block and was not
+        // asked in vain, so it never counts toward the halt evidence.
+        if response.blocks.is_empty() && response.retry_after_ms.is_none() {
+            // While a rule rejection at a height is being corroborated,
+            // repeated replies without blocks for that height rotate planning
+            // away from the peer, so the other advertising peers are asked too
+            // (sync-local only, never a penalty). Nothing changes otherwise.
+            let watched = self.rule_rejection_watch.as_ref().is_some_and(|w| {
+                in_flight.range.start <= w.height && w.height <= in_flight.range.end
+            });
+            if let Some(info) = self.peer_chains.get_mut(&in_flight.peer_id) {
+                if watched
+                    && info.health.unanswered_asks.saturating_add(1) >= UNANSWERED_ASKS_TO_COUNT
+                    && info.health.retry_not_before.is_none()
+                {
+                    info.health.retry_not_before = Some(now + SYNC_RETRY_BASE_DELAY);
+                }
+            }
+            self.note_unanswered_ask(in_flight.peer_id, in_flight.range);
+            if self.validation_halt.is_some() {
+                return Ok(Vec::new());
+            }
         }
 
         if response.blocks.len() > in_flight.range.len() as usize {
@@ -2349,6 +2454,7 @@ impl SyncManager {
             info.health.consecutive_transport_failures,
             retry_delay.as_millis()
         );
+        self.note_unanswered_ask(peer_id, range);
     }
 
     fn retain_peer_health(&mut self, peer_id: PeerId, health: PeerSyncHealth, now: Instant) {
@@ -4517,55 +4623,216 @@ mod tests {
         );
     }
 
-    /// #2807 feature coverage: a rule rejection from ONE peer only rotates
-    /// (cooldown, no ban, no halt); a second DISTINCT peer serving
-    /// rule-failing data at the same height corroborates canonical
-    /// divergence and latches the loud `ValidationHalted` state — with no
-    /// peer banned and planning quiesced. Local height passing the halted
-    /// block clears the latch.
+    /// Model of the node loop at the SyncManager seam. Every range a
+    /// `rejecting` peer serves is rejected by local rules at its first height
+    /// (rewind + rule rejection with one shared block hash, as `node.rs` feeds
+    /// them); every range a `serving` peer serves is accepted
+    /// (`set_local_height(end)`); NewBlock gossip of the network tip arrives
+    /// every 77 s. Returns (height reached, second the halt latched, rejected
+    /// responses).
+    fn rejecting_peer_sim(rejecting: usize, serving: usize, local: u64, tip: u64, secs: u64) -> (u64, Option<u64>, u32) {
+        let t0 = Instant::now();
+        let mut mgr = SyncManager::new(local);
+        let rejecting_ids: Vec<PeerId> = (0..rejecting).map(|_| fake_peer()).collect();
+        let serving_ids: Vec<PeerId> = (0..serving).map(|_| fake_peer()).collect();
+        for p in serving_ids.iter().chain(rejecting_ids.iter()) {
+            mgr.record_peer_status_at(*p, tip, t0);
+        }
+        let mut halted_at = None;
+        let mut rejected = 0u32;
+        for tick in 0..secs {
+            let now = t0 + Duration::from_secs(tick);
+            if tick % 77 == 0 {
+                mgr.note_observed_height(tip);
+            }
+            for planned in mgr.plan_requests(now) {
+                let start = planned.request.start_height;
+                let end = start + u64::from(planned.request.count.saturating_sub(1));
+                if rejecting_ids.contains(&planned.peer_id) {
+                    rejected += 1;
+                    let accepted = mgr.local_height();
+                    mgr.note_authoritative_rejection(
+                        &planned.peer_id,
+                        accepted,
+                        AuthoritativeSyncRejectionAttribution::LocalRuleRejection,
+                    );
+                    mgr.note_rule_rejection_at(&planned.peer_id, accepted + 1, [0xF0; 32], now);
+                } else {
+                    mgr.set_local_height(end.min(tip));
+                }
+            }
+            if halted_at.is_none() && mgr.validation_halt().is_some() {
+                halted_at = Some(tick);
+            }
+        }
+        (mgr.local_height(), halted_at, rejected)
+    }
+
+    /// The halt latches only after every advertising peer was asked: two peers
+    /// serving the same rejected block do not halt a node whose third peer
+    /// serves the chain; it syncs to the tip through that peer.
     #[test]
-    fn corroborated_rule_rejection_halts_loudly_without_banning_2807() {
-        let peer_a = fake_peer();
-        let peer_b = fake_peer();
+    fn halt_waits_for_every_advertising_peer_and_sync_reaches_the_tip() {
+        let (reached, halted_at, _) = rejecting_peer_sim(2, 1, 100, 16_000, 7_200);
+        assert_eq!(halted_at, None, "halted before every advertising peer was asked");
+        assert_eq!(reached, 16_000, "the node must sync to the tip through the serving peer");
+    }
+
+    /// Two peers serving DIFFERENT rule-failing blocks at one height do not
+    /// corroborate anything, even with no other peer left to ask.
+    #[test]
+    fn different_rejected_blocks_at_one_height_do_not_corroborate() {
+        let (a, b) = (fake_peer(), fake_peer());
         let t0 = Instant::now();
         let mut mgr = SyncManager::new(10);
-        mgr.record_peer_status_at(peer_a, 60, t0);
-        mgr.record_peer_status_at(peer_b, 60, t0);
-
-        mgr.note_rule_rejection_at(&peer_a, 11, t0);
-        assert!(
-            mgr.validation_halt().is_none(),
-            "a single serving peer must not corroborate a halt — it may be lying"
-        );
-        assert!(
-            mgr.peer_metrics(&peer_a).unwrap().cooling_down,
-            "the first server must be rotated away from via cooldown"
-        );
-        assert!(!mgr.peer_metrics(&peer_a).unwrap().banned);
-
-        mgr.note_rule_rejection_at(&peer_b, 11, t0);
-        let halt = mgr
-            .validation_halt()
-            .expect("two distinct servers must corroborate the halt");
-        assert_eq!(halt.height, 11);
-        assert_eq!(halt.distinct_peers, 2);
-        assert_eq!(mgr.state().label(), "validation_halted");
-        assert!(!mgr.peer_metrics(&peer_a).unwrap().banned);
-        assert!(!mgr.peer_metrics(&peer_b).unwrap().banned);
-        assert!(
-            mgr.plan_requests(t0 + Duration::from_secs(600)).is_empty(),
-            "re-downloading cannot cure a deterministic rejection; planning \
-             must quiesce while halted"
-        );
-
-        // Gossip must not flap the halt state.
-        mgr.note_observed_height(90);
-        assert_eq!(mgr.state().label(), "validation_halted");
-
-        // The halted block landing through another path clears the latch.
-        mgr.set_local_height(11);
-        assert!(mgr.validation_halt().is_none());
+        mgr.record_peer_status_at(a, 60, t0);
+        mgr.record_peer_status_at(b, 60, t0);
+        mgr.note_rule_rejection_at(&a, 11, [0xA1; 32], t0);
+        mgr.note_rule_rejection_at(&b, 11, [0xB2; 32], t0);
+        assert!(mgr.validation_halt().is_none(), "different blocks must not latch the halt");
         assert_ne!(mgr.state().label(), "validation_halted");
+    }
+
+    /// The same block from two peers latches only once every peer advertising
+    /// that height was asked for it.
+    #[test]
+    fn same_block_latches_only_after_every_advertising_peer_was_asked() {
+        let (a, b, c) = (fake_peer(), fake_peer(), fake_peer());
+        let t0 = Instant::now();
+        let mut mgr = SyncManager::new(10);
+        for p in [a, b, c] {
+            mgr.record_peer_status_at(p, 60, t0);
+        }
+        mgr.note_rule_rejection_at(&a, 11, [0x11; 32], t0);
+        mgr.note_rule_rejection_at(&b, 11, [0x11; 32], t0);
+        assert!(mgr.validation_halt().is_none(), "peer c was not asked yet: rotate, don't halt");
+        assert!(!mgr.plan_requests(t0 + Duration::from_secs(1)).is_empty(), "planning continues");
+        mgr.note_rule_rejection_at(&c, 11, [0x11; 32], t0);
+        let halt = mgr.validation_halt().expect("every peer served the same rejected block");
+        assert_eq!(halt.distinct_peers, 3);
+    }
+
+    /// Three peers serve the same rejected block at height 11; a fourth peer
+    /// keeps advertising height 60 but delivers nothing for it (times out, or
+    /// replies with no blocks). Once it has been asked and delivered nothing,
+    /// every advertising peer was asked, so the halt latches.
+    fn silent_peer_run(empty_reply: bool) -> Option<ValidationHalt> {
+        last_peer_run(3, if empty_reply { LastPeer::Empty } else { LastPeer::TimesOut }, 7_200)
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum LastPeer {
+        TimesOut,
+        Empty,
+        /// Replies `retry_after_ms: Some(ms)` with no blocks (serve slots full, or
+        /// the serve governor): busy, not unanswered.
+        Busy(u64),
+    }
+
+    fn last_peer_run(rejecting: usize, mode: LastPeer, secs: u64) -> Option<ValidationHalt> {
+        let rejecting: Vec<PeerId> = (0..rejecting).map(|_| fake_peer()).collect();
+        let silent = fake_peer();
+        let t0 = Instant::now();
+        let mut mgr = SyncManager::new(10);
+        for p in rejecting.iter().chain(std::iter::once(&silent)) {
+            mgr.record_peer_status_at(*p, 60, t0);
+        }
+        let mut behaviour = RequestResponseBehaviour::with_codec(
+            BlockSyncCodec,
+            std::iter::once((StreamProtocol::new(BLOCK_SYNC_PROTOCOL), ProtocolSupport::Full)),
+            Config::default(),
+        );
+        let mut chain = Blockchain::default();
+        chain.height = 10;
+        // The rejecting peers have already served the same rejected block, so
+        // only the last peer's answer is missing from the evidence.
+        for p in &rejecting {
+            mgr.note_rule_rejection_at(p, 11, [0x11; 32], t0);
+        }
+        for tick in 0..secs {
+            let now = t0 + Duration::from_secs(tick);
+            if tick % 77 == 0 {
+                mgr.record_peer_status_at(silent, 60, now);
+            }
+            for planned in mgr.plan_requests(now) {
+                let id = behaviour.send_request(&planned.peer_id, planned.request.clone());
+                mgr.register_request(id, planned.peer_id, &planned.request, now);
+                if planned.peer_id == silent {
+                    let retry_after_ms = match mode {
+                        LastPeer::TimesOut => None,
+                        LastPeer::Empty => Some(None),
+                        LastPeer::Busy(ms) => Some(Some(ms)),
+                    };
+                    if let Some(retry_after_ms) = retry_after_ms {
+                        let _ = mgr.handle_response(
+                            id,
+                            BlockResponse { blocks: Vec::new(), retry_after_ms },
+                            now,
+                            &mut chain,
+                        );
+                    }
+                    // TimesOut: never answered; `plan_requests` times it out.
+                } else {
+                    let accepted = mgr.local_height();
+                    mgr.note_authoritative_rejection(
+                        &planned.peer_id,
+                        accepted,
+                        AuthoritativeSyncRejectionAttribution::LocalRuleRejection,
+                    );
+                    mgr.note_rule_rejection_at(&planned.peer_id, 11, [0x11; 32], now);
+                }
+            }
+            if let Some(halt) = mgr.validation_halt() {
+                return Some(halt);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn halt_latches_when_the_last_unasked_peer_times_out() {
+        let halt = silent_peer_run(false).expect("a peer that only times out must count as asked");
+        assert_eq!(halt.height, 11);
+        assert!(halt.distinct_peers >= 2);
+    }
+
+    #[test]
+    fn halt_latches_when_the_last_unasked_peer_replies_empty() {
+        let halt = silent_peer_run(true).expect("a peer that only replies empty must count as asked");
+        assert_eq!(halt.height, 11);
+    }
+
+    /// Two peers serve the same rejected block; the third advertising peer
+    /// answers "busy, retry later" (`retry_after_ms: Some(_)`: all serve slots
+    /// in use, or the serve governor). A busy reply is not an unanswered ask,
+    /// so it never completes the halt evidence, however often it repeats.
+    #[test]
+    fn busy_replies_do_not_count_as_asked() {
+        assert_eq!(last_peer_run(2, LastPeer::Busy(0), 1_800).map(|h| h.height), None, "a busy peer (retry 0 ms) completed the evidence");
+    }
+
+    #[test]
+    fn refusing_replies_do_not_count_as_asked() {
+        assert_eq!(last_peer_run(2, LastPeer::Busy(10_000), 1_800).map(|h| h.height), None, "a refusing peer (retry 10 s) completed the evidence");
+    }
+
+    #[test]
+    fn measure_halt_latch() {
+        let (local, tip, secs) = (100u64, 16_000u64, 7_200u64);
+        for (rejecting, serving) in [(0usize, 1usize), (1, 1), (2, 0), (2, 1), (2, 3), (4, 3)] {
+            let (reached, halted_at, rejected) = rejecting_peer_sim(rejecting, serving, local, tip, secs);
+            println!(
+                "MEASURE halt-latch: rejecting={rejecting} serving={serving} start={local} tip={tip} \
+                 after {secs}s: local_height={reached} halted_at_s={halted_at:?} rejected_responses={rejected}"
+            );
+            if serving == 0 && rejecting >= 2 {
+                assert!(halted_at.is_some(), "every advertising peer was asked: expected the halt");
+            }
+            if serving > 0 {
+                assert_eq!(reached, tip, "a serving peer must carry the node to the tip");
+                assert!(halted_at.is_none());
+            }
+        }
     }
 
     #[test]

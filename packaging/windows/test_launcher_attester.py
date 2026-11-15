@@ -44,7 +44,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 class OracleKey(unittest.TestCase):
     def test_actions_are_offered_and_dispatched(self) -> None:
-        self.assertIn("'NewOracleKey', 'StartAttester', 'StopAttester')]", LAUNCHER)
+        self.assertIn("'NewOracleKey', 'StartAttester', 'StopAttester', ", LAUNCHER)
         self.assertIn("'NewOracleKey' { Initialize-UserState; New-OracleKey }", LAUNCHER)
         self.assertIn("'StartAttester' { Initialize-UserState; Start-Attester }", LAUNCHER)
         self.assertIn("'StopAttester' { Stop-Attester }", LAUNCHER)
