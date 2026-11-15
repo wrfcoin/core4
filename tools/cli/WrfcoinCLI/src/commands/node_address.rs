@@ -92,12 +92,32 @@ pub enum AddressCommands {
         /// Protobuf ed25519 peer identity; default $WRFCOIN_DATA_DIR/peer_identity.key.
         #[clap(long)]
         p2p_key_file: Option<PathBuf>,
-        /// Owner-only file with the local node's reader/operator bearer, if its reads need one.
+        /// Owner-only file with the local node's Reader (or Operator) bearer: `/node/bonds/<id>`
+        /// needs one. The timer passes the node's own `operator.token`.
         #[clap(long)]
         operator_token_file: Option<PathBuf>,
         /// Build and sign the record and print it; nothing is kept or posted.
         #[clap(long)]
         dry_run: bool,
+    },
+    /// Check one address record offline: field shapes, public addresses, and
+    /// both signatures (strict Ed25519). Optionally pin the chain, the bond
+    /// and the server key it must name. The house consumer runs this on each
+    /// record before dialling. Prints a summary without the addresses.
+    Verify {
+        /// Record JSON file, or `-` for stdin (so the addresses never touch disk).
+        #[clap(long, default_value = "-")]
+        record: PathBuf,
+        #[clap(long)]
+        chain_id: Option<String>,
+        #[clap(long)]
+        network_id: Option<String>,
+        #[clap(long)]
+        genesis_hash: Option<String>,
+        #[clap(long)]
+        deployment_id: Option<String>,
+        #[clap(long)]
+        server_key: Option<String>,
     },
 }
 
@@ -238,7 +258,15 @@ impl AddressRecord {
             peer_key.to_peer_id() == peer_id,
             "peer id must embed an ed25519 identity key"
         );
-        let peer_signature = hex::decode(&self.peer_signature)?;
+        // The same strict Ed25519 check as the server key (verify_strict: no
+        // small-order key or R, canonical S), not libp2p's permissive verify.
+        let peer_key = peer_key
+            .try_into_ed25519()
+            .map_err(|_| anyhow::anyhow!("peer id must embed an ed25519 identity key"))?;
+        let peer_key = PublicKey::from_bytes(&peer_key.to_bytes())
+            .map_err(|_| anyhow::anyhow!("record peer key invalid"))?;
+        let peer_signature = Signature::from_hex(&self.peer_signature)
+            .map_err(|_| anyhow::anyhow!("record peer signature invalid"))?;
         ensure!(
             peer_key.verify(&self.peer_message()?, &peer_signature),
             "record peer signature does not verify"
@@ -261,16 +289,25 @@ fn public_v4(ip: Ipv4Addr) -> bool {
         || a >= 240
         || (a == 100 && (64..128).contains(&b)) // CGNAT: no port forward, no dial
         || (a == 192 && b == 0 && ip.octets()[2] == 0)
-        || (a == 198 && (b == 18 || b == 19)))
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 192 && b == 88 && ip.octets()[2] == 99)) // 6to4 relay anycast
 }
 
-/// The bond-admission service's rule: global unicast (`2000::/3`) only,
-/// minus Teredo (`2001::/32`), documentation (`2001:db8::/32`) and 6to4
-/// (`2002::/16`). That also refuses loopback, IPv4-mapped, NAT64, ULA,
-/// link-local and multicast.
+/// Global unicast (`2000::/3`) only, minus Teredo (`2001::/32`), benchmarking
+/// (`2001:2::/48`), ORCHID (`2001:10::/28`), ORCHIDv2 (`2001:20::/28`),
+/// documentation (`2001:db8::/32`, `3fff::/20`) and 6to4 (`2002::/16`). That
+/// also refuses loopback, IPv4-mapped, NAT64, ULA, link-local and multicast.
 fn public_v6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
-    (s[0] & 0xe000) == 0x2000 && !(s[0] == 0x2001 && (s[1] == 0 || s[1] == 0xdb8)) && s[0] != 0x2002
+    (s[0] & 0xe000) == 0x2000
+        && !(s[0] == 0x2001
+            && (s[1] == 0
+                || (s[1] == 2 && s[2] == 0)
+                || (s[1] & 0xfff0) == 0x0010
+                || (s[1] & 0xfff0) == 0x0020
+                || s[1] == 0xdb8))
+        && !(s[0] == 0x3fff && (s[1] & 0xf000) == 0)
+        && s[0] != 0x2002
 }
 
 /// 1..=4 distinct `/ip4|ip6/<public>/tcp/<port>/p2p/<peer>` addresses, each
@@ -410,7 +447,74 @@ fn retryable(error: &str) -> bool {
         .any(|code| error.contains(&format!(" {code}")) || error.contains(&format!("_{code}")))
 }
 
+fn verify_command(command: &AddressCommands) -> Result<Value> {
+    let AddressCommands::Verify {
+        record,
+        chain_id,
+        network_id,
+        genesis_hash,
+        deployment_id,
+        server_key,
+    } = command
+    else {
+        anyhow::bail!("not an address verify command");
+    };
+    let bytes = if record.as_os_str() == "-" {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(RECORD_CAP as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= RECORD_CAP, "record exceeds 4 KiB");
+        bytes
+    } else {
+        bounded_read(record, RECORD_CAP)?
+    };
+    let r: AddressRecord =
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("record JSON invalid"))?;
+    r.verify()?;
+    let lower = |v: &str| v.trim().trim_start_matches("0x").to_ascii_lowercase();
+    for (want, have, what) in [
+        (
+            chain_id.as_deref().map(str::to_owned),
+            &r.chain_id,
+            "chain id",
+        ),
+        (
+            network_id.as_deref().map(str::to_owned),
+            &r.network_id,
+            "network id",
+        ),
+        (
+            genesis_hash.as_deref().map(lower),
+            &r.genesis_hash,
+            "genesis hash",
+        ),
+        (
+            deployment_id.as_deref().map(lower),
+            &r.deployment_id,
+            "bond id",
+        ),
+        (
+            server_key.as_deref().map(lower),
+            &r.server_key,
+            "server key",
+        ),
+    ] {
+        if let Some(want) = want {
+            ensure!(&want == have, "record {what} differs from the expected one");
+        }
+    }
+    Ok(
+        json!({"status":"VALID","epoch":r.epoch,"height":r.height,"server_key":r.server_key,
+        "deployment_id":r.deployment_id,"peer_id":r.peer_id,"addresses":r.multiaddrs.len()}),
+    )
+}
+
 pub async fn handle(command: &AddressCommands) -> Result<Value> {
+    if matches!(command, AddressCommands::Verify { .. }) {
+        return verify_command(command);
+    }
     let AddressCommands::Publish {
         deployment_id,
         multiaddrs,
@@ -424,7 +528,10 @@ pub async fn handle(command: &AddressCommands) -> Result<Value> {
         p2p_key_file,
         operator_token_file,
         dry_run,
-    } = command;
+    } = command
+    else {
+        anyhow::bail!("not an address publish command");
+    };
     let deployment = id(deployment_id, "deployment id")?;
     let genesis = id(genesis_hash.trim_start_matches("0x"), "genesis hash")?;
     ensure!(
@@ -692,6 +799,74 @@ mod tests {
         assert!(wrong.sign(&server(), &peer()).is_err());
     }
 
+    /// R = identity, S = 0 verifies under a permissive check for a small-order
+    /// key ("universal signature"). verify_strict refuses it for K and the peer key.
+    #[test]
+    fn small_order_keys_and_the_universal_signature_are_refused() {
+        let mut identity_point = [0u8; 32];
+        identity_point[0] = 1;
+        let mut universal = [0u8; 64];
+        universal[0] = 1;
+        let universal = hex::encode(universal);
+        // Small-order server key.
+        let mut r = record(41, 27_300);
+        r.sign(&server(), &peer()).unwrap();
+        let mut bad = r.clone();
+        bad.server_key = hex::encode(identity_point);
+        bad.signature = universal.clone();
+        assert!(bad.verify().is_err());
+        // Small-order peer key: a peer id embedding the identity point.
+        let mut proto = vec![0x08, 0x01, 0x12, 0x20];
+        proto.extend_from_slice(&identity_point);
+        let mut mh = vec![0x00, proto.len() as u8];
+        mh.extend_from_slice(&proto);
+        let weak_peer = libp2p_identity::PeerId::from_bytes(&mh)
+            .unwrap()
+            .to_string();
+        let mut weak = record(41, 27_300);
+        weak.peer_id = weak_peer.clone();
+        weak.multiaddrs = vec![format!("/ip4/198.51.99.7/tcp/9000/p2p/{weak_peer}")];
+        let message = weak.message().unwrap();
+        weak.signature = server().sign(&message).unwrap().to_hex();
+        weak.peer_signature = universal;
+        let err = weak.verify().unwrap_err().to_string();
+        assert!(err.contains("peer"), "{err}");
+    }
+
+    #[test]
+    fn verify_command_checks_a_record_and_the_expected_fields() {
+        let dir = std::env::temp_dir().join(format!("addr-verify-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut r = record(41, 27_300);
+        r.sign(&server(), &peer()).unwrap();
+        let file = dir.join("record.json");
+        std::fs::write(&file, serde_json::to_vec(&r).unwrap()).unwrap();
+        let cmd = |chain: &str, key: &str, path: &Path| AddressCommands::Verify {
+            record: path.to_path_buf(),
+            chain_id: Some(chain.into()),
+            network_id: Some("testnet".into()),
+            genesis_hash: Some(format!("0x{}", "AB".repeat(32))),
+            deployment_id: Some("01".repeat(32)),
+            server_key: Some(key.into()),
+        };
+        let out = verify_command(&cmd("888", &r.server_key, &file)).unwrap();
+        assert_eq!(out["status"], "VALID");
+        assert_eq!(out["addresses"], 1);
+        assert!(
+            !out.to_string().contains("198.51.99"),
+            "the summary must not print addresses"
+        );
+        assert!(verify_command(&cmd("777", &r.server_key, &file)).is_err());
+        assert!(verify_command(&cmd("888", &"cd".repeat(32), &file)).is_err());
+        let mut tampered = r.clone();
+        tampered.multiaddrs = vec![format!("/ip4/198.51.99.8/tcp/9000/p2p/{}", r.peer_id)];
+        std::fs::write(&file, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(verify_command(&cmd("888", &r.server_key, &file)).is_err());
+        std::fs::write(&file, br#"{"version":1}"#).unwrap();
+        assert!(verify_command(&cmd("888", &r.server_key, &file)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn only_public_canonical_addresses_ending_in_this_peer() {
         let peer_id = peer().public().to_peer_id();
@@ -714,6 +889,11 @@ mod tests {
             "/ip6/2002:c633:6307::1/tcp/9000/p2p/PEER",
             "/ip6/2001:0:1::1/tcp/9000/p2p/PEER",
             "/ip6/2001:db8::1/tcp/9000/p2p/PEER",
+            "/ip6/2001:2::1/tcp/9000/p2p/PEER",
+            "/ip6/2001:10::1/tcp/9000/p2p/PEER",
+            "/ip6/2001:2f::1/tcp/9000/p2p/PEER",
+            "/ip6/3fff::1/tcp/9000/p2p/PEER",
+            "/ip4/192.88.99.1/tcp/9000/p2p/PEER",
             "/dns4/node.example.org/tcp/9000/p2p/PEER",
             "/ip4/198.51.99.7/udp/9000/quic-v1/p2p/PEER",
             "/ip4/198.51.99.7/tcp/9000",
@@ -918,7 +1098,9 @@ mod tests {
         // Another chain than the operator named.
         let node = node_mocks(&mut f, 41, 27_300, SEED, "REGISTERED");
         let mut cmd = command(&f, &addrs, false);
-        let AddressCommands::Publish { chain_id, .. } = &mut cmd;
+        let AddressCommands::Publish { chain_id, .. } = &mut cmd else {
+            unreachable!()
+        };
         *chain_id = "777".into();
         assert!(
             run(&cmd)
@@ -952,7 +1134,9 @@ mod tests {
 
         // A seed file off testnet is refused before anything is read.
         let mut cmd = command(&f, &addrs, false);
-        let AddressCommands::Publish { network_id, .. } = &mut cmd;
+        let AddressCommands::Publish { network_id, .. } = &mut cmd else {
+            unreachable!()
+        };
         *network_id = "mainnet".into();
         assert!(run(&cmd).unwrap_err().to_string().contains("testnet only"));
         no_post.assert();
@@ -969,9 +1153,13 @@ mod tests {
         drop(no_post);
 
         // The mailbox is busy, or its node is an epoch behind: exit 2, run again later.
+        // The mailbox's code rides in the body; the client appends it to RECEIPT_HTTP_<status>.
         for (status, code) in [
             (429, "BUSY"),
+            (429, "RATE_LIMITED"),
             (409, "FUTURE_EPOCH"),
+            (409, "STALE_EPOCH"),
+            (409, "FUTURE_HEIGHT"),
             (503, "NODE_UNAVAILABLE"),
         ] {
             let post = f
