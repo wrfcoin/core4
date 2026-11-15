@@ -57,12 +57,6 @@ REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github/workflows/secret-scanning.yml"
 BASELINE = REPO / ".secrets.baseline"
 
-# A real, committed file carrying templated Slack webhooks. Used as the fixture
-# deliberately: it is the file the defect was found on, and using it means this
-# test guards the actual repository content rather than a synthetic copy that
-# could drift from it. No new secret material is introduced by this test.
-FIXTURE = REPO / ".taskmaster/docs/infrastructure-hardening/ids-ips-configuration.md"
-
 # The three templated webhooks. Pinned by hash so a change to the file that
 # removes them is a visible test failure rather than a silent loss of coverage.
 # Read from the SAME file the workflow's sentinel check reads. Keeping a second
@@ -174,31 +168,41 @@ def test_workflow_executes_a_sentinel_check() -> None:
     )
 
 
-def test_sentinels_match_the_committed_fixture() -> None:
-    """The sentinel list must describe findings that actually exist."""
+def test_sentinels_are_generated_not_committed() -> None:
+    """The sentinel list must describe findings the generator really emits."""
     check(
         "the sentinel list is non-empty",
         bool(_sentinels.HASHED_SECRETS),
         "an empty list makes the gate's presence check pass vacuously",
     )
+    tracked = subprocess.run(
+        ["git", "grep", "-l", "-e", "hooks.slack.com/services/T0", "--", ".", ":!*.py"],
+        capture_output=True, text=True, cwd=REPO,
+    )
     check(
-        "the sentinel path points at a file that exists",
-        (REPO / _sentinels.SENTINEL_PATH).is_file(),
-        f"{_sentinels.SENTINEL_PATH} is missing",
+        "no committed file carries a literal webhook-shaped string",
+        tracked.stdout.strip() == "",
+        f"tracked: {tracked.stdout.split()}",
     )
 
 
 def test_templated_webhooks_are_surfaced() -> None:
-    """The fixture: templated Slack webhooks must appear in the scan output."""
-    if not FIXTURE.is_file():
-        check("fixture file exists", False, f"{FIXTURE} is missing")
-        return
-    found = hashes(scan(FIXTURE, "--no-verify"))
-    missing = EXPECTED_HASHES - found
+    """The generated fixture: all sentinels must appear in the hermetic scan."""
+    missing = _sentinels.absent_sentinels(["--no-verify"])
     check(
-        "all three templated webhooks appear in the hermetic scan",
+        "all three generated webhooks appear in the hermetic scan",
         not missing,
-        f"missing {sorted(missing)}",
+        f"missing {missing}",
+    )
+
+
+def test_empty_generator_is_red() -> None:
+    """RED capability: a generator that emits nothing must fail the self-test."""
+    missing = _sentinels.absent_sentinels(["--no-verify"], generator=lambda: "")
+    check(
+        "an empty generator leaves all three sentinels absent (self-test goes RED)",
+        set(missing) == EXPECTED_HASHES,
+        f"absent: {missing}",
     )
 
 
@@ -209,8 +213,7 @@ def test_filter_reenabled_drops_them() -> None:
     upstream behaviour changed and the --no-verify guard should be re-justified
     rather than assumed still necessary.
     """
-    plain = scan(FIXTURE)
-    found = hashes(plain)
+    found = _sentinels.scan_generated([])
     if EXPECTED_HASHES <= found:
         # Verification could not reach Slack, so nothing was marked
         # VERIFIED_FALSE and the case is inapplicable here.
@@ -227,18 +230,6 @@ def test_filter_reenabled_drops_them() -> None:
     )
 
 
-def test_baseline_acknowledges_them() -> None:
-    """The gate must be green AND true: surfaced findings must be acknowledged."""
-    base = json.loads(BASELINE.read_text(encoding="utf-8"))
-    ack = {f["hashed_secret"] for fs in base.get("results", {}).values() for f in fs}
-    missing = EXPECTED_HASHES - ack
-    check(
-        "the three webhooks are acknowledged in .secrets.baseline",
-        not missing,
-        f"unacknowledged: {sorted(missing)} — the hermetic scan would fail the gate",
-    )
-
-
 def test_synthetic_webhook_round_trip() -> None:
     """A freshly written templated webhook is surfaced too.
 
@@ -247,11 +238,7 @@ def test_synthetic_webhook_round_trip() -> None:
     """
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "probe.md"
-        p.write_text(
-            "webhook: https://hooks.slack.com/services/"
-            "T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX\n",
-            encoding="utf-8",
-        )
+        p.write_text(_sentinels.render_fixture().splitlines()[0] + "\n", encoding="utf-8")
         found = hashes(scan(p, "--no-verify", cwd=Path(td)))
         check(
             "a newly written templated webhook is surfaced by the hermetic scan",
@@ -268,10 +255,10 @@ def main() -> int:
     print("#2292 — the secret scan must not depend on Slack's availability")
     test_workflow_passes_no_verify()
     test_workflow_executes_a_sentinel_check()
-    test_sentinels_match_the_committed_fixture()
+    test_sentinels_are_generated_not_committed()
     test_templated_webhooks_are_surfaced()
+    test_empty_generator_is_red()
     test_filter_reenabled_drops_them()
-    test_baseline_acknowledges_them()
     test_synthetic_webhook_round_trip()
 
     print()
@@ -284,7 +271,7 @@ def main() -> int:
         for f in failures:
             print(f"  {f}", file=sys.stderr)
         return 1
-    print("secret scan is hermetic: templated webhooks are surfaced and acknowledged.")
+    print("secret scan is hermetic: generated templated webhooks are surfaced.")
     return 0
 
 

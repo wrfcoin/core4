@@ -89,7 +89,9 @@ open PR #2232, which carries `docs/security/PREIMAGE_MIGRATION.md`. (That file i
 | NodeSettlementEndorsement | `wrfcoin.node_settlement_endorsement.v1` | `consensus::node_share_contracts::NodeSettlementEndorsement` | Implemented | — |
 | NodeBondAuthorization | `wrfcoin.node_bond_authorization.v1` | `consensus::node_share_contracts::NodeBondAuthorization` | Implemented | — |
 | NodeBondPossession | `wrfcoin.node_bond_possession.v1` | `consensus::node_share_contracts::NodeBondPossession` | Implemented | — |
+| NodeBondPayoutPasskeyApproval | `wrfcoin.node_bond_payout_passkey.v1` | `consensus::node_share_contracts::NodeBondPayoutPasskeyApproval` | Implemented | — |
 | NodeReceiptSubmissionAuthorization | `wrfcoin.node_receipt_submission.v1` | `consensus::node_receipt_registry::NodeReceiptSubmissionAuthorization` | Implemented | — |
+| RetrievalAuditReceipt | `wrfcoin.retrieval_audit_receipt.v1` | `keeper_proof::audit::RetrievalAuditReceipt` | CrossCrate | #2249 |
 
 Native account subjects use explicit identity and V2 via their checked `preimage`
 methods. They are signing foundations only, without transaction admission or

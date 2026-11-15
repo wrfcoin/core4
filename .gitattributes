@@ -13,3 +13,7 @@
 # stops them shipping in the bundle; it is not a secret-removal mechanism.
 configs/development/.env.cache export-ignore
 tests/load/.env.k6 export-ignore
+
+# The Windows package config is read byte for byte by its tests and launcher;
+# keep it LF on Windows checkouts (core.autocrlf=true on hosted runners).
+packaging/windows/chain-888.conf text eol=lf

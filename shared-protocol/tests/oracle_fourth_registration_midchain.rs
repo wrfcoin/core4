@@ -1026,7 +1026,7 @@ async fn control_declaring_quorum_three_leaves_two_live_attesters_unable_to_pay(
 // (b) + (d) at live heights: deferral instead of an unpaid mine
 // ---------------------------------------------------------------------------
 
-/// The live chain is above `RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT` (11,000),
+/// The live chain is above `RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT`,
 /// where a real reveal WITHOUT quorum is not mined unpaid but held back in the
 /// mempool until quorum arrives (#2777). So on the live chain "1-of-4 does not
 /// pay" means "is deferred", and the risk to rule out is a deferred reveal

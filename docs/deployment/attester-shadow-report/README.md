@@ -15,8 +15,9 @@ python3 -m unittest -q test_shadow_report
 
 ## What the report keeps apart
 * **Configured radius**: the owner's reward-policy number, given on the command line and printed on its own line.
-* **Coarse-location uncertainty**: the registry location is rounded to 0.01 degree, so the logged distance can differ from the
-  true one by up to ~0.8 km (`--uncertainty-km`). It is a separate line and is never added to or subtracted from the radius.
+* **Coarse-location uncertainty**: the registry location is rounded to 0.01 degree for an operator-token attester and to 0.1
+  degree for any other token, so the logged distance can differ from the true one by up to ~0.8 km or ~8 km
+  (`--uncertainty-km`; pass the larger value for a non-operator attester). It is a separate line and is never added to or subtracted from the radius.
   A station whose distance is within it of the radius is marked `BORDERLINE`, never silently moved across the line.
 * **Physics-only cap**: a commit with no reference, or a KNOWN distance beyond the radius, must be `PHYSICS-ONLY` at the 0.5 cap
   (`UNCHECKED_CONFIDENCE_CAP`, the shared-protocol constant); anything else is a violation. The cap is deliberately not an

@@ -4,12 +4,15 @@ mod helpers;
 #[cfg(feature = "p2p")]
 mod da_challenge_producer;
 #[cfg(feature = "p2p")]
+mod p2p_bonded_fetch;
+#[cfg(feature = "p2p")]
 mod p2p_events;
 #[cfg(feature = "p2p")]
 mod peer_reputation;
 mod rate_limit;
 mod routes;
 mod slashing_submitter;
+mod snapshot_server_key;
 mod state;
 mod stateful_invariants;
 mod transition_extractor;
@@ -549,6 +552,31 @@ fn load_token_store() -> Arc<FxHashMap<String, AuthPrincipal>> {
 /// `protocol_signer::load_block_signer`, so release binaries physically
 /// cannot contain the env-key path.
 fn load_snapshot_signer(node_role: NodeRole) -> Option<Arc<dyn BlockSigner>> {
+    // Testnet software server key (WRFCOIN_SNAPSHOT_SERVER_KEY_FILE): lets a
+    // node without a PKCS#11 token, such as the native Windows package, serve
+    // signed snapshots and bonded tickets under its registered server key. It
+    // is resolved first because it is an explicit opt-in; a configured but
+    // refused key (wrong network, loose file, HSM also set) stops the node
+    // instead of falling back. The isolated receipt consumer never takes it.
+    if node_role != NodeRole::ReceiptConsumer {
+        match snapshot_server_key::load_from_env() {
+            Ok(Some(signer)) => return Some(signer),
+            Ok(None) => {},
+            Err(e) => {
+                eprintln!("FATAL: {e:#}");
+                std::process::exit(1);
+            },
+        }
+    } else if
+    // determinism-ok: node-local startup credential presence check for the isolated rehearsal receiver, never consensus input
+    std::env::var_os(snapshot_server_key::SNAPSHOT_SERVER_KEY_FILE_ENV).is_some() {
+        eprintln!(
+            "FATAL: {} is not accepted by the signing-rehearsal receiver",
+            snapshot_server_key::SNAPSHOT_SERVER_KEY_FILE_ENV
+        );
+        std::process::exit(1);
+    }
+
     // #2860: a public sync-only joiner has no signing token by design. It still
     // loads the independent trusted-signer set used to verify incoming snapshot
     // payloads; it simply cannot sign payloads served by this process. Producing
@@ -1396,6 +1424,10 @@ const DEBUG_SEED_API_ENV: &str = "WRFCOIN_ENABLE_DEBUG_SEED_API";
 const MEMPOOL_MAX_SIZE_BYTES_ENV: &str = "WRFCOIN_MEMPOOL_MAX_SIZE_BYTES";
 const MEMPOOL_MAX_TXS_PER_SENDER_ENV: &str = "WRFCOIN_MEMPOOL_MAX_TXS_PER_SENDER";
 const MEMPOOL_MAX_AGE_SECS_ENV: &str = "WRFCOIN_MEMPOOL_MAX_AGE_SECS";
+/// Seconds between two passes that age out pool entries older than the
+/// configured max age (`WRFCOIN_MEMPOOL_MAX_AGE_SECS`, default 4 h).
+const MEMPOOL_AGE_SWEEP_SECS_ENV: &str = "WRFCOIN_MEMPOOL_AGE_SWEEP_SECS";
+const DEFAULT_MEMPOOL_AGE_SWEEP_SECS: u64 = 300;
 const MEMPOOL_MIN_FEE_RATE_ENV: &str = "WRFCOIN_MEMPOOL_MIN_FEE_RATE";
 
 // ── #3095: upgrade-notice run-up ───────────────────────────────────────────
@@ -1778,6 +1810,68 @@ fn mlsag_verify_budget_ms_from_env() -> u64 {
         .unwrap_or(wrfcoin_privacy::MLSAG_VERIFY_BUDGET_MS_DEFAULT)
 }
 
+/// The age-out interval: a positive whole number of seconds, else the default
+/// (an invalid value is logged and ignored, never fatal).
+fn mempool_age_sweep_secs_from_value(raw: Option<&str>) -> u64 {
+    parse_positive_mempool_override(MEMPOOL_AGE_SWEEP_SECS_ENV, raw, DEFAULT_MEMPOOL_AGE_SWEEP_SECS).unwrap_or_else(
+        |error| {
+            log::warn!("{error}; aging out pool entries every {DEFAULT_MEMPOOL_AGE_SWEEP_SECS} s");
+            DEFAULT_MEMPOOL_AGE_SWEEP_SECS
+        },
+    )
+}
+
+/// One pass: remove pool entries older than the pool's configured max age,
+/// the same criterion the byte-cap path already applies when it makes room.
+/// Returns how many were removed.
+async fn age_out_mempool(mempool: &Arc<RwLock<Mempool>>) -> usize {
+    mempool.write().await.clean_old_transactions()
+}
+
+/// Whether this node runs the timed age-out pass. A producing node does not:
+/// it defers some entries on purpose (extra device reveals, attestation groups,
+/// registrar registrations) to include them in a later block, so it keeps the
+/// lazy byte-cap path. Nodes that never build a block run the timed pass.
+fn mempool_age_sweep_enabled(node_role: NodeRole) -> bool {
+    node_role != NodeRole::Producing
+}
+
+/// Age out old pool entries on a timer on nodes that do not produce blocks.
+/// Local pool housekeeping: never block bytes, state or consensus.
+fn spawn_mempool_age_sweep(state: &web::Data<AppState>, node_role: NodeRole) {
+    // determinism-ok: startup-only node-local housekeeping interval; never enters block bytes, state or consensus decisions
+    let secs = mempool_age_sweep_secs_from_value(std::env::var(MEMPOOL_AGE_SWEEP_SECS_ENV).ok().as_deref());
+    if start_mempool_age_sweep(state.mempool.clone(), node_role, secs).is_none() {
+        log::info!("Pool age-out timer off: this node produces blocks and keeps the byte-cap path");
+    }
+}
+
+/// Start the timed pass for `node_role`, or return `None` for a producing node.
+fn start_mempool_age_sweep(
+    mempool: Arc<RwLock<Mempool>>,
+    node_role: NodeRole,
+    secs: u64,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !mempool_age_sweep_enabled(node_role) {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first tick fires at once; start one interval after boot.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let removed = age_out_mempool(&mempool).await;
+            if removed > 0 {
+                log::info!("Aged out {removed} pool entr{} older than the configured max age", if removed == 1 { "y" } else { "ies" });
+            } else {
+                log::debug!("Pool age-out pass: nothing older than the configured max age");
+            }
+        }
+    }))
+}
+
 #[cfg(feature = "privacy")]
 fn spawn_privacy_key_eviction_task(state: &web::Data<AppState>) {
     let privacy_registry = state.privacy_key_registry.clone();
@@ -2118,7 +2212,7 @@ async fn main() -> std::io::Result<()> {
     );
 
     if declared_identity.chain_id == "777" {
-        log::warn!("This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets. https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html");
+        log::warn!("This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets. https://wrfcoin.com/testnet-disclaimer.html");
     }
 
     // #2712 fail-closed oracle-governance allowlist declaration.
@@ -2974,6 +3068,10 @@ async fn main() -> std::io::Result<()> {
         },
     };
 
+    // Admitted P2P bonded snapshot fetches; `Some` only when the operator
+    // opted in with WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS (owner decision 2026-10-31).
+    #[cfg(feature = "p2p")]
+    let mut p2p_bonded_fetch_rx = None;
     #[cfg(feature = "p2p")]
     let (p2p_client, p2p_event_rx, p2p_summary_info, p2p_startup) = {
         if p2p_profile.is_enabled() {
@@ -3041,9 +3139,10 @@ async fn main() -> std::io::Result<()> {
                 )
                 .await
             {
-                    Ok(handle) => {
+                    Ok(mut handle) => {
                         let peer_id = handle.local_peer_id;
                         let peer_id_str = peer_id.to_string();
+                        p2p_bonded_fetch_rx = handle.take_bonded_fetch_requests();
                         let (client, event_rx) = handle.into_parts();
                         if let Some(quic_port) = quic_port {
                             log::info!(
@@ -3321,6 +3420,7 @@ async fn main() -> std::io::Result<()> {
         token_store,
         legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
         permissionless_replay_seen: Arc::new(RwLock::new(permissionless_replay_seen_init)),
         storage: Arc::new(RwLock::new(storage)),
@@ -3328,6 +3428,7 @@ async fn main() -> std::io::Result<()> {
         failed_transactions_total: Arc::new(AtomicU64::new(0)),
         zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
         block_production_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -3384,6 +3485,8 @@ async fn main() -> std::io::Result<()> {
 
     #[cfg(feature = "privacy")]
     spawn_privacy_key_eviction_task(&state);
+
+    spawn_mempool_age_sweep(&state, node_role);
 
     #[cfg(feature = "p2p")]
     {
@@ -3601,6 +3704,12 @@ async fn main() -> std::io::Result<()> {
         tokio::sync::RwLock::new(crate::peer_reputation::PeerReputationTracker::new()),
     );
 
+    // Serve P2P bonded snapshot fetches when the node opted in.
+    #[cfg(feature = "p2p")]
+    if let (Some(requests), Some(client)) = (p2p_bonded_fetch_rx, state.p2p.clone()) {
+        p2p_bonded_fetch::spawn_bonded_fetch_server(requests, state.clone(), client);
+    }
+
     // Spawn P2P event consumer to process incoming blocks/transactions from peers.
     #[cfg(feature = "p2p")]
     if let Some(event_rx) = p2p_event_rx {
@@ -3762,6 +3871,14 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
+    // API-only address index for reward history. Reads the chain and nothing
+    // reads it back; see reward_index.rs.
+    state::reward_index::spawn_refresh(
+        state.reward_address_index.clone(),
+        state.blockchain.clone(),
+        state.storage.clone(),
+    );
+
     // Capture references for the shutdown handler before `state` is moved
     // into the HttpServer closure.
     let shutdown_storage = state.storage.clone();
@@ -3774,11 +3891,17 @@ async fn main() -> std::io::Result<()> {
     // Global per-IP HTTP rate limiter (issue #1080).
     let rl_state = rate_limit::RateLimiterState::new(state.token_store.clone());
 
+    // The dashboard's Stop button (`POST /node/shutdown`, Operator) raises this;
+    // the graceful-shutdown task below waits for it alongside the signals.
+    let node_shutdown = web::Data::new(routes::node_shutdown::NodeShutdown::new());
+    let node_shutdown_app = node_shutdown.clone();
+
     let server = HttpServer::new(move || {
         let app = App::new()
             .wrap(rate_limit::RateLimiter::new(rl_state.clone()))
             .wrap(build_cors())
             .app_data(state.clone())
+            .app_data(node_shutdown_app.clone())
             .app_data(launch_api_json_config());
         // #3586: only the isolated ReceiptConsumer gets the large receiver-ingest budget.
         let app = if node_role == NodeRole::ReceiptConsumer {
@@ -3803,6 +3926,12 @@ async fn main() -> std::io::Result<()> {
     // and drops roughly one request in 400.
     .keep_alive(LAUNCH_API_KEEP_ALIVE)
     .shutdown_timeout(30)
+    // Our shutdown task below owns SIGINT/SIGTERM (and the Windows console
+    // events). Left enabled, actix catches Ctrl-C itself and stops the server
+    // on its own, so `main` returned while P2P disconnect and the shutdown
+    // checkpoint were still running and "Graceful shutdown complete." never
+    // printed. Only the explicit `server_handle.stop` may stop the server.
+    .disable_signals()
     .run();
 
     let server_handle = server.handle();
@@ -3820,16 +3949,43 @@ async fn main() -> std::io::Result<()> {
     }
 
     // Spawn a task that waits for SIGTERM or SIGINT — or the #3093 upgrade
-    // halt — then orchestrates a graceful shutdown: P2P disconnect -> storage
+    // halt, or the operator's `POST /node/shutdown` — then orchestrates a graceful shutdown: P2P disconnect -> storage
     // checkpoint -> HTTP stop. The upgrade halt additionally exits with its
     // distinct code once the shutdown is complete.
     let upgrade_halt_signal = wrfcoin_native_chain::upgrade::halt_signal();
-    tokio::spawn(async move {
+    let shutdown_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_started_task = Arc::clone(&shutdown_started);
+    let shutdown_task = tokio::spawn(async move {
         let sigterm = async {
+            #[cfg(unix)]
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                 .expect("failed to register SIGTERM handler")
                 .recv()
                 .await;
+            // Windows has no SIGTERM: closing the console window or a system shutdown
+            // is the "terminate" a Windows node receives. If a handler cannot be
+            // registered the node keeps running and Ctrl-C still stops it cleanly.
+            #[cfg(windows)]
+            {
+                use tokio::signal::windows::{ctrl_close, ctrl_shutdown};
+                match (ctrl_close(), ctrl_shutdown()) {
+                    (Ok(mut close), Ok(mut shutdown)) => {
+                        tokio::select! {
+                            _ = close.recv() => {},
+                            _ = shutdown.recv() => {},
+                        }
+                    }
+                    (close, shutdown) => {
+                        log::warn!(
+                            "Windows close/shutdown handlers unavailable (close ok: {}, shutdown ok: {}); \
+                             only Ctrl-C triggers a graceful shutdown",
+                            close.is_ok(),
+                            shutdown.is_ok()
+                        );
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
         };
         let sigint = async {
             tokio::signal::ctrl_c()
@@ -3837,11 +3993,17 @@ async fn main() -> std::io::Result<()> {
                 .expect("failed to register SIGINT handler");
         };
         let upgrade_halt = upgrade_halt_signal.notified();
+        let stop_requested = node_shutdown.wait();
 
         let mut exit_upgrade_required = false;
         tokio::select! {
             _ = sigterm => log::info!("Received SIGTERM, initiating graceful shutdown..."),
             _ = sigint => log::info!("Received SIGINT, initiating graceful shutdown..."),
+            _ = stop_requested => {
+                log::info!("Stop requested from the node's API (POST /node/shutdown), initiating graceful shutdown...");
+                // Let the route's 202 reach the page before P2P goes down.
+                tokio::time::sleep(routes::node_shutdown::RESPONSE_GRACE).await;
+            },
             _ = upgrade_halt => {
                 log::error!(
                     "EXIT_UPGRADE_REQUIRED: upgrade deadline reached, initiating clean shutdown \
@@ -3850,6 +4012,7 @@ async fn main() -> std::io::Result<()> {
                 exit_upgrade_required = true;
             },
         }
+        shutdown_started_task.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Phase 1: Shut down P2P networking.
         #[cfg(feature = "p2p")]
@@ -3885,17 +4048,50 @@ async fn main() -> std::io::Result<()> {
         server_handle.stop(true).await;
 
         log::info!("Graceful shutdown complete.");
-        if exit_upgrade_required {
-            log::error!(
-                "Stopped cleanly at the upgrade deadline; exiting with code {} \
-                 (EXIT_UPGRADE_REQUIRED, #3093). Install the announced release and restart.",
-                wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED
-            );
-            std::process::exit(wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED);
-        }
+        exit_upgrade_required
     });
 
-    server.await
+    let (served, exit_upgrade_required) =
+        serve_until_shutdown_complete(server, shutdown_task, &shutdown_started).await;
+    if exit_upgrade_required == Some(true) {
+        log::error!(
+            "Stopped cleanly at the upgrade deadline; exiting with code {} \
+             (EXIT_UPGRADE_REQUIRED, #3093). Install the announced release and restart.",
+            wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED
+        );
+        std::process::exit(wrfcoin_native_chain::upgrade::EXIT_CODE_UPGRADE_REQUIRED);
+    }
+    served
+}
+
+/// Run the HTTP server to completion, then — when the graceful-shutdown task is
+/// what stopped it — wait for that task to finish before returning.
+///
+/// The task stops the server as its LAST phase and logs "Graceful shutdown
+/// complete." after that, so `server.await` alone returns while the task is
+/// still mid-sequence and `main` can exit underneath it. If the server ended
+/// for any other reason (the task never saw a signal), the task is still
+/// waiting for one and is aborted instead of awaited forever.
+///
+/// Returns the server's own result and the task's output (`None` when the task
+/// did not run the sequence or panicked).
+async fn serve_until_shutdown_complete<T>(
+    server: actix_web::dev::Server,
+    shutdown_task: tokio::task::JoinHandle<T>,
+    shutdown_started: &std::sync::atomic::AtomicBool,
+) -> (std::io::Result<()>, Option<T>) {
+    let served = server.await;
+    if !shutdown_started.load(std::sync::atomic::Ordering::SeqCst) {
+        shutdown_task.abort();
+        return (served, None);
+    }
+    match shutdown_task.await {
+        Ok(outcome) => (served, Some(outcome)),
+        Err(err) => {
+            log::error!("Graceful shutdown task did not finish: {err}");
+            (served, None)
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3905,16 +4101,279 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn mempool_age_sweep_interval_defaults_and_overrides() {
+        assert_eq!(mempool_age_sweep_secs_from_value(None), DEFAULT_MEMPOOL_AGE_SWEEP_SECS);
+        assert_eq!(mempool_age_sweep_secs_from_value(Some("60")), 60);
+        for invalid in ["0", "-5", "abc", "1.5"] {
+            assert_eq!(mempool_age_sweep_secs_from_value(Some(invalid)), DEFAULT_MEMPOOL_AGE_SWEEP_SECS, "{invalid}");
+        }
+    }
+
+    /// The timer's pass removes entries older than the configured max age and
+    /// keeps younger ones.
+    #[tokio::test]
+    async fn the_age_out_pass_removes_old_entries_and_keeps_young_ones() {
+        use wrfcoin_native_chain::blockchain::transaction::{TransactionInput, TransactionOutput};
+        let entry = |tag: &str| {
+            let mut tx = wrfcoin_native_chain::blockchain::transaction::Transaction::new(
+                vec![TransactionInput {
+                    txid: wrfcoin_shared_protocol::crypto::hash::hash_string(tag),
+                    vout: 0,
+                    signature: None,
+                    public_key: None,
+                    coinbase_data: None,
+                }],
+                vec![TransactionOutput {
+                    amount: 100,
+                    address: "wrf-age-test".to_string(),
+                    script: "OP_TRUE".to_string(),
+                    nft_data: None,
+                }],
+            );
+            tx.set_id();
+            tx
+        };
+        let mut config = Config::default();
+        config.mempool_max_age_secs = 1;
+        let mempool = Arc::new(RwLock::new(Mempool::new(&config)));
+        let old = entry("age-out-old");
+        mempool.write().await.add_transaction(old.clone()).expect("old entry admitted");
+        assert_eq!(age_out_mempool(&mempool).await, 0, "nothing is older than the max age yet");
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        let young = entry("age-out-young");
+        mempool.write().await.add_transaction(young.clone()).expect("young entry admitted");
+        assert_eq!(age_out_mempool(&mempool).await, 1);
+        let pool = mempool.read().await;
+        assert!(!pool.contains(&old.id.unwrap()), "the old entry is gone");
+        assert!(pool.contains(&young.id.unwrap()), "the young entry stays");
+        assert_eq!(pool.size(), 1);
+    }
+
+    fn age_test_entry(tag: &str) -> Transaction {
+        use wrfcoin_native_chain::blockchain::transaction::{TransactionInput, TransactionOutput};
+        let mut tx = Transaction::new(
+            vec![TransactionInput {
+                txid: wrfcoin_shared_protocol::crypto::hash::hash_string(tag),
+                vout: 0,
+                signature: None,
+                public_key: None,
+                coinbase_data: None,
+            }],
+            vec![TransactionOutput {
+                amount: 100,
+                address: "wrf-age-test".to_string(),
+                script: "OP_TRUE".to_string(),
+                nft_data: None,
+            }],
+        );
+        tx.set_id();
+        tx
+    }
+
+    fn age_test_pool() -> Arc<RwLock<Mempool>> {
+        let mut config = Config::default();
+        config.mempool_max_age_secs = 1;
+        Arc::new(RwLock::new(Mempool::new(&config)))
+    }
+
+    #[tokio::test]
+    async fn only_nodes_that_do_not_produce_run_the_age_out_timer() {
+        assert!(!mempool_age_sweep_enabled(NodeRole::Producing));
+        assert!(mempool_age_sweep_enabled(NodeRole::SyncOnly));
+        assert!(mempool_age_sweep_enabled(NodeRole::ReceiptConsumer));
+    }
+
+    /// A node that does not produce removes old entries on the timer.
+    #[tokio::test]
+    async fn a_non_producing_node_ages_out_old_entries_on_the_timer() {
+        let mempool = age_test_pool();
+        let old = age_test_entry("timer-old");
+        mempool.write().await.add_transaction(old.clone()).expect("entry admitted");
+        let task = start_mempool_age_sweep(mempool.clone(), NodeRole::SyncOnly, 1).expect("timer runs");
+        tokio::time::sleep(std::time::Duration::from_millis(3_200)).await;
+        task.abort();
+        assert!(!mempool.read().await.contains(&old.id.unwrap()), "the old entry is gone");
+    }
+
+    /// A producing node starts no timer, so a reveal it is deferring to a later
+    /// block stays in its pool past the max age.
+    #[tokio::test]
+    async fn a_producing_node_keeps_a_deferred_reveal_past_the_max_age() {
+        let mempool = age_test_pool();
+        let station_id = "station-age-deferred";
+        let nonce = "age-deferred-nonce";
+        let timestamp = chrono::Utc::now().timestamp();
+        let data = json!({ "temperature_c": 12.5 });
+        let commit_id = Transaction::compute_commit_id(&data, nonce, station_id, timestamp, "weather_observation");
+        let mut reveal = age_test_entry("age-deferred-reveal");
+        reveal.tx_type = TransactionType::ContributionReveal;
+        reveal.sender_address = Address::new([0x5a; 20]);
+        reveal.data = Some(
+            json!({
+                "commit_id": commit_id,
+                "station_id": station_id,
+                "timestamp": timestamp,
+                "contribution_type": "weather_observation",
+                "data": data,
+                "nonce": nonce,
+            })
+            .to_string(),
+        );
+        reveal.set_id();
+        mempool.write().await.add_transaction(reveal.clone()).expect("reveal admitted");
+        assert!(
+            start_mempool_age_sweep(mempool.clone(), NodeRole::Producing, 1).is_none(),
+            "a producing node starts no age-out timer"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
+        let pool = mempool.read().await;
+        assert!(pool.contains(&reveal.id.unwrap()), "the deferred reveal stays past the max age");
+        assert_eq!(
+            pool.get_transactions_by_type(TransactionType::ContributionReveal, 10).len(),
+            1,
+            "and is still there for a later block"
+        );
+        drop(pool);
+        assert_eq!(age_out_mempool(&mempool).await, 1, "a timed pass would have removed it");
+    }
     #[path = "node_share_slice6b.rs"]
     mod node_share_slice6b;
+    #[cfg(feature = "p2p")]
+    mod producer_persist_3544;
+    #[path = "reward_address_index.rs"]
+    mod reward_address_index;
+    #[path = "reward_history_newest.rs"]
+    mod reward_history_newest;
     #[path = "node_bond_slice6a.rs"]
     mod node_bond_slice6a;
+    #[path = "producers_bonds_list.rs"]
+    mod producers_bonds_list;
+    #[path = "snapshot_prefix_counts.rs"]
+    mod snapshot_prefix_counts;
+
+    /// `GET /network/producers` (see tests/producers_bonds_list.rs for `/node/bonds`).
+    mod network_producers_route {
+        use super::*;
+        use super::producers_bonds_list::reader_get;
+        use wrfcoin_shared_protocol::consensus::producer_set::{ProducerMember, ProducerSetChange};
+
+        fn member(id: &str, byte: u8) -> ProducerMember {
+            let key = PrivateKey::from_bytes(&[byte; 32]).unwrap();
+            let public = wrfcoin_shared_protocol::crypto::signature::PublicKey::from_private_key(&key);
+            ProducerMember {
+                producer_id: id.to_string(),
+                payout_address: wrfcoin_shared_protocol::common::types::Address::from_public_key(&public)
+                    .to_string(),
+                public_key: public.as_bytes().try_into().unwrap(),
+            }
+        }
+
+        #[actix_web::test]
+        async fn network_producers_lists_active_set_with_bounded_activity() {
+            let state = test_state(None);
+            let app = test::init_service(test_app(state.clone())).await;
+
+            // Reader auth, like the other node read models.
+            let response = test::call_service(
+                &app,
+                test::TestRequest::get().uri("/network/producers").to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+            // Empty history: an honest empty set, not a fabricated roster.
+            let response = test::call_service(&app, reader_get("/network/producers").to_request()).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(body["producers"], serde_json::json!([]));
+            assert!(body["set_epoch"].is_null());
+            assert!(body["producer_set_hash"].is_null());
+
+            let (alpha, bravo) = (member("alpha", 41), member("bravo", 42));
+            {
+                let mut chain = state.blockchain.write().await;
+                chain.state.producer_set_history = vec![
+                    ProducerSetChange::new(0, 0, vec![bravo.clone(), alpha.clone()]),
+                    // Scheduled far ahead: must not be reported as the active set.
+                    ProducerSetChange::new(1, 1_000, vec![member("charlie", 43)]),
+                ];
+                let mut prev = Hash::default();
+                for (height, key) in [(1, alpha.public_key), (2, bravo.public_key), (3, alpha.public_key)] {
+                    let mut block = Block::new(1, prev, Vec::new(), 1, height);
+                    block.producer_pubkey = key;
+                    block.set_hash(block.calculate_hash());
+                    prev = block.hash.unwrap();
+                    chain.add_block(block).unwrap();
+                }
+            }
+
+            let response = test::call_service(&app, reader_get("/network/producers").to_request()).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(body["tip_height"], 3);
+            assert_eq!(body["authorizes_height"], 4);
+            assert_eq!(body["set_epoch"], 0);
+            assert_eq!(body["set_effective_height"], 0);
+            let producers = body["producers"].as_array().unwrap();
+            assert_eq!(producers.len(), 2);
+            // Canonical (producer_id) order regardless of history order.
+            assert_eq!(producers[0]["producer_id"], "alpha");
+            assert_eq!(producers[0]["public_key"], hex::encode(alpha.public_key));
+            assert_eq!(producers[0]["payout_address"], alpha.payout_address);
+            assert_eq!(producers[0]["last_produced_height"], 3);
+            assert_eq!(producers[0]["blocks_in_window"], 2);
+            assert_eq!(producers[1]["producer_id"], "bravo");
+            assert_eq!(producers[1]["last_produced_height"], 2);
+            assert_eq!(producers[1]["blocks_in_window"], 1);
+            assert_eq!(body["activity_window"]["blocks_scanned"], 3);
+            assert_eq!(body["activity_window"]["from_height"], 1);
+            assert_eq!(body["activity_window"]["to_height"], 3);
+
+            // A narrow window only sees the newest block.
+            let response = test::call_service(&app, reader_get("/network/producers?window=1").to_request()).await;
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(body["activity_window"]["blocks_scanned"], 1);
+            assert_eq!(body["producers"][0]["blocks_in_window"], 1);
+            assert!(body["producers"][1]["last_produced_height"].is_null());
+            assert_eq!(body["producers"][1]["blocks_in_window"], 0);
+
+            // Bounds: 0 clamps up to 1, huge clamps down to the cap.
+            let response = test::call_service(&app, reader_get("/network/producers?window=0").to_request()).await;
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(body["activity_window"]["requested"], 1);
+            let response =
+                test::call_service(&app, reader_get("/network/producers?window=99999999").to_request()).await;
+            let body: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(
+                body["activity_window"]["requested"],
+                crate::routes::network::MAX_PRODUCER_ACTIVITY_WINDOW
+            );
+
+            // A malformed window is refused, not panicked on.
+            let response = test::call_service(&app, reader_get("/network/producers?window=abc").to_request()).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
     #[path = "node_receipt_slice3.rs"]
     mod node_receipt_slice3;
+    #[cfg(feature = "p2p")]
+    #[path = "node_tx_admission.rs"]
+    mod node_tx_admission;
+    #[cfg(feature = "p2p")]
+    #[path = "node_receipt_p2p_fetch.rs"]
+    mod node_receipt_p2p_fetch;
     #[path = "node_settlement_slice4.rs"]
     mod node_settlement_slice4;
     #[path = "node_fraud_slice5.rs"]
     mod node_fraud_slice5;
+    #[path = "node_fraud_route.rs"]
+    mod node_fraud_route;
+    #[path = "security_key_route.rs"]
+    mod security_key_route;
+    #[path = "forecast_late_score_route.rs"]
+    mod forecast_late_score_route;
 
     #[cfg(unix)]
     #[path = "payout_signer_3499.rs"]
@@ -5086,6 +5545,22 @@ mod tests {
                 "parsed signers should NOT contain uppercase input");
     }
 
+    /// Fresh redb storage for one test state. The file is created with
+    /// O_EXCL under an OS-random name (tempfile), so two tests or two test
+    /// processes can never open the same database, then unlinked right after
+    /// redb opens it: the open handle keeps the inode alive and nothing is
+    /// left in the temp dir. The old `wrfcoin-test-<fastrand u64>.redb`
+    /// names were never removed and were not guaranteed unique.
+    fn test_storage() -> Storage {
+        let file = tempfile::Builder::new()
+            .prefix("wrfcoin-test-")
+            .suffix(".redb")
+            .tempfile()
+            .expect("test storage file should be created");
+        let path = file.into_temp_path();
+        Storage::open(&path, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open")
+    }
+
     fn test_token_store() -> Arc<FxHashMap<String, AuthPrincipal>> {
         let mut store = FxHashMap::default();
         store.insert(
@@ -5241,9 +5716,7 @@ mod tests {
         zk_max_provers: usize,
     ) -> web::Data<AppState> {
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let mut blockchain = Blockchain::default();
         let zk_verifier: Arc<dyn wrfcoin_shared_protocol::consensus::zk_verification::ZkVerifier> =
             Arc::new(wrfcoin_native_chain::zk_service::ArkworksZkVerifier);
@@ -5277,6 +5750,7 @@ mod tests {
             token_store: test_token_store(),
             legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
             storage: Arc::new(RwLock::new(storage)),
@@ -5284,6 +5758,7 @@ mod tests {
             failed_transactions_total: Arc::new(AtomicU64::new(0)),
             zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
             block_production_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -5350,9 +5825,7 @@ mod tests {
         // and `test_state_with_block_capacity`.
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
 
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let blockchain = {
             #[cfg(feature = "zk")]
             {
@@ -5396,6 +5869,7 @@ mod tests {
             token_store: test_token_store(),
             legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
             storage: Arc::new(RwLock::new(storage)),
@@ -5403,6 +5877,7 @@ mod tests {
             failed_transactions_total: Arc::new(AtomicU64::new(0)),
             zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
             block_production_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -5473,9 +5948,7 @@ mod tests {
         let snapshot_signing_key = snapshot_signing_key.map(signer_from_test_private_key);
         #[cfg(feature = "zk")]
         {
-            let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-            let storage =
-                Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+            let storage = test_storage();
             let mut blockchain = Blockchain::with_capacity(max_in_memory_blocks);
             let zk_verifier: Arc<
                 dyn wrfcoin_shared_protocol::consensus::zk_verification::ZkVerifier,
@@ -5510,6 +5983,7 @@ mod tests {
                 token_store: test_token_store(),
                 legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
                 permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
                 permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
                 storage: Arc::new(RwLock::new(storage)),
@@ -5517,6 +5991,7 @@ mod tests {
                 failed_transactions_total: Arc::new(AtomicU64::new(0)),
                 zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
                 block_production_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -5569,9 +6044,7 @@ mod tests {
         });
         }
 
-        let tmp = std::env::temp_dir().join(format!("wrfcoin-test-{}.redb", fastrand::u64(..)));
-        let storage =
-            Storage::open(&tmp, DEFAULT_CHECKPOINT_INTERVAL).expect("test storage should open");
+        let storage = test_storage();
         let blockchain = Blockchain::with_capacity(max_in_memory_blocks);
         let (finality_signal_tx, _rx) =
             wrfcoin_shared_protocol::consensus::finality::finality_signal_channel();
@@ -5600,6 +6073,7 @@ mod tests {
             token_store: test_token_store(),
             legacy_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_submit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
+        forecast_quotas: Arc::new(RwLock::new(Default::default())),
         contribution_commit_rate_limit: Arc::new(RwLock::new(FxHashMap::default())),
             permissionless_replay_seen: Arc::new(RwLock::new(FxHashMap::default())),
             storage: Arc::new(RwLock::new(storage)),
@@ -5607,6 +6081,7 @@ mod tests {
             failed_transactions_total: Arc::new(AtomicU64::new(0)),
             zk_proofs_per_block_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         trust_reward_metrics_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
+        reward_address_index: Arc::new(Default::default()),
         mining_tx_count_cache: Arc::new(std::sync::Mutex::new(FxHashMap::default())),
         stake_metrics_cache: Arc::new(std::sync::Mutex::new(None)),
             block_production_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -5682,6 +6157,126 @@ mod tests {
                 nft_data: None,
             }],
         )
+    }
+
+    #[actix_web::test]
+    async fn host_metrics_gpu_keeps_operator_auth_and_existing_fields() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let path = "/node/metrics/host";
+        let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        for field in ["memory_total_mb", "memory_used_mb", "memory_free_mb", "memory_used_percent",
+            "swap_total_mb", "swap_used_mb", "cpu_per_core", "cpu_usage_avg_percent", "disks"]
+        {
+            assert!(body.get(field).is_some(), "existing field {field} must remain");
+        }
+        if let Some(gpu) = body.get("gpu") {
+            assert!(gpu.is_array(), "optional GPU section must not be null or an error");
+        }
+    }
+
+    /// The dashboard's Stop button: `POST /node/shutdown` is Operator-only, a
+    /// refused caller signals nothing, and the operator's call answers 202 and
+    /// wakes the graceful-shutdown task's wait.
+    #[actix_web::test]
+    async fn node_shutdown_requires_the_operator_and_signals_the_shutdown_task() {
+        use routes::node_shutdown::NodeShutdown;
+        let shutdown = web::Data::new(NodeShutdown::new());
+        let app = test::init_service(test_app(test_state(None)).app_data(shutdown.clone())).await;
+        let path = "/node/shutdown";
+
+        let response = test::call_service(&app, test::TestRequest::post().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for (caller, token) in [
+            ("reader", TEST_READER_TOKEN),
+            ("contributor", TEST_CONTRIBUTOR_TOKEN),
+            ("oracle", TEST_ORACLE_TOKEN),
+            ("unknown token", "not-a-token"),
+        ] {
+            let response = test::call_service(&app, test::TestRequest::post().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            // Name the caller's role, never the token, in the failure message.
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "caller: {caller}");
+        }
+        // GET is not the route.
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert!(response.status().is_client_error(), "GET {path} must not stop the node");
+        assert!(!shutdown.is_requested(), "a refused caller must not signal the shutdown");
+
+        let response = test::call_service(&app, test::TestRequest::post().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["status"], "shutting_down");
+        assert_eq!(body["already_requested"], false);
+        assert!(shutdown.is_requested());
+        tokio::time::timeout(std::time::Duration::from_secs(5), shutdown.wait())
+            .await
+            .expect("the operator's request wakes the shutdown task's wait");
+
+        // A second press is answered, not re-signalled.
+        let response = test::call_service(&app, test::TestRequest::post().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["already_requested"], true);
+    }
+
+    /// Without the shared request registered (no shutdown task to wake), the
+    /// operator is told so instead of being answered "shutting down".
+    #[actix_web::test]
+    async fn node_shutdown_without_a_shutdown_task_is_unavailable() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let response = test::call_service(&app, test::TestRequest::post().uri("/node/shutdown")
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `main` must hand the SAME request object to the server and to the
+    /// graceful-shutdown task, and the task must wait on it next to the signals.
+    #[actix_web::test]
+    async fn main_wires_the_stop_route_into_the_graceful_shutdown_task() {
+        let code = strip_comments_and_literals(include_str!("main.rs"));
+        let builder = code.find("let server = HttpServer::new(").expect("server builder");
+        let created = code
+            .find("let node_shutdown = web::Data::new(routes::node_shutdown::NodeShutdown::new());")
+            .expect("main creates one NodeShutdown");
+        assert!(created < builder, "the request is created before the server factory");
+        let run = code[builder..].find(".run();").expect("builder runs") + builder;
+        assert!(
+            code[builder..run].contains(".app_data(node_shutdown_app.clone())"),
+            "every worker gets the shared NodeShutdown as app data"
+        );
+        let task = code.find("let shutdown_task = tokio::spawn(").expect("shutdown task");
+        // The signal select! follows `exit_upgrade_required` (a Windows-only
+        // select! for the console events comes earlier).
+        let select = code[task..].find("let mut exit_upgrade_required").expect("task selects") + task;
+        assert!(code[task..select].contains("let stop_requested = node_shutdown.wait();"));
+        let flag = code[select..]
+            .find("shutdown_started_task.store(true")
+            .expect("task marks the sequence started")
+            + select;
+        assert!(
+            code[select..flag].contains("_ = stop_requested =>"),
+            "the stop route must wake the same select! as SIGINT/SIGTERM"
+        );
     }
 
     fn test_app(
@@ -6272,6 +6867,40 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    /// Advisory governance routes are reachable even though a `/governance`
+    /// scope is registered (a matched scope never falls through), read with
+    /// no token, and refuse a submit while the feature is unscheduled.
+    #[actix_web::test]
+    async fn advisory_governance_routes_are_reachable_and_gated() {
+        let state = test_state(None);
+        let app = test::init_service(App::new().app_data(state.clone()).configure(configure_launch_routes)).await;
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        let data = body.get("data").unwrap_or(&body);
+        assert_eq!(data["total"], 0);
+        assert_eq!(data["feature_active_next_height"], false);
+        assert_eq!(data["limits"]["quorum_min_votes"], 3);
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals/adv-0123456789abcdef").to_request()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/advisory/proposals/LAW-001").to_request()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // The legacy scope still answers.
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/governance/proposals").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut tx = wrfcoin_shared_protocol::blockchain::transaction::Transaction::new(Vec::new(), Vec::new());
+        tx.tx_type = wrfcoin_shared_protocol::blockchain::transaction::TransactionType::AdvisoryGovernance;
+        let response = test::call_service(&app, test::TestRequest::post()
+            .uri("/governance/advisory/submit")
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: test-only synthetic bearer fixture, never a deployed credential.
+            .set_json(&tx).to_request()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "unscheduled: FEATURE_NOT_ACTIVE");
     }
 
     /// Lane C (#3126): the serve/fetch/receipt loop over the real routes —
@@ -8562,6 +9191,92 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn oracle_attestation_requires_the_signer_in_the_current_oracle_set() {
+        use wrfcoin_native_chain::security::key_registry::SigningRole;
+
+        let (outside_sk, outside_id) = keypair(402);
+        let (member_sk, member_id) = keypair(403);
+        let state = test_state(None);
+        {
+            let mut blockchain = state.blockchain.write().await;
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![outside_id.clone(), member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+            for id in [&outside_id, &member_id] {
+                blockchain
+                    .apply_state_transition(StateTransition::RegisterSigningKeyEpoch {
+                        identity: id.clone(),
+                        role: SigningRole::Oracle,
+                        epoch: 1,
+                        public_key: id.clone(),
+                        activated_at: 0,
+                    })
+                    .unwrap();
+            }
+            blockchain
+                .apply_state_transition(StateTransition::SetOracleConfig {
+                    oracle_set: vec![member_id.clone()],
+                    oracle_quorum: 1,
+                })
+                .unwrap();
+        }
+        let app = test::init_service(test_app(state.clone())).await;
+
+        let timestamp = chrono::Utc::now().timestamp();
+        let body_for = |sk: &wrfcoin_native_chain::crypto::signature::PrivateKey, id: &str, nonce: &str| {
+            let payload = OracleAttestationPayload {
+                commit_id: "d".repeat(64),
+                oracle_id: id.to_string(),
+                approved: true,
+                signature: None,
+                confidence: None,
+                timestamp,
+                nonce: Some(nonce.to_string()),
+            };
+            let signature = sk.sign(payload.signing_message().as_bytes());
+            json!({
+                "oracle_id": id,
+                "commit_hash": "d".repeat(64),
+                "approved": true,
+                "signature": signature.to_string(),
+                "timestamp": timestamp,
+                "nonce": nonce
+            })
+        };
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&outside_sk, &outside_id, "outside-set"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(
+            body.to_string().contains("not in the current oracle set"),
+            "refusal names the oracle set: {body}"
+        );
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enters the pool");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::post()
+                .uri("/transactions/oracle/attestation")
+                .insert_header(("Authorization", format!("Bearer {TEST_ORACLE_TOKEN}"))) // secret-leak-ok: fixed test fixture token
+                .set_json(body_for(&member_sk, &member_id, "in-set"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[actix_web::test]
     async fn stake_routes_return_state_backed_fields_and_consistent_metrics() {
         let state = test_state(None);
         let primary = "0x3333333333333333333333333333333333333333"
@@ -8722,6 +9437,7 @@ mod tests {
             // #1839: snapshot endpoints now require Reader auth
             "/state/snapshot",
             "/state/snapshot/entries",
+            "/state/snapshot/prefix-counts",
             "/state/snapshot/sync-payload",
             // #1841: per-address stake status now requires Reader auth
             "/transactions/stake/0x1111111111111111111111111111111111111111",
@@ -9815,6 +10531,339 @@ mod tests {
         assert_error_envelope(&limited_body);
     }
 
+    /// #2169 on chain 888: `passkey_p256_auth` is scheduled by an applied
+    /// governance extension (h3400), not genesis. `/transactions/submit`
+    /// refuses a passkey transfer while the feature is not active at tip+1,
+    /// accepts it (through mempool admission) once it is, and leaves the
+    /// ed25519 path unchanged on both sides of the height.
+    #[actix_web::test]
+    async fn transactions_submit_accepts_passkey_transfer_only_once_active_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::accounts::passkey::test_support::SoftwareAuthenticator;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_accepts_passkey_transfer_only_once_active_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x3400340034003400340034003400340034003400",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 3_400;
+        let _env = crate::helpers::test_env::lock();
+        refresh_feature_schedule_extensions(vec![(
+            ConsensusFeature::PasskeyP256Auth.name().to_string(),
+            H,
+        )]);
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x3333333333333333333333333333333333333333";
+        let amount = 42u64;
+
+        let auth = SoftwareAuthenticator::new(&[0x34; 32], "wallet.wrfcoin.test");
+        let passkey_from = auth.account().to_hex();
+        let passkey_body = |nonce: u64, signed_amount: u64| {
+            json!({
+                "from": passkey_from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "passkey_auth": auth.authorize_transfer(to, signed_amount, nonce),
+            })
+        };
+        let (ed_sk, ed_pk_hex) = keypair(0x3400_01);
+        let ed_from = format!(
+            "0x{}",
+            hex::encode(Address::from_public_key(&PublicKey::from_private_key(&ed_sk)).0) // secret-leak-ok: formats the public address of a seeded test key, never the key itself.
+        );
+        let ed_body = |nonce: u64| {
+            json!({
+                "from": ed_from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "auth_pubkey": ed_pk_hex,
+                "auth_signature": ed_sk
+                    .sign(&transparent_transfer_authorization_message(&ed_from, to, amount, nonce))
+                    .to_string(),
+            })
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+
+        // Tip = H-2: the next block (H-1) is below activation.
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(passkey_body(0, amount))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&body);
+        assert_eq!(body["error"]["code"], "FEATURE_NOT_ACTIVE", "{body}");
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enqueued before activation");
+
+        // ed25519 is accepted below activation exactly as before.
+        let resp = test::call_service(&app, submit(ed_body(0))).await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // Tip = H-1: the next block (H) is at activation.
+        state.blockchain.write().await.height = H - 1;
+        // A passkey assertion over a different amount is refused.
+        let resp = test::call_service(&app, submit(passkey_body(0, amount + 1))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["error"]["code"], "AUTHORIZATION_INVALID", "{body}");
+
+        // The valid passkey transfer is accepted and admitted to the mempool.
+        let resp = test::call_service(&app, submit(passkey_body(0, amount))).await;
+        let status = resp.status();
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_success_envelope(&body);
+        assert_eq!(state.mempool.read().await.size(), 2, "ed25519 + passkey transfers pending");
+
+        refresh_feature_schedule_extensions(Vec::new());
+    }
+
+    /// Sponsored first sends: `/transactions/submit` refuses a transfer that
+    /// carries a sponsorship while `paymaster` is not active at tip+1 (before
+    /// any replay/rate state), refuses a sponsorship that does not match the
+    /// transfer, and admits a valid one once active.
+    #[actix_web::test]
+    async fn transactions_submit_accepts_sponsorship_only_once_paymaster_active_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::accounts::paymaster::SponsorAuthorization;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_accepts_sponsorship_only_once_paymaster_active_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x1101110111011101110111011101110111011101",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 5_000;
+        let _env = crate::helpers::test_env::lock();
+        refresh_feature_schedule_extensions(vec![(ConsensusFeature::Paymaster.name().to_string(), H)]);
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x3333333333333333333333333333333333333333";
+        let amount = 42u64;
+
+        let (user_sk, user_pk_hex) = keypair(0x1101_01);
+        let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
+        let (sponsor_sk, _) = keypair(0x1101_02);
+        let sponsor = Address::from_public_key(&PublicKey::from_private_key(&sponsor_sk)).to_hex();
+        let sponsorship = |expires: u64, fee: u64| {
+            let mut auth = SponsorAuthorization {
+                sponsor: sponsor.clone(),
+                fee,
+                expires_at_height: expires,
+                balance_floor: 0,
+                first_send_only: true,
+                sponsor_public_key: String::new(),
+                signature: String::new(),
+            };
+            auth.sign(&sponsor_sk, &from, to, amount, 0);
+            auth
+        };
+        let body = |auth: SponsorAuthorization| {
+            json!({
+                "from": from,
+                "to": to,
+                "amount": amount,
+                "nonce": "0",
+                "transparent_opt_out": true,
+                "auth_pubkey": user_pk_hex,
+                "auth_signature": user_sk
+                    .sign(&transparent_transfer_authorization_message(&from, to, amount, 0))
+                    .to_string(),
+                "sponsorship": auth,
+            })
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+
+        // Tip = H-2: the next block (H-1) is below activation.
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(body(sponsorship(H + 10, 5_000)))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&json_body);
+        assert_eq!(json_body["error"]["code"], "FEATURE_NOT_ACTIVE", "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), 0, "nothing enqueued before activation");
+
+        // Tip = H-1: the next block (H) is at activation.
+        state.blockchain.write().await.height = H - 1;
+        let mut tampered = sponsorship(H + 10, 5_000);
+        tampered.fee += 1;
+        let resp = test::call_service(&app, submit(body(tampered))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(json_body["error"]["code"], "SPONSORSHIP_INVALID", "{json_body}");
+
+        let resp = test::call_service(&app, submit(body(sponsorship(H + 10, 5_000)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_success_envelope(&json_body);
+        assert_eq!(json_body["data"]["sponsored"], true, "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), 1, "the sponsored transfer is pending");
+
+        refresh_feature_schedule_extensions(Vec::new());
+    }
+
+    /// Burned transfer fee: `/transactions/submit` declares the chain's fee
+    /// on the envelope it builds, refuses a wallet that offers less once the
+    /// fee is in force at tip+1 (before any replay/rate state), and
+    /// `/network/info` tells wallets what a send costs.
+    #[actix_web::test]
+    async fn transactions_submit_declares_and_enforces_the_transfer_fee_at_next_height() {
+        use wrfcoin_native_chain::blockchain::transaction::transparent_transfer_authorization_message;
+        use wrfcoin_shared_protocol::consensus::transfer_fee::TRANSFER_FEE_V1_BASE_UNITS as FEE;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            ConsensusFeature, refresh_feature_schedule_extensions,
+        };
+
+        // Own process: the extension overlay is process-global.
+        if crate::helpers::test_env::isolated_chain_domain(
+            "tests::transactions_submit_declares_and_enforces_the_transfer_fee_at_next_height",
+            "wrfcoin-main",
+            "mainnet",
+            "0x1101110111011101110111011101110111011101",
+            "none",
+        ) {
+            return;
+        }
+        const H: u64 = 6_000;
+        let _env = crate::helpers::test_env::lock();
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let to = "0x4444444444444444444444444444444444444444";
+        let amount = 42u64;
+        // One sender per submit: the per-`from` submit budget (#3337) is not
+        // what this test exercises.
+        let body = |nonce: u64, fee: Option<u64>| {
+            let (user_sk, user_pk_hex) = keypair(0x1101_10 + nonce);
+            let from = Address::from_public_key(&PublicKey::from_private_key(&user_sk)).to_hex();
+            let mut body = json!({
+                "from": from,
+                "to": to,
+                "amount": amount,
+                "nonce": nonce.to_string(),
+                "transparent_opt_out": true,
+                "auth_pubkey": user_pk_hex,
+                "auth_signature": user_sk
+                    .sign(&transparent_transfer_authorization_message(&from, to, amount, nonce))
+                    .to_string(),
+            });
+            if let Some(fee) = fee {
+                body["fee"] = json!(fee);
+            }
+            body
+        };
+        let submit = |body: serde_json::Value| {
+            test::TestRequest::post()
+                .uri("/transactions/submit")
+                .insert_header(("Authorization", format!("Bearer {TEST_CONTRIBUTOR_TOKEN}"))) // secret-leak-ok: fixed synthetic test bearer defined in main.rs; never a deployed credential.
+                .set_json(body)
+                .to_request()
+        };
+        let pending_fees = |state: &web::Data<AppState>| {
+            let state = state.clone();
+            async move {
+                let mut fees: Vec<u64> = state
+                    .mempool
+                    .read()
+                    .await
+                    .get_transactions()
+                    .iter()
+                    .map(|tx| tx.fee)
+                    .collect();
+                fees.sort_unstable();
+                fees
+            }
+        };
+
+        // Unscheduled: no fee declared, none charged, and info says so.
+        refresh_feature_schedule_extensions(Vec::new());
+        let resp = test::call_service(&app, submit(body(0, Some(1)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_eq!(json_body["data"]["fee"], "0", "{json_body}");
+        assert_eq!(json_body["data"]["fee_burned"], false);
+        assert_eq!(pending_fees(&state).await, vec![0], "envelope unchanged");
+        let resp = test::call_service(&app, test::TestRequest::get().uri("/network/info").to_request()).await;
+        let info: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(info["transfer_fee"]["active"], false, "{info}");
+        assert_eq!(info["transfer_fee"]["base_units"], "0");
+
+        // Scheduled at H; tip H-2, so the next block H-1 charges nothing, but
+        // the envelope already declares the fee so a late mine is not refused.
+        refresh_feature_schedule_extensions(vec![(ConsensusFeature::TransferFeeBurn.name().to_string(), H)]);
+        state.blockchain.write().await.height = H - 2;
+        let resp = test::call_service(&app, submit(body(1, Some(0)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "below activation a low offer is fine: {json_body}");
+        assert_eq!(json_body["data"]["fee"], FEE.to_string());
+        assert_eq!(json_body["data"]["fee_burned"], false);
+        assert_eq!(pending_fees(&state).await, vec![0, FEE]);
+
+        // Tip H-1: the next block charges the fee.
+        state.blockchain.write().await.height = H - 1;
+        let size_before = state.mempool.read().await.size();
+        let resp = test::call_service(&app, submit(body(2, Some(FEE - 1)))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_error_envelope(&json_body);
+        assert_eq!(json_body["error"]["code"], "FEE_BELOW_MINIMUM", "{json_body}");
+        assert!(json_body["error"]["message"].as_str().unwrap().contains("0.00005 WRF"), "{json_body}");
+        assert_eq!(state.mempool.read().await.size(), size_before, "nothing enqueued");
+        // The refused nonce was not reserved: the same nonce is accepted with
+        // the fee, and an absent `fee` accepts the chain's fee.
+        let resp = test::call_service(&app, submit(body(2, Some(FEE)))).await;
+        let status = resp.status();
+        let json_body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{json_body}");
+        assert_eq!(json_body["data"]["fee"], FEE.to_string());
+        assert_eq!(json_body["data"]["fee_burned"], true);
+        assert_eq!(json_body["data"]["fee_paid_by"], "sender");
+        let resp = test::call_service(&app, submit(body(3, None))).await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(pending_fees(&state).await, vec![0, FEE, FEE, FEE]);
+
+        let resp = test::call_service(&app, test::TestRequest::get().uri("/network/info").to_request()).await;
+        let info: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(info["transfer_fee"]["active"], true, "{info}");
+        assert_eq!(info["transfer_fee"]["base_units"], FEE.to_string());
+        assert_eq!(info["transfer_fee"]["wrf"], "0.00005");
+        assert_eq!(info["transfer_fee"]["burned"], true);
+
+        refresh_feature_schedule_extensions(Vec::new());
+    }
+
     #[actix_web::test]
     async fn legacy_submit_rate_limit_helper_enforces_current_window() {
         let state = test_state(None);
@@ -10556,7 +11605,7 @@ mod tests {
         let refuse = at("refuse_seen_permissionless_replay_key(&req, &state, &replay_key)");
         let limit = at("enforce_legacy_authenticated_submit_rate_limit(&req, &state, from)");
         let reserve = at("enforce_permissionless_replay_protection(&req, &state, &replay_key)");
-        let enqueue = at("enqueue_protocol_transaction_with_nonce(");
+        let enqueue = at("enqueue_protocol_transaction_with_nonce_and_fee(");
         assert!(
             refuse < limit && limit < reserve && reserve < enqueue,
             "order must be: read-only replay refusal, rate limit, durable reservation, enqueue"
@@ -12552,6 +13601,10 @@ mod tests {
 
         let body: serde_json::Value = test::read_body_json(resp).await;
         assert!(body["node_version"].is_string());
+        // The public disclaimer page served by wrfcoin.com (frontend public/testnet-disclaimer.html).
+        assert_eq!(body["disclaimer_url"], "https://wrfcoin.com/testnet-disclaimer.html");
+        // Release builds stamp the short commit; local and test builds report null.
+        assert!(body["node_build"].is_null() || body["node_build"].is_string());
         assert!(body["sync_status"].is_string());
         assert!(body["chain_height"].is_number());
         // Without P2P, peer_count should be 0.
@@ -14414,6 +15467,36 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn node_resources_weather_acceptance_is_nullable_and_state_backed() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let request = || test::TestRequest::get().uri("/node/resources").to_request();
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body.get("weather_last_accepted_block_unix"), Some(&serde_json::Value::Null));
+        assert_eq!(body.get("weather_last_accepted_block_age_secs"), Some(&serde_json::Value::Null));
+        for field in ["chain_status", "chain_last_block_age_secs", "chain_block_interval_secs",
+            "uptime_secs", "blocks_in_memory", "account_count", "nft_count", "pending_transactions"]
+        {
+            assert!(body.get(field).is_some(), "retain {field}");
+        }
+        let newest = chrono::Utc::now().timestamp() - 120;
+        {
+            let mut chain = state.blockchain.write().await;
+            chain.state.station_weather_accepted_block_unix.insert("older".into(), newest - 3600);
+            chain.state.station_weather_accepted_block_unix.insert("newer".into(), newest);
+        }
+        let response = test::call_service(&app, request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["weather_last_accepted_block_unix"], newest);
+        let upper = chrono::Utc::now().timestamp().saturating_sub(newest);
+        let age = body["weather_last_accepted_block_age_secs"].as_i64().expect("age");
+        assert!((120..=upper).contains(&age));
+    }
+
+    #[actix_web::test]
     async fn node_resources_returns_system_metrics() {
         let state = test_state(None);
         let app = test::init_service(test_app(state.clone())).await;
@@ -15754,6 +16837,49 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// #3551 review: state also changes off-block (a bridge audit event at
+    /// the current height, height-0 configuration writers), so the summary
+    /// route must reflect a write that moved neither height nor tip.
+    #[actix_web::test]
+    async fn snapshot_summary_follows_an_off_block_state_write_3551() {
+        let state = test_state(None);
+        let app = test::init_service(test_app(state.clone())).await;
+        let get_summary = || {
+            test::TestRequest::get()
+                .uri("/state/snapshot")
+                .insert_header(("Authorization", format!("Bearer {TEST_READER_TOKEN}"))) // secret-leak-ok: test; TEST_READER_TOKEN is a fixed #[cfg(test)] fixture string
+                .to_request()
+        };
+        let before: SnapshotSummaryResponse =
+            test::read_body_json(test::call_service(&app, get_summary()).await).await;
+        let (height, tip) = {
+            let mut blockchain = state.blockchain.write().await;
+            let (height, tip) = (blockchain.height, blockchain.tip);
+            blockchain
+                .apply_state_transition(StateTransition::ApplyReward {
+                    address: "0x3551355135513551355135513551355135513551".parse::<Address>().expect("address"),
+                    amount: Balance(3551),
+                    reason: "off-block write".to_string(),
+                })
+                .expect("off-block write");
+            assert_eq!((blockchain.height, blockchain.tip), (height, tip), "precondition: no new block");
+            (height, tip)
+        };
+        let after: SnapshotSummaryResponse =
+            test::read_body_json(test::call_service(&app, get_summary()).await).await;
+        let expected = {
+            let blockchain = state.blockchain.read().await;
+            assert_eq!((blockchain.height, blockchain.tip), (height, tip));
+            let storage = state.storage.read().await;
+            crate::routes::snapshot::current_snapshot_summary_for_tests(&blockchain, &storage).expect("export")
+        };
+        assert_ne!(after.state_root_hex, before.state_root_hex, "precondition: the write moved the root");
+        assert_eq!(after.height, expected.height);
+        assert_eq!(after.state_root_hex, expected.state_root_hex);
+        assert_eq!(after.snapshot_root_hex, expected.snapshot_root_hex);
+        assert_eq!(after.entry_count, expected.entry_count);
+    }
+
     #[actix_web::test]
     async fn snapshot_entries_requires_reader_auth() {
         let state = test_state(None);
@@ -16784,6 +17910,71 @@ mod tests {
         assert_eq!(all["stations"].as_array().unwrap().len(), 3);
     }
 
+    /// Public reads return station coordinates at 0.1 degree; full precision
+    /// needs the operator token. The pending-attestation surface, every role:
+    /// Reader, Contributor and Oracle get the 0.1 degree grid, Operator the
+    /// registry value, anonymous nothing. Coordinates are made up.
+    #[actix_web::test]
+    async fn pending_attestations_give_exact_coordinates_only_to_the_operator() {
+        let state = test_state(None);
+        // PWS-A is seeded at (10.123456, 20.654321).
+        seed_station_list_3342(&state, &["PWS-A"]).await;
+        let station_id = "PWS-A";
+        let nonce = "coords-tenth-nonce";
+        let timestamp = 1_700_000_000_i64;
+        let data = json!({ "temperature_c": 12.5 });
+        let commit_id =
+            Transaction::compute_commit_id(&data, nonce, station_id, timestamp, "weather_observation");
+        let mut reveal = age_test_entry("coords-tenth-reveal");
+        reveal.tx_type = TransactionType::ContributionReveal;
+        reveal.sender_address = Address::new([0x5b; 20]);
+        reveal.data = Some(
+            json!({
+                "commit_id": commit_id,
+                "station_id": station_id,
+                "timestamp": timestamp,
+                "contribution_type": "weather_observation",
+                "data": data,
+                "nonce": nonce,
+            })
+            .to_string(),
+        );
+        reveal.set_id();
+        state.mempool.write().await.add_transaction(reveal).expect("reveal admitted");
+        let app = test::init_service(test_app(state)).await;
+
+        let (anon, _) = get_station_list_3342!(&app, "/transactions/oracle/pending", None);
+        assert_eq!(anon, StatusCode::UNAUTHORIZED);
+
+        let cases: [(&str, &str, f64, f64); 4] = [
+            ("reader", TEST_READER_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("contributor", TEST_CONTRIBUTOR_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("oracle", TEST_ORACLE_TOKEN, 10.1, 20.7), // secret-leak-ok: test-only constant token
+            ("operator", TEST_OPERATOR_TOKEN, 10.123456, 20.654321), // secret-leak-ok: test-only constant token
+        ];
+        for (role, token, latitude, longitude) in cases {
+            let (status, body) =
+                get_station_list_3342!(&app, "/transactions/oracle/pending", Some(token));
+            assert_eq!(status, StatusCode::OK, "{role}");
+            let entry = body["observations"]
+                .as_array()
+                .expect("observations array")
+                .iter()
+                .find(|o| o["station_id"] == station_id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{role}: the reveal must be listed"));
+            assert_eq!(entry["station_location"]["latitude"], latitude, "{role}");
+            assert_eq!(entry["station_location"]["longitude"], longitude, "{role}");
+            if role != "operator" {
+                let wire = body.to_string();
+                assert!(
+                    !wire.contains("10.12") && !wire.contains("20.65"),
+                    "{role}: finer than 0.1 degree must not reach a non-operator"
+                );
+            }
+        }
+    }
+
     /// #3343 review: a tiny page must not collect or sort the registry. With
     /// limit = 1 over 20,000 stations the selection heap never holds more than
     /// 2 entries and uses O(n) comparisons, far below a full sort (~n log2 n).
@@ -17641,5 +18832,110 @@ mod tests {
             "keep-alive {LAUNCH_API_KEEP_ALIVE:?} exceeds the documented \
              retention ceiling {LAUNCH_API_KEEP_ALIVE_CEILING:?}"
         );
+    }
+
+    /// The shipped server must be built with actix's own signal handling
+    /// disabled, so Ctrl-C reaches only our graceful-shutdown task. Comments and
+    /// literals are stripped first, as in the keep-alive guard above.
+    #[actix_web::test]
+    async fn main_builds_the_shipped_server_with_signals_disabled() {
+        let call_needle = concat!(".disable_", "signals()");
+        assert!(
+            !strip_comments_and_literals("// .disable_signals()").contains(call_needle),
+            "the stripper must erase line comments"
+        );
+        let code = strip_comments_and_literals(include_str!("main.rs"));
+        let start = code
+            .find(".bind((host.as_str(), port))?")
+            .expect("the launch_api builder must still bind host/port");
+        let chain = &code[start..];
+        let end = chain
+            .find(".run();")
+            .expect("the launch_api builder must still call .run()");
+        assert!(
+            chain[..end].contains(call_needle),
+            "the launch_api HttpServer builder must CALL .disable_signals() between \
+             .bind(..) and .run(); otherwise actix stops the server on Ctrl-C by itself \
+             and main returns before the graceful shutdown (P2P disconnect, checkpoint) \
+             finishes"
+        );
+    }
+
+    fn signal_free_probe_server() -> actix_web::dev::Server {
+        actix_web::HttpServer::new(|| {
+            App::new().route(
+                "/probe",
+                web::get().to(|| async { actix_web::HttpResponse::Ok().finish() }),
+            )
+        })
+        .workers(1)
+        .disable_signals()
+        .bind(("127.0.0.1", 0))
+        .expect("bind an ephemeral port")
+        .run()
+    }
+
+    /// The race this closes: the shutdown task stops the server and only THEN
+    /// finishes its sequence. `serve_until_shutdown_complete` must not return
+    /// until the task has finished, and must hand back its outcome.
+    #[actix_web::test]
+    async fn serve_waits_for_the_shutdown_sequence_after_the_server_stops() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let server = signal_free_probe_server();
+        let handle = server.handle();
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let task = {
+            let started = Arc::clone(&started);
+            let finished = Arc::clone(&finished);
+            tokio::spawn(async move {
+                let _ = signal_rx.await;
+                started.store(true, Ordering::SeqCst);
+                handle.stop(true).await;
+                // Work that happens after the HTTP stop, like the final log line.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                finished.store(true, Ordering::SeqCst);
+                true
+            })
+        };
+
+        let _ = signal_tx.send(());
+        let (served, outcome) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            serve_until_shutdown_complete(server, task, &started),
+        )
+        .await
+        .expect("serve must return once the shutdown sequence finishes");
+        assert!(served.is_ok());
+        assert_eq!(outcome, Some(true), "the task's outcome must be returned");
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "serve returned before the shutdown sequence finished"
+        );
+    }
+
+    /// If the server ends without the shutdown task having started (it is
+    /// still waiting for a signal), serve must abort it rather than hang.
+    #[actix_web::test]
+    async fn serve_does_not_wait_for_a_shutdown_task_that_never_started() {
+        use std::sync::atomic::AtomicBool;
+
+        let server = signal_free_probe_server();
+        let handle = server.handle();
+        let started = AtomicBool::new(false);
+        let task = tokio::spawn(std::future::pending::<bool>());
+        tokio::spawn(async move { handle.stop(false).await });
+
+        let (served, outcome) = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            serve_until_shutdown_complete(server, task, &started),
+        )
+        .await
+        .expect("serve must not wait on a shutdown task that never started");
+        assert!(served.is_ok());
+        assert_eq!(outcome, None);
     }
 }

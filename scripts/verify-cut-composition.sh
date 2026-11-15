@@ -235,7 +235,7 @@ else
 fi
 
 grep -F \
-    "test one_chain_survives_genesis_wal_reduction_and_peer_sync_2557 ... ok" \
+    "test gated::one_chain_survives_genesis_wal_reduction_and_peer_sync_2557 ... ok" \
     "$test_report" >/dev/null ||
     die "the named lifecycle test did not execute successfully"
 grep -E \

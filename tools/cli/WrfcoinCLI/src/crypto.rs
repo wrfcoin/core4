@@ -710,6 +710,8 @@ mod tests {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         let nonce = 7;
         payload.auth_pubkey = Some(key_pair.public_key_hex().unwrap());

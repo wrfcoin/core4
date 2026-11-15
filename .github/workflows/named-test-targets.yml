@@ -83,23 +83,6 @@ jobs:
   # nothing to guard here. The check-run result IS the classifier's verdict.
   named-test-targets:
     name: advisory — integration targets nothing else runs
-    # Self-hosted, matching the repo's convention for heavy Rust legs: eight
-    # workflows already use `[self-hosted, n5pro]`, including test-target-compile.yml
-    # and ci-readiness.yml's own Rust job — ci-readiness keeps `ubuntu-latest` only
-    # for its light jobs. Two reasons this job has to be here rather than hosted:
-    #
-    #   1. The documented failure is hosted-specific. ci-readiness.yml's parking note
-    #      records a hosted runner dying with `No space left on device` building these
-    #      very targets — ~14G free on a hosted image against a measured 21G of
-    #      `target/`. That is a property of the runner image, not of the targets, and
-    #      #2490's dispatch input already offers n5pro for exactly this reason.
-    #   2. A gate that cannot run produces no evidence. Hosted minutes are exhausted
-    #      for the month, so a hosted-only gate whose purpose is to run the targets
-    #      nothing else runs would itself run nothing — the vacuous-gate recursion
-    #      docs/ci/VACUOUS_GATES.md is about.
-    #
-    # If the self-hosted runner is offline the job QUEUES rather than skipping, which
-    # is deliberate and matches ci-readiness.yml: a skipped job reads GREEN in rollups.
     runs-on: ubuntu-latest
     # 45, not 30: the #2861 steps below add the cut-composition-harness build
     # (native-chain + shared-protocol/test-support). Warm-cache cost is minutes;

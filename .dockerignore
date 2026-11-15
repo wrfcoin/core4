@@ -55,6 +55,7 @@ LICENSE
 !.taskmaster/*.md
 !docs/governance/constitution.md
 !docs/security/DOMAIN_TAGS.md
+!docs/security/RPC_SURFACE.md
 
 # Task Master files (not needed in containers)
 .taskmaster/

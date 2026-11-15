@@ -24,7 +24,7 @@ A station's owner can be replaced without the owner's consent.
   signature over the record plus a possession proof by the NEW owner key over
   `wrfcoin_station_ownership_v1 ‖ chain ‖ station_id ‖ owner_address`
   (`station_ownership_message_with_domain`). The CURRENT owner never signs.
-- From h11,000 (`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`,
+- From h3,000 on chain 888 (`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`; 11,000 before the 2026-10-23 owner ruling,
   `shared-protocol/src/consensus/proof_of_publishing.rs:431`) the reward payee is the registered owner
   (`reward_recipient_for_station`, `proof_of_publishing.rs:6264-6313`). So a governance-signed
   re-registration naming a new owner redirects the station's earnings.

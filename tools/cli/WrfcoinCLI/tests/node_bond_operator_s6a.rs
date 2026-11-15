@@ -108,6 +108,7 @@ fn public_cli_signs_with_real_key_file_and_preserves_existing_outputs() {
             &ChainIdentity::new("777", "testnet"),
             &[7; 32],
             &[hex::encode(fixture::pk(99))],
+            0,
         )
         .unwrap();
     let again = run(&dir.0, Some(&key), &args);

@@ -15,6 +15,7 @@ use wrfcoin_native_chain::consensus::proof_of_publishing::DEFAULT_SUBMISSION_TIM
 use wrfcoin_native_chain::crypto::domain_signing::{signing_chain_id, signing_network_id};
 use wrfcoin_native_chain::crypto::signature::{PublicKey, Signature};
 use wrfcoin_native_chain::security::api_auth::ApiRole;
+use wrfcoin_native_chain::weather::public_location::tenth_degree;
 use wrfcoin_native_chain::security::key_registry::SigningRole;
 
 // ---------------------------------------------------------------------------
@@ -182,12 +183,15 @@ pub async fn submit_oracle_attestation(
     // silently accept signatures from any caller that uses their own public key
     // as oracle_id, producing confusing errors at mempool admission (#1844).
     // The mempool also enforces has_identity_role, but we fail-closed here too.
-    let (oracle_registered, signature_valid) = {
+    let (oracle_registered, in_oracle_set, signature_valid) = {
         let blockchain = state.blockchain.read().await;
         let registered = blockchain
             .state
             .signing_keys
             .has_identity_role(&request.oracle_id, SigningRole::Oracle);
+        // The mempool checks the signing-key registry; the oracle set is chain
+        // state, so membership is checked here at the node's ingress.
+        let in_set = blockchain.state.oracle_set.contains(&request.oracle_id);
         let sig_valid = registered
             && blockchain
                 .state
@@ -199,7 +203,7 @@ pub async fn submit_oracle_attestation(
                     message.as_bytes(),
                     signature_hex,
                 );
-        (registered, sig_valid)
+        (registered, in_set, sig_valid)
     };
     if !oracle_registered {
         return envelope_error(
@@ -207,6 +211,14 @@ pub async fn submit_oracle_attestation(
             StatusCode::UNPROCESSABLE_ENTITY,
             "UNPROCESSABLE_ENTITY",
             "oracle_id is not a registered oracle operator",
+        );
+    }
+    if !in_oracle_set {
+        return envelope_error(
+            &req,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "UNPROCESSABLE_ENTITY",
+            "oracle_id is not in the current oracle set",
         );
     }
     if !signature_valid {
@@ -883,14 +895,14 @@ pub struct PendingAttestationObservation {
     /// the field.
     // determinism-ok: read-only API echo of the registry's Option<f64> elevation; nothing here is consensus arithmetic
     pub elevation_meters: Option<f64>,
-    /// #3240: the registered station's location, COARSENED to
-    /// [`PENDING_LOCATION_DECIMALS`] decimal places (~1.1 km), so a service-side
+    /// #3240: the registered station's location, so a service-side
     /// attester can pick the nearest NWS reference station per commit. Read
     /// from the same `station_registry` entry that yields `provenance_class`;
     /// omitted for a station with no registry entry. Unsigned, read-only,
     /// derived from existing state: not part of any preimage, transaction or
-    /// state root. Coarsened because nearest-station selection needs no more,
-    /// and this surface must not widen exposure of exact coordinates.
+    /// state root. Every caller except the node operator gets it at 0.1 degree
+    /// (the public grid, see [`PendingStationLocation::for_caller`]); the
+    /// Operator token gets full precision.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub station_location: Option<PendingStationLocation>,
     pub approvals: usize,
@@ -906,10 +918,7 @@ pub struct PendingAttestationObservation {
     pub reward_finalized: bool,
 }
 
-/// Decimal places kept in [`PendingStationLocation`] (0.01° ≈ 1.1 km).
-pub const PENDING_LOCATION_DECIMALS: i32 = 2;
-
-/// Coarse station location on the pending surface (#3240).
+/// Station location on the pending surface (#3240).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PendingStationLocation {
     // determinism-ok: read-surface echo of registry coordinates for a service-side reference lookup; never enters consensus
@@ -919,22 +928,32 @@ pub struct PendingStationLocation {
 }
 
 impl PendingStationLocation {
-    /// Coarsen a registry location. Non-finite values yield `None` rather
+    /// The location as a caller may see it: full precision for the node
+    /// operator, the public 0.1 degree grid for everyone else (Reader,
+    /// Contributor and Oracle tokens). Non-finite values yield `None` rather
     /// than a location an attester would trust.
-    pub fn coarse(
+    pub fn for_caller(
         location: &wrfcoin_shared_protocol::station_registry::StationLocation,
+        exact: bool,
     ) -> Option<Self> {
-        // determinism-ok: presentation rounding on a read-only response field; never consensus arithmetic
-        let scale = 10f64.powi(PENDING_LOCATION_DECIMALS);
-        // determinism-ok: as above
-        let round = |v: f64| (v * scale).round() / scale;
         if !location.latitude.is_finite() || !location.longitude.is_finite() {
             return None;
         }
+        if exact {
+            return Some(Self { latitude: location.latitude, longitude: location.longitude });
+        }
         Some(Self {
-            latitude: round(location.latitude),
-            longitude: round(location.longitude),
+            latitude: tenth_degree(location.latitude)?,
+            longitude: tenth_degree(location.longitude)?,
         })
+    }
+
+    /// The public 0.1 degree view.
+    #[cfg(test)]
+    pub fn coarse(
+        location: &wrfcoin_shared_protocol::station_registry::StationLocation,
+    ) -> Option<Self> {
+        Self::for_caller(location, false)
     }
 }
 
@@ -1079,9 +1098,13 @@ pub async fn get_pending_attestations(
     state: web::Data<AppState>,
     query: web::Query<PendingAttestationsQuery>,
 ) -> impl Responder {
-    if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
-        return resp;
-    }
+    let caller = match require_role(&req, &state, ApiRole::Reader) {
+        Ok(role) => role,
+        Err(resp) => return resp,
+    };
+    // Exact coordinates only for the node operator; everyone else, attesters
+    // included, gets the public 0.1 degree grid.
+    let exact_location = caller == ApiRole::Operator;
     let limit = query
         .limit
         .unwrap_or(PENDING_ATTESTATIONS_DEFAULT_LIMIT)
@@ -1171,7 +1194,7 @@ pub async fn get_pending_attestations(
             .unwrap_or_default();
         let elevation_meters = registered_station.and_then(|s| s.location.elevation_meters);
         let station_location =
-            registered_station.and_then(|s| PendingStationLocation::coarse(&s.location));
+            registered_station.and_then(|s| PendingStationLocation::for_caller(&s.location, exact_location));
         let observation = PendingAttestationObservation {
             commit_id: payload.commit_id.clone(),
             station_id: payload.station_id.clone(),
@@ -1235,7 +1258,7 @@ pub async fn get_pending_attestations(
             .unwrap_or_default();
         let elevation_meters = registered_station.and_then(|s| s.location.elevation_meters);
         let station_location =
-            registered_station.and_then(|s| PendingStationLocation::coarse(&s.location));
+            registered_station.and_then(|s| PendingStationLocation::for_caller(&s.location, exact_location));
         observations.push(PendingAttestationObservation {
             commit_id: commit_id.clone(),
             station_id: payload.station_id.clone(),
@@ -1506,8 +1529,8 @@ mod pending_attestation_tests {
         }
     }
 
-    /// #3240: a registered station's location reaches the pending surface
-    /// only COARSENED (0.01°), and an unregistered station's entry omits the
+    /// #3240: a registered station's location reaches a non-operator only at
+    /// 0.1 degree, and an unregistered station's entry omits the
     /// key entirely (older attesters and `deny_unknown_fields`-free readers
     /// see exactly the pre-change shape).
     #[test]
@@ -1521,13 +1544,13 @@ mod pending_attestation_tests {
         assert_eq!(
             coarse,
             PendingStationLocation {
-                latitude: 46.79,
+                latitude: 46.8,
                 longitude: -92.1,
             }
         );
 
         let present = serde_json::to_value(pending_entry(Some(coarse))).unwrap();
-        assert_eq!(present["station_location"]["latitude"], 46.79);
+        assert_eq!(present["station_location"]["latitude"], 46.8);
         assert_eq!(present["station_location"]["longitude"], -92.1);
         let wire = present.to_string();
         assert!(
@@ -1547,5 +1570,24 @@ mod pending_attestation_tests {
             elevation_meters: None,
         };
         assert_eq!(PendingStationLocation::coarse(&non_finite), None);
+        assert_eq!(PendingStationLocation::for_caller(&non_finite, true), None);
+    }
+
+    /// The operator view is the registry value; every other view is the
+    /// public grid, with a tie going up like the website. Made-up values.
+    #[test]
+    fn pending_station_location_is_exact_only_for_the_operator() {
+        let location = wrfcoin_shared_protocol::station_registry::StationLocation {
+            latitude: -10.05,
+            longitude: 20.654_321,
+            elevation_meters: None,
+        };
+        assert_eq!(
+            PendingStationLocation::for_caller(&location, true),
+            Some(PendingStationLocation { latitude: -10.05, longitude: 20.654_321 })
+        );
+        let public = PendingStationLocation::for_caller(&location, false).expect("finite");
+        assert_eq!(public, PendingStationLocation { latitude: -10.0, longitude: 20.7 });
+        assert!(public.latitude.is_sign_negative(), "-10.0 keeps its sign");
     }
 }

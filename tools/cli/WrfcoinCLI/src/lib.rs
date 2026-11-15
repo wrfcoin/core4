@@ -15,7 +15,9 @@
 //! mechanisms for maintaining blockchain integrity with fork resolution and difficulty adjustment.
 
 pub mod api;
+pub mod bond_grant;
 pub mod forecast_receipt;
+pub mod forecast_late_score;
 pub mod config;
 pub mod consensus;
 pub mod crypto;
@@ -26,6 +28,7 @@ pub mod forecast_submission;
 pub mod output;
 pub mod node_operator;
 pub mod security;
+pub mod security_key;
 pub mod websocket;
 pub mod why_report;
 

@@ -245,6 +245,28 @@ impl PopConsensusAdapter {
         });
     }
 
+    /// The metadata comparison `validate_block` enforces, on its own and
+    /// without rejecting anything: every producer-written key of `block` that
+    /// differs from what this node derives from `state` (the state before the
+    /// block). For an offline replay that counts differences over a chain's
+    /// history (`replay_verify --compare-metadata`); not for use inside a
+    /// running node.
+    ///
+    /// # Panics
+    ///
+    /// If the PoP lock is held elsewhere. The replay tool is the only owner.
+    pub fn producer_metadata_mismatches_blocking(
+        &self,
+        state: &wrfcoin_shared_protocol::blockchain::state::State,
+        block: &Block,
+    ) -> Vec<wrfcoin_shared_protocol::consensus::proof_of_publishing::ProducerMetadataMismatch>
+    {
+        self.pop
+            .try_write()
+            .expect("producer_metadata_mismatches_blocking: the PoP lock is held elsewhere")
+            .producer_metadata_mismatches(state, block)
+    }
+
     /// Stateful PoP block production path used by launch API mining.
     ///
     /// This delegates to `ProofOfPublishing::create_next_block`, which applies
@@ -337,8 +359,43 @@ impl ConsensusEngine for PopConsensusAdapter {
             return Ok(false);
         }
 
+        // Block-producer authentication (#2290) runs FIRST, before scoring and
+        // the launch-invariant checks. It is the authoritative application
+        // boundary for both gossip and IBD; the P2P sync worker keeps only a
+        // context-free ordering shadow. validate_block returns only
+        // Ok(true)/Ok(false)/Err, and an auth failure yields Ok(false)
+        // (`LocalRuleRejection`, no peer penalty). The accepted set is unchanged:
+        // only the order of checks moves. A block that fails auth and would also
+        // have failed a later check with Err now reads as a rule rejection
+        // (Ok(false)) rather than a local failure, which on a reorg means
+        // InvalidChain rather than Transient; that only affects blocks rejected
+        // either way. The check needs no pop lock (it reads
+        // producer_set_history). Genesis is pinned and never reaches this path.
+        if let Err(reason) = wrfcoin_shared_protocol::consensus::producer_authority::verify_block_producer_authorized(
+            block,
+            &chain.state.producer_set_history,
+        ) {
+            warn!("producer-auth rejected block at height {} (pre-scoring): {}", block.height, reason);
+            return Ok(false);
+        }
+
         let mut pop = self.pop.write().await;
-        pop.set_oracle_signing_keys(chain.state.signing_keys.clone());
+        // Check the block under the governance policies of the state it builds
+        // on, as the producer built it. `verify_block` recomputes the block's
+        // publishing score with the engine's task-assigner, scarcity and
+        // multidomain policies. Without this copy a node that never mines
+        // would score with the engine defaults (and a producing node with
+        // whatever it held at its own last block), and would refuse an honest
+        // block as a score mismatch once any of those policies is not at its
+        // default. Also sets the oracle set and the oracle signing keys.
+        if let Err((code, error)) = pop.sync_engine_from_state(&chain.state) {
+            warn!(
+                "{code}: block at height {} rejected: the chain's governance policies do not \
+                 validate ({error})",
+                block.height
+            );
+            return Ok(false);
+        }
         pop.set_verification_genesis(chain.state.genesis_emission_config.clone());
         let recent_timestamps: Vec<i64> = chain
             .blocks()
@@ -369,17 +426,22 @@ impl ConsensusEngine for PopConsensusAdapter {
             return Ok(false);
         }
 
-        // Block-producer authentication (#2290) — authoritative application
-        // boundary for both gossip and IBD. The P2P sync worker deliberately
-        // owns only a context-free ordering shadow; launch application reaches
-        // this adapter with canonical producer-set history. Genesis is pinned
-        // and never reaches this path.
-        if let Err(reason) = wrfcoin_shared_protocol::consensus::producer_authority::verify_block_producer_authorized(
-            block,
-            &chain.state.producer_set_history,
-        ) {
-            warn!("producer-auth rejected block at height {}: {}", block.height, reason);
-            return Ok(false);
+        // The block's producer-written metadata is applied to state by
+        // `extract_transitions`. Derive it here from the block's transactions
+        // and the pre-block state, and refuse a block that claims anything
+        // else. Runs last: every cheaper rejection has already had its turn.
+        if ProofOfPublishing::producer_metadata_recompute_enforced(block.height) {
+            let mismatches = pop.producer_metadata_mismatches(&chain.state, block);
+            for mismatch in &mismatches {
+                warn!(
+                    "{}: block at height {} rejected: metadata key '{}' is not what this node \
+                     derives from the block's transactions ({})",
+                    mismatch.code, block.height, mismatch.key, mismatch.detail
+                );
+            }
+            if !mismatches.is_empty() {
+                return Ok(false);
+            }
         }
 
         Ok(true)
@@ -406,7 +468,12 @@ impl ConsensusEngine for PopConsensusAdapter {
         let next_height = chain.height.checked_add(1).ok_or_else(|| {
             ConsensusError::CreationFailed("block height overflow while creating PoP block".into())
         })?;
-        pop.set_authorized_oracles(chain.state.oracle_registry().oracle_set().clone());
+        // Score under the governance policies, oracle set and signing keys of
+        // the state this block builds on, as `create_next_block` and
+        // `validate_block` do.
+        pop.sync_engine_from_state(&chain.state).map_err(|(code, err)| {
+            ConsensusError::CreationFailed(format!("{code}: {err}"))
+        })?;
 
         // Use chain.tip as the typed Hash. The trait passes previous_hash as
         // &str for compatibility, but Block::new requires Hash. Assert they
@@ -1383,6 +1450,80 @@ mod tests {
             0,
             0,
         )
+    }
+
+    /// Producer authentication runs before any scoring: a block changed after
+    /// signing (a transaction appended and the block re-hashed, not re-signed)
+    /// is rejected as unauthorised without the scorer seeing it.
+    ///
+    /// The test proves the order, not just the outcome. The auth check takes no
+    /// pop lock, while everything after it (verify_block_chained, the scorer)
+    /// needs `self.pop.write()`. So it holds the pop write lock and requires
+    /// `validate_block` to return under a short timeout: with auth first it
+    /// returns at once; with scoring first it would wait on the lock.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn block_failing_producer_auth_is_rejected_before_scoring() {
+        use std::time::Duration;
+        use wrfcoin_shared_protocol::blockchain::transaction::{
+            Transaction, TransactionInput, TransactionOutput, TransactionType,
+        };
+        use wrfcoin_shared_protocol::common::types::Address;
+        use wrfcoin_shared_protocol::crypto::hash::hash_string;
+        use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey};
+        use wrfcoin_shared_protocol::crypto::signer::EnvKeySigner;
+
+        let signer_key = PrivateKey::from_bytes(&[7u8; 32]).expect("valid ed25519 secret");
+        let signer_pubkey = PublicKey::from_private_key(&signer_key);
+        let payout = Address([0x5au8; 20]).to_hex();
+        let chain = chain_with_seeded_producer(&signer_pubkey, &payout);
+
+        let adapter = PopConsensusAdapter::new(make_pop());
+        adapter
+            .set_producer_signer(Arc::new(EnvKeySigner::from_private_key(signer_key, "test-producer")))
+            .await;
+
+        let coinbase = Transaction::new_coinbase(&payout, 0, chain.height + 1);
+        let mut block = adapter
+            .create_block(vec![coinbase], &chain.tip.to_string(), &payout, &chain)
+            .await
+            .expect("valid signed block");
+        assert_eq!(block.prev_block_hash, chain.tip, "built on tip so validate reaches auth");
+
+        // Append an EnvironmentalOffset with an out-of-range amount and re-hash
+        // WITHOUT re-signing: the producer signature now covers stale content,
+        // so auth must reject it.
+        let mut offset = Transaction::new(
+            vec![TransactionInput { txid: hash_string("auth-order-in"), vout: 0, signature: None, public_key: None, coinbase_data: None }],
+            vec![TransactionOutput { amount: 0, address: payout.clone(), script: "OP_TRUE".to_string(), nft_data: None }],
+        );
+        offset.tx_type = TransactionType::EnvironmentalOffset;
+        offset.fee = 1;
+        offset.data = Some(r#"{"amount":100000000000000.0,"verification":1.0,"impact":1.0}"#.to_string());
+        offset.set_id();
+        block.transactions.push(offset);
+        block.set_hash(block.calculate_hash());
+
+        // Hold the pop write lock. The auth check needs no pop lock, so it still
+        // returns; verify_block_chained and the scorer would wait here. Require
+        // validate_block to return under a timeout with a clean Ok(false).
+        let pop_guard = adapter.pop.write().await;
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(2000),
+            adapter.validate_block(&block, &chain),
+        )
+        .await;
+        drop(pop_guard);
+        match outcome {
+            Err(_elapsed) => panic!(
+                "validate_block did not return while the pop write lock was held — \
+                 it reached the lock, so producer auth did not run first"
+            ),
+            Ok(verdict) => assert!(
+                matches!(verdict, Ok(false)),
+                "a block failing producer auth must be rejected before scoring; got {verdict:?}"
+            ),
+        }
     }
 
     /// **Elsa's combined load-bearing test** (#2290 blocker 2, round 2).

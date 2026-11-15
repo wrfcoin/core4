@@ -168,6 +168,49 @@ pub enum StationCommands {
         out: PathBuf,
     },
 
+    /// `station_registrar_key`: check or sign ONE new phone-station
+    /// registration as a pinned registrar key, for the testnet registrar
+    /// service. Refuses anything the chain's registrar rule would not apply.
+    /// `--check` reads no key and writes nothing.
+    RegistrarSign {
+        /// One phone row as JSON: station_id, owner_address, owner_pubkey,
+        /// owner_signature, latitude, longitude, hardware_model,
+        /// provenance_class, data_quality_tier. Nothing else.
+        #[clap(long)]
+        row_file: PathBuf,
+
+        #[clap(long)]
+        chain_id: String,
+
+        /// Must be testnet: the online registrar key is a software key.
+        #[clap(long, default_value = "testnet")]
+        network_id: String,
+
+        /// The chain's block-1 hash; the key must be pinned for it in this build.
+        #[clap(long)]
+        genesis_hash: String,
+
+        /// Must be 0: the registrar registers new stations only.
+        #[clap(long)]
+        expected_nonce: u64,
+
+        /// Check the owner proof and the registrar limits only. No key read.
+        #[clap(long, conflicts_with_all = ["key_file", "submitted_at", "out"])]
+        check: bool,
+
+        /// Registrar private key file (64 hex seed). Read only after every check passed.
+        #[clap(long, required_unless_present = "check")]
+        key_file: Option<PathBuf>,
+
+        /// Transaction timestamp (unix seconds).
+        #[clap(long, required_unless_present = "check")]
+        submitted_at: Option<i64>,
+
+        /// Output artifact path.
+        #[clap(long, required_unless_present = "check")]
+        out: Option<PathBuf>,
+    },
+
     /// Build the commit and reveal request bodies for one observation.
     ///
     /// Emits both, because they share a `commit_id` that must be derived
@@ -322,25 +365,25 @@ fn parse_tier(raw: &str) -> Result<DataQualityTier> {
 /// are rejected so an export/schema mismatch cannot silently change signed data.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RegistrationRow {
-    station_id: String,
-    owner_address: String,
-    owner_pubkey: Option<String>,
-    owner_signature: Option<String>,
-    latitude: f64,
-    longitude: f64,
-    elevation_meters: Option<f64>,
+pub(crate) struct RegistrationRow {
+    pub(crate) station_id: String,
+    pub(crate) owner_address: String,
+    pub(crate) owner_pubkey: Option<String>,
+    pub(crate) owner_signature: Option<String>,
+    pub(crate) latitude: f64,
+    pub(crate) longitude: f64,
+    pub(crate) elevation_meters: Option<f64>,
     #[serde(default = "default_hardware")]
-    hardware_model: String,
+    pub(crate) hardware_model: String,
     #[serde(default = "default_provenance")]
-    provenance_class: String,
+    pub(crate) provenance_class: String,
     #[serde(default = "default_tier")]
-    data_quality_tier: String,
-    submitted_at: i64,
+    pub(crate) data_quality_tier: String,
+    pub(crate) submitted_at: i64,
     /// v2 only: the station's current owner-ledger nonce this registration is
     /// signed for (`ConsensusFeature::StationRegistrationNonce`). Absent = v1.
     #[serde(default)]
-    expected_nonce: Option<u64>,
+    pub(crate) expected_nonce: Option<u64>,
 }
 
 fn default_hardware() -> String {
@@ -353,13 +396,13 @@ fn default_tier() -> String {
     "gold".into()
 }
 
-struct PreparedRegistration {
-    payload: StationRegistrationPayload,
-    submitted_at: i64,
-    coordinates_wire_adjusted: bool,
+pub(crate) struct PreparedRegistration {
+    pub(crate) payload: StationRegistrationPayload,
+    pub(crate) submitted_at: i64,
+    pub(crate) coordinates_wire_adjusted: bool,
 }
 
-fn prepare_registration(
+pub(crate) fn prepare_registration(
     row: &RegistrationRow,
     owner_key: Option<&PathBuf>,
     chain_id: &str,
@@ -717,6 +760,29 @@ pub async fn handle_station_command(action: &StationCommands) -> Result<Value> {
             }
         },
 
+        StationCommands::RegistrarSign {
+            row_file,
+            chain_id,
+            network_id,
+            genesis_hash,
+            expected_nonce,
+            check,
+            key_file,
+            submitted_at,
+            out,
+        } => {
+            super::station_registrar::registrar_sign(super::station_registrar::RegistrarSignArgs {
+                row_file,
+                chain_id,
+                network_id,
+                genesis_hash,
+                expected_nonce: *expected_nonce,
+                check: *check,
+                key_file: key_file.as_ref(),
+                submitted_at: *submitted_at,
+                out: out.as_ref(),
+            })
+        },
         StationCommands::BuildObservation {
             station_id,
             contributor,

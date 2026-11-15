@@ -1,5 +1,10 @@
+#[path = "forecast_quota.rs"]
+pub mod forecast_quota;
 #[path = "snapshot_service.rs"]
 pub mod snapshot_service;
+
+#[path = "reward_index.rs"]
+pub mod reward_index;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
@@ -663,6 +668,7 @@ pub struct AppState {
     /// collector cannot flood `POST /transactions/contribution/commit` and
     /// stall block production, while independent contributors keep their own
     /// budgets.
+    pub forecast_quotas: Arc<RwLock<forecast_quota::Quotas>>,
     pub contribution_commit_rate_limit: Arc<RwLock<FxHashMap<String, SlidingWindowCounter>>>,
     pub permissionless_replay_seen: Arc<RwLock<FxHashMap<String, i64>>>,
     pub storage: Arc<RwLock<Storage>>,
@@ -698,6 +704,9 @@ pub struct AppState {
     /// scrape, pruned to the in-memory window on each call. Same pattern as
     /// `zk_proofs_per_block_cache` from #1469.
     pub trust_reward_metrics_cache: Arc<std::sync::Mutex<FxHashMap<u64, TrustRewardCacheEntry>>>,
+    /// Address index for `GET /addresses/{address}/credits`. API read only: it
+    /// is outside `Blockchain` and nothing in consensus can reach it.
+    pub reward_address_index: Arc<reward_index::RewardAddressIndex>,
     /// Per-block tx-count memoization for `/mining/stats` (#1385).
     /// Maps block height → transaction count. Same lazy-populate + prune pattern
     /// as `zk_proofs_per_block_cache`.

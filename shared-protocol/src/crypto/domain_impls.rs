@@ -352,15 +352,14 @@ impl DomainSeparated for SnapshotSyncPayload {
     const DOMAIN_TAG: &'static [u8] = b"wrfcoin.snapshot_sync_payload.v2";
 
     fn canonical_body(&self) -> Vec<u8> {
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .u64_field(self.height)
             .str_field(&self.state_root_hex)
             .str_field(&self.snapshot_root_hex)
             .u64_field(self.entry_count)
             .str_field(&self.tip_hash_hex)
             .u64_field(self.finalized_height)
-            .finish();
-        body
+            .finish()
     }
 }
 
@@ -372,14 +371,13 @@ impl DomainSeparated for WeatherReading {
     const DOMAIN_TAG: &'static [u8] = b"wrfcoin.weather_observation.v1";
 
     fn canonical_body(&self) -> Vec<u8> {
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .i64_field(self.timestamp_unix)
             .opt_f64_field(self.temperature_c)
             .opt_f64_field(self.pressure_hpa)
             .opt_f64_field(self.humidity_pct)
             .opt_f64_field(self.wind_speed_ms)
-            .finish();
-        body
+            .finish()
     }
 }
 
@@ -413,8 +411,7 @@ impl DomainSeparated for CalibrationAttestationPayload {
         // only if serialization fails, which cannot silently succeed as a
         // different value.
         let encoded = serde_json::to_string(self).unwrap_or_default();
-        let body = BodyBuilder::new().str_field(&encoded).finish();
-        body
+        BodyBuilder::new().str_field(&encoded).finish()
     }
 }
 
@@ -504,15 +501,14 @@ impl DomainSeparated for ComputeReceipt {
     fn canonical_body(&self) -> Vec<u8> {
         // `signature` excluded — a signature cannot cover itself. Mirrors the
         // field set of the legacy `canonical_signing_message`.
-        let body = BodyBuilder::new()
+        BodyBuilder::new()
             .str_field(&self.task_id)
             .str_field(&self.worker_id)
             .str_field(&self.work_hash)
             .u64_field(self.work_factor)
             .i64_field(self.completed_at)
             .str_field(&self.nonce)
-            .finish();
-        body
+            .finish()
     }
 }
 
@@ -701,11 +697,15 @@ mod tests {
     fn node_share_contract_domains_match_the_registry() {
         use crate::consensus::node_share_contracts::{
             NodeServiceTicket, NodeSettlementEndorsement, NodeBondAuthorization, NodeBondPossession,
+            NodeBondPayoutPasskeyApproval,
         };
         assert!(tag_matches_registry::<NodeServiceTicket>(SignedObjectKind::NodeServiceTicket));
         assert!(tag_matches_registry::<NodeSettlementEndorsement>(SignedObjectKind::NodeSettlementEndorsement));
         assert!(tag_matches_registry::<NodeBondAuthorization>(SignedObjectKind::NodeBondAuthorization));
         assert!(tag_matches_registry::<NodeBondPossession>(SignedObjectKind::NodeBondPossession));
+        assert!(tag_matches_registry::<NodeBondPayoutPasskeyApproval>(
+            SignedObjectKind::NodeBondPayoutPasskeyApproval
+        ));
     }
 
     #[test]
@@ -728,12 +728,14 @@ mod tests {
         // NodeServiceReceipt (#3129 — consumer-signed snapshot service evidence;
         // its impl lives in consensus::node_service_receipt), plus four bonded
         // Node S1 subjects (Refs #2848, consensus::node_share_contracts),
-        // plus S3 owner batch authorization (consensus::node_receipt_registry).
+        // plus S3 owner batch authorization (consensus::node_receipt_registry),
+        // plus the passkey_bond_payout challenge subject
+        // (consensus::node_share_contracts::NodeBondPayoutPasskeyApproval).
         let with_impls = SIGNED_OBJECT_REGISTRY
             .iter()
             .filter(|e| e.coverage.has_impl())
             .count();
         assert!(tag_matches_registry::<crate::consensus::node_receipt_registry::NodeReceiptSubmissionAuthorization>(SignedObjectKind::NodeReceiptSubmissionAuthorization));
-        assert_eq!(with_impls, 27);
+        assert_eq!(with_impls, 28);
     }
 }

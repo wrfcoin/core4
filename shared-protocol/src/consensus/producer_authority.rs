@@ -81,8 +81,7 @@ impl ProducerAuthorityPolicy for GovernanceProducers {
         let members = self
             .validated
             .iter()
-            .filter(|c| c.effective_height <= height)
-            .next_back()
+            .rfind(|c| c.effective_height <= height)
             .map(|c| c.members.clone())
             .unwrap_or_default();
         ProducerAuthorityDecision::Enforced(members)
@@ -178,7 +177,7 @@ pub fn check_block_producer_authority(
 /// The ONE shared gate both untrusted acceptance boundaries call — gossip
 /// (`pop_adapter::validate_block`) and IBD (`sync.rs::validate_block`) — with the
 /// SAME `chain.state.producer_set_history` snapshot and the active chain identity
-/// + signing version. Wiring both to this single function is what stops the two
+/// and signing version. Wiring both to this single function is what stops the two
 /// call sites drifting (Dan §1).
 ///
 /// Returns `Ok(())` to accept, `Err(reason)` to reject the block. Fail-closed: an

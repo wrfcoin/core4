@@ -69,12 +69,11 @@ pub struct HandshakeLimits {
     /// Defaults to `false` — **observe-only** — because handshake delivery is
     /// not guaranteed, so "unproven" does not reliably mean "hostile".
     ///
-    /// The genesis handshake is published exactly once, at connection
-    /// establishment (`node.rs`, the sole production publish site), and is
-    /// never retried. Gossipsub subscription propagation takes at least a
-    /// heartbeat, so a handshake published into a mesh that cannot yet deliver
-    /// it is simply lost — and nothing republishes it. A peer can therefore
-    /// remain unproven forever while being entirely healthy.
+    /// The genesis handshake travels over gossipsub with no acknowledgement.
+    /// `node.rs` publishes it on connection, on subscription, and on a short
+    /// bounded retry schedule (`handshake_redelivery`), but a node on an older
+    /// build may not retry, and any of those can be lost. A peer can therefore
+    /// remain unproven while being entirely healthy.
     ///
     /// Enforcing against that would disconnect good peers on a timer. Worse,
     /// the same gap means chain-identity verification silently never runs for

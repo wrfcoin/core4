@@ -37,6 +37,7 @@ fn main() {
         &fixture::identity(),
         &[7; 32],
         &[hex::encode(fixture::bonds::pk(99))],
+        0,
     )
     .unwrap();
     let mut state = fixture::bonds::state();
