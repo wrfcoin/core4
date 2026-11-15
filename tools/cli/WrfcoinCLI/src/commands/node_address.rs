@@ -631,11 +631,11 @@ mod tests {
         // Ed25519 is deterministic: these vectors are pinned in the mailbox tests.
         assert_eq!(
             r.signature,
-            "bb8cad257bc2e8ce5f67be29f9757e1c5144e8dabb8080067445a955dfc0f8bc91408e8317a4f9593517702e01a7343fe329b862544e8ee464ae3a389a022a0e"
+            "bb8cad257bc2e8ce5f67be29f9757e1c5144e8dabb8080067445a955dfc0f8bc91408e8317a4f9593517702e01a7343fe329b862544e8ee464ae3a389a022a0e" // pragma: allowlist secret -- public test-vector signature over synthetic seeds
         );
         assert_eq!(
             r.peer_signature,
-            "5a695757d6c8345da86e9dcb73dfc17905971e9cc23492f6b47aaf669aacee956586427b36697c8536abb555425b1f8a1cceb27de39dd53affb1a9649aa5aa08"
+            "5a695757d6c8345da86e9dcb73dfc17905971e9cc23492f6b47aaf669aacee956586427b36697c8536abb555425b1f8a1cceb27de39dd53affb1a9649aa5aa08" // pragma: allowlist secret -- public test-vector signature over synthetic seeds
         );
     }
 
