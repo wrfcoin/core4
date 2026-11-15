@@ -342,7 +342,7 @@ pub(crate) fn durable_packet(out: &Path, tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
-fn checked_url(text: &str, what: &str) -> Result<()> {
+pub(crate) fn checked_url(text: &str, what: &str) -> Result<()> {
     let url = url::Url::parse(text)?;
     ensure!(
         matches!(url.scheme(), "http" | "https")
@@ -441,11 +441,11 @@ fn batch_ids(batch: &NodeServiceBatch) -> Result<Vec<String>> {
         .collect::<Result<_, _>>()?)
 }
 
-fn parse_u64(value: &Value) -> Option<u64> {
+pub(crate) fn parse_u64(value: &Value) -> Option<u64> {
     value.as_str().and_then(|s| s.parse().ok())
 }
 
-fn owner_only_dir(path: &Path) -> Result<()> {
+pub(crate) fn owner_only_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
@@ -512,7 +512,7 @@ async fn stage_claims(
     Ok(Some(staged))
 }
 
-fn retry_later(message: String) -> anyhow::Error {
+pub(crate) fn retry_later(message: String) -> anyhow::Error {
     wrfcoin_cli::errors::CliError::new(
         wrfcoin_cli::errors::CliErrorCode::ConnectionError,
         format!("RETRY_LATER {message}"),
