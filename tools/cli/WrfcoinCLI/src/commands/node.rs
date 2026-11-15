@@ -19,6 +19,11 @@ pub enum NodeCommands {
         #[clap(subcommand)]
         action: super::node_bond::BondCommands,
     },
+    /// This node's signed address record for the house consumer (default OFF mailbox).
+    Address {
+        #[clap(subcommand)]
+        action: super::node_address::AddressCommands,
+    },
     /// Report provable Node-service fraud (operator route default OFF).
     Fraud {
         #[clap(subcommand)]
@@ -59,12 +64,17 @@ pub async fn handle_node_command(command: &NodeCommands, ctx: &ExecutionContext)
     if let NodeCommands::Bond { action: action @ super::node_bond::BondCommands::GrantRequest { .. } } = command {
         return super::node_bond::handle(action).await;
     }
+    // Explicit URLs only, like the grant request: no legacy client or retry policy.
+    if let NodeCommands::Address { action } = command {
+        return super::node_address::handle(action).await;
+    }
     let client = ApiClient::new(ApiConfig::default())?;
 
     match command {
         NodeCommands::Receipt { action } => super::node_receipt::handle(action).await,
         NodeCommands::Bond { action } => super::node_bond::handle(action).await,
         NodeCommands::Fraud { action } => super::node_fraud::handle(action).await,
+        NodeCommands::Address { action } => super::node_address::handle(action).await,
         NodeCommands::Info => {
             let network: Value = client.get("/network/info", None).await?;
             Ok(json!({

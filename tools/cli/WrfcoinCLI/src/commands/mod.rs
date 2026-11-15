@@ -17,6 +17,7 @@ pub mod iot;
 pub mod monitor;
 pub mod nft;
 pub mod node;
+pub mod node_address;
 pub mod node_bond;
 pub mod node_bond_admit;
 pub mod node_bond_update;

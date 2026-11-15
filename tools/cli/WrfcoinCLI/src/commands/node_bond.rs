@@ -325,7 +325,7 @@ pub(crate) fn sign_packet(
     Ok(())
 }
 
-fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedSigner> {
+pub(crate) fn resolve_signer() -> Result<wrfcoin_shared_protocol::crypto::signer::ResolvedSigner> {
     ensure!(
         // secret-leak-ok: presence check over variable names only; no credential value is read or formatted
         super::ceremony::pin_env_detected().is_none(),
