@@ -43,7 +43,6 @@ use wrfcoin_shared_protocol::{
         domain_signing::verify_domain_for,
         signature::{PublicKey, Signature},
     },
-    governance::schedule_extension::bond_admission_keys,
 };
 
 use super::node_bond::{BondSignerRole, read_transaction, sign_with_operator_key};
@@ -164,7 +163,9 @@ pub(crate) struct State {
 }
 
 impl State {
-    fn bindings(&self) -> [&str; 10] {
+    /// What makes a state file belong to one bond. The admission key is not
+    /// part of it: a retirement can move a bond to the spare key mid-way.
+    fn bindings(&self) -> [&str; 9] {
         [
             &self.chain_id,
             &self.network_id,
@@ -175,7 +176,6 @@ impl State {
             &self.payout_address,
             &self.multiaddr,
             &self.service_alias,
-            &self.admission_key,
         ]
     }
     fn attempt_dir(&self, state_dir: &Path) -> PathBuf {
@@ -474,12 +474,16 @@ pub async fn handle(args: &StartArgs) -> Result<Value> {
         .and_then(node_deposit::api_hash)
         .map(hex::encode)
         .ok_or_else(|| anyhow::anyhow!("node genesis unavailable"))?;
-    let admission_key = bond_admission_keys(&genesis)
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            anyhow::anyhow!("this binary pins no bond admission key for this chain; update the CLI")
-        })?;
+    // The packet names the admission key before the service co-signs, so it
+    // must be the key the service holds: the first pinned slot not retired at
+    // the node's next height (after `bond_admission_key_retire_0`, the spare).
+    let in_force = node_deposit::read_admission_keys_in_force(&api, &genesis).await?;
+    let admission_key = in_force.first().cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no bond admission key is in force for this chain at the node's next height \
+             (none pinned in this binary, or every pinned key retired); update the CLI"
+        )
+    })?;
 
     owner_only_dir(&args.state_dir)?;
     let state_path = args.state_dir.join(STATE_FILE);
@@ -495,7 +499,7 @@ pub async fn handle(args: &StartArgs) -> Result<Value> {
         payout_address: payout.to_string(),
         multiaddr: multiaddr.to_string(),
         service_alias: format!("node-{}", &server_key[..8]),
-        admission_key,
+        admission_key: admission_key.clone(),
         attempt: 1,
         step: Step::Start,
         effective_epoch: None,
@@ -539,6 +543,29 @@ pub async fn handle(args: &StartArgs) -> Result<Value> {
     let nonce = parse_u64(&account["nonce"])
         .or_else(|| account["nonce"].as_u64())
         .ok_or_else(|| anyhow::anyhow!("owner nonce unavailable"))?;
+
+    // A kept packet that names an admission key retired since can never be
+    // included: renew with the key in force (from step 3, like a missed epoch).
+    if !in_force.contains(&state.admission_key) {
+        let old = state.attempt;
+        let retired = std::mem::replace(&mut state.admission_key, admission_key.clone());
+        if state.step > Step::Start {
+            state.attempt += 1;
+            state.step = Step::Start;
+            state.effective_epoch = None;
+            state.expected_nonce = None;
+            state.files = Files::default();
+            save_state(&state_path, &state)?;
+            return Err(retry_later(format!(
+                "admission key {}.. was retired; attempt {old}'s packets stay in attempt-{old}. \
+                 Run again to renew with admission key {}.. (attempt {})",
+                &retired[..8],
+                &state.admission_key[..8],
+                state.attempt
+            )));
+        }
+        save_state(&state_path, &state)?;
+    }
 
     // A packet whose epoch has begun, or whose nonce another transaction
     // used, can never be included: start a new attempt on the next run.
@@ -828,7 +855,7 @@ mod tests {
     fn pin() {
         install_bond_admission_pin_for_tests(
             &hex::encode([7u8; 32]),
-            vec![hex::encode(fixture::pk(60))],
+            vec![hex::encode(fixture::pk(60)), hex::encode(fixture::pk(62))],
         );
     }
     fn identity() -> ChainIdentity {
@@ -843,6 +870,8 @@ mod tests {
         wallet: SoftwareAuthenticator,
         owner: Address,
         server_key: [u8; 32],
+        /// What `/network/upgrade` answers: the schedule entries, or None for a 503.
+        schedule: Option<Vec<(&'static str, u64)>>,
     }
 
     fn secret(path: PathBuf, bytes: &[u8]) -> PathBuf {
@@ -891,7 +920,16 @@ mod tests {
             server,
             args,
             wallet,
+            schedule: Some(Vec::new()),
         }
+    }
+
+    fn upgrade_body(entries: &[(&str, u64)], height: u64) -> String {
+        json!({"tip_height":height,"scheduled":{"status":"ready","next_height":height + 1,"version_at_next":2,
+            "base_provisional":false,"total_entries":entries.len(),"truncated":false,"warnings":[],
+            "entries":entries.iter().map(|(f, h)| json!({"feature":f,"activation_height":h,"source":"extension",
+                "known":true,"active_at_next":*h <= height + 1,"blocks_remaining":0})).collect::<Vec<_>>()}})
+        .to_string()
     }
 
     fn envelope(data: Value) -> String {
@@ -934,20 +972,33 @@ mod tests {
                 .mock("GET", mockito::Matcher::Regex(BONDS.into()))
                 .with_body(bond.to_string())
                 .create(),
+            match &f.schedule {
+                Some(entries) => f
+                    .server
+                    .mock("GET", "/network/upgrade")
+                    .with_body(upgrade_body(entries, height))
+                    .create(),
+                None => f.server.mock("GET", "/network/upgrade").with_status(503).create(),
+            },
         ]
     }
 
-    /// The admission service: co-signs what it is sent with the pinned key.
+    /// The admission service: co-signs what it is sent with the pinned online key.
     fn admission(f: &mut Fx, hits: usize) -> mockito::Mock {
+        admission_with(f, hits, 60)
+    }
+
+    /// The admission service holding pinned key `byte` (60 online, 62 spare).
+    fn admission_with(f: &mut Fx, hits: usize, byte: u8) -> mockito::Mock {
         f.server
             .mock("POST", "/api/bond-admission")
             // A public request: the node's bearer never goes to the admission service.
             .match_header("authorization", mockito::Matcher::Missing)
-            .with_body_from_request(|request| {
+            .with_body_from_request(move |request| {
                 let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
                 let mut tx: Transaction =
                     serde_json::from_value(body["transaction"].clone()).unwrap();
-                let key = EnvKeySigner::from_private_key(fixture::key(60), "synthetic-admission");
+                let key = EnvKeySigner::from_private_key(fixture::key(byte), "synthetic-admission");
                 sign_packet(&mut tx, BondSignerRole::Admission, &identity(), &key).unwrap();
                 let a = NodeBondLifecycle::parse(&tx).unwrap().signed.authorization;
                 json!({"ok":true,"data":{"admitted":true,"included":false,"action":"Deposit",
@@ -973,7 +1024,7 @@ mod tests {
                         &identity(),
                         &[7; 32],
                         &[],
-                        &[hex::encode(fixture::pk(60))],
+                        &[hex::encode(fixture::pk(60)), hex::encode(fixture::pk(62))],
                         true,
                     )
                     .unwrap();
@@ -1279,5 +1330,115 @@ mod tests {
                 .contains("--admission-url")
         );
         std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// After `bond_admission_key_retire_0`, a new bond names the spare (slot 1),
+    /// and the spare's co-sign is accepted through to the submitted packet.
+    #[test]
+    fn a_retired_slot_0_moves_a_new_bond_to_the_spare_and_its_cosign_is_accepted() {
+        let mut f = fx("spare");
+        f.schedule = Some(vec![("bond_admission_key_retire_0", 12_000)]);
+        {
+            let _node = node(&mut f, 12_321, unknown(12_321, 24), 0, FUNDED);
+            let posted = admission_with(&mut f, 1, 62);
+            waits(run(&f.args), "waiting for payout approval");
+            posted.assert();
+        }
+        assert_eq!(state(&f).admission_key, hex::encode(fixture::pk(62)));
+        let admitted = read_transaction(&attempt(&f, 1).join("admitted.json")).unwrap();
+        assert_eq!(NodeBondLifecycle::parse(&admitted).unwrap().governance_key, Some(fixture::pk(62)));
+        approve(&f, &f.wallet);
+        let _node = node(&mut f, 12_330, unknown(12_330, 24), 0, FUNDED);
+        let submitted = submit(&mut f, 1);
+        waits(run(&f.args), "waiting for inclusion");
+        submitted.assert();
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// The retired key's co-sign is refused: the packet names the spare, and a
+    /// service still signing with slot 0 does not verify under it.
+    #[test]
+    fn a_cosign_from_the_retired_key_is_refused() {
+        let mut f = fx("retired-cosign");
+        f.schedule = Some(vec![("bond_admission_key_retire_0", 12_000)]);
+        let _node = node(&mut f, 12_321, unknown(12_321, 24), 0, FUNDED);
+        // A stale service rewrites the packet to name slot 0 and signs with it.
+        let posted = f
+            .server
+            .mock("POST", "/api/bond-admission")
+            .with_body_from_request(|request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                let mut tx: Transaction = serde_json::from_value(body["transaction"].clone()).unwrap();
+                let mut p = NodeBondLifecycle::parse(&tx).unwrap();
+                p.governance_key = Some(fixture::pk(60));
+                tx.data = Some(serde_json::to_string(&p).unwrap());
+                tx.set_id();
+                let key = EnvKeySigner::from_private_key(fixture::key(60), "synthetic-admission");
+                sign_packet(&mut tx, BondSignerRole::Admission, &identity(), &key).unwrap();
+                let a = NodeBondLifecycle::parse(&tx).unwrap().signed.authorization;
+                json!({"ok":true,"data":{"admitted":true,"included":false,"action":"Deposit",
+                    "deploymentId":hex::encode(a.deployment_id),"effectiveEpoch":a.effective_epoch,
+                    "transaction":tx}})
+                .to_string()
+                .into_bytes()
+            })
+            .expect(1)
+            .create();
+        let err = run(&f.args).unwrap_err().to_string();
+        assert!(err.contains("changed the packet") || err.contains("co-sign"), "{err}");
+        posted.assert();
+        assert!(!attempt(&f, 1).join("admitted.json").exists());
+        assert_eq!(state(&f).step, Step::Requested);
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// A bond admitted under slot 0 whose key is retired before it is included
+    /// renews from a new plan with the spare.
+    #[test]
+    fn a_kept_packet_naming_a_key_retired_since_renews_with_the_spare() {
+        let mut f = fx("renew-spare");
+        to_admitted(&mut f);
+        assert_eq!(state(&f).admission_key, hex::encode(fixture::pk(60)));
+        f.schedule = Some(vec![("bond_admission_key_retire_0", 12_329)]);
+        {
+            let _node = node(&mut f, 12_330, unknown(12_330, 24), 0, FUNDED);
+            let posted = admission(&mut f, 0);
+            waits(run(&f.args), "was retired");
+            posted.assert();
+        }
+        let s = state(&f);
+        assert_eq!((s.attempt, s.step, s.admission_key.clone()), (2, Step::Start, hex::encode(fixture::pk(62))));
+        assert!(attempt(&f, 1).join("admitted.json").exists(), "attempt 1's packets are kept");
+        let _node = node(&mut f, 12_331, unknown(12_331, 24), 0, FUNDED);
+        let posted = admission_with(&mut f, 1, 62);
+        waits(run(&f.args), "waiting for payout approval");
+        posted.assert();
+        assert!(attempt(&f, 2).join("admitted.json").exists());
+        std::fs::remove_dir_all(&f.root).unwrap();
+    }
+
+    /// Unreadable schedule, or every pinned key retired: refuse before any
+    /// state or packet is written, and post nothing.
+    #[test]
+    fn an_unreadable_schedule_or_no_key_in_force_fails_closed() {
+        for (tag, schedule, says) in [
+            ("no-schedule", None, "could not be read"),
+            (
+                "all-retired",
+                Some(vec![("bond_admission_key_retire_0", 1), ("bond_admission_key_retire_1", 1)]),
+                "no bond admission key is in force",
+            ),
+        ] {
+            let mut f = fx(tag);
+            f.schedule = schedule;
+            let _node = node(&mut f, 12_321, unknown(12_321, 24), 0, FUNDED);
+            let posted = admission(&mut f, 0);
+            let err = run(&f.args).unwrap_err();
+            assert_ne!(crate::commands::emit::classify_exit_code(&err), 2, "{err}");
+            assert!(err.to_string().contains(says), "{err}");
+            posted.assert();
+            assert!(!f.args.state_dir.join(STATE_FILE).exists());
+            std::fs::remove_dir_all(&f.root).unwrap();
+        }
     }
 }

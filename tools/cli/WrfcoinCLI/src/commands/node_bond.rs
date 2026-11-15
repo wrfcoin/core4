@@ -704,7 +704,8 @@ mod tests {
     #[test]
     fn admission_role_signs_only_online_actions_for_a_pinned_key() {
         use wrfcoin_shared_protocol::governance::schedule_extension::install_bond_admission_pin_for_tests;
-        install_bond_admission_pin_for_tests(&hex::encode([7u8; 32]), vec![hex::encode(fixture::pk(60))]);
+        // Shared pin, two slots (online 60, spare 62): the same in every module of this binary.
+        install_bond_admission_pin_for_tests(&hex::encode([7u8; 32]), vec![hex::encode(fixture::pk(60)), hex::encode(fixture::pk(62))]);
         let identity = ChainIdentity::new("777", "testnet");
         let admission = EnvKeySigner::from_private_key(fixture::key(60), "synthetic-admission");
 
