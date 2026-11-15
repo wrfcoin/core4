@@ -455,6 +455,53 @@ jobs:
             if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'WRFCOIN_API_HOST cannot be set there' -Quiet)) { throw 'launcher.log does not explain the refused key' }
             Remove-Item -LiteralPath $reach
             Write-Host 'reachable.conf: allowed keys applied (0.0.0.0 listener, announced address on /network/peer_id and the dashboard), other keys refused'
+
+            # Bonded receipts: -Action ReceiptTimer refuses without bond.conf and
+            # owner.key, then registers a per-user task that runs -Action Receipt
+            # every 30 minutes; one Receipt pass runs `wrfcoin.exe node receipt
+            # auto` and logs one line (the node is stopped here, so the pass
+            # fails, which is what the log must say). StopReceiptTimer removes it.
+            $launcher = Join-Path $app 'wrfcoin-node.ps1'
+            $bondConf = Join-Path $root 'bond.conf'
+            $ownerKey = Join-Path $root 'owner.key'
+            $receiptLog = Join-Path $root 'logs\receipt.log'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action ReceiptTimer -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'ReceiptTimer ran without bond.conf' }
+            $global:LASTEXITCODE = 0   # the refusal was expected
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'bond.conf. A bonded node needs it' -SimpleMatch -Quiet)) { throw 'launcher.log does not name the missing bond.conf' }
+            if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin receipt' -ErrorAction SilentlyContinue) { throw 'a refused ReceiptTimer registered a task' }
+            $ownerSeed = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+            [System.IO.File]::WriteAllText($ownerKey, $ownerSeed)
+            [System.IO.File]::WriteAllText($bondConf, "# CI`r`nWRFCOIN_BOND_DEPLOYMENT_ID=$('ab' * 32)`r`nWRFCOIN_BOND_OWNER_ADDRESS=0x$('cd' * 20)`r`nWRFCOIN_CLAIM_MAILBOX_URL=https://claim-mailbox.invalid/claims`r`n")
+            try {
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action ReceiptTimer -Quiet
+              if ($LASTEXITCODE -ne 0) { throw "ReceiptTimer exited $LASTEXITCODE" }
+              Assert-UserOnly $ownerKey
+              $task = Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin receipt'
+              if ("$($task.Actions[0].Arguments)" -notlike '*-Action Receipt -Quiet*') { throw "task arguments: $($task.Actions[0].Arguments)" }
+              if ("$($task.Triggers[0].Repetition.Interval)" -ne 'PT30M') { throw "task interval: $($task.Triggers[0].Repetition.Interval)" }
+              if ("$($task.Principal.RunLevel)" -ne 'Limited' -or "$($task.Principal.LogonType)" -ne 'Interactive') { throw "task principal: $($task.Principal.RunLevel) $($task.Principal.LogonType)" }
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action Receipt -Quiet
+              $receiptExit = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              if ($receiptExit -eq 0) { throw 'a receipt pass against a stopped node reported success' }
+              $line = Get-Content -LiteralPath $receiptLog -Tail 1
+              Write-Host "receipt.log: $line"
+              if ($line -notmatch 'receipt exit=\d+ \(FAILED\)') { throw 'receipt.log does not record the failed pass' }
+              $logText = Get-Content -LiteralPath $receiptLog -Raw
+              if ($logText.Contains($ownerSeed) -or $logText.Contains($tok)) { throw 'receipt.log contains the owner key or the operator token' }
+              # A key bond.conf may not set stops the timer from being registered.
+              Add-Content -LiteralPath $bondConf -Value 'WRFCOIN_API_HOST=0.0.0.0'
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action ReceiptTimer -Quiet
+              if ($LASTEXITCODE -eq 0) { throw 'ReceiptTimer accepted a bond.conf with another key' }
+              $global:LASTEXITCODE = 0
+            } finally {
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action StopReceiptTimer -Quiet
+              $global:LASTEXITCODE = 0
+            }
+            if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin receipt' -ErrorAction SilentlyContinue) { throw 'StopReceiptTimer left the task' }
+            Remove-Item -LiteralPath $bondConf, $ownerKey
+            Write-Host 'receipts: timer refused without bond.conf/owner.key, registered per user every 30 min, one pass logged without secrets, removed by StopReceiptTimer'
           } finally {
             Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
