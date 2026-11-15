@@ -28,8 +28,9 @@ use anyhow::{Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 use wrfcoin_forecast_score::late_score::{
-    ChainSample, WINDOW_HOURS, hourly_window, last_reading_before, nearest_reading,
-    reference_from_window, truth_candidates, window_candidates, window_hash,
+    ChainSample, WINDOW_HOURS, hourly_window_over, last_reading_before, nearest_reading,
+    reference_for_lead, truth_candidates, window_candidates_over, window_hash,
+    window_hours_for_lead,
 };
 use wrfcoin_shared_protocol::blockchain::transaction::{
     Transaction, TransactionInput, TransactionOutput, TransactionType,
@@ -37,7 +38,7 @@ use wrfcoin_shared_protocol::blockchain::transaction::{
 use wrfcoin_shared_protocol::common::types::Address;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
     ForecastScorePayload, LateScoreVariable, MAX_FORECASTS_PER_SCORE_TX, MAX_OBSERVATION_SIGNATURES,
-    MAX_WINDOW_READINGS, ObservationAttestation, ObservationSignature, forecast_score_message, score_outpoint,
+    LEAD_HOURS, MAX_WINDOW_READINGS, ObservationAttestation, ObservationSignature, forecast_score_message, score_outpoint,
     target_for,
 };
 use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey, Signature};
@@ -61,7 +62,7 @@ pub struct CommitBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttestationReport {
     pub attestation: ObservationAttestation,
-    /// The 24 hourly samples, oldest first.
+    /// The 48 hourly samples, oldest first.
     pub window: Vec<Option<i64>>,
     pub samples: usize,
     pub truth_candidates: Vec<String>,
@@ -77,7 +78,7 @@ pub struct AttestationReport {
 /// window readings) and when the truth would be refused on chain.
 pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Result<AttestationReport> {
     let target = target_for(block.commit_time, block.lead_hours)
-        .ok_or_else(|| anyhow!("lead must be 1, 6, 12 or 24 hours and commit_time non-negative"))?;
+        .ok_or_else(|| anyhow!("lead must be 6, 12 or 24 hours and commit_time non-negative"))?;
     let variable = block.variable;
 
     let truths = truth_candidates(samples, variable, target);
@@ -96,15 +97,18 @@ pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Resul
         block.commit_height
     );
 
-    let candidates = window_candidates(samples, variable, block.commit_time, block.commit_height);
-    let window = hourly_window(&candidates, block.commit_time).map_err(|e| anyhow!("window: {e}"))?;
-    let lag = usize::try_from(block.lead_hours).map_err(|_| anyhow!("lead"))?;
-    let reference = reference_from_window(&window, lag)
+    // 48 hourly slots: the reference has a same-hour-yesterday term.
+    let hours = window_hours_for_lead(block.lead_hours);
+    let candidates =
+        window_candidates_over(samples, variable, block.commit_time, block.commit_height, hours);
+    let window =
+        hourly_window_over(&candidates, block.commit_time, hours).map_err(|e| anyhow!("window: {e}"))?;
+    let reference = reference_for_lead(&window, block.lead_hours)
         .map_err(|e| anyhow!("reference: {e}"))?
         .ok_or_else(|| {
             anyhow!(
                 "only {} hourly samples in the 24 h before the commit; 12 are needed",
-                window.iter().flatten().count()
+                window[window.len() - WINDOW_HOURS..].iter().flatten().count()
             )
         })?;
     let last = last_reading_before(&candidates, block.commit_time)
@@ -112,8 +116,8 @@ pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Resul
         .clone();
 
     // The readings the window and `last` were built from: the candidates
-    // observed in [commit - 24 h, commit), in byte order, once each.
-    let start = block.commit_time - WINDOW_HOURS as i64 * SECS_PER_HOUR;
+    // observed in [commit - window, commit), in byte order, once each.
+    let start = block.commit_time - hours as i64 * SECS_PER_HOUR;
     let used: BTreeSet<&str> = candidates
         .iter()
         .filter(|r| r.observed_at >= start && r.observed_at < block.commit_time)
@@ -372,19 +376,28 @@ mod tests {
                 commit_height: case["commit_height"].as_u64().unwrap(),
                 commit_time: case["commit_time"].as_i64().unwrap(),
             };
+            // The shared vectors also cover the 1 h lead (the backend's
+            // practice score); the chain does not score it, so the oracle job
+            // refuses it.
+            if !LEAD_HOURS.contains(&block.lead_hours) {
+                let error = attest_observation(&samples, &block).unwrap_err().to_string();
+                assert!(error.contains("lead must be"), "{error}");
+                continue;
+            }
             let expect = &case["expect"];
             let expected_window: Vec<Option<i64>> = serde_json::from_value(expect["window"].clone()).unwrap();
             let samples_in_window = expected_window.iter().flatten().count();
             match attest_observation(&samples, &block) {
                 Ok(report) => {
                     assert_eq!(report.attestation.truth_commit_id, expect["truth"].as_str().unwrap(), "{case}");
-                    assert_eq!(report.window, expected_window, "{case}");
+                    // The vectors pin the 24 h window: the newest 24 of the 48.
+                    assert_eq!(report.window[24..], expected_window[..], "{case}");
                     assert_eq!(report.last_commit_id, expect["last"].as_str().unwrap(), "{case}");
                     let candidates: Vec<String> = serde_json::from_value(expect["truth_candidates"].clone()).unwrap();
                     assert_eq!(report.truth_candidates, candidates, "{case}");
                     assert_eq!(
                         report.attestation.window_hash,
-                        hex::encode(window_hash(&expected_window).unwrap()),
+                        hex::encode(window_hash(&report.window).unwrap()),
                         "{case}"
                     );
                 },
@@ -406,7 +419,7 @@ mod tests {
         assert_eq!(a.window_commit_ids.len(), 24);
         assert!(a.window_commit_ids.windows(2).all(|p| p[0].as_bytes() < p[1].as_bytes()));
         assert_eq!(a.target, block.commit_time + 6 * 3_600);
-        let reference = reference_from_window(&report.window, 6).unwrap().unwrap();
+        let reference = reference_for_lead(&report.window, 6).unwrap().unwrap();
         assert_eq!((a.reference, a.mean24), (reference.reference, reference.mean24));
         assert_eq!(a.last, 1690);
 
@@ -465,5 +478,100 @@ mod tests {
         let mut bad_lead = block.clone();
         bad_lead.lead_hours = 3;
         assert!(attest_observation(&samples, &bad_lead).is_err());
+        // The 1 h lead is not scored any more.
+        bad_lead.lead_hours = 1;
+        assert!(attest_observation(&samples, &bad_lead).is_err());
+    }
+
+    /// Two days of hourly readings ending just before `commit_time`, all
+    /// landed below the commit height, and a truth reading at the target.
+    fn two_days(commit_time: i64, commit_height: u64, value: impl Fn(usize) -> i64) -> Vec<ChainSample> {
+        let mut samples: Vec<ChainSample> = (0..48)
+            .map(|slot| {
+                let observed_at = commit_time - (48 - slot as i64) * 3_600 + 600;
+                ChainSample {
+                    id: format!("w{slot:02}"),
+                    observed_at,
+                    value: value(slot),
+                    height: commit_height - 100 + slot as u64,
+                    block_time: observed_at + 60,
+                    has_quorum: true,
+                    provenance: None,
+                }
+            })
+            .collect();
+        let target = commit_time + 24 * 3_600;
+        samples.push(ChainSample {
+            id: "t".into(),
+            observed_at: target,
+            value: value(72),
+            height: commit_height + 1_200,
+            block_time: target + 60,
+            has_quorum: true,
+            provenance: None,
+        });
+        samples
+    }
+
+    #[test]
+    fn the_24_hour_lead_is_attested_from_a_48_hour_window() {
+        let commit_time = 1_800_000_000 - 1_800_000_000 % 3_600;
+        let commit_height = 5_000;
+        let daily = |slot: usize| {
+            let hour = (slot % 24) as i64;
+            2_000 + 80 * if hour < 12 { hour } else { 24 - hour } + (slot as i64 * 7) % 5
+        };
+        let samples = two_days(commit_time, commit_height, daily);
+        let block = CommitBlock {
+            station_id: "st1".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 24,
+            commit_height,
+            commit_time,
+        };
+        let report = attest_observation(&samples, &block).expect("two full days are attestable");
+        let a = &report.attestation;
+        assert_eq!(report.window.len(), 48);
+        assert_eq!(a.window_commit_ids.len(), 48, "both days are cited");
+        assert_eq!(a.window_hash, hex::encode(window_hash(&report.window).unwrap()));
+        let reference = reference_for_lead(&report.window, 24).unwrap().unwrap();
+        assert_eq!((a.reference, a.mean24), (reference.reference, reference.mean24));
+        assert_eq!(reference.pairs, 24);
+        // The lag-24 term is far below the day's spread on a daily cycle; the
+        // old 24-slot rule had no lag-24 pairs and used the spread.
+        let old = wrfcoin_forecast_score::late_score::reference_from_window(&report.window[24..], 24)
+            .unwrap()
+            .unwrap();
+        assert!(a.reference < old.reference / 10, "{} vs {}", a.reference, old.reference);
+        assert_eq!(a.mean24, old.mean24);
+        assert_eq!(a.last, daily(47));
+
+        // A 6 h lead uses the same 48 h window and gets the lag-24 term too.
+        let six = CommitBlock { lead_hours: 6, ..block.clone() };
+        let six_samples: Vec<ChainSample> = samples
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                if s.id == "t" {
+                    s.observed_at = commit_time + 6 * 3_600;
+                    s.block_time = s.observed_at + 60;
+                }
+                s
+            })
+            .collect();
+        let six_report = attest_observation(&six_samples, &six).unwrap();
+        assert_eq!(six_report.window.len(), 48);
+        assert_eq!(six_report.attestation.window_commit_ids.len(), 48);
+        let six_day = wrfcoin_forecast_score::late_score::reference_from_window(&six_report.window[24..], 6)
+            .unwrap()
+            .unwrap();
+        assert!(six_report.attestation.reference < six_day.reference / 10);
+
+        // Only one day of history: the lag-24 term has no pairs, so the 24 h
+        // lead falls back to the spread (still scored, as before).
+        let one_day: Vec<ChainSample> =
+            samples.iter().filter(|s| s.id == "t" || s.id.as_str() >= "w24").cloned().collect();
+        let thin = attest_observation(&one_day, &block).unwrap();
+        assert_eq!(thin.attestation.reference, old.reference);
     }
 }

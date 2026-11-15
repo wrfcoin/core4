@@ -784,7 +784,7 @@ fn forecast_late_score_end_to_end() {
 
     // Not recorded: a second forecast by the same wallet for the bucket, the
     // station owner's own forecast, a float, an out-of-range value, two
-    // variables, an unsupported lead, an unregistered station.
+    // variables, an unsupported lead (3 h, and 1 h), an unregistered station.
     let records_before = state.forecast_late_score.records.len();
     let h = ACTIVE + 4;
     for (signer, value, tag) in [
@@ -815,6 +815,9 @@ fn forecast_late_score_end_to_end() {
     }
     for (signer, lead, station, tag) in [
         (key(0x33), 3u32, STATION, "lead-3"),
+        // The 1 h lead is not scored (cheap baselines and honest
+        // forecasters overlap there), so a 1 h forecast is not recorded.
+        (key(0x37), 1, STATION, "lead-1"),
         (key(0x34), 6, "st-unregistered", "no-station"),
     ] {
         let (commit, reveal) = forecast(

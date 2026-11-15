@@ -1,5 +1,6 @@
 //! `bond_admission_key` on a chain with no pinned key: it cannot be scheduled,
-//! and if a block schedules it anyway it accepts nothing.
+//! and if a block schedules it anyway it accepts nothing. This binary pins keys
+//! for chain 888 only; the chain used here (777, block-1 hash `[7; 32]`) has none.
 //!
 //! The feature is active from `K` here, as it would be if a governance-signed
 //! extension reached a block despite every admission and signer refusal: a block
@@ -37,6 +38,8 @@ const GOVERNANCE: u8 = 99;
 const WOULD_BE_ADMISSION: u8 = 60;
 /// Chain 888's public block-1 hash, from `packaging/windows/chain-888.conf`.
 const CHAIN_888: &str = "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+/// A chain instance with no admission pin (a made-up block-1 hash).
+const OTHER_CHAIN: &str = "1111111111111111111111111111111111111111111111111111111111111111"; // pragma: allowlist secret -- not a real chain
 
 fn state() -> State {
     install_feature_schedule(
@@ -88,9 +91,10 @@ fn would_be_admitted() -> NodeBondLifecycle {
 }
 
 #[test]
-fn this_binary_pins_no_key_on_any_chain() {
-    assert!(BOND_ADMISSION_KEY_PINS.is_empty());
-    assert!(bond_admission_keys(CHAIN_888).is_empty());
+fn this_binary_pins_admission_keys_on_chain_888_only() {
+    assert_eq!(BOND_ADMISSION_KEY_PINS.len(), 1);
+    assert_eq!(bond_admission_keys(CHAIN_888).len(), 2);
+    assert!(bond_admission_keys(OTHER_CHAIN).is_empty());
     assert!(bond_admission_keys(&hex::encode([7u8; 32])).is_empty());
 }
 
@@ -124,19 +128,27 @@ fn a_binary_without_the_key_stops_cleanly_at_the_activation() {
 }
 
 #[test]
-fn it_cannot_be_scheduled_on_chain_888_or_anywhere_else() {
+fn it_is_schedulable_on_chain_888_only_once_pinned() {
+    let f = ConsensusFeature::BondAdmissionKey;
+    assert!(f.schedulable(Some(CHAIN_888)));
+    assert!(!f.schedulable(Some(OTHER_CHAIN)));
+    assert!(!f.schedulable(None));
+}
+
+#[test]
+fn it_cannot_be_scheduled_on_an_unpinned_chain() {
     let f = ConsensusFeature::BondAdmissionKey;
     let extension = FeatureScheduleExtension {
-        chain_id: "888".into(),
+        chain_id: "999".into(),
         network_id: "testnet".into(),
-        genesis_hash: CHAIN_888.into(),
+        genesis_hash: OTHER_CHAIN.into(),
         sequence: 0,
         entries: vec![ScheduleEntry::new(f.name(), 21_200 + MIN_RUNUP_BLOCKS)],
         version_steps: Vec::new(),
         min_protocol_version: 3,
         release_commit: "ab1b1a4930000000000000000000000000000000".into(),
     };
-    for node in [None, Some(CHAIN_888)] {
+    for node in [None, Some(OTHER_CHAIN)] {
         assert!(!f.schedulable(node), "{node:?}");
         assert_eq!(
             check_admission_policy(&extension, node),

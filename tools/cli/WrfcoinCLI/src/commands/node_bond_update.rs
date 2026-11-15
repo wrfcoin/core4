@@ -294,6 +294,15 @@ pub async fn handle(args: &UpdateArgs) -> Result<Value> {
         .receipt_request("GET", &format!("/addresses/{owner}"), None)
         .await?;
     let nonce = number(&account["nonce"])?;
+    if args.admission_cosign {
+        let genesis = hex::encode(id(&args.genesis_hash)?);
+        ensure!(
+            super::node_deposit::read_admission_keys_in_force(&api, &genesis)
+                .await?
+                .contains(&hex::encode(id(&args.governance_key)?)),
+            "--governance-key is a bond admission key retired at the node's next height; use the key in force"
+        );
+    }
     let expected = unsigned(args, &current.binding, nonce, epoch.effective_epoch()?)?;
     let payload = NodeBondLifecycle::parse(&expected)
         .ok_or_else(|| anyhow::anyhow!("Update packet refused"))?;

@@ -137,9 +137,20 @@ impl DaChallengeRuntime {
         }
     }
 
+    /// Handle a DA challenge response received over gossip.
+    ///
+    /// `author` is the gossipsub signed message author and `relay` the peer
+    /// that forwarded the message to us. Only the author is authenticated as
+    /// the responder: a response is credited to the challenged keeper only
+    /// when the signed author is that keeper and the response's embedded
+    /// `keeper_id` names the same identity. The relay is used for logging
+    /// only, so an honest keeper's response still counts when it reaches us
+    /// through another peer, and a challenged keeper cannot claim a response
+    /// someone else authored by forwarding it.
     pub async fn handle_inbound_response(
         &self,
-        peer_id: &str,
+        author: Option<&str>,
+        relay: &str,
         response: DataAvailabilityChallengeResponse,
     ) {
         let tracked = {
@@ -152,18 +163,35 @@ impl DaChallengeRuntime {
 
         let Some(tracked) = tracked else {
             log::debug!(
-                "Ignoring DA challenge response {} from {peer_id}: no in-flight challenge",
+                "Ignoring DA challenge response {} via {relay}: no in-flight challenge",
                 response.challenge_id
             );
             return;
         };
 
-        let response_matches_target = peer_id == tracked.peer_id;
-        if !response_matches_target {
+        let Some(author) = author else {
             log::debug!(
-                "Ignoring DA challenge response {} from {peer_id}: expected peer {}",
+                "Ignoring DA challenge response {} via {relay}: message has no signed author",
+                response.challenge_id
+            );
+            return;
+        };
+
+        if author != tracked.peer_id {
+            log::debug!(
+                "Ignoring DA challenge response {} authored by {author} via {relay}: expected keeper {}",
                 response.challenge_id,
                 tracked.peer_id
+            );
+            return;
+        }
+
+        if response.keeper_id != author {
+            log::debug!(
+                "Ignoring DA challenge response {} authored by {author} via {relay}: \
+                 embedded keeper_id {} does not match the author",
+                response.challenge_id,
+                response.keeper_id
             );
             return;
         }
@@ -606,7 +634,7 @@ mod tests {
         };
 
         runtime
-            .handle_inbound_response("peer-x", spoofed_response)
+            .handle_inbound_response(Some("peer-x"), "peer-x", spoofed_response)
             .await;
 
         assert!(
@@ -623,6 +651,140 @@ mod tests {
                 .is_err(),
             "spoofed sender should be ignored, not converted into a failure event"
         );
+    }
+
+    /// Track a challenge against `target` and return it with a valid
+    /// response whose embedded keeper_id is `keeper_id`.
+    async fn tracked_challenge_and_response(
+        runtime: &DaChallengeRuntime,
+        challenge_id: &str,
+        target: &str,
+        keeper_id: &str,
+    ) -> (DataAvailabilityChallenge, DataAvailabilityChallengeResponse) {
+        let challenge = DataAvailabilityChallenge {
+            challenge_id: challenge_id.to_string(),
+            cid: "ipfs:test".to_string(),
+            nonce: [3u8; 32],
+            offset: 0,
+            length: 4,
+            issued_at: Utc::now().timestamp(),
+        };
+        runtime
+            .track_challenge(
+                target.to_string(),
+                challenge.clone(),
+                b"data".to_vec(),
+                Duration::from_secs(30),
+            )
+            .await;
+        let response = DataAvailabilityChallengeResponse {
+            challenge_id: challenge.challenge_id.clone(),
+            data_fragment: b"data".to_vec(),
+            proof: compute_proof(&challenge.nonce, b"data"),
+            keeper_id: keeper_id.to_string(),
+            responded_at: Utc::now().timestamp(),
+        };
+        (challenge, response)
+    }
+
+    async fn is_inflight(runtime: &DaChallengeRuntime, challenge_id: &str) -> bool {
+        runtime.inflight.read().await.contains_key(challenge_id)
+    }
+
+    async fn no_failure_emitted(rx: &mut broadcast::Receiver<DaChallengeFailure>) -> bool {
+        tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err()
+    }
+
+    #[tokio::test]
+    async fn relayed_response_from_real_author_is_accepted() {
+        let runtime = DaChallengeRuntime::new();
+        let mut failure_rx = runtime.subscribe_failures();
+        let (challenge, response) =
+            tracked_challenge_and_response(&runtime, "relay-ok", "keeper-k", "keeper-k").await;
+
+        // Keeper K authored the response; relay R forwarded it to us.
+        runtime
+            .handle_inbound_response(Some("keeper-k"), "relay-r", response)
+            .await;
+
+        assert!(
+            !is_inflight(&runtime, &challenge.challenge_id).await,
+            "a valid response authored by the target must settle the challenge even when relayed"
+        );
+        assert!(
+            no_failure_emitted(&mut failure_rx).await,
+            "a valid relayed response must not be reported as a failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_authored_by_other_peer_but_forwarded_by_target_is_refused() {
+        let runtime = DaChallengeRuntime::new();
+        let mut failure_rx = runtime.subscribe_failures();
+        // Another keeper C authored a valid response naming itself; the
+        // challenged keeper K merely forwarded it.
+        let (challenge, response) =
+            tracked_challenge_and_response(&runtime, "relay-steal", "keeper-k", "keeper-c").await;
+
+        runtime
+            .handle_inbound_response(Some("keeper-c"), "keeper-k", response.clone())
+            .await;
+        assert!(
+            is_inflight(&runtime, &challenge.challenge_id).await,
+            "a response authored by another peer must not be credited to the forwarding target"
+        );
+
+        // Same bytes with the wire keeper_id rewritten to K, still authored by C.
+        let mut rewritten = response;
+        rewritten.keeper_id = "keeper-k".to_string();
+        runtime
+            .handle_inbound_response(Some("keeper-c"), "keeper-k", rewritten)
+            .await;
+        assert!(
+            is_inflight(&runtime, &challenge.challenge_id).await,
+            "an unauthenticated keeper_id must not let another author's response count for the target"
+        );
+        assert!(no_failure_emitted(&mut failure_rx).await);
+    }
+
+    #[tokio::test]
+    async fn response_without_signed_author_is_refused() {
+        let runtime = DaChallengeRuntime::new();
+        let mut failure_rx = runtime.subscribe_failures();
+        let (challenge, response) =
+            tracked_challenge_and_response(&runtime, "no-author", "keeper-k", "keeper-k").await;
+
+        // Even when the forwarding peer is the target itself.
+        runtime
+            .handle_inbound_response(None, "keeper-k", response)
+            .await;
+
+        assert!(
+            is_inflight(&runtime, &challenge.challenge_id).await,
+            "a response with no signed author must not settle the challenge"
+        );
+        assert!(no_failure_emitted(&mut failure_rx).await);
+    }
+
+    #[tokio::test]
+    async fn keeper_id_mismatch_with_author_is_refused() {
+        let runtime = DaChallengeRuntime::new();
+        let mut failure_rx = runtime.subscribe_failures();
+        // Signed author is the target, but the embedded keeper_id names someone else.
+        let (challenge, response) =
+            tracked_challenge_and_response(&runtime, "id-mismatch", "keeper-k", "keeper-z").await;
+
+        runtime
+            .handle_inbound_response(Some("keeper-k"), "relay-r", response)
+            .await;
+
+        assert!(
+            is_inflight(&runtime, &challenge.challenge_id).await,
+            "a response whose keeper_id disagrees with its author must not settle the challenge"
+        );
+        assert!(no_failure_emitted(&mut failure_rx).await);
     }
 
     #[tokio::test]

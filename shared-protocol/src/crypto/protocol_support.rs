@@ -88,6 +88,12 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "station_registrar_key",
     "advisory_governance",
     "forecast_late_score",
+    "late_data_pay",
+    "station_submitter_key",
+    "bond_admission_key_retire_0",
+    "bond_admission_key_retire_1",
+    "station_registrar_key_retire_0",
+    "station_registrar_key_retire_1",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -177,7 +183,8 @@ pub fn upgrade_required_in_schedule_with(raw: &str, known: &[&str]) -> Option<Up
 /// the first unknown one is the lowest.
 ///
 /// `bond_admission_key` and `station_registrar_key` each count as implemented
-/// only on a chain instance this binary pins a key for. A binary without the
+/// only on a chain instance this binary pins a key for, and each
+/// `…_key_retire_N` only where that pin row has a slot N. A binary without the
 /// key cannot validate blocks its peers accept, so it stops cleanly at the
 /// activation instead of refusing them.
 pub fn upgrade_required_in_feature_schedule(
@@ -186,7 +193,14 @@ pub fn upgrade_required_in_feature_schedule(
     use crate::crypto::chain_binding::ConsensusFeature;
     use crate::governance::schedule_extension::schedule_extension_authority;
     let genesis = schedule_extension_authority().map(|a| a.genesis_hash());
-    let unpinned: Vec<&str> = [ConsensusFeature::BondAdmissionKey, ConsensusFeature::StationRegistrarKey]
+    let unpinned: Vec<&str> = [
+        ConsensusFeature::BondAdmissionKey,
+        ConsensusFeature::StationRegistrarKey,
+        ConsensusFeature::BondAdmissionKeyRetire0,
+        ConsensusFeature::BondAdmissionKeyRetire1,
+        ConsensusFeature::StationRegistrarKeyRetire0,
+        ConsensusFeature::StationRegistrarKeyRetire1,
+    ]
         .into_iter()
         .filter(|feature| !feature.schedulable(genesis))
         .map(ConsensusFeature::name)
@@ -343,7 +357,13 @@ mod tests {
                 "streak_replay_recipient_parity",
                 "station_registrar_key",
                 "advisory_governance",
-                "forecast_late_score"
+                "forecast_late_score",
+                "late_data_pay",
+                "station_submitter_key",
+                "bond_admission_key_retire_0",
+                "bond_admission_key_retire_1",
+                "station_registrar_key_retire_0",
+                "station_registrar_key_retire_1"
             ]
         );
     }

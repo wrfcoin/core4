@@ -108,6 +108,7 @@ pub static MIGRATIONS: &[&dyn CheckpointMigration] = &[
     &MigrationV15ToV16,
     &MigrationV16ToV17,
     &MigrationV17ToV18,
+    &MigrationV18ToV19,
 ];
 
 /// The registered migration that reads `version`, if any.
@@ -596,8 +597,29 @@ impl CheckpointMigration for MigrationV17ToV18 {
         let _: legacy::state_v17::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 17, error: e.to_string() })?;
         let mut migrated = body.to_vec();
         migrated.extend_from_slice(&[0u8; EMPTY_FORECAST_LATE_SCORE_BYTES]);
-        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 18, error: e.to_string() })?;
-        debug_assert!(current.forecast_late_score.is_empty());
+        let _: legacy::state_v18::State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 18, error: e.to_string() })?;
+        Ok(migrated)
+    }
+}
+
+/// Bytes of an empty station submitter state in the checkpoint codec: two
+/// empty maps (approved keys, commit signers), each a u64 zero length.
+pub(super) const EMPTY_STATION_SUBMITTERS_BYTES: usize = 2 * 8;
+
+/// Format 19 appends the station submitter state
+/// (`ConsensusFeature::StationSubmitterKey`). A format-18 checkpoint predates
+/// the feature, so the state is empty: append exactly its two u64 zero
+/// lengths. No key or signer record is invented.
+pub struct MigrationV18ToV19;
+impl CheckpointMigration for MigrationV18ToV19 {
+    fn from_version(&self) -> u32 { 18 }
+    fn to_version(&self) -> u32 { 19 }
+    fn migrate(&self, body: &[u8]) -> Result<Vec<u8>, MigrationError> {
+        let _: legacy::state_v18::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 18, error: e.to_string() })?;
+        let mut migrated = body.to_vec();
+        migrated.extend_from_slice(&[0u8; EMPTY_STATION_SUBMITTERS_BYTES]);
+        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 19, error: e.to_string() })?;
+        debug_assert!(current.station_submitters.is_empty());
         Ok(migrated)
     }
 }
@@ -607,9 +629,19 @@ impl CheckpointMigration for MigrationV17ToV18 {
 /// validation prevents an accidental field reorder from silently truncating.
 pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error> {
     let mut payload = bincode::serialize(state)?;
-    // Format 18: any forecast late-score entry needs the full current layout.
-    if !state.forecast_late_score.is_empty() {
+    // Format 19: any approved submitter key or signer record needs the full current layout.
+    if !state.station_submitters.is_empty() {
         return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
+    }
+    // Empty (always, until `station_submitter_key` / `device_submission_limit`):
+    // drop its two u64 zero lengths and continue with the format-18 writer.
+    let suffix = [0u8; EMPTY_STATION_SUBMITTERS_BYTES];
+    assert!(payload.ends_with(&suffix), "empty station submitter state must be the final field");
+    payload.truncate(payload.len() - suffix.len());
+    let _: legacy::state_v18::State = decode_exact(&payload)?;
+    // Format 18: any forecast late-score entry needs the format-18 layout.
+    if !state.forecast_late_score.is_empty() {
+        return Ok(envelope(18, &payload));
     }
     // Empty (always, until `forecast_late_score` is in force): drop its five
     // u64 zero lengths and continue with the format-17 writer.
@@ -710,6 +742,7 @@ mod tests {
             vec![0; 8],
             vec![0; 8],
             vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES],
+            vec![0; EMPTY_STATION_SUBMITTERS_BYTES],
         ]
         .concat()
     }
@@ -891,6 +924,7 @@ mod tests {
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
                 &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
+                &[0; EMPTY_STATION_SUBMITTERS_BYTES], // empty station submitter state (format 19)
             ].concat()
         );
     }
@@ -930,6 +964,7 @@ mod tests {
                 &[0; 8], // empty send-allowlist map (format 16)
                 &[0; 8], // empty advisory proposal map (format 17)
                 &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
+                &[0; EMPTY_STATION_SUBMITTERS_BYTES], // empty station submitter state (format 19)
             ]
             .concat()
         );
@@ -1009,7 +1044,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES], vec![0; EMPTY_STATION_SUBMITTERS_BYTES]]
                 .concat()
                 .as_slice()
         );
@@ -1036,7 +1071,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -1066,14 +1101,14 @@ mod tests {
         assert_eq!(&body(&v11)[..body(&v10).len()], body(&v10));
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
-        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(18));
-        assert_eq!(&body(&golden(18))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES]);
+        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(19));
+        assert_eq!(&body(&golden(19))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]);
     }
 
     #[test]
     fn v13_off_migrates_exactly_and_prior_node_activation_is_refused() {
         let v13=golden(13);
-        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(18));
+        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(19));
         for receipt_marker in [false,true] {
             // Independent frozen suffix: bond Option tag/body, then the S3
             // receipt Option tag and its original three-field empty body.
@@ -1105,7 +1140,7 @@ mod tests {
         assert_eq!(&body(&v16)[..body(&v15).len()], body(&v15));
         assert_eq!(&body(&v16)[body(&v15).len()..], &[0; 8]);
         let migrated = migrate_to_current(15, body(&v15)).unwrap();
-        assert_eq!(migrated, golden(18));
+        assert_eq!(migrated, golden(19));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.send_allowlists.is_empty());
         // Empty maps: the writer never emits format 16 or 17 (byte-identical
@@ -1136,7 +1171,7 @@ mod tests {
         assert_eq!(&body(&v17)[..body(&v16).len()], body(&v16));
         assert_eq!(&body(&v17)[body(&v16).len()..], &[0; 8]);
         let migrated = migrate_to_current(16, body(&v16)).unwrap();
-        assert_eq!(migrated, golden(18));
+        assert_eq!(migrated, golden(19));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.advisory_proposals.is_empty());
         let mut with_proposal = state.clone();
@@ -1177,9 +1212,12 @@ mod tests {
         let v17 = golden(17);
         let _: legacy::state_v17::State = decode_exact(body(&v17)).unwrap();
         let migrated = migrate_to_current(17, body(&v17)).unwrap();
-        assert_eq!(migrated, golden(18));
+        assert_eq!(migrated, golden(19));
         assert_eq!(&body(&migrated)[..body(&v17).len()], body(&v17));
-        assert_eq!(&body(&migrated)[body(&v17).len()..], &[0; EMPTY_FORECAST_LATE_SCORE_BYTES]);
+        assert_eq!(
+            &body(&migrated)[body(&v17).len()..],
+            &[0; EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]
+        );
         assert_eq!(
             bincode::serialize(&ForecastLateScoreState::default()).unwrap(),
             vec![0u8; EMPTY_FORECAST_LATE_SCORE_BYTES],
@@ -1205,13 +1243,60 @@ mod tests {
         );
         for with_entry in [pending, pooled, tracked] {
             let written = encode_compatible(&with_entry).unwrap();
-            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
-            let back: State = decode_exact(body(&written)).unwrap();
+            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), 18);
+            let frozen: legacy::state_v18::State = decode_exact(body(&written)).unwrap();
+            assert_eq!(frozen.forecast_late_score, with_entry.forecast_late_score);
+            let back: State = decode_exact(body(&migrate_to_current(18, body(&written)).unwrap())).unwrap();
             assert_eq!(back.forecast_late_score, with_entry.forecast_late_score);
         }
         // A format-17 body cannot be mislabelled as 18 or vice versa.
         assert!(migrate_to_current(17, body(&migrated)).is_err());
         assert!(decode_exact::<State>(body(&v17)).is_err());
+    }
+
+    #[test]
+    fn v18_golden_appends_only_the_empty_station_submitter_state() {
+        use wrfcoin_shared_protocol::blockchain::station_owner::{
+            CommitSignerRecord, StationSubmitter, StationSubmitterState,
+        };
+        use wrfcoin_shared_protocol::blockchain::transaction::{CommitSignerClass, SubmitterClass};
+        let v18 = golden(18);
+        let _: legacy::state_v18::State = decode_exact(body(&v18)).unwrap();
+        assert_eq!(MigrationV18ToV19.migrate(body(&v18)).unwrap(), body(&golden(19)));
+        let migrated = migrate_to_current(18, body(&v18)).unwrap();
+        assert_eq!(migrated, golden(19));
+        assert_eq!(&body(&migrated)[..body(&v18).len()], body(&v18));
+        assert_eq!(&body(&migrated)[body(&v18).len()..], &[0; EMPTY_STATION_SUBMITTERS_BYTES]);
+        assert_eq!(
+            bincode::serialize(&StationSubmitterState::default()).unwrap(),
+            vec![0u8; EMPTY_STATION_SUBMITTERS_BYTES],
+            "the empty state must be exactly the bytes the migration appends"
+        );
+        let state: State = decode_exact(body(&migrated)).unwrap();
+        assert!(state.station_submitters.is_empty());
+        // Empty: the writer keeps the deployed format (byte-identical).
+        let written = encode_compatible(&state).unwrap();
+        assert!(u32::from_le_bytes(written[8..12].try_into().unwrap()) < 16);
+        // A key or a signer record: format 19, full layout, exact round trip.
+        let mut keyed = state.clone();
+        keyed.station_submitters.keys.insert(
+            "st-1".into(),
+            StationSubmitter { pubkey: "ab".repeat(32), class: SubmitterClass::Relay, set_at_height: 4 },
+        );
+        let mut signed = state.clone();
+        signed
+            .station_submitters
+            .commit_signers
+            .insert("c1".into(), CommitSignerRecord { class: CommitSignerClass::Device, committed_at: 9 });
+        for with_entry in [keyed, signed] {
+            let written = encode_compatible(&with_entry).unwrap();
+            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+            let back: State = decode_exact(body(&written)).unwrap();
+            assert_eq!(back.station_submitters, with_entry.station_submitters);
+        }
+        // A format-18 body cannot be mislabelled as 19 or vice versa.
+        assert!(migrate_to_current(18, body(&migrated)).is_err());
+        assert!(decode_exact::<State>(body(&v18)).is_err());
     }
 
     #[test]

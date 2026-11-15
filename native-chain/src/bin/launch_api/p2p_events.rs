@@ -2893,14 +2893,22 @@ async fn run_p2p_event_loop_with_persist_control(
                 );
             },
 
-            P2pEvent::DaChallengeResponse { peer_id, response } => {
-                da_challenge_runtime
-                    .handle_inbound_response(&peer_id.to_string(), response.clone())
-                    .await;
+            P2pEvent::DaChallengeResponse {
+                peer_id,
+                author,
+                response,
+            } => {
+                // Attribute the response to its signed gossip author, not to
+                // the peer that relayed it (`peer_id`).
+                let author = author.map(|a| a.to_string());
                 log::info!(
-                    "P2P DA challenge response: id={} from={peer_id}",
-                    response.challenge_id
+                    "P2P DA challenge response: id={} author={} via={peer_id}",
+                    response.challenge_id,
+                    author.as_deref().unwrap_or("<none>")
                 );
+                da_challenge_runtime
+                    .handle_inbound_response(author.as_deref(), &peer_id.to_string(), response)
+                    .await;
             },
 
             // #1388: a peer broadcast a finality vote on the
@@ -7669,6 +7677,8 @@ mod tests {
             )),
             // BTreeMaps throughout: compared as one ordered value.
             field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
+            // BTreeMaps throughout: compared as one ordered value.
+            field!("station_submitters", |s| field_json(&s.station_submitters)),
         ]
     }
 
@@ -10531,6 +10541,12 @@ mod tests {
         (entries[0].amount.0, block.timestamp.timestamp() - reveal.timestamp)
     }
 
+    /// `device_submission_limit` is in force only once `station_submitter_key`
+    /// has been active for 2,000 blocks (`device_submission_limit_active`, no
+    /// exemption at low heights): the ON fixtures key from genesis and mine at
+    /// `DSL_LEAD_BASE_3565 + 1`.
+    const DSL_LEAD_BASE_3565: u64 = 2_000;
+
     fn reexec_child_3565(test: &str, child: &str) -> bool {
         if std::env::var_os(child).is_some() {
             return false;
@@ -10548,8 +10564,8 @@ mod tests {
     /// process-global). Two quorum-attested reveals from ONE station are staged
     /// in the mempool; the real producer keeps exactly one and both commits.
     /// Producer, P2P applier, extracted transitions and WAL replay agree on the
-    /// root. A 1805 s old reading is paid `late_data_multiplier_bps(age)` of the
-    /// fresh reading's reward, exactly.
+    /// root. With `late_data_pay` also scheduled, a 1805 s old reading is paid
+    /// `late_data_multiplier_bps(age)` of the fresh reading's reward, exactly.
     #[tokio::test]
     async fn device_submission_limit_keeps_one_reveal_per_station_with_parity_3565() {
         if reexec_child_3565(
@@ -10564,17 +10580,18 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(
-                ConsensusFeature::DeviceSubmissionLimit.name().to_string(),
-                1,
-            )])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+                (ConsensusFeature::LateDataPay.name().to_string(), 1),
+            ])
             .expect("schedule"),
         );
 
         // Owner-signed commits: from activation a commit must be authorized by
         // the station's registered owner key (#3565 pre-activation fix (a)).
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[],
         )
         .await;
         assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
@@ -10584,20 +10601,158 @@ mod tests {
             1,
             "gate ON: one reveal per station per block"
         );
-        assert_producer_applier_wal_root_parity_3565(&two, "on-two-reveals").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&two, "on-two-reveals", DSL_LEAD_BASE_3565).await;
         let (fresh_amount, fresh_age) = reward_and_age_3565(&two.block_1);
         assert!(fresh_age <= 600, "fixture: the fresh reading is inside full pay ({fresh_age}s)");
         assert!(fresh_amount > 0, "vacuity guard: the fresh reading is paid");
 
         let late = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 1805, true, &[], &[],
         )
         .await;
-        assert_producer_applier_wal_root_parity_3565(&late, "on-late").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&late, "on-late", DSL_LEAD_BASE_3565).await;
         let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
         let multiplier = late_data_multiplier_bps(late_age);
         assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
         assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "gate ON: late data is paid less, on the curve");
+    }
+
+    /// #3565 split: `device_submission_limit` ON without `late_data_pay` keeps
+    /// one reveal per station per block but pays an 1805 s old reading exactly
+    /// what a fresh one is (the reduction moved to its own flag). Parity holds.
+    #[tokio::test]
+    async fn device_submission_limit_without_late_data_pay_pays_late_in_full_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::device_submission_limit_without_late_data_pay_pays_late_in_full_3565",
+            "WRFCOIN_3565_DSL_ONLY_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
+                .expect("schedule"),
+        );
+        let fresh = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 5, true, &[], &[],
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::DeviceSubmissionLimit, fresh.block_1.height));
+        assert!(!feature_active(ConsensusFeature::LateDataPay, fresh.block_1.height));
+        let late = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 1805, true, &[], &[],
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&late, "dsl-only-late", DSL_LEAD_BASE_3565).await;
+        let (fresh_amount, _) = reward_and_age_3565(&fresh.block_1);
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        assert!(fresh_amount > 0 && late_age > 600, "vacuity guard: paid, and the late reading is past full pay");
+        assert_eq!(late_amount, fresh_amount, "late_data_pay off: late data is paid in full");
+    }
+
+    /// #3565 split: `late_data_pay` ON alone applies the curve (the
+    /// one-per-block rule stays off: both same-station reveals are mined).
+    #[tokio::test]
+    async fn late_data_pay_alone_applies_the_curve_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::late_data_pay_alone_applies_the_curve_3565",
+            "WRFCOIN_3565_LATE_ONLY_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::consensus::proof_of_publishing::late_data_multiplier_bps;
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![(ConsensusFeature::LateDataPay.name().to_string(), 1)]).expect("schedule"),
+        );
+        let two = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5,
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::LateDataPay, two.block_1.height));
+        assert!(!feature_active(ConsensusFeature::DeviceSubmissionLimit, two.block_1.height));
+        assert_eq!(count_3565(&two.block_1, TransactionType::ContributionReveal), 2, "one-per-block stays off");
+        let fresh = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5,
+        )
+        .await;
+        let late = mine_attested_reward_block_with_reveals(
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 1805,
+        )
+        .await;
+        assert_producer_applier_wal_root_parity_3565(&late, "late-only").await;
+        let (fresh_amount, _) = reward_and_age_3565(&fresh.block_1);
+        let (late_amount, late_age) = reward_and_age_3565(&late.block_1);
+        let multiplier = late_data_multiplier_bps(late_age);
+        assert!(multiplier > 5_000 && multiplier < 10_000, "fixture lands on the slope ({late_age}s -> {multiplier})");
+        assert_eq!(late_amount, fresh_amount * multiplier / 10_000, "late_data_pay on: late data is paid less");
+    }
+
+    /// `station_submitter_key` + `device_submission_limit` ON (isolated child):
+    /// the station's commit is signed by an approved RELAY key, not the owner
+    /// key (as the house collector signs). The commit applies, its reveal is
+    /// mined and paid, the signer class is recorded on chain, and producer,
+    /// P2P applier, extracted transitions and WAL replay agree on the root
+    /// with a populated `station_submitters`.
+    #[tokio::test]
+    async fn approved_submitter_key_signs_for_the_station_with_parity_3565() {
+        if reexec_child_3565(
+            "p2p_events::tests::approved_submitter_key_signs_for_the_station_with_parity_3565",
+            "WRFCOIN_3565_SUBMITTER_CHILD",
+        ) {
+            return;
+        }
+        use wrfcoin_shared_protocol::blockchain::station_owner::StationSubmitter;
+        use wrfcoin_shared_protocol::blockchain::transaction::{CommitSignerClass, SubmitterClass};
+        use wrfcoin_shared_protocol::crypto::chain_binding::{
+            feature_active, install_feature_schedule, ConsensusFeature, FeatureSchedule,
+        };
+        use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
+        install_feature_schedule(
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+            ])
+            .expect("schedule"),
+        );
+        // The fixture signs non-owner commits with its seed-903 key; approve
+        // exactly that key as the station's relay key in the shared genesis.
+        let relay_key = {
+            use rand::SeedableRng;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(903);
+            let sk = wrfcoin_native_chain::crypto::signature::PrivateKey::generate(&mut rng);
+            wrfcoin_native_chain::crypto::signature::PublicKey::from_private_key(&sk).to_hex()
+        };
+        let approve = Arc::new(move |chain: &mut Blockchain| {
+            chain.state.station_submitters.keys.insert(
+                "station-attest".to_string(),
+                StationSubmitter { pubkey: relay_key.clone(), class: SubmitterClass::Relay, set_at_height: 0 },
+            );
+        });
+        let scenario = mine_attested_reward_block_with_options(
+            1.0, ContributionProvenanceClass::Real, approve, DSL_LEAD_BASE_3565, None, 1, 5, false, &[], &[],
+        )
+        .await;
+        assert!(feature_active(ConsensusFeature::StationSubmitterKey, scenario.block_1.height));
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionCommit), 1, "the relay-signed commit is mined");
+        assert_eq!(count_3565(&scenario.block_1, TransactionType::ContributionReveal), 1, "its reveal is mined");
+        {
+            let producer = scenario.producer_chain.read().await;
+            let signers: Vec<_> = producer.state.station_submitters.commit_signers.values().map(|r| r.class).collect();
+            assert_eq!(signers, vec![CommitSignerClass::Relay], "the signer class is on chain");
+        }
+        let (amount, _) = reward_and_age_3565(&scenario.block_1);
+        assert!(amount > 0, "the relayed reading is paid");
+        assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "submitter-relay", DSL_LEAD_BASE_3565).await;
     }
 
     /// #3565 gate OFF control (isolated child, nothing scheduled): the same
@@ -10683,12 +10838,15 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
 
         let two = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[],
         )
         .await;
         assert_eq!(count_3565(&two.block_1, TransactionType::ContributionCommit), 2, "owner-signed commits are mined");
@@ -10697,10 +10855,10 @@ mod tests {
         let pending = pending_reveal_nonces_3565(&two).await;
         assert_eq!(pending.len(), 1, "(b) the extra reveal is deferred, not evicted");
         assert_ne!(pending[0], mined[0].1, "the pending reveal is the one not mined");
-        assert_producer_applier_wal_root_parity_3565(&two, "defer-two").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&two, "defer-two", DSL_LEAD_BASE_3565).await;
 
         let not_owner = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 1, 5, false, &[], &[],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 1, 5, false, &[], &[],
         )
         .await;
         assert_eq!(
@@ -10709,7 +10867,7 @@ mod tests {
             "(a) a commit not signed by the registered owner key is refused"
         );
         assert_eq!(count_3565(&not_owner.block_1, TransactionType::ContributionReveal), 0, "(a) so its reveal cannot occupy the slot");
-        assert_producer_applier_wal_root_parity_3565(&not_owner, "not-owner").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&not_owner, "not-owner", DSL_LEAD_BASE_3565).await;
     }
 
     /// #3565 (b) with the #2777 fence: gate ON, block at h3000 (the fence's
@@ -10730,7 +10888,10 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let base = RICH_AMBIENT_REWARD_ACTIVATION_HEIGHT - 1;
@@ -10766,11 +10927,14 @@ mod tests {
         };
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
         install_feature_schedule(
-            FeatureSchedule::from_entries(vec![(ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1)])
+            FeatureSchedule::from_entries(vec![
+                (ConsensusFeature::StationSubmitterKey.name().to_string(), 0),
+                (ConsensusFeature::DeviceSubmissionLimit.name().to_string(), 1),
+            ])
                 .expect("schedule"),
         );
         let scenario = mine_attested_reward_block_with_options(
-            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), 0, None, 2, 5, true, &[], &[0],
+            1.0, ContributionProvenanceClass::Real, Arc::new(|_| {}), DSL_LEAD_BASE_3565, None, 2, 5, true, &[], &[0],
         )
         .await;
         let forecast_typed_commits = scenario
@@ -10786,7 +10950,7 @@ mod tests {
         let mined = reveal_ids_3565(&scenario.block_1);
         assert_eq!(mined.len(), 1);
         assert_eq!(mined[0].1, "nonce-attest-1", "the owner's reveal takes the slot");
-        assert_producer_applier_wal_root_parity_3565(&scenario, "forecast-typed").await;
+        assert_producer_applier_wal_root_parity_at_base_3565(&scenario, "forecast-typed", DSL_LEAD_BASE_3565).await;
     }
 
     /// COMMIT-REVEAL LIFECYCLE expiry parity. The producer runs a per-block
@@ -11453,6 +11617,9 @@ mod tests {
             // Apply-path coverage with recorded, scored and paid forecasts:
             // shared-protocol/tests/forecast_late_score.rs.
             "forecast_late_score",
+            // Producer/applier/WAL parity with an approved key and recorded
+            // commit signers: native-chain/tests/station_submitter_key_parity.rs.
+            "station_submitters",
         ]
         .into_iter()
         .collect();
@@ -16650,13 +16817,16 @@ mod station_registration_admission_tests {
         assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["s"])), "already scored");
         assert!(!crate::p2p_events::forecast_score_admissible(&state, &score(&["f", "unknown"])), "one bad id refuses the score");
         // Through the live ingress filter: only the admissible score survives.
+        // Build it once: `Transaction::new` stamps `Utc::now()`, so a second
+        // `score(&["f"])` can carry a different id when the clock ticks.
+        let admissible = score(&["f"]);
         let survivors = crate::p2p_events::admissible_gossip_txs(
             &state,
             10,
-            vec![score(&["unknown"]), score(&["s"]), score(&["f"])],
+            vec![score(&["unknown"]), score(&["s"]), admissible.clone()],
         );
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].id, score(&["f"]).id);
+        assert_eq!(survivors[0].id, admissible.id);
         // Another type is not affected.
         let mut other = Transaction::new(Vec::new(), Vec::new());
         other.tx_type = TransactionType::Transfer;
