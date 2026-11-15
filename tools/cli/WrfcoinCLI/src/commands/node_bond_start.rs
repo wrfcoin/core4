@@ -298,6 +298,7 @@ fn check_admitted(
     let sig = Signature::from_bytes(&got.governance_signature)
         .map_err(|_| anyhow::anyhow!("admission answer carries no co-sign"))?;
     ensure!(
+        // secret-leak-ok: verification boolean over the service's public admission key and its signature; fixed message, no key material formatted.
         verify_domain_for(
             &key,
             &got.signed.authorization,
