@@ -599,7 +599,6 @@ fn only_the_bond_path_and_the_scheduling_guards_read_the_pins() {
             "shared-protocol/src/governance/schedule_extension.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_bond.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_bond_admit.rs",
-            "tools/cli/WrfcoinCLI/src/commands/node_bond_start.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_bond_update.rs",
             "tools/cli/WrfcoinCLI/src/commands/node_deposit.rs",
         ]
