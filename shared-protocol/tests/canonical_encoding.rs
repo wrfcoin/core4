@@ -674,6 +674,10 @@ const CANONICAL_DEFERRED: &[(SignedObjectKind, &str)] = &[
         "CrossCrate (#2249): lives in keeper-proof",
     ),
     (
+        SignedObjectKind::RetrievalAuditReceipt,
+        "CrossCrate (#2249): lives in keeper-proof (feature retrieval-audit)",
+    ),
+    (
         SignedObjectKind::OraclePacket,
         "CrossCrate (#2249): lives in oracle-packet",
     ),
@@ -758,6 +762,10 @@ const CANONICAL_DEFERRED: &[(SignedObjectKind, &str)] = &[
     (
         SignedObjectKind::NodeBondPossession,
         "S1 DomainSeparated body and fixed-integer bounded wire; executed signing and wire goldens; no parallel Canonical signing codec",
+    ),
+    (
+        SignedObjectKind::NodeBondPayoutPasskeyApproval,
+        "passkey_bond_payout WebAuthn challenge subject: DomainSeparated body with an executed independent V2 golden (passkey_bond_payout_vectors); no parallel Canonical signing codec",
     ),
 ];
 

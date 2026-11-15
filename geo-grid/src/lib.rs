@@ -507,15 +507,6 @@ impl ScarcityRegion {
             area_km2,
         }
     }
-
-    /// Reward multiplier suggested by data desert policy: 1.0 (Dense), 1.5 (Normal), 2.5 (Sparse).
-    pub fn reward_multiplier(&self) -> f64 {
-        match self.density {
-            DataDensity::Dense => 1.0,
-            DataDensity::Normal => 1.5,
-            DataDensity::Sparse => 2.5,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -629,10 +620,8 @@ mod tests {
         let cell = GeoCell::from_lat_lon(40.0, -105.0, 50).unwrap();
         let sparse = ScarcityRegion::new(cell, 0, 10_000.0);
         assert_eq!(sparse.density, DataDensity::Sparse);
-        assert_eq!(sparse.reward_multiplier(), 2.5);
 
         let dense = ScarcityRegion::new(cell, 500, 1_000.0);
         assert_eq!(dense.density, DataDensity::Dense);
-        assert_eq!(dense.reward_multiplier(), 1.0);
     }
 }

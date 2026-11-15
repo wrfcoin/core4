@@ -522,6 +522,12 @@ impl BlockSigner for EnvKeySigner {
 #[cfg(feature = "hsm")]
 mod pkcs11;
 
+mod testnet_oracle_key;
+pub use testnet_oracle_key::{
+    TESTNET_ORACLE_KEY_FILE, TestnetOracleKeySigner, load_testnet_oracle_key,
+    testnet_oracle_key_allowed,
+};
+
 #[cfg(feature = "hsm")]
 pub use pkcs11::{enumerate_public_keys, Pkcs11Config, Pkcs11Signer, TokenPublicKey};
 
@@ -535,6 +541,10 @@ pub enum SignerMode {
     DebugEnvKey,
     /// PKCS#11 token (softhsm2 / YubiKey / CloudHSM).
     Hsm,
+    /// Testnet-only software oracle key read from an owner-only file
+    /// ([`TESTNET_ORACLE_KEY_FILE`]). Available in release builds, refused off
+    /// a declared testnet. Oracle role only.
+    TestnetKeyFile,
 }
 
 /// Outcome of [`load_block_signer`]. Holds the boxed trait object plus the
@@ -742,7 +752,35 @@ impl<'a> SignerEnv<'a> {
 ///
 /// See [`SignerEnv::oracle`] for the custody rule on oracle vs producer key
 /// material.
+///
+/// # Testnet software key file
+///
+/// Before the role's HSM/debug resolution, a release-capable testnet-only key
+/// file ([`TESTNET_ORACLE_KEY_FILE`]) is consulted. It is refused off a declared
+/// testnet, when an HSM is also configured, and when a debug oracle key variable
+/// is also set; a refusal is an error, never a fall-through. The resolved signer
+/// is wrapped like every other.
 pub fn load_oracle_signer() -> Result<Option<ResolvedSigner>> {
+    if let Some(raw) = testnet_oracle_key::resolve_from_env()? {
+        return Ok(Some(finish_resolved_signer(raw)?));
+    }
+    load_block_signer_for(SignerEnv::oracle())
+}
+
+/// Load the oracle signer for a **key ceremony** (possession proofs).
+///
+/// Ceremony signing stays on the HSM / debug paths of [`SignerEnv::oracle`]:
+/// the testnet software key file ([`TESTNET_ORACLE_KEY_FILE`]) is for running
+/// an attester, not for ceremony material, so its presence is a refusal here
+/// rather than a silent choice of a different key.
+pub fn load_oracle_signer_for_ceremony() -> Result<Option<ResolvedSigner>> {
+    // determinism-ok: ceremony-startup presence check of a signer config var, never consensus input
+    if std::env::var_os(TESTNET_ORACLE_KEY_FILE).is_some_and(|v| !v.is_empty()) {
+        bail!(
+            "{TESTNET_ORACLE_KEY_FILE} is set, but ceremony signing accepts only a PKCS#11 \
+             oracle key (or a debug key in debug builds). Unset it for the ceremony"
+        );
+    }
     load_block_signer_for(SignerEnv::oracle())
 }
 
@@ -944,6 +982,13 @@ pub fn log_signer_banner(resolved: &ResolvedSigner) {
     match resolved.mode {
         SignerMode::Hsm => {
             log::info!("[signer] HSM active — {}", resolved.signer.provenance());
+        },
+        SignerMode::TestnetKeyFile => {
+            log::warn!(
+                "[signer] TESTNET software oracle key active — {} (public key {}). Votes are signed with a key file, not a hardware token; non-testnet networks refuse this.",
+                resolved.signer.provenance(),
+                resolved.signer.public_key().to_hex()
+            );
         },
         SignerMode::DebugEnvKey => {
             log::warn!(

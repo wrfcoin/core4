@@ -26,13 +26,8 @@
 #
 #   * that compile step is `--no-run` by construction. It proves the
 #     tests COMPILE and says nothing about whether they PASS.
-#   * wrfcoin-cli-integration.yml runs both its jobs on `ubuntu-latest`.
-#     Hosted runners on this repo are billing-VOID: run 33361037125 on `main`
-#     (2026-08-31T05:34) shows `input-panic-lint` with runner="", steps=0,
-#     three seconds wall clock, annotated "The job was not started because
-#     recent account payments have failed". Every hosted job on that push
-#     failed identically; every self-hosted job succeeded. A hosted job is
-#     not a gate tonight.
+#   * wrfcoin-cli-integration.yml runs only the mocked and launch_api
+#     boundary tests, not the whole package.
 #   * ci-readiness.yml's `cargo test --locked --workspace --lib
 #     --all-features` would cover the CLI's lib tests — but that workflow
 #     resolves to `workflow_dispatch` only; both `pull_request` and

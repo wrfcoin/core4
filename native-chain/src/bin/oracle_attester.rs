@@ -19,6 +19,12 @@
 //! - **Test key (today):** debug build with
 //!   `WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY=<hex>` or
 //!   `WRFCOIN_ORACLE_SIGNER_KEY_FILE=<path>` (mode 0600).
+//! - **Testnet software key (release builds):**
+//!   `WRFCOIN_TESTNET_ORACLE_KEY_FILE=<path>`, a file holding the ed25519 seed
+//!   as 64 hex characters, readable only by its owner (mode 0600 on Unix, an
+//!   owner-only DACL on Windows). Accepted only with `WRFCOIN_NETWORK_ID=testnet`
+//!   and an explicit non-mainnet `WRFCOIN_CHAIN_ID`; refused when an HSM or a
+//!   debug oracle key is also configured.
 //! - **Real identity (after re-keying ceremony):**
 //!   `WRFCOIN_HSM_MODULE_PATH=<softhsm2/ykcs11 .so>` plus
 //!   `WRFCOIN_HSM_ORACLE_KEY_LABEL=<label>` — the PKCS#11 path, which takes
@@ -81,8 +87,9 @@
 //! nowhere else. The chain receives only the signed attestation — `commit_id`,
 //! `oracle_id`, `approved`, `confidence`, `timestamp`, `nonce` — and never the
 //! reference station, the distance or the residuals. The station location comes
-//! from the node's pending surface (`station_location`, registry-sourced and
-//! coarsened to 0.01°), never from the contributor-controlled reveal `data`,
+//! from the node's pending surface (`station_location`, registry-sourced, at
+//! 0.1° for any token but the node operator's, and re-coarsened here to at
+//! most 0.01°), never from the contributor-controlled reveal `data`,
 //! which would let a contributor pick their own reference. Fallback order, each
 //! step named in the verdict reasons and logged: nearest station within
 //! `WRFCOIN_ATTESTER_MAX_REFERENCE_KM` → the configured
@@ -110,6 +117,7 @@ use wrfcoin_shared_protocol::weather::station_reference::{
     SeaLevelPressureClaim, pair_station_reference_sea_level,
 };
 use wrfcoin_shared_protocol::weather::validation::weather_observation_from_json;
+use wrfcoin_native_chain::weather::public_location::{tenth_degree, tenth_degree_cell};
 
 /// How long a locally-submitted commit id suppresses re-submission while the
 /// attestation waits to mine. After this, chain state (`attesting_oracles`)
@@ -323,6 +331,12 @@ impl ReferenceLocation {
     }
 }
 
+/// A location's public 0.1° cell, in whole tenths (the node's rounding rule).
+// determinism-ok: attester-side lookup key; never consensus
+fn tenth_cell(latitude: f64, longitude: f64) -> Option<(i64, i64)> {
+    Some((tenth_degree_cell(latitude)?, tenth_degree_cell(longitude)?))
+}
+
 /// Trusted DEM ground elevations for the #3299 sea-level band, keyed by
 /// station id (`WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE`).
 ///
@@ -332,14 +346,17 @@ impl ReferenceLocation {
 /// registration too), must not be a mutable backend column (the backend skips
 /// the DEM lookup exactly when an operator override is given, the laundering
 /// path), and must be the same for every attester and every cycle. The
-/// attester also sees only the 0.01°-coarsened location, too coarse for a DEM
+/// attester also sees only a coarsened location (0.1° unless it holds the
+/// node operator's token), too coarse for a DEM
 /// lookup on a hillside. So the operator builds the file once from the
 /// registry's exact coordinates (`docs/deployment/attester-dem-table/`), it is
 /// reviewable, and every attester loads the same bytes.
 ///
 /// Each entry is bound to the station's coarse location: when the pending
 /// surface serves a different (or no) location, the station has moved since
-/// the file was built and the entry is not used.
+/// the file was built and the entry is not used. A node answers a non-operator
+/// token at the public 0.1° grid; such a location is matched against the 0.1°
+/// cell of the entry, so the binding is then only as fine as that cell.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DemTable {
     by_station: HashMap<String, DemEntry>,
@@ -351,6 +368,8 @@ pub(crate) struct DemTable {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DemEntry {
     location: ReferenceLocation,
+    /// The entry's 0.1° cell in whole tenths, from the file's own values.
+    tenth_cell: (i64, i64),
     // determinism-ok: attester-side #3299 DEM ground elevation; never consensus
     dem_ground_elevation_m: f64,
 }
@@ -396,7 +415,9 @@ impl DemTable {
             {
                 bail!("DEM table: station {} has an implausible DEM elevation", row.station_id);
             }
-            let entry = DemEntry { location, dem_ground_elevation_m: row.dem_ground_elevation_m };
+            let tenth_cell = tenth_cell(row.latitude, row.longitude)
+                .ok_or_else(|| anyhow!("DEM table: station {} has an invalid location", row.station_id))?;
+            let entry = DemEntry { location, tenth_cell, dem_ground_elevation_m: row.dem_ground_elevation_m };
             if by_station.insert(row.station_id.clone(), entry).is_some() {
                 bail!("DEM table: station {} appears twice", row.station_id);
             }
@@ -437,8 +458,15 @@ impl DemTable {
     // determinism-ok: attester-side #3299 lookup; never consensus
     fn lookup(&self, station_id: &str, served: Option<ReferenceLocation>) -> Option<f64> {
         let entry = self.by_station.get(station_id)?;
-        let served = served.and_then(ReferenceLocation::coarse)?;
-        (served.point_key() == entry.location.point_key()).then_some(entry.dem_ground_elevation_m)
+        let served = served?;
+        if served.coarse()?.point_key() == entry.location.point_key() {
+            return Some(entry.dem_ground_elevation_m);
+        }
+        // A non-operator view: exactly on the public 0.1° grid. Match its cell.
+        let on_tenth_grid = tenth_degree(served.latitude) == Some(served.latitude)
+            && tenth_degree(served.longitude) == Some(served.longitude);
+        (on_tenth_grid && tenth_cell(served.latitude, served.longitude)? == entry.tenth_cell)
+            .then_some(entry.dem_ground_elevation_m)
     }
 }
 
@@ -1419,9 +1447,10 @@ fn attester_from_env() -> Result<Attester> {
         // session can reach it. The only interpolation in this function is
         // `forbidden.uninventoried()` above, which yields role names.
         None => bail!( // secret-leak-ok: static help text naming env vars, no values interpolated
-            "no oracle signer is configured. Set WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
-             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) or WRFCOIN_HSM_MODULE_PATH + \
-             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11) — an oracle that cannot sign cannot \
+            "no oracle signer is configured. Set WRFCOIN_HSM_MODULE_PATH + \
+             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11), WRFCOIN_TESTNET_ORACLE_KEY_FILE \
+             (testnet only, owner-only file), or WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
+             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) — an oracle that cannot sign cannot \
              attest, and a node short of quorum pays no contributor."
         ),
     }
@@ -2149,6 +2178,51 @@ fn run_sea_level_preview(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// What the command line asks for (after `--sea-level-preview`, handled first).
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// No arguments: run from the environment.
+    Run,
+    /// Exactly one of `--help`, `-h`, `--version`, `-V`.
+    Usage,
+    /// Anything else: refuse, naming the first offending argument.
+    Refuse(String),
+}
+
+fn parse_args(args: &[String]) -> CliAction {
+    let is_usage = |a: &String| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V");
+    if args.is_empty() {
+        return CliAction::Run;
+    }
+    if args.len() == 1 && is_usage(&args[0]) {
+        return CliAction::Usage;
+    }
+    // The first argument that is not a usage flag, or the second one if both are.
+    let offending = args.iter().find(|a| !is_usage(a)).unwrap_or_else(|| &args[1]);
+    CliAction::Refuse(offending.clone())
+}
+
+/// `--help` / `--version` text. Configuration is environment-only, so this
+/// names the required variables rather than flags.
+fn usage() -> String {
+    format!(
+        "oracle_attester {version}\n\
+         Polls a node's pending oracle surface, checks each reading mechanically, signs and\n\
+         submits attestations. Configured entirely through the environment.\n\
+         \n\
+         Required: WRFCOIN_ATTESTER_NODE_URL, WRFCOIN_ATTESTER_API_TOKEN, WRFCOIN_CHAIN_ID,\n\
+         WRFCOIN_NETWORK_ID, WRFCOIN_ATTESTER_FORBID_{{GOVERNANCE,SNAPSHOT,PRODUCER}}_PUBKEY, and\n\
+         an oracle signer: WRFCOIN_HSM_MODULE_PATH + WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11),\n\
+         or a testnet key file (see the module docs).\n\
+         \n\
+         Usage:\n\
+         \x20 oracle_attester                       run (reads the environment)\n\
+         \x20 oracle_attester --sea-level-preview   offline sea-level pressure preview\n\
+         \x20 oracle_attester --help | --version    this text\n",
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
@@ -2157,6 +2231,19 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--sea-level-preview") {
         return run_sea_level_preview(&args[1..]);
+    }
+    // Offline: prints usage and exits; touches no config, key or network.
+    // Anything else on the command line is refused, never ignored: a typo
+    // must not start a live attester.
+    match parse_args(&args) {
+        CliAction::Run => {},
+        CliAction::Usage => {
+            print!("{}", usage());
+            return Ok(());
+        },
+        CliAction::Refuse(arg) => {
+            bail!("unrecognised argument '{arg}'. Configuration is environment-only; see --help")
+        },
     }
 
     let config = Config::from_env()?;
@@ -2300,6 +2387,29 @@ fn build_attester_http_client() -> Result<reqwest::Client> {
 mod tests {
     use super::*;
     use wrfcoin_shared_protocol::crypto::signature::PrivateKey;
+
+    #[test]
+    fn only_no_arguments_runs_and_anything_unrecognised_is_refused() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&a(&[])), CliAction::Run);
+        for flag in ["--help", "-h", "--version", "-V"] {
+            assert_eq!(parse_args(&a(&[flag])), CliAction::Usage);
+        }
+        assert_eq!(parse_args(&a(&["foo", "--help"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--help", "foo"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--once"])), CliAction::Refuse("--once".into()));
+        assert_eq!(parse_args(&a(&[""])), CliAction::Refuse(String::new()));
+    }
+
+    #[test]
+    fn usage_names_the_required_environment_and_no_secret_values() {
+        let text = usage();
+        assert!(text.starts_with("oracle_attester "));
+        for var in ["WRFCOIN_ATTESTER_NODE_URL", "WRFCOIN_CHAIN_ID", "WRFCOIN_NETWORK_ID"] {
+            assert!(text.contains(var), "usage does not name {var}");
+        }
+        assert!(text.contains("WRFCOIN_ATTESTER_FORBID_{GOVERNANCE,SNAPSHOT,PRODUCER}_PUBKEY"));
+    }
 
     /// #2833: entries with quorum land in `ready_to_mine`, which this binary
     /// previously did not even deserialize — a fully-attested backlog read as
@@ -2610,6 +2720,12 @@ mod tests {
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(exact)), Some(247.9));
         let moved = ReferenceLocation { latitude: 46.85, longitude: -92.10 };
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(moved)), None);
+        // A non-operator node view at 0.1 degree matches the entry's 0.1 cell,
+        // and only that cell.
+        let public = ReferenceLocation { latitude: 46.8, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(public)), Some(247.9));
+        let next_cell = ReferenceLocation { latitude: 46.9, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(next_cell)), None);
         assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", None), None);
         assert_eq!(table.lookup("PWS-OTHER", Some(here)), None);
 

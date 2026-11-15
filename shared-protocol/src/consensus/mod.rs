@@ -2,6 +2,7 @@ pub mod block_producer_auth;
 pub mod capability;
 pub mod data_desert;
 pub mod finality;
+pub mod forecast_late_score;
 pub mod forecast_verification;
 pub mod hyper_local;
 pub mod partition_policy;
@@ -20,3 +21,6 @@ pub mod verify_cost;
 
 pub mod node_settlement;
 pub mod node_fraud;
+/// Burned transfer fee (`transfer_fee_burn`, owner GO 2026-11-01).
+pub mod transfer_fee;
+pub mod station_registrar;

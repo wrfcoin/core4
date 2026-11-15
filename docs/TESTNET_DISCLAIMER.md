@@ -8,4 +8,4 @@ attacked on a schedule. Please use only disposable test assets.
 The [go/no-go checklist's must-not-attach list](security/TESTNET_GO_NO_GO.md#must-not-be-attached)
 is the authoritative attachment policy, including the prohibition on mainnet validator keys.
 
-Canonical URL: https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html
+Canonical URL: https://wrfcoin.com/testnet-disclaimer.html

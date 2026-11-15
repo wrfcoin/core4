@@ -48,64 +48,45 @@ impl OperatorKey {
         Ok(Self { key })
     }
     pub fn load(path: &Path) -> Result<Self> {
-        // Existing permission guard plus stricter mode, UID and no-follow checks.
+        // Existing permission guard plus stricter mode, UID and no-follow checks
+        // (Unix), or an owner-only DACL check (Windows).
         wrfcoin_shared_protocol::security::key_file::assert_key_file_permissions(path)
             .map_err(|_| anyhow::anyhow!("operator key permissions refused"))?;
-        #[cfg(not(unix))]
-        anyhow::bail!("operator key ownership cannot be enforced on this platform");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-            let mut file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-                .open(path)
-                .map_err(|_| anyhow::anyhow!("operator key file refused"))?;
-            let meta = file
-                .metadata()
-                .map_err(|_| anyhow::anyhow!("operator key file refused"))?;
-            // SAFETY: geteuid has no arguments or memory side effects.
-            let uid = unsafe { libc::geteuid() };
-            ensure!(
-                file_policy(meta.is_file(), meta.mode(), meta.uid(), uid),
-                "operator key must be regular, mode 0600 and owned by running user"
+        let mut file = open_owned_key_file(path)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.by_ref()
+            .take(8193)
+            .read_to_end(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("operator key file refused"))?;
+        ensure!(bytes.len() <= 8192, "operator key exceeds bound");
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| anyhow::anyhow!("operator key format refused"))?
+            .trim();
+        if !text.starts_with('{') {
+            let seed = Zeroizing::new(
+                hex::decode(text).map_err(|_| anyhow::anyhow!("operator key format refused"))?,
             );
-            let mut bytes = Zeroizing::new(Vec::new());
-            file.by_ref()
-                .take(8193)
-                .read_to_end(&mut bytes)
-                .map_err(|_| anyhow::anyhow!("operator key file refused"))?;
-            ensure!(bytes.len() <= 8192, "operator key exceeds bound");
-            let text = std::str::from_utf8(&bytes)
-                .map_err(|_| anyhow::anyhow!("operator key format refused"))?
-                .trim();
-            if !text.starts_with('{') {
-                let seed = Zeroizing::new(
-                    hex::decode(text)
-                        .map_err(|_| anyhow::anyhow!("operator key format refused"))?,
-                );
-                return Self::from_seed(&seed);
-            }
-            let wallet: WalletKey = serde_json::from_str(text)
-                .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
-            let der = Zeroizing::new(
-                STANDARD
-                    .decode(wallet.private_key.as_bytes())
-                    .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?,
-            );
-            let key = Ed25519KeyPair::from_pkcs8(&der)
-                .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
-            let signer = Self { key };
-            let public = STANDARD
-                .decode(&wallet.public_key)
-                .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
-            ensure!(
-                public == signer.key.public_key().as_ref()
-                    && wallet.address == signer.address().to_string(),
-                "operator wallet public binding refused"
-            );
-            Ok(signer)
+            return Self::from_seed(&seed);
         }
+        let wallet: WalletKey = serde_json::from_str(text)
+            .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
+        let der = Zeroizing::new(
+            STANDARD
+                .decode(wallet.private_key.as_bytes())
+                .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?,
+        );
+        let key = Ed25519KeyPair::from_pkcs8(&der)
+            .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
+        let signer = Self { key };
+        let public = STANDARD
+            .decode(&wallet.public_key)
+            .map_err(|_| anyhow::anyhow!("operator wallet format refused"))?;
+        ensure!(
+            public == signer.key.public_key().as_ref()
+                && wallet.address == signer.address().to_string(),
+            "operator wallet public binding refused"
+        );
+        Ok(signer)
     }
     pub fn public_key(&self) -> PublicKey {
         PublicKey::from_bytes(self.key.public_key().as_ref()).expect("ring Ed25519 key is 32 bytes")
@@ -168,6 +149,46 @@ impl OperatorKey {
     }
 }
 
+/// Open a local secret key file that only the running user can read.
+///
+/// Unix: no symlink follow, regular file, mode exactly 0600, owned by the
+/// effective user. Windows: no reparse-point follow, regular file, and an
+/// owner-only DACL (current user, SYSTEM or Administrators; see
+/// `wrfcoin_shared_protocol::security::key_file::open_owner_only_key_file`).
+/// The returned handle is the file that was checked.
+pub fn open_owned_key_file(path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| anyhow::anyhow!("key file refused"))?;
+        let meta = file.metadata().map_err(|_| anyhow::anyhow!("key file refused"))?;
+        // SAFETY: geteuid has no arguments or memory side effects.
+        let uid = unsafe { libc::geteuid() };
+        ensure!(
+            file_policy(meta.is_file(), meta.mode(), meta.uid(), uid),
+            "key file must be regular, mode 0600 and owned by running user"
+        );
+        Ok(file)
+    }
+    #[cfg(windows)]
+    {
+        // The error names the path and, for a loose file, the SID that can
+        // read it (public); never file contents.
+        wrfcoin_shared_protocol::security::key_file::open_owner_only_key_file(path)
+            .map_err(|e| anyhow::anyhow!("key file refused: {e}"))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        anyhow::bail!("key ownership cannot be enforced on this platform")
+    }
+}
+
+#[cfg(unix)]
 fn file_policy(regular: bool, mode: u32, file_uid: u32, running_uid: u32) -> bool {
     regular && mode & 0o7777 == 0o600 && file_uid == running_uid
 }
@@ -275,11 +296,14 @@ mod tests {
     }
     #[test]
     fn operator_wallet_binding_mode_owner_and_symlink_controls() {
-        assert!(!file_policy(true, 0o600, 101, 100));
-        assert!(!file_policy(false, 0o600, 100, 100));
-        assert!(!file_policy(true, 0o400, 100, 100));
-        assert!(!file_policy(true, 0o640, 100, 100));
-        assert!(file_policy(true, 0o600, 100, 100));
+        #[cfg(unix)]
+        {
+            assert!(!file_policy(true, 0o600, 101, 100));
+            assert!(!file_policy(false, 0o600, 100, 100));
+            assert!(!file_policy(true, 0o400, 100, 100));
+            assert!(!file_policy(true, 0o640, 100, 100));
+            assert!(file_policy(true, 0o600, 100, 100));
+        }
         let root = std::env::temp_dir().join(format!("node-operator-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("wallet.json");

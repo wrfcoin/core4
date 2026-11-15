@@ -57,7 +57,7 @@ fn deposit(owner_byte: u8, id: u8, genesis: [u8; 32], chain: &str) -> NodeBondLi
         },
         owner_key: pk(owner_byte), governance_key: Some(pk(99)),
         governance_signature: signature(&authorization, 99, chain),
-        payout_key: Some(pk(owner_byte)), payout_signature: signature(&authorization, owner_byte, chain),
+        payout_key: Some(pk(owner_byte)), payout_signature: signature(&authorization, owner_byte, chain), payout_passkey: None,
     }
 }
 

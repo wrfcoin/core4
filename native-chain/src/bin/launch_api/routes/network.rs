@@ -198,6 +198,7 @@ pub async fn get_network_info(state: web::Data<AppState>) -> impl Responder {
 
     let height = blockchain.height;
     drop(blockchain);
+    let transfer_fee = transfer_fee_info(height.saturating_add(1));
 
     let genesis_hash = if let Some(hash) = cached {
         hash
@@ -246,14 +247,37 @@ pub async fn get_network_info(state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
         "network_id": std::env::var("WRFCOIN_NETWORK_ID").unwrap_or_else(|_| "unknown".into()),
         "chain_id": std::env::var("WRFCOIN_CHAIN_ID").unwrap_or_else(|_| "777".into()),
-        "disclaimer_url": "https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html",
+        "disclaimer_url": "https://wrfcoin.com/testnet-disclaimer.html",
         "node_version": env!("CARGO_PKG_VERSION"),
+        // Short commit of the source, set at compile time by release builds (the Windows
+        // installer workflow); null for local builds, so they stay reproducible.
+        "node_build": option_env!("WRFCOIN_BUILD_COMMIT"),
         "genesis_hash": genesis_hash,
         "peer_count": peer_count,
         "sync_status": sync_status,
         "chain_height": height,
         "local_peer_id": local_peer_id,
+        "transfer_fee": transfer_fee,
     }))
+}
+
+/// The burned transfer fee (`transfer_fee_burn`) for a transfer mined at
+/// `next_height`, for wallets to show before a send. `base_units` is `"0"` and
+/// `active` false on a chain that charges no fee.
+pub(crate) fn transfer_fee_info(next_height: u64) -> serde_json::Value {
+    use wrfcoin_shared_protocol::consensus::transfer_fee as fee;
+    let charged = fee::transfer_fee_at(next_height);
+    let base_units = charged.unwrap_or(0);
+    serde_json::json!({
+        "feature": wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::TransferFeeBurn.name(),
+        "active": charged.is_some(),
+        "scheduled": fee::transfer_fee_scheduled(),
+        "next_height": next_height,
+        "base_units": base_units.to_string(),
+        "wrf": fee::format_wrf(base_units),
+        "burned": true,
+        "sponsorable": wrfcoin_shared_protocol::accounts::paymaster::sponsorship_active(next_height),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -277,14 +301,76 @@ pub async fn get_network_peer_id(state: web::Data<AppState>) -> impl Responder {
                 format!("{addr}/p2p/{peer_id}")
             }
         });
+        let server_key = state
+            .snapshot_signing_key
+            .as_ref()
+            .map(|signer| signer.public_key().as_bytes().to_vec());
+        // The configured service id only (routes::snapshot::server_service_id
+        // falls back to host:port, which is never a bond alias). This file is
+        // also compiled alone by tests/network_routes.rs, so no crate::routes.
+        // determinism-ok: operator-facing status read for the dashboard; never a consensus input
+        let service_id = std::env::var("WRFCOIN_SERVICE_ID").ok();
+        let bonded = bonded_mode_status(
+            wrfcoin_p2p::config::serve_bonded_snapshots_from_env(),
+            server_key.as_deref(),
+            service_id.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+        );
         HttpResponse::Ok().json(serde_json::json!({
             "peer_id": peer_id,
             "listen_addrs": [listen_with_peer],
             "external_addr": external_addr,
+            "bonded": bonded,
         }))
     } else {
         HttpResponse::ServiceUnavailable()
             .json(serde_json::json!({"error": "P2P not enabled"}))
+    }
+}
+
+/// "Bonded mode" as the node dashboard shows it: whether this node answers
+/// bonded snapshot fetches over P2P (`WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS`), the
+/// service id its receipts name it by (`WRFCOIN_SERVICE_ID`, which must equal
+/// the bond's service alias) and the public key it signs served snapshots with
+/// (the bond's server key; `null` when no signer loaded, so a fetch would be
+/// refused with `NODE_SERVER_SIGNER_UNAVAILABLE`). All three are public: the
+/// alias and the server key are in the bond registration on chain. A node that
+/// does not serve reports only `{"serving": false}`.
+#[cfg(feature = "p2p")]
+fn bonded_mode_status(serving: bool, server_key: Option<&[u8]>, service_id: Option<&str>) -> serde_json::Value {
+    if !serving {
+        return serde_json::json!({ "serving": false });
+    }
+    serde_json::json!({
+        "serving": true,
+        "service_id": service_id,
+        "server_key": server_key.map(hex::encode),
+    })
+}
+
+#[cfg(all(test, feature = "p2p"))]
+mod bonded_mode_status_tests {
+    use super::bonded_mode_status;
+
+    #[test]
+    fn a_node_that_does_not_serve_reports_only_that() {
+        assert_eq!(bonded_mode_status(false, Some(&[7; 32]), Some("laptop-1")), serde_json::json!({ "serving": false }));
+        assert_eq!(bonded_mode_status(false, None, None), serde_json::json!({ "serving": false }));
+    }
+
+    #[test]
+    fn a_serving_node_names_its_service_id_and_server_key() {
+        let status = bonded_mode_status(true, Some(&[0xab; 32]), Some("laptop-1"));
+        assert_eq!(status["serving"], true);
+        assert_eq!(status["service_id"], "laptop-1");
+        assert_eq!(status["server_key"], "ab".repeat(32));
+    }
+
+    #[test]
+    fn a_serving_node_without_a_signer_says_so() {
+        let status = bonded_mode_status(true, None, None);
+        assert_eq!(status["serving"], true);
+        assert!(status["server_key"].is_null());
+        assert!(status["service_id"].is_null());
     }
 }
 
@@ -786,6 +872,128 @@ pub async fn get_network_upgrade(state: web::Data<AppState>) -> impl Responder {
         notice: signed,
         scheduled,
         faucet_sink,
+    })
+}
+
+/// Default and maximum number of recent blocks `/network/producers` scans for
+/// per-key activity. Only in-memory blocks are scanned (never storage), so the
+/// work is bounded by `MAX_PRODUCER_ACTIVITY_WINDOW` under one read lock.
+pub const DEFAULT_PRODUCER_ACTIVITY_WINDOW: u64 = 256;
+pub const MAX_PRODUCER_ACTIVITY_WINDOW: u64 = 2048;
+
+#[derive(Debug, Deserialize)]
+pub struct ProducersQuery {
+    pub window: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProducerView {
+    pub producer_id: String,
+    /// Hex ed25519 key that authenticates this producer's blocks.
+    pub public_key: String,
+    pub payout_address: String,
+    /// Newest height in the scanned window whose block this key signed.
+    pub last_produced_height: Option<u64>,
+    pub blocks_in_window: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProducerActivityWindow {
+    /// Requested window after clamping to `1..=MAX_PRODUCER_ACTIVITY_WINDOW`.
+    pub requested: u64,
+    /// Lowest and highest heights actually scanned (`null` when nothing was).
+    pub from_height: Option<u64>,
+    pub to_height: Option<u64>,
+    pub blocks_scanned: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NetworkProducersResponse {
+    pub tip_height: u64,
+    /// The set below authorizes the block at this height (`tip_height + 1`).
+    pub authorizes_height: u64,
+    /// `epoch` / `effective_height` of the producer-set change in force; `null`
+    /// when the chain carries no producer-set history.
+    pub set_epoch: Option<u64>,
+    pub set_effective_height: Option<u64>,
+    pub producer_set_hash: Option<String>,
+    pub producers: Vec<ProducerView>,
+    pub activity_window: ProducerActivityWindow,
+}
+
+/// `GET /network/producers` — read-only view of the authorized producer set
+/// (`State::producer_set_history`) plus cheap recent activity per key.
+pub async fn get_network_producers(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    query: web::Query<ProducersQuery>,
+) -> impl Responder {
+    use wrfcoin_shared_protocol::consensus::producer_set::validate_producer_set_history;
+    if let Err(resp) = require_role(&req, &state, ApiRole::Reader) {
+        return resp;
+    }
+    let requested = query
+        .window
+        .unwrap_or(DEFAULT_PRODUCER_ACTIVITY_WINDOW)
+        .clamp(1, MAX_PRODUCER_ACTIVITY_WINDOW);
+    let chain = state.blockchain.read().await;
+    let history = &chain.state.producer_set_history;
+    if validate_producer_set_history(history).is_err() {
+        return envelope_error(
+            &req,
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "PRODUCER_SET_INVALID",
+            "producer set history is invalid",
+        );
+    }
+    let tip_height = chain.height;
+    let authorizes_height = tip_height.saturating_add(1);
+    // Validated history is in strictly-increasing effective_height order, so the
+    // change in force is the last one at or below the height it authorizes.
+    let active = history.iter().rfind(|c| c.effective_height <= authorizes_height);
+    let mut producers: Vec<ProducerView> = active
+        .map(|c| {
+            c.canonical_members()
+                .into_iter()
+                .map(|m| ProducerView {
+                    producer_id: m.producer_id.clone(),
+                    public_key: hex::encode(m.public_key),
+                    payout_address: m.payout_address.clone(),
+                    last_produced_height: None,
+                    blocks_in_window: 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let keys: Vec<[u8; 32]> = active
+        .map(|c| c.canonical_members().into_iter().map(|m| m.public_key).collect())
+        .unwrap_or_default();
+    let mut from_height = None;
+    let mut to_height = None;
+    let mut blocks_scanned = 0u64;
+    for (height, block) in chain.blocks().iter().rev().take(requested as usize) {
+        to_height.get_or_insert(*height);
+        from_height = Some(*height);
+        blocks_scanned += 1;
+        let index = keys.iter().position(|k| *k == block.producer_pubkey);
+        if let Some(view) = index.and_then(|i| producers.get_mut(i)) {
+            view.blocks_in_window += 1;
+            view.last_produced_height.get_or_insert(*height);
+        }
+    }
+    HttpResponse::Ok().json(NetworkProducersResponse {
+        tip_height,
+        authorizes_height,
+        set_epoch: active.map(|c| c.epoch),
+        set_effective_height: active.map(|c| c.effective_height),
+        producer_set_hash: active.map(|c| c.producer_set_hash().to_hex()),
+        producers,
+        activity_window: ProducerActivityWindow {
+            requested,
+            from_height,
+            to_height,
+            blocks_scanned,
+        },
     })
 }
 

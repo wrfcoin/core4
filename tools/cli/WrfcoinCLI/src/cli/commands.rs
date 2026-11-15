@@ -677,8 +677,21 @@ impl Wallet {
             authority: None,
             authority_signature: None,
             passkey_auth: None,
+            sponsorship: None,
+            session_key_auth: None,
         };
         let signature = key_pair.sign_hex(&payload.authorization_message(nonce))?;
+        Ok((from, key_pair.public_key_hex()?, signature))
+    }
+
+    /// Sign `message` with the primary address's phrase key. Returns
+    /// `(address, ed25519 public key hex, signature hex)`. Used for
+    /// security-key actions (`security_key_spend`); the key never leaves
+    /// this process.
+    pub fn sign_with_primary(&self, message: &[u8]) -> Result<(String, String, String)> {
+        let from = self.primary_signing_address()?;
+        let key_pair = self.key_manager()?.load_key_pair(&from)?;
+        let signature = key_pair.sign_hex(message)?;
         Ok((from, key_pair.public_key_hex()?, signature))
     }
 
@@ -1025,14 +1038,26 @@ pub async fn handle_wallet_command(
                 .read()
                 .await
                 .sign_transparent_transfer(to, amount_units, nonce)?;
+            // Burned transfer fee: declared when the node reports one in
+            // force; otherwise omitted, and the node declares its own.
+            let fee = client.get_transfer_fee().await;
+            let fee_units = fee.as_ref().ok().copied().flatten();
+            // `security_key_spend`: a protected account also needs a touch +
+            // PIN on its registered key (nothing happens for other accounts).
+            let security_key_auth = crate::commands::security_key::spend_assertion_if_required(
+                &client, &from, to, amount_units, nonce,
+            )
+            .await?;
             let accepted = client
-                .submit_transparent_transfer(
+                .submit_transparent_transfer_with_security_key(
                     &from,
                     to,
                     amount_units,
                     nonce,
                     &auth_pubkey,
                     &auth_signature,
+                    fee_units,
+                    security_key_auth.as_ref(),
                 )
                 .await?;
             Ok(json!({
@@ -1045,6 +1070,7 @@ pub async fn handle_wallet_command(
                 "from": from,
                 "to": to,
                 "amount": wrfcoin_cli::output::format_wrf_units(amount_units),
+                "network_fee": crate::commands::send_interactive::network_fee_label(&fee),
                 "status": "submitted",
                 "tx_id": accepted.tx_id,
             }))

@@ -19,7 +19,9 @@ pub mod anti_gaming;
 pub mod blockchain;
 pub mod categorical;
 pub mod continuous;
+pub mod late_score;
 pub mod probabilistic;
+pub mod skill;
 pub mod variables;
 
 // Re-export blockchain types at crate root (consensus-critical).

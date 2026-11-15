@@ -2653,6 +2653,333 @@ async function run() {
         assert.deepStrictEqual(await seenLookup(SEA_LEVEL_STATION.stationId), { elevation_m: 227.7 });
     });
 
+    // --- backend collector roster (--backend-roster), merged with the file ---
+    // Made-up stations, owners, devices and keys only.
+    const backendEntry = (n, over = {}) => ({
+        provider: 'ambient',
+        stationId: `pws-00000000000000${n}`,
+        ownerAddress: `0x${String(n).repeat(20).slice(0, 40)}`,
+        mac: `AA:BB:CC:DD:EE:${n}`,
+        model: 'personal-weather-station',
+        consentStatus: 'approved',
+        coarseMetadataStatus: 'approved',
+        bindingRef: `backend:website-station:pws-00000000000000${n}`,
+        apiKey: `APIKEYSECRET-${n}`, // pragma: allowlist secret -- made-up key in a unit-test fixture
+        appKey: `APPKEYSECRET-${n}`,
+        latitude: 10.3,
+        longitude: -20.7,
+        ...over,
+    });
+    const backendAnswer = (stations) => ({ status: 200, data: { version: 'collector_roster_v1', stations, skipped: 0 } });
+    const fileEntry = (id, mac, owner) => multi.normalizeRosterEntry({
+        stationId: id, ownerAddress: owner, mac, model: 'WS-5000',
+        consentStatus: 'approved', coarseMetadataStatus: 'approved', bindingRef: `file:${id}`,
+        apiKey: 'FILEKEYSECRET', appKey: 'FILEAPPSECRET', // pragma: allowlist secret -- made-up keys in a unit-test fixture
+    }, 0);
+    // Everything the script prints while `fn` runs, so tests can prove what is NOT printed.
+    async function capturing(fn) {
+        const lines = [];
+        const saved = { log: console.log, error: console.error };
+        console.log = (...a) => lines.push(a.join(' '));
+        console.error = (...a) => lines.push(a.join(' '));
+        try {
+            return { result: await fn(), printed: lines.join('\n') };
+        } finally {
+            console.log = saved.log;
+            console.error = saved.error;
+        }
+    }
+
+    await test('backend roster: a good answer gives entries with keys and the grid position; nothing of it is printed', async () => {
+        const memory = { entries: null, atMs: 0 };
+        const { result, printed } = await capturing(() => multi.loadBackendRoster({
+            getJson: async (urlPath) => {
+                assert.strictEqual(urlPath, '/api/weather/stations/collector-roster');
+                return backendAnswer([backendEntry(11), backendEntry(12, { name: 'Jane Doe back yard' })]);
+            },
+            nowMs: () => 1000,
+            memory,
+        }));
+        assert.strictEqual(result.state, 'fresh');
+        assert.deepStrictEqual(result.entries.map((e) => e.stationId), ['pws-0000000000000011', 'pws-0000000000000012']);
+        assert.strictEqual(result.entries[0].apiKey, 'APIKEYSECRET-11');
+        assert.deepStrictEqual([result.entries[0].latitude, result.entries[0].longitude], [10.3, -20.7]);
+        // A name is never taken from the backend.
+        assert.strictEqual(result.entries[1].name, undefined);
+        assert.ok(!printed.includes('SECRET'), 'keys must never be printed');
+        assert.ok(!printed.includes('Jane'), 'names must never be printed');
+        assert.strictEqual(memory.atMs, 1000);
+    });
+
+    await test('backend roster: one bad entry is dropped alone and cannot reject the others', async () => {
+        const bad = [
+            backendEntry(21, { mac: undefined }),
+            backendEntry(22, { consentStatus: 'pending' }),
+            backendEntry(23, { apiKey: undefined }),
+            backendEntry(24, { appKey: '' }),
+            backendEntry(25, { latitude: null }),
+            backendEntry(26, { bindingRef: 'ab'.repeat(20) }),
+            backendEntry(27, { provider: 'weatherflow' }),
+            backendEntry(28, { mac: 'AA:BB:CC:DD:EE:11' }),          // same device as the good one
+            backendEntry(11, { mac: 'AA:BB:CC:DD:EE:29' }),          // same station id as the good one
+            null,
+            'not an entry',
+        ];
+        const { result } = await capturing(() => multi.loadBackendRoster({
+            getJson: async () => backendAnswer([backendEntry(11), ...bad, backendEntry(12)]),
+            memory: { entries: null, atMs: 0 },
+        }));
+        assert.deepStrictEqual(result.entries.map((e) => e.stationId), ['pws-0000000000000011', 'pws-0000000000000012']);
+    });
+
+    await test('backend roster: an answer that is not a roster is refused whole (old array shape, wrong version, too many)', async () => {
+        for (const data of [
+            [backendEntry(11)], { stations: [backendEntry(11)] }, { version: 'other', stations: [] },
+            { version: 'collector_roster_v1', stations: 'x' }, null, 'text',
+            { version: 'collector_roster_v1', stations: Array.from({ length: 501 }, () => backendEntry(11)) },
+        ]) {
+            assert.strictEqual(multi.backendRosterEntries(data), null);
+        }
+        assert.deepStrictEqual(multi.backendRosterEntries({ version: 'collector_roster_v1', stations: [] }), { entries: [], dropped: 0 });
+    });
+
+    await test('backend unreachable or 5xx: the last good roster in memory is used, for at most 24 hours, and the answer body is never printed', async () => {
+        const memory = { entries: null, atMs: 0 };
+        let clock = 5_000;
+        let answer = backendAnswer([backendEntry(11)]);
+        const deps = { getJson: async () => answer, nowMs: () => clock, memory };
+        assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'fresh');
+
+        for (const failure of [
+            { status: 503, data: { error: 'boom APIKEYSECRET-LEAK' } }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 500, data: 'APIKEYSECRET-LEAK' }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 502, data: null },
+            { status: null, error: 'ECONNREFUSED' },
+            { status: null, error: 'timeout' },
+        ]) {
+            answer = failure;
+            clock += 60_000;
+            const { result, printed } = await capturing(() => multi.loadBackendRoster(deps));
+            assert.strictEqual(result.state, 'last_good', `status ${failure.status}`);
+            assert.deepStrictEqual(result.entries.map((e) => e.stationId), ['pws-0000000000000011']);
+            assert.ok(!printed.includes('SECRET'), 'a failing answer body must never be printed');
+        }
+        // A request that throws is the same as no answer.
+        const throwing = { ...deps, getJson: async () => { throw new Error('socket APIKEYSECRET-LEAK'); } }; // pragma: allowlist secret -- made-up text
+        const thrown = await capturing(() => multi.loadBackendRoster(throwing));
+        assert.strictEqual(thrown.result.state, 'last_good');
+        assert.ok(!thrown.printed.includes('SECRET'));
+
+        // Exactly 24 hours after the last good read it is still used; a moment later it is dropped for good.
+        answer = { status: 503, data: null };
+        clock = 5_000 + multi.BACKEND_ROSTER_MAX_AGE_MS;
+        assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'last_good');
+        clock += 1;
+        const expired = await capturing(() => multi.loadBackendRoster(deps));
+        assert.deepStrictEqual(expired.result, { entries: [], state: 'none' });
+        assert.strictEqual(memory.entries, null);
+        // And a later good read fills it again; an empty roster is a real answer, not a failure.
+        answer = backendAnswer([]);
+        assert.deepStrictEqual((await capturing(() => multi.loadBackendRoster(deps))).result, { entries: [], state: 'fresh' });
+    });
+
+    await test('a deliberate refusal drops the backend stations at once: switch off (404), token rotated (401/403), 429, not a roster', async () => {
+        for (const refusal of [
+            { status: 404, data: { error: { code: 'NOT_FOUND' } } },
+            { status: 403, data: { error: { code: 'FORBIDDEN' } } },
+            { status: 401, data: null },
+            { status: 429, data: 'slow down' },
+            { status: 400, data: null },
+            { status: 200, data: 'APIKEYSECRET-LEAK not json' }, // pragma: allowlist secret -- made-up text in a unit-test fixture
+            { status: 200, data: [backendEntry(11)] },
+            { status: 200, data: { version: 'other', stations: [] } },
+        ]) {
+            const memory = { entries: null, atMs: 0 };
+            let answer = backendAnswer([backendEntry(11)]);
+            const deps = { getJson: async () => answer, nowMs: () => 10_000, memory };
+            assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'fresh');
+            answer = refusal;
+            const { result, printed } = await capturing(() => multi.loadBackendRoster(deps));
+            assert.deepStrictEqual(result, { entries: [], state: 'none' }, `status ${refusal.status}`);
+            assert.strictEqual(memory.entries, null);
+            assert.ok(!printed.includes('SECRET'));
+            // And a network failure right after a refusal has nothing to fall back to.
+            answer = { status: null, error: 'ECONNREFUSED' };
+            assert.deepStrictEqual((await capturing(() => multi.loadBackendRoster(deps))).result, { entries: [], state: 'none' });
+        }
+    });
+
+    await test('an unreadable roster file: no backend entry is used that cycle, and the backend is not even asked', async () => {
+        let asked = 0;
+        const { result } = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'none', unreadable: true }, memory: { entries: null, atMs: 0 },
+            getJson: async () => { asked += 1; return backendAnswer([backendEntry(11)]); },
+        }));
+        assert.deepStrictEqual(result, { entries: [], source: 'none' });
+        assert.strictEqual(asked, 0);
+        // A missing file (no file named at all) is different: the backend's stations are used.
+        const none = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'none' }, memory: { entries: null, atMs: 0 },
+            getJson: async () => backendAnswer([backendEntry(11)]),
+        }));
+        assert.strictEqual(none.result.source, 'backend');
+        // The real reader marks an unreadable file as such.
+        const src = fs.readFileSync(path.join(__dirname, 'fetch-ambient-weather-multi.cjs'), 'utf8');
+        assert.ok(src.includes("return { entries: [], source: 'none', unreadable: true };"));
+    });
+
+    await test('a connection reset after the headers is a network error, not a hang (and keeps last-good allowed)', async () => {
+        const http = require('http');
+        // Answers 200 with a partial body, then destroys the socket before the end.
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+            res.write('{"version":"collector_roster_v1","stations":[');
+            setTimeout(() => req.socket.destroy(), 20);
+        });
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address();
+        try {
+            const outcome = await Promise.race([
+                multi.backendGetJson('127.0.0.1', port, '/api/weather/stations/collector-roster', 'TOKEN', 5000),
+                new Promise((resolve) => setTimeout(() => resolve('HUNG'), 3000)),
+            ]);
+            assert.notStrictEqual(outcome, 'HUNG', 'backendGetJson must settle when the answer is cut off');
+            assert.strictEqual(outcome.status, null);
+            // A network error: the last good roster may still be used.
+            const memory = { entries: null, atMs: 0 };
+            let answer = backendAnswer([backendEntry(11)]);
+            const deps = { getJson: async () => answer, nowMs: () => 1000, memory };
+            await capturing(() => multi.loadBackendRoster(deps));
+            answer = outcome;
+            assert.strictEqual((await capturing(() => multi.loadBackendRoster(deps))).result.state, 'last_good');
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    await test('a station that left the backend roster is gone on the next good read', async () => {
+        const memory = { entries: null, atMs: 0 };
+        let answer = backendAnswer([backendEntry(11), backendEntry(12)]);
+        const deps = { getJson: async () => answer, nowMs: () => 1, memory };
+        await capturing(() => multi.loadBackendRoster(deps));
+        answer = backendAnswer([backendEntry(12)]);
+        const { result } = await capturing(() => multi.loadBackendRoster(deps));
+        assert.deepStrictEqual(result.entries.map((e) => e.stationId), ['pws-0000000000000012']);
+    });
+
+    await test('merge: the file wins on the same device or the same station id; other backend stations are added after the file\'s', async () => {
+        const file = [
+            fileEntry('hand-station-a', 'AA:BB:CC:DD:EE:11', 'hand-owner-a'),
+            fileEntry('pws-0000000000000013', '00:00:00:00:00:13', 'hand-owner-b'),
+        ];
+        const backend = multi.backendRosterEntries(backendAnswer([backendEntry(11), backendEntry(12), backendEntry(13)]).data).entries;
+        const merged = multi.mergeRosters(file, backend);
+        assert.deepStrictEqual(merged.entries.map((e) => [e.stationId, e.ownerAddress]), [
+            ['hand-station-a', 'hand-owner-a'],
+            ['pws-0000000000000013', 'hand-owner-b'],
+            ['pws-0000000000000012', backendEntry(12).ownerAddress],
+        ]);
+        // The device in the file still pays the owner the file names, with the file's keys.
+        assert.strictEqual(merged.entries[0].apiKey, 'FILEKEYSECRET');
+        assert.deepStrictEqual(merged.dropped, [
+            { station_id: 'pws-0000000000000011', reason: 'device_in_file' },
+            { station_id: 'pws-0000000000000013', reason: 'station_id_in_file' },
+        ]);
+    });
+
+    await test('loadRoster with the backend: file + backend; backend down leaves the file\'s stations; an invalid file still refuses everything', async () => {
+        const file = { entries: [fileEntry('hand-station-a', '00:00:00:00:00:0A', 'hand-owner-a')], source: 'file' };
+        const up = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: file, memory: { entries: null, atMs: 0 },
+            getJson: async () => backendAnswer([backendEntry(11)]),
+        }));
+        assert.strictEqual(up.result.source, 'file+backend');
+        assert.deepStrictEqual(up.result.entries.map((e) => e.stationId), ['hand-station-a', 'pws-0000000000000011']);
+        assert.ok(!up.printed.includes('SECRET'));
+
+        const down = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: file, memory: { entries: null, atMs: 0 },
+            getJson: async () => ({ status: 503, data: 'down' }),
+        }));
+        assert.strictEqual(down.result.source, 'file');
+        assert.deepStrictEqual(down.result.entries.map((e) => e.stationId), ['hand-station-a']);
+
+        const noFile = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'none' }, memory: { entries: null, atMs: 0 },
+            getJson: async () => backendAnswer([backendEntry(11)]),
+        }));
+        assert.strictEqual(noFile.result.source, 'backend');
+
+        let asked = 0;
+        const invalid = await capturing(() => multi.loadRoster({
+            backendRoster: true, fileRoster: { entries: [], source: 'invalid' }, memory: { entries: null, atMs: 0 },
+            getJson: async () => { asked += 1; return backendAnswer([backendEntry(11)]); },
+        }));
+        assert.deepStrictEqual(invalid.result, { entries: [], source: 'invalid' });
+        assert.strictEqual(asked, 0);
+    });
+
+    await test('a revoked key on one station does not stop the next one', async () => {
+        const stations = multi.backendRosterEntries(backendAnswer([backendEntry(11), backendEntry(12)]).data).entries;
+        const seen = [];
+        const results = [];
+        await capturing(async () => {
+            for (const station of stations) {
+                results.push(await multi.processContributor(station, {
+                    dryRun: true,
+                    fetchStationReadings: async (s) => {
+                        seen.push(s.stationId);
+                        if (s.stationId.endsWith('11')) return { ok: false, reason: 'auth', detail: 'devices HTTP 401' };
+                        return { ok: true, normalized: [], stale: false, stationName: s.stationId, modelBinding: 'operator_asserted' };
+                    },
+                    submitStationReadings: async () => ({}),
+                }));
+            }
+        });
+        assert.deepStrictEqual(seen, ['pws-0000000000000011', 'pws-0000000000000012']);
+        assert.strictEqual(results[0].skipped, true);
+        assert.strictEqual(results[0].reason, 'auth');
+        assert.strictEqual(results[1].dryRun, true);
+    });
+
+    await test('--loop-seconds: cycles keep running after one throws, wait at least a minute, and the error text is redacted', async () => {
+        const savedExitCode = process.exitCode;
+        const waits = [];
+        let cycles = 0;
+        try {
+            const { printed } = await capturing(() => multi.runLoop(5, {
+                cycle: async () => {
+                    cycles += 1;
+                    process.exitCode = 1;
+                    if (cycles === 2) throw new Error('GET https://rt.example/v1/devices?apiKey=APIKEYSECRET&applicationKey=APPKEYSECRET failed');
+                },
+                sleep: async (ms) => { waits.push(ms); },
+                keepGoing: () => cycles < 4,
+            }));
+            assert.strictEqual(cycles, 4);
+            assert.deepStrictEqual(waits, [60_000, 60_000, 60_000]);
+            assert.ok(printed.includes('Collector cycle failed; the loop continues'));
+            assert.ok(!printed.includes('SECRET'));
+            assert.strictEqual(process.exitCode, 0);
+            const longer = [];
+            let once = 0;
+            await multi.runLoop(300, { cycle: async () => { once += 1; }, sleep: async (ms) => { longer.push(ms); }, keepGoing: () => once < 2 });
+            assert.deepStrictEqual(longer, [300_000]);
+        } finally {
+            process.exitCode = savedExitCode;
+        }
+    });
+
+    await test('without --backend-roster nothing asks the backend roster path: the file alone, as before', async () => {
+        const src = fs.readFileSync(path.join(__dirname, 'fetch-ambient-weather-multi.cjs'), 'utf8');
+        assert.ok(src.includes("if (!BACKEND_ROSTER && !deps.backendRoster) return loadPrimaryRoster();"));
+        assert.strictEqual(multi.BACKEND_ROSTER_PATH, '/api/weather/stations/collector-roster');
+        // The roster answer is held in memory only: nothing in the backend-roster code writes a file.
+        const section = src.slice(src.indexOf('// Backend collector roster (--backend-roster)'), src.indexOf('async function loadPrimaryRoster'));
+        assert.ok(section.length > 500);
+        assert.ok(!/writeFile|appendFile|createWriteStream|mkdirSync/.test(section));
+    });
+
     console.log(`\n${passed} passed`);
 }
 

@@ -1,8 +1,4 @@
-name: Loom Concurrency (parked)
-# NO-AUTOMATIC-TRIGGER: parked — weekly schedule commented out and the workflow
-# gh-disabled (2026-07-31, Actions budget). These loom models are this repo's ONLY
-# CI home for interleaving coverage (#2257), so while parked that coverage is zero.
-# Register and restore: docs/ci/parked-workflows.txt + docs/ci/reenable-parked-workflows.sh.
+name: Loom Concurrency
 
 # Loom explores thread interleavings exhaustively within a bounded model. The
 # models live in shared-protocol/tests/loom_mempool.rs and drive the PRODUCTION
@@ -15,19 +11,15 @@ name: Loom Concurrency (parked)
 # via reqwest before any model can run. The models therefore run under a plain
 # `cargo test`, which is why this workflow can actually be green.
 #
-# NOT PR-TRIGGERED. Exhaustive interleaving exploration is expensive and the org
-# Actions budget is under pressure. Note that the models are ordinary `cargo test`
+# NOT PR-TRIGGERED. Exhaustive interleaving exploration is expensive. Note that the models are ordinary `cargo test`
 # integration tests, so `ci-readiness`'s Rust gate does NOT pick them up (it runs
 # `--lib`, not `--test loom_mempool`) — this workflow is their only home. If PR
 # coverage is wanted, schedule it deliberately rather than widening this trigger.
 
 on:
-  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
-  # UI re-enable would silently re-arm the cron below. File-level park keeps
-  # the August-budget decision visible in the diff; re-arming is a reviewed
-  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
-  # schedule:
-  # - cron: '0 4 * * 1' # weekly, Monday 04:00 UTC
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: under 30 min, and this is the only CI home for these models.
+  schedule:
+    - cron: '41 5 * * *'
   workflow_dispatch:
     inputs:
       max_preemptions:
@@ -49,6 +41,23 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Reclaim hosted disk before the toolchain and build, as sbom-generate does (#3621).
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.98.0'

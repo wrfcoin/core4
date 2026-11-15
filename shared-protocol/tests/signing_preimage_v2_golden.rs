@@ -1003,6 +1003,7 @@ fn build_session_key_register_case() -> Value {
             allowed_targets: vec![Address([0x82; 20])],
             max_value_per_use: 25,
             max_total_value: 250,
+            window: None,
         },
         valid_from: 2_170,
         valid_until: 2_270,
@@ -1163,6 +1164,156 @@ fn build_declare_authorization_case(
         "input": { "chain_id": identity().chain_id, "account": account.to_hex(), "authorization": authorization_name, "nonce": nonce, "generation": generation },
         "tampered_input": { "chain_id": identity().chain_id, "account": account.to_hex(), "authorization": authorization_name, "nonce": nonce + 1, "generation": generation },
         "tamper_note": "nonce 11 -> 12",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
+/// Security-key wallets (`security_key_spend`): the phrase key signs
+/// `security_key::action_message`; registered keys sign SHA3 of the same bytes.
+/// `begin_escape` is the phrase-only action, so it is the one with no key in
+/// the body; the tampered twin moves the action nonce.
+fn build_security_key_action_case(seed: u64) -> Value {
+    use wrfcoin_shared_protocol::accounts::security_key::{SecurityKeyActionBody, action_message};
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let nonce = 3u64;
+    let preimage = action_message(
+        &identity().chain_id,
+        &identity().network_id,
+        &account,
+        nonce,
+        &SecurityKeyActionBody::BeginEscape,
+    )
+    .expect("begin_escape encodes");
+    let signature = sk.sign(&preimage);
+    json!({
+        "kind": "security_key_action_v1",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.security_key_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": identity().chain_id, "network_id": identity().network_id, "account": account.to_hex(), "action": "begin_escape", "nonce": nonce },
+        "tampered_input": { "chain_id": identity().chain_id, "network_id": identity().network_id, "account": account.to_hex(), "action": "begin_escape", "nonce": nonce + 1 },
+        "tamper_note": "nonce 3 -> 4",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
+/// Forecast late score (`consensus::forecast_late_score`): what one oracle
+/// signs, the full score payload (the observation and the forecast commit ids
+/// it scores). Negative values, two reading ids and two forecast ids, so the
+/// signed integer and list encodings are pinned too.
+fn build_forecast_score_attestation_case() -> Value {
+    use wrfcoin_shared_protocol::consensus::forecast_late_score::{
+        LateScoreVariable, ObservationAttestation, forecast_score_message,
+    };
+    let seed = 900_160u64;
+    let (sk, pk) = keypair(seed);
+    let attestation = ObservationAttestation {
+        station_id: "station-golden-1".to_string(),
+        variable: LateScoreVariable::TemperatureC,
+        lead_hours: 6,
+        commit_height: 21_504,
+        commit_time: 1_762_628_423,
+        target: 1_762_650_023,
+        truth: -1_300,
+        truth_commit_id: "c3".repeat(32),
+        reference: 139,
+        mean24: -900,
+        last: -2_000,
+        window_hash: "5a".repeat(32),
+        window_commit_ids: vec!["a1".repeat(32), "b2".repeat(32)],
+    };
+    let forecast_commit_ids = vec!["d4".repeat(32), "e5".repeat(32)];
+    // The tamper keeps the observation and drops one forecast id.
+    let tampered_ids = vec!["d4".repeat(32)];
+    let preimage = forecast_score_message(
+        &identity().chain_id,
+        &identity().network_id,
+        &attestation,
+        &forecast_commit_ids,
+    );
+    let signature = sk.sign(&preimage);
+    let input = |ids: &[String]| {
+        json!({
+            "chain_id": identity().chain_id,
+            "network_id": identity().network_id,
+            "attestation": serde_json::to_value(&attestation).expect("attestation serializes"),
+            "forecast_commit_ids": ids,
+        })
+    };
+    json!({
+        "kind": "forecast_score_attestation_v2",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.forecast_score_attestation.v2",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": input(&forecast_commit_ids),
+        "tampered_input": input(&tampered_ids),
+        "tamper_note": "forecast_commit_ids [d4.., e5..] -> [d4..]",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
+/// Send allowlist (`accounts::send_allowlist`): one owner-signed action whose
+/// list is non-empty, so the address encoding is pinned too.
+fn build_send_allowlist_action_case() -> Value {
+    use wrfcoin_shared_protocol::accounts::send_allowlist::{
+        SendAllowlistAction, send_allowlist_action_message,
+    };
+    let seed = 900_140u64;
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let nonce = 7u64;
+    let action = SendAllowlistAction::Enable {
+        add_delay_blocks: 2_244,
+        allowed: vec![Address([0xAA; 20]), Address([0xBB; 20])],
+    };
+    let preimage = send_allowlist_action_message(&identity().chain_id, &account, &action, nonce);
+    let signature = sk.sign(&preimage);
+    let action_json = serde_json::to_value(&action).expect("action serializes");
+    json!({
+        "kind": "send_allowlist_action_v2",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.send_allowlist_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": identity().chain_id, "account": account.to_hex(), "action": action_json, "nonce": nonce },
+        "tampered_input": { "chain_id": identity().chain_id, "account": account.to_hex(), "action": action_json, "nonce": nonce + 1 },
+        "tamper_note": "action nonce 7 -> 8",
+        "preimage_hex": hex::encode(&preimage),
+        "signature_hex": signature.to_hex(),
+    })
+}
+
+/// Advisory governance (`governance::advisory`): one proposal (the "Welcome to
+/// governance" text, with a newline and a non-ASCII byte so the text encoding
+/// is pinned) and one vote. Shared with the phone signer.
+fn build_advisory_governance_case(seed: u64, action: wrfcoin_shared_protocol::governance::advisory::AdvisoryAction, nonce: u64, tampered: wrfcoin_shared_protocol::governance::advisory::AdvisoryAction, note: &str) -> Value {
+    use wrfcoin_shared_protocol::governance::advisory::advisory_action_message;
+    let (sk, pk) = keypair(seed);
+    let account = Address::from_public_key(&pk);
+    let id = identity();
+    let preimage = advisory_action_message(&id.chain_id, &id.network_id, &account, &action, nonce);
+    let signature = sk.sign(&preimage);
+    let action_json = serde_json::to_value(&action).expect("action serializes");
+    let tampered_json = serde_json::to_value(&tampered).expect("action serializes");
+    json!({
+        "kind": "advisory_governance_action_v2",
+        "frame": "money_path_v2",
+        "tag": "wrfcoin.advisory_governance_action.v1",
+        "signer_seed": seed,
+        "signer_secret_hex": sk.to_hex(),
+        "signer_public_key_hex": pk.to_hex(),
+        "input": { "chain_id": id.chain_id, "network_id": id.network_id, "account": account.to_hex(), "action": action_json, "nonce": nonce },
+        "tampered_input": { "chain_id": id.chain_id, "network_id": id.network_id, "account": account.to_hex(), "action": tampered_json, "nonce": nonce },
+        "tamper_note": note,
         "preimage_hex": hex::encode(&preimage),
         "signature_hex": signature.to_hex(),
     })
@@ -1383,6 +1534,53 @@ fn build_station_owner_action_case(action: &str, tamper_to: &str, seed: u64) -> 
     )
 }
 
+/// Sponsored first sends: the sponsor's authorization of one transfer's fee
+/// (`accounts::paymaster::sponsored_send_authorization_message_with_domain`).
+/// Pinned so the sponsor service's signer cannot drift from consensus.
+fn build_sponsored_send_authorization_case() -> Value {
+    use wrfcoin_shared_protocol::accounts::paymaster::sponsored_send_authorization_message_with_domain;
+    let identity = identity();
+    let input = json!({
+        "chain_id": identity.chain_id, "network_id": identity.network_id,
+        "sponsor": "0x".to_string() + &"5a".repeat(20),
+        "from": "0x".to_string() + &"a1".repeat(20),
+        "to": "0x".to_string() + &"b2".repeat(20),
+        "amount": 10_000_000u64,
+        "nonce": 0u64,
+        "fee": 5_000u64,
+        "expires_at_height": 21_000u64,
+        "balance_floor": 100_000_000u64,
+        "first_send_only": true,
+    });
+    let mut tampered = input.clone();
+    tampered["first_send_only"] = json!(false);
+    station_owner_case(
+        "sponsored_send_authorization_v1",
+        "wrfcoin_sponsored_send_auth_v1",
+        900_150,
+        |i: &Value| {
+            let s = |k: &str| i[k].as_str().expect(k).to_string();
+            let n = |k: &str| i[k].as_u64().expect(k);
+            sponsored_send_authorization_message_with_domain(
+                &s("chain_id"),
+                &s("network_id"),
+                &s("sponsor"),
+                &s("from"),
+                &s("to"),
+                n("amount"),
+                n("nonce"),
+                n("fee"),
+                n("expires_at_height"),
+                n("balance_floor"),
+                i["first_send_only"].as_bool().expect("first_send_only"),
+            )
+        },
+        input,
+        tampered,
+        "first_send_only true -> false (a sponsor's rule cannot be widened after signing)",
+    )
+}
+
 fn build_all_cases() -> Vec<Value> {
     let mut cases = Vec::new();
     {
@@ -1452,6 +1650,7 @@ fn build_all_cases() -> Vec<Value> {
         "declare_authorization_signer_is_sender_v2",
         900_121,
     ));
+    cases.push(build_security_key_action_case(900_140));
     cases.extend(build_station_owner_transfer_cases());
     cases.extend(build_station_owner_recovery_filing_cases());
     cases.push(build_station_owner_recovery_cancel_case());
@@ -1460,6 +1659,31 @@ fn build_all_cases() -> Vec<Value> {
     cases.push(build_station_owner_action_case("deactivate", "reactivate", 900_137));
     cases.push(build_station_owner_action_case("reactivate", "deactivate", 900_138));
     cases.push(build_station_registration_authorization_v2_case());
+    cases.push(build_sponsored_send_authorization_case());
+    cases.push(build_send_allowlist_action_case());
+    {
+        use wrfcoin_shared_protocol::governance::advisory::{AdvisoryAction, proposal_id};
+        let welcome = |summary: &str| AdvisoryAction::Propose {
+            title: "Welcome to governance".into(),
+            summary: summary.into(),
+        };
+        cases.push(build_advisory_governance_case(
+            900_150,
+            welcome("The first advisory proposal on chain 888.\nIt changes nothing \u{2014} a passed proposal is only recorded."),
+            3,
+            welcome("The first advisory proposal on chain 888.\nIt changes everything."),
+            "summary text changed",
+        ));
+        let id = proposal_id(&Address([0x5A; 20]), 3);
+        cases.push(build_advisory_governance_case(
+            900_151,
+            AdvisoryAction::Vote { proposal_id: id.clone(), approve: true },
+            9,
+            AdvisoryAction::Vote { proposal_id: id, approve: false },
+            "vote for -> against",
+        ));
+    }
+    cases.push(build_forecast_score_attestation_case());
     cases
 }
 

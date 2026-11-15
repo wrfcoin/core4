@@ -12,13 +12,9 @@ on:
       - 'consensus-engines/**'
       - 'docs/security/KANI_PROOFS.md'
       - '.github/workflows/kani.yml'
-# PARKED 2026-07-31 to protect the August Actions budget (3,000 min/month, private repo).
-# Only the `schedule:` trigger is parked -- `pull_request` and `workflow_dispatch` are
-# untouched, so PR gating is unchanged and this can still be run on demand with
-# `gh workflow run <file>`. Restore by deleting this banner and uncommenting below.
-# Rationale + restore list: docs/ci/reenable-parked-workflows.sh (in this repo)
-  # schedule:
-  # - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: the proofs take about a minute; setup is most of the job.
+  schedule:
+    - cron: '13 6 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -52,6 +48,23 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      # Reclaim hosted disk before the toolchain and build, as sbom-generate does (#3621).
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier

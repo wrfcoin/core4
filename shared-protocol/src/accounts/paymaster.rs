@@ -217,6 +217,10 @@ pub enum PaymasterError {
     PerSenderRateLimitExceeded,
     #[error("insufficient deposit: needed {needed}, available {available}")]
     InsufficientDeposit { needed: u128, available: u128 },
+    /// #3170: a sponsorship must charge the paymaster something. A zero cost
+    /// would consume a rate-limit slot without paying for the work.
+    #[error("sponsored cost must be non-zero")]
+    ZeroCost,
 }
 
 /// Roll `account`'s per-paymaster epoch counters over if the current one has
@@ -227,6 +231,10 @@ fn roll_epoch_if_elapsed(account: &mut PaymasterAccount, limits: &PaymasterLimit
         account.sponsorships_this_epoch = 0;
         account.successes_this_epoch = 0;
         account.failures_this_epoch = 0;
+        // #3170: per-sender windows live only inside the paymaster's own
+        // epoch, so the map is cleared when that epoch rolls. It can then
+        // never hold more than `max_sponsorships_per_epoch` entries.
+        account.per_sender.clear();
     }
 }
 
@@ -301,6 +309,9 @@ pub fn apply(
         },
         PaymasterAction::SponsorOperation { paymaster, sender, actual_cost, succeeded } => {
             let limits = DEFAULT_PAYMASTER_LIMITS;
+            if actual_cost == 0 {
+                return Err(PaymasterError::ZeroCost);
+            }
             let account = paymasters.get_mut(&paymaster).ok_or(PaymasterError::NotRegistered)?;
             if account.unstake_requested_at.is_some() {
                 return Err(PaymasterError::UnstakePending);
@@ -347,6 +358,474 @@ pub fn apply(
 
             Ok(PaymasterEffect { credit_to_account: None, burn: Some(actual_cost) })
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sponsored first sends (owner GO 2026-11-01)
+// ---------------------------------------------------------------------------
+//
+// A sponsor pays the fee for someone else's transparent transfer. The sponsor
+// signs a [`SponsorAuthorization`] bound to that exact transfer
+// (`from`/`to`/`amount`/`nonce`) and to its own rules (fee, expiry, a balance
+// floor it keeps, first-send-only). The transfer carries it in
+// `TransparentTransferPayload::sponsorship`. Once `ConsensusFeature::Paymaster`
+// is active, state apply checks it, debits the fee from the sponsor's own
+// spendable balance, burns it, and records the sponsorship in the sponsor's
+// `State::paymasters` entry so the protocol-wide rate limits
+// ([`DEFAULT_PAYMASTER_LIMITS`]) bound it. Before activation the field is
+// ignored, so a transfer carrying it applies exactly as it does today.
+//
+// Why this closes the #3169 drain for the reachable path: the only way a
+// sponsorship is charged is a valid signature by the sponsor's own key over
+// the transfer it pays for, under a chain-bound domain tag, inside a short
+// validity window. Nobody else can spend a sponsor's balance. The deposit
+// lifecycle actions (`Stake`/`RequestUnstake`/`WithdrawStake`) stay
+// unreachable: no transaction constructs them, and they still need owner
+// authorization before one does.
+//
+// Why the sponsor's balance and not a staked deposit: a deposit needs a
+// lifecycle transaction (a new `TransactionType`) and an unstake protocol.
+// Every rule a sponsor sets is already in its own signature, and its exposure
+// is bounded on chain by the fee cap times the per-epoch count. The balance
+// floor lets the sponsor stop paying before its account runs dry.
+
+/// Domain tag for a sponsor's authorization of one transfer's fee.
+pub const SPONSORED_SEND_AUTH_DOMAIN: &[u8] = b"wrfcoin_sponsored_send_auth_v1";
+
+/// Smallest fee a sponsorship may pay, in base units (0.00001 WRF). #3170: a
+/// sponsorship always costs the sponsor something.
+pub const MIN_SPONSORED_FEE: u64 = 1_000;
+
+/// Largest fee a sponsorship may pay, in base units (0.01 WRF). Caps what a
+/// leaked sponsor key can burn per transfer.
+pub const MAX_SPONSORED_FEE: u64 = 1_000_000;
+
+/// Longest a sponsor authorization may stay valid, in blocks (about 41
+/// minutes at 77 s/block). A sponsor cannot be made to pay for a transfer it
+/// signed long ago; a stockpile of signatures expires.
+pub const MAX_SPONSORSHIP_VALIDITY_BLOCKS: u64 = 32;
+
+/// A sponsor's signed promise to pay one transfer's fee, carried in
+/// `TransparentTransferPayload::sponsorship`. Hex/JSON wire form so wallets
+/// and the sponsor service can build it without Rust.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SponsorAuthorization {
+    /// Sponsor account address (hex). Its spendable balance pays `fee`.
+    pub sponsor: String,
+    /// Fee the sponsor pays, in base units. Burned.
+    pub fee: u64,
+    /// Last height at which this authorization may be applied.
+    pub expires_at_height: u64,
+    /// The sponsor refuses to pay if its spendable balance would drop below
+    /// this, in base units.
+    pub balance_floor: u64,
+    /// Pay only when the transfer is the sender's first outgoing transfer
+    /// (account nonce 0).
+    pub first_send_only: bool,
+    /// Hex ed25519 public key of the sponsor; must derive `sponsor`.
+    pub sponsor_public_key: String,
+    /// Hex ed25519 signature over [`sponsored_send_authorization_message_with_domain`].
+    pub signature: String,
+}
+
+/// Why a sponsorship is refused. Each refusal leaves state untouched.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum SponsorshipError {
+    #[error("sponsor address is not a valid address")]
+    SponsorAddressInvalid,
+    #[error("sponsor public key or signature is malformed")]
+    MalformedSignature,
+    #[error("sponsor public key does not derive the sponsor address")]
+    SponsorKeyMismatch,
+    #[error("sponsor signature does not verify over this transfer")]
+    BadSignature,
+    #[error("an account cannot sponsor its own transfer")]
+    SelfSponsorship,
+    #[error("sponsorship expired at height {expires_at_height}, now {height}")]
+    Expired { expires_at_height: u64, height: u64 },
+    #[error("sponsorship is valid for more than {max} blocks")]
+    ValidityTooLong { max: u64 },
+    #[error("sponsored fee {fee} is below the protocol minimum {min}")]
+    FeeBelowMinimum { fee: u64, min: u64 },
+    #[error("sponsored fee {fee} is above the protocol cap {max}")]
+    FeeAboveCap { fee: u64, max: u64 },
+    #[error("sponsor pays only for a first send; transfer nonce is {nonce}")]
+    NotFirstSend { nonce: u64 },
+    #[error("sponsor balance {available} cannot pay {fee} and keep its floor {floor}")]
+    SponsorBalanceBelowFloor { available: u128, fee: u64, floor: u64 },
+    #[error("sponsor rate limit: {0}")]
+    RateLimited(PaymasterError),
+}
+
+/// The message a sponsor signs, with the chain identity passed explicitly.
+/// Every variable-length field is length-prefixed; the trailing fields are
+/// fixed width, so no two distinct sponsorships share a preimage.
+#[allow(clippy::too_many_arguments)]
+pub fn sponsored_send_authorization_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    sponsor: &str,
+    from: &str,
+    to: &str,
+    amount: u64,
+    nonce: u64,
+    fee: u64,
+    expires_at_height: u64,
+    balance_floor: u64,
+    first_send_only: bool,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(SPONSORED_SEND_AUTH_DOMAIN.len() + 160);
+    buf.extend_from_slice(SPONSORED_SEND_AUTH_DOMAIN);
+    crate::blockchain::transaction::push_chain_domain(&mut buf, chain_id, network_id);
+    for field in [sponsor, from, to] {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    buf.extend_from_slice(&amount.to_le_bytes());
+    buf.extend_from_slice(&nonce.to_le_bytes());
+    buf.extend_from_slice(&fee.to_le_bytes());
+    buf.extend_from_slice(&expires_at_height.to_le_bytes());
+    buf.extend_from_slice(&balance_floor.to_le_bytes());
+    buf.push(u8::from(first_send_only));
+    buf
+}
+
+impl SponsorAuthorization {
+    /// The message this authorization signs for the transfer
+    /// `from -> to, amount` at `nonce`, under the running chain identity.
+    pub fn message(&self, from: &str, to: &str, amount: u64, nonce: u64) -> Vec<u8> {
+        sponsored_send_authorization_message_with_domain(
+            &crate::crypto::domain_signing::signing_chain_id(),
+            &crate::crypto::domain_signing::signing_network_id(),
+            &self.sponsor,
+            from,
+            to,
+            amount,
+            nonce,
+            self.fee,
+            self.expires_at_height,
+            self.balance_floor,
+            self.first_send_only,
+        )
+    }
+
+    /// Fill `sponsor_public_key`/`signature` with `key`'s signature over this
+    /// transfer. The sponsor service and tests use it.
+    pub fn sign(
+        &mut self,
+        key: &crate::crypto::signature::PrivateKey,
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+    ) {
+        let message = self.message(from, to, amount, nonce);
+        self.sponsor_public_key =
+            crate::crypto::signature::PublicKey::from_private_key(key).to_hex();
+        self.signature = key.sign(&message).to_hex();
+    }
+
+    /// The signature alone: well-formed, from the key that derives
+    /// `sponsor`, over this transfer. Height-free, so mempool admission can
+    /// use it. Returns the sponsor address.
+    pub fn verify_signature(
+        &self,
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+    ) -> Result<Address, SponsorshipError> {
+        let sponsor = self
+            .sponsor
+            .parse::<Address>()
+            .map_err(|_| SponsorshipError::SponsorAddressInvalid)?;
+        let public_key = crate::crypto::signature::PublicKey::from_hex(&self.sponsor_public_key)
+            .map_err(|_| SponsorshipError::MalformedSignature)?;
+        let signature = crate::crypto::signature::Signature::from_hex(&self.signature)
+            .map_err(|_| SponsorshipError::MalformedSignature)?;
+        if Address::from_public_key(&public_key) != sponsor {
+            return Err(SponsorshipError::SponsorKeyMismatch);
+        }
+        if !public_key.verify(&self.message(from, to, amount, nonce), &signature) {
+            return Err(SponsorshipError::BadSignature);
+        }
+        Ok(sponsor)
+    }
+
+    /// Every stateless rule at `height`: the signature, no self-sponsorship,
+    /// the validity window, the fee bounds and first-send-only. Returns the
+    /// sponsor address. Balance and rate limits need state; see
+    /// [`charge_balance_sponsorship`].
+    pub fn check(
+        &self,
+        from: &str,
+        to: &str,
+        amount: u64,
+        nonce: u64,
+        height: u64,
+    ) -> Result<Address, SponsorshipError> {
+        let sponsor = self.verify_signature(from, to, amount, nonce)?;
+        if from.parse::<Address>().ok() == Some(sponsor) {
+            return Err(SponsorshipError::SelfSponsorship);
+        }
+        if height > self.expires_at_height {
+            return Err(SponsorshipError::Expired {
+                expires_at_height: self.expires_at_height,
+                height,
+            });
+        }
+        if self.expires_at_height - height > MAX_SPONSORSHIP_VALIDITY_BLOCKS {
+            return Err(SponsorshipError::ValidityTooLong {
+                max: MAX_SPONSORSHIP_VALIDITY_BLOCKS,
+            });
+        }
+        if self.fee < MIN_SPONSORED_FEE {
+            return Err(SponsorshipError::FeeBelowMinimum {
+                fee: self.fee,
+                min: MIN_SPONSORED_FEE,
+            });
+        }
+        if self.fee > MAX_SPONSORED_FEE {
+            return Err(SponsorshipError::FeeAboveCap {
+                fee: self.fee,
+                max: MAX_SPONSORED_FEE,
+            });
+        }
+        if self.first_send_only && nonce != 0 {
+            return Err(SponsorshipError::NotFirstSend { nonce });
+        }
+        Ok(sponsor)
+    }
+}
+
+/// Lenient deserializer for `TransparentTransferPayload::sponsorship`: a
+/// malformed member reads as `None`, so a payload an older binary parses is
+/// parsed identically here (same rule as `passkey::deserialize_lenient_passkey`).
+pub fn deserialize_lenient_sponsorship<'de, D>(
+    deserializer: D,
+) -> Result<Option<SponsorAuthorization>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw.and_then(|value| serde_json::from_value::<SponsorAuthorization>(value).ok()))
+}
+
+/// Whether `ConsensusFeature::Paymaster` is in force at `height`.
+pub fn sponsorship_active(height: u64) -> bool {
+    crate::crypto::chain_binding::feature_active(
+        crate::crypto::chain_binding::ConsensusFeature::Paymaster,
+        height,
+    )
+}
+
+/// Whether this chain schedules `ConsensusFeature::Paymaster` at all
+/// (mempool admission has no height).
+pub fn sponsorship_scheduled() -> bool {
+    crate::crypto::chain_binding::feature_scheduled(
+        crate::crypto::chain_binding::ConsensusFeature::Paymaster,
+    )
+}
+
+/// Rate-limit one balance-funded sponsorship of `cost` for `sender` against
+/// the sponsor's record, WITHOUT mutating `paymasters`: returns the updated
+/// record for the caller to store once the transfer itself has applied. A
+/// sponsor with no record gets one (deposit 0). The deposit is never read or
+/// drawn: the caller debits the sponsor's spendable balance.
+pub fn charge_balance_sponsorship(
+    paymasters: &BTreeMap<Address, PaymasterAccount>,
+    sponsor: Address,
+    sender: Address,
+    cost: u128,
+    height: u64,
+) -> Result<PaymasterAccount, PaymasterError> {
+    let limits = DEFAULT_PAYMASTER_LIMITS;
+    if cost == 0 {
+        return Err(PaymasterError::ZeroCost);
+    }
+    let mut account = paymasters.get(&sponsor).cloned().unwrap_or(PaymasterAccount {
+        deposit: 0,
+        unstake_delay_blocks: 0,
+        unstake_requested_at: None,
+        epoch_started_at: height,
+        sponsorships_this_epoch: 0,
+        successes_this_epoch: 0,
+        failures_this_epoch: 0,
+        throttled_until: None,
+        per_sender: BTreeMap::new(),
+    });
+    if account.unstake_requested_at.is_some() {
+        return Err(PaymasterError::UnstakePending);
+    }
+    if let Some(until) = account.throttled_until {
+        if height < until {
+            return Err(PaymasterError::PaymasterThrottled { until });
+        }
+    }
+    roll_epoch_if_elapsed(&mut account, &limits, height);
+    if account.sponsorships_this_epoch >= limits.max_sponsorships_per_epoch {
+        return Err(PaymasterError::PerPaymasterRateLimitExceeded);
+    }
+    let window = account.per_sender.entry(sender).or_default();
+    roll_sender_window_if_elapsed(window, &limits, height);
+    if window.count >= limits.max_sponsorships_per_sender_per_epoch {
+        return Err(PaymasterError::PerSenderRateLimitExceeded);
+    }
+    window.count += 1;
+    account.sponsorships_this_epoch += 1;
+    // A balance sponsorship is recorded only once its transfer applied, so
+    // it is always a success; the failure throttle never fires on this path.
+    account.successes_this_epoch += 1;
+    Ok(account)
+}
+
+#[cfg(test)]
+mod sponsored_send_tests {
+    use super::*;
+    use crate::crypto::signature::{PrivateKey, PublicKey};
+
+    const FROM: &str = "0x1111111111111111111111111111111111111111";
+    const TO: &str = "0x2222222222222222222222222222222222222222";
+
+    fn sponsor_key() -> PrivateKey {
+        PrivateKey::from_bytes(&[7u8; 32]).expect("key")
+    }
+
+    fn signed(fee: u64, expires_at_height: u64, first_send_only: bool, nonce: u64) -> SponsorAuthorization {
+        let key = sponsor_key();
+        let sponsor = Address::from_public_key(&PublicKey::from_private_key(&key)).to_hex();
+        let mut auth = SponsorAuthorization {
+            sponsor,
+            fee,
+            expires_at_height,
+            balance_floor: 0,
+            first_send_only,
+            sponsor_public_key: String::new(),
+            signature: String::new(),
+        };
+        auth.sign(&key, FROM, TO, 10, nonce);
+        auth
+    }
+
+    #[test]
+    fn a_valid_sponsorship_passes_and_names_its_sponsor() {
+        let auth = signed(5_000, 110, true, 0);
+        let sponsor = auth.check(FROM, TO, 10, 0, 100).expect("valid");
+        assert_eq!(sponsor.to_hex(), auth.sponsor);
+    }
+
+    #[test]
+    fn the_signature_binds_every_transfer_field() {
+        let auth = signed(5_000, 110, true, 0);
+        assert_eq!(auth.check(FROM, TO, 11, 0, 100), Err(SponsorshipError::BadSignature));
+        assert_eq!(auth.check(FROM, FROM, 10, 0, 100), Err(SponsorshipError::BadSignature));
+        let mut raised = auth.clone();
+        raised.fee += 1;
+        assert_eq!(raised.check(FROM, TO, 10, 0, 100), Err(SponsorshipError::BadSignature));
+        let mut floor = auth.clone();
+        floor.balance_floor = 1;
+        assert_eq!(floor.check(FROM, TO, 10, 0, 100), Err(SponsorshipError::BadSignature));
+    }
+
+    #[test]
+    fn a_key_that_does_not_derive_the_sponsor_is_refused() {
+        let mut auth = signed(5_000, 110, true, 0);
+        auth.sponsor = FROM.to_string();
+        assert_eq!(auth.check(TO, TO, 10, 0, 100), Err(SponsorshipError::SponsorKeyMismatch));
+    }
+
+    #[test]
+    fn expiry_and_validity_window_are_enforced() {
+        let auth = signed(5_000, 110, true, 0);
+        assert!(matches!(auth.check(FROM, TO, 10, 0, 111), Err(SponsorshipError::Expired { .. })));
+        assert!(matches!(
+            auth.check(FROM, TO, 10, 0, 110 - MAX_SPONSORSHIP_VALIDITY_BLOCKS - 1),
+            Err(SponsorshipError::ValidityTooLong { .. })
+        ));
+        assert!(auth.check(FROM, TO, 10, 0, 110).is_ok());
+    }
+
+    #[test]
+    fn fee_bounds_are_enforced() {
+        let low = signed(MIN_SPONSORED_FEE - 1, 110, true, 0);
+        assert!(matches!(low.check(FROM, TO, 10, 0, 100), Err(SponsorshipError::FeeBelowMinimum { .. })));
+        let high = signed(MAX_SPONSORED_FEE + 1, 110, true, 0);
+        assert!(matches!(high.check(FROM, TO, 10, 0, 100), Err(SponsorshipError::FeeAboveCap { .. })));
+    }
+
+    #[test]
+    fn first_send_only_refuses_a_later_send() {
+        let auth = signed(5_000, 110, true, 3);
+        assert_eq!(auth.check(FROM, TO, 10, 3, 100), Err(SponsorshipError::NotFirstSend { nonce: 3 }));
+        let any = signed(5_000, 110, false, 3);
+        assert!(any.check(FROM, TO, 10, 3, 100).is_ok());
+    }
+
+    #[test]
+    fn a_sponsor_cannot_sponsor_itself() {
+        let key = sponsor_key();
+        let me = Address::from_public_key(&PublicKey::from_private_key(&key)).to_hex();
+        let mut auth = SponsorAuthorization {
+            sponsor: me.clone(),
+            fee: 5_000,
+            expires_at_height: 110,
+            balance_floor: 0,
+            first_send_only: false,
+            sponsor_public_key: String::new(),
+            signature: String::new(),
+        };
+        auth.sign(&key, &me, TO, 10, 0);
+        assert_eq!(auth.check(&me, TO, 10, 0, 100), Err(SponsorshipError::SelfSponsorship));
+    }
+
+    #[test]
+    fn malformed_sponsorship_json_reads_as_absent() {
+        #[derive(Deserialize)]
+        struct Holder {
+            #[serde(default, deserialize_with = "deserialize_lenient_sponsorship")]
+            sponsorship: Option<SponsorAuthorization>,
+        }
+        let h: Holder = serde_json::from_str(r#"{"sponsorship":{"sponsor":7}}"#).unwrap();
+        assert!(h.sponsorship.is_none());
+        let h: Holder = serde_json::from_str("{}").unwrap();
+        assert!(h.sponsorship.is_none());
+    }
+
+    #[test]
+    fn balance_sponsorship_never_mutates_the_map_and_rate_limits() {
+        let paymasters = BTreeMap::new();
+        let sponsor = Address([9; 20]);
+        let sender = Address([1; 20]);
+        let record = charge_balance_sponsorship(&paymasters, sponsor, sender, 5_000, 10).unwrap();
+        assert!(paymasters.is_empty());
+        assert_eq!(record.deposit, 0);
+        assert_eq!(record.sponsorships_this_epoch, 1);
+        assert_eq!(record.per_sender[&sender].count, 1);
+        assert_eq!(
+            charge_balance_sponsorship(&paymasters, sponsor, sender, 0, 10),
+            Err(PaymasterError::ZeroCost)
+        );
+
+        let mut paymasters = BTreeMap::new();
+        let mut full = record.clone();
+        full.sponsorships_this_epoch = DEFAULT_PAYMASTER_LIMITS.max_sponsorships_per_epoch;
+        paymasters.insert(sponsor, full);
+        assert_eq!(
+            charge_balance_sponsorship(&paymasters, sponsor, Address([2; 20]), 5_000, 11),
+            Err(PaymasterError::PerPaymasterRateLimitExceeded)
+        );
+        // The epoch rolls: counters AND the per-sender map reset (#3170).
+        let rolled = charge_balance_sponsorship(
+            &paymasters,
+            sponsor,
+            Address([2; 20]),
+            5_000,
+            10 + DEFAULT_PAYMASTER_LIMITS.epoch_blocks,
+        )
+        .unwrap();
+        assert_eq!(rolled.sponsorships_this_epoch, 1);
+        assert_eq!(rolled.per_sender.len(), 1);
     }
 }
 
