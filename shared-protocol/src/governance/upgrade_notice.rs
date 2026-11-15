@@ -249,7 +249,7 @@ pub fn verify_upgrade_notice(
     let mut seen: Vec<String> = Vec::with_capacity(signed.signatures.len());
     for entry in &signed.signatures {
         let signer_pubkey = entry.signer_pubkey.trim().to_ascii_lowercase();
-        if !allow.iter().any(|k| *k == signer_pubkey) {
+        if !allow.contains(&signer_pubkey) {
             return Err(UpgradeNoticeError::SignerNotAuthorized { signer_pubkey });
         }
         if seen.contains(&signer_pubkey) {

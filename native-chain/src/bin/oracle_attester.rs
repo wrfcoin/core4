@@ -19,6 +19,12 @@
 //! - **Test key (today):** debug build with
 //!   `WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY=<hex>` or
 //!   `WRFCOIN_ORACLE_SIGNER_KEY_FILE=<path>` (mode 0600).
+//! - **Testnet software key (release builds):**
+//!   `WRFCOIN_TESTNET_ORACLE_KEY_FILE=<path>`, a file holding the ed25519 seed
+//!   as 64 hex characters, readable only by its owner (mode 0600 on Unix, an
+//!   owner-only DACL on Windows). Accepted only with `WRFCOIN_NETWORK_ID=testnet`
+//!   and an explicit non-mainnet `WRFCOIN_CHAIN_ID`; refused when an HSM or a
+//!   debug oracle key is also configured.
 //! - **Real identity (after re-keying ceremony):**
 //!   `WRFCOIN_HSM_MODULE_PATH=<softhsm2/ykcs11 .so>` plus
 //!   `WRFCOIN_HSM_ORACLE_KEY_LABEL=<label>` — the PKCS#11 path, which takes
@@ -73,6 +79,7 @@
 //! | `WRFCOIN_ATTESTER_MAX_REFERENCE_KM` | in `shadow`/`per_station` | max station↔reference distance; beyond it the commit is PHYSICS-ONLY. No default: the `nws_station` bands were calibrated at ~3 km, so the radius is an owner reward-policy choice. Ignored (with a warning) in `fixed` |
 //! | `WRFCOIN_ATTESTER_REFERENCE_LOOKUP_TIMEOUT_SECS` | no (5) | per-request timeout for NWS point/station lookups and per-station observation fetches |
 //! | `WRFCOIN_ATTESTER_MAX_REFERENCE_STATIONS_PER_CYCLE` | no (8) | bound on distinct NWS stations whose observations are fetched per poll cycle; point/station lookups are bounded at twice this |
+//! | `WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE` | no | #3299 trusted DEM ground elevations (see [`DemTable`]). Read only while `reference_sea_level_pressure` is active: a station-kind sea-level claim from a station with a registered elevation is trusted only when that elevation is within DEM −50 m / +60 m. Unset, or a station missing from the file = the claim is not trusted (pressure scored unverified). Unreadable or malformed = refuse to start |
 //!
 //! # Per-commit reference selection (#3240) is service-side, not consensus
 //!
@@ -80,8 +87,9 @@
 //! nowhere else. The chain receives only the signed attestation — `commit_id`,
 //! `oracle_id`, `approved`, `confidence`, `timestamp`, `nonce` — and never the
 //! reference station, the distance or the residuals. The station location comes
-//! from the node's pending surface (`station_location`, registry-sourced and
-//! coarsened to 0.01°), never from the contributor-controlled reveal `data`,
+//! from the node's pending surface (`station_location`, registry-sourced, at
+//! 0.1° for any token but the node operator's, and re-coarsened here to at
+//! most 0.01°), never from the contributor-controlled reveal `data`,
 //! which would let a contributor pick their own reference. Fallback order, each
 //! step named in the verdict reasons and logged: nearest station within
 //! `WRFCOIN_ATTESTER_MAX_REFERENCE_KM` → the configured
@@ -109,6 +117,7 @@ use wrfcoin_shared_protocol::weather::station_reference::{
     SeaLevelPressureClaim, pair_station_reference_sea_level,
 };
 use wrfcoin_shared_protocol::weather::validation::weather_observation_from_json;
+use wrfcoin_native_chain::weather::public_location::{tenth_degree, tenth_degree_cell};
 
 /// How long a locally-submitted commit id suppresses re-submission while the
 /// attestation waits to mine. After this, chain state (`attesting_oracles`)
@@ -209,14 +218,18 @@ impl EntryEvaluation {
 /// silent full-confidence one. With `policy.sea_level_pressure` (#3285) the
 /// pressure variable pairs the reveal's `pressure_sea_level_hpa`, read from
 /// the raw `data` JSON (never parsed into `WeatherObservation`), once it
-/// recomputes from `pressure_hpa` and the station's registered elevation; a
-/// mismatch or an unverifiable claim is added to the verdict's audit trail.
+/// recomputes from `pressure_hpa` and the station's registered elevation, and
+/// that elevation is within the #3299 band around `dem_ground_m` (the
+/// [`DemTable`] value for the station); a mismatch or an unverifiable claim is
+/// added to the verdict's audit trail.
 fn evaluate_entry(
     entry: &PendingEntry,
     policy: &MechanicalPolicy,
     references: &[StationReferenceObservation],
     max_pair_secs: i64,
     now: i64,
+    // determinism-ok: attester-side #3299 DEM band input; never consensus-executed
+    dem_ground_m: Option<f64>,
 ) -> EntryEvaluation {
     let observation = PendingObservation {
         commit_id: entry.commit_id.clone(),
@@ -235,6 +248,7 @@ fn evaluate_entry(
             &parsed,
             SeaLevelPressureClaim::from_reveal(&observation.data),
             entry.elevation_meters,
+            dem_ground_m,
             policy.sea_level_pressure,
             observation.timestamp,
             references,
@@ -317,6 +331,145 @@ impl ReferenceLocation {
     }
 }
 
+/// A location's public 0.1° cell, in whole tenths (the node's rounding rule).
+// determinism-ok: attester-side lookup key; never consensus
+fn tenth_cell(latitude: f64, longitude: f64) -> Option<(i64, i64)> {
+    Some((tenth_degree_cell(latitude)?, tenth_degree_cell(longitude)?))
+}
+
+/// Trusted DEM ground elevations for the #3299 sea-level band, keyed by
+/// station id (`WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE`).
+///
+/// Why a pinned operator file, and not a live DEM query or the backend's
+/// `dem_ground_elevation_m`: the value must not be self-asserted (a registrant
+/// who lies about its elevation would lie about a DEM field in its own
+/// registration too), must not be a mutable backend column (the backend skips
+/// the DEM lookup exactly when an operator override is given, the laundering
+/// path), and must be the same for every attester and every cycle. The
+/// attester also sees only a coarsened location (0.1° unless it holds the
+/// node operator's token), too coarse for a DEM
+/// lookup on a hillside. So the operator builds the file once from the
+/// registry's exact coordinates (`docs/deployment/attester-dem-table/`), it is
+/// reviewable, and every attester loads the same bytes.
+///
+/// Each entry is bound to the station's coarse location: when the pending
+/// surface serves a different (or no) location, the station has moved since
+/// the file was built and the entry is not used. A node answers a non-operator
+/// token at the public 0.1° grid; such a location is matched against the 0.1°
+/// cell of the entry, so the binding is then only as fine as that cell.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DemTable {
+    by_station: HashMap<String, DemEntry>,
+    /// sha256 of the file bytes as loaded; `None` when no file is configured.
+    /// Logged at startup so two attesters on different tables are visible.
+    sha256_hex: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DemEntry {
+    location: ReferenceLocation,
+    /// The entry's 0.1° cell in whole tenths, from the file's own values.
+    tenth_cell: (i64, i64),
+    // determinism-ok: attester-side #3299 DEM ground elevation; never consensus
+    dem_ground_elevation_m: f64,
+}
+
+impl DemTable {
+    /// Parse the file body. Every entry must be well-formed: a malformed or
+    /// duplicated entry refuses the whole file rather than silently dropping
+    /// one station's bound.
+    fn parse(body: &str) -> Result<Self> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct File {
+            version: u32,
+            #[serde(default)]
+            source: Option<String>,
+            stations: Vec<Row>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Row {
+            station_id: String,
+            // determinism-ok: attester-side file input; never consensus
+            latitude: f64,
+            // determinism-ok: as above
+            longitude: f64,
+            // determinism-ok: as above
+            dem_ground_elevation_m: f64,
+        }
+        use sha2::{Digest, Sha256};
+        let file: File = serde_json::from_str(body).context("DEM table is not valid JSON")?;
+        if file.version != 1 {
+            bail!("DEM table version {} is not supported (expected 1)", file.version);
+        }
+        let _ = file.source;
+        let mut by_station = HashMap::new();
+        for row in file.stations {
+            let location = ReferenceLocation { latitude: row.latitude, longitude: row.longitude }
+                .coarse()
+                .ok_or_else(|| anyhow!("DEM table: station {} has an invalid location", row.station_id))?;
+            if !row.dem_ground_elevation_m.is_finite()
+                // determinism-ok: attester-side plausibility bound on a file value (Dead Sea shore to above Everest)
+                || !(-500.0..=9000.0).contains(&row.dem_ground_elevation_m)
+            {
+                bail!("DEM table: station {} has an implausible DEM elevation", row.station_id);
+            }
+            let tenth_cell = tenth_cell(row.latitude, row.longitude)
+                .ok_or_else(|| anyhow!("DEM table: station {} has an invalid location", row.station_id))?;
+            let entry = DemEntry { location, tenth_cell, dem_ground_elevation_m: row.dem_ground_elevation_m };
+            if by_station.insert(row.station_id.clone(), entry).is_some() {
+                bail!("DEM table: station {} appears twice", row.station_id);
+            }
+        }
+        Ok(Self { by_station, sha256_hex: Some(hex::encode(Sha256::digest(body.as_bytes()))) })
+    }
+
+    /// The startup line: the file's sha256 and entry count, nothing else (no
+    /// station ids, no locations), so operators can compare attesters.
+    fn startup_line(&self) -> String {
+        match &self.sha256_hex {
+            Some(sha) => format!("[attester] #3299 DEM table sha256={sha} entries={}", self.len()),
+            None => "[attester] #3299 DEM table: none configured (WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE \
+                     unset): while reference_sea_level_pressure is active, a station-kind sea-level \
+                     claim from a station with a registered elevation is not trusted"
+                .to_string(),
+        }
+    }
+
+    fn from_env() -> Result<Self> {
+        // determinism-ok: service startup configuration; nothing here reaches consensus state
+        match std::env::var("WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE") {
+            Ok(path) if !path.trim().is_empty() => {
+                let body = std::fs::read_to_string(path.trim()) // key-file-exempt: #3299 DEM elevation table (JSON), not key material
+                    .with_context(|| format!("cannot read WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE {path}"))?;
+                Self::parse(&body).context("WRFCOIN_ATTESTER_DEM_ELEVATIONS_FILE")
+            },
+            _ => Ok(Self::default()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.by_station.len()
+    }
+
+    /// The trusted DEM ground elevation for this pending entry, or `None`
+    /// when the station is not in the file or its served location differs.
+    // determinism-ok: attester-side #3299 lookup; never consensus
+    fn lookup(&self, station_id: &str, served: Option<ReferenceLocation>) -> Option<f64> {
+        let entry = self.by_station.get(station_id)?;
+        let served = served?;
+        if served.coarse()?.point_key() == entry.location.point_key() {
+            return Some(entry.dem_ground_elevation_m);
+        }
+        // A non-operator view: exactly on the public 0.1° grid. Match its cell.
+        let on_tenth_grid = tenth_degree(served.latitude) == Some(served.latitude)
+            && tenth_degree(served.longitude) == Some(served.longitude);
+        (on_tenth_grid && tenth_cell(served.latitude, served.longitude)? == entry.tenth_cell)
+            .then_some(entry.dem_ground_elevation_m)
+    }
+}
+
 /// How this process chooses the reference station for a commit (#3240).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReferenceMode {
@@ -368,6 +521,8 @@ pub(crate) struct Config {
     reference_max_pair_secs: i64,
     /// #3240 reference selection mode (default `Fixed`).
     reference_mode: ReferenceMode,
+    /// #3299 trusted DEM ground elevations (empty when unset).
+    dem_table: DemTable,
     /// Max station↔reference distance in km; required outside `Fixed`.
     // determinism-ok: service-side reference radius; never consensus
     max_reference_km: Option<f64>,
@@ -512,6 +667,8 @@ impl Config {
             .unwrap_or(8)
             .max(1);
 
+        let dem_table = DemTable::from_env()?;
+
         Ok(Self {
             node_url,
             api_token,
@@ -523,6 +680,7 @@ impl Config {
             reference_base_url,
             reference_max_pair_secs,
             reference_mode,
+            dem_table,
             max_reference_km,
             reference_lookup_timeout,
             max_reference_stations_per_cycle,
@@ -555,6 +713,7 @@ impl Config {
                 .to_string(),
             reference_max_pair_secs: reference_max_pair_secs.max(1),
             reference_mode: ReferenceMode::Fixed,
+            dem_table: DemTable::default(),
             max_reference_km: None,
             reference_lookup_timeout: Duration::from_secs(5),
             max_reference_stations_per_cycle: 8,
@@ -1288,9 +1447,10 @@ fn attester_from_env() -> Result<Attester> {
         // session can reach it. The only interpolation in this function is
         // `forbidden.uninventoried()` above, which yields role names.
         None => bail!( // secret-leak-ok: static help text naming env vars, no values interpolated
-            "no oracle signer is configured. Set WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
-             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) or WRFCOIN_HSM_MODULE_PATH + \
-             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11) — an oracle that cannot sign cannot \
+            "no oracle signer is configured. Set WRFCOIN_HSM_MODULE_PATH + \
+             WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11), WRFCOIN_TESTNET_ORACLE_KEY_FILE \
+             (testnet only, owner-only file), or WRFCOIN_ORACLE_SIGNER_PRIVATE_KEY / \
+             WRFCOIN_ORACLE_SIGNER_KEY_FILE (debug builds) — an oracle that cannot sign cannot \
              attest, and a node short of quorum pays no contributor."
         ),
     }
@@ -1594,8 +1754,9 @@ pub(crate) async fn run_cycle_with_resolver(
         // #3240: the reference observations are chosen per `reference_mode`;
         // the evaluation itself (incl. the #3285 sea-level pairing) is the
         // shared pure `evaluate_entry` in every mode.
+        let dem_ground_m = config.dem_table.lookup(&entry.station_id, entry.station_location);
         let evaluate = |references: &[StationReferenceObservation]| {
-            evaluate_entry(entry, policy, references, config.reference_max_pair_secs, now)
+            evaluate_entry(entry, policy, references, config.reference_max_pair_secs, now, dem_ground_m)
         };
         let fixed_label = || {
             config.reference_station.clone().unwrap_or_else(|| "none".to_string())
@@ -1791,9 +1952,299 @@ pub(crate) async fn run_cycle_with_resolver(
     Ok(submitted)
 }
 
+/// One reading for the #3299 shadow preview: the pending-surface fields the
+/// evaluation reads. `commit_id` is optional (it only labels per-reading lines).
+#[derive(Debug, serde::Deserialize)]
+struct PreviewReading {
+    #[serde(default)]
+    commit_id: Option<String>,
+    station_id: String,
+    timestamp: i64,
+    data: serde_json::Value,
+    #[serde(default)]
+    // determinism-ok: offline preview input; never consensus-executed
+    elevation_meters: Option<f64>,
+    #[serde(default)]
+    station_location: Option<ReferenceLocation>,
+}
+
+/// Arguments of `oracle_attester --sea-level-preview` (#3299).
+#[derive(Debug, Default)]
+struct PreviewArgs {
+    readings: String,
+    nws_observations: String,
+    dem: Option<String>,
+    features: Vec<String>,
+    per_reading: bool,
+}
+
+const PREVIEW_USAGE: &str = "usage: oracle_attester --sea-level-preview --readings FILE \
+    --nws-observations FILE [--dem FILE] [--features a,b] [--per-reading]";
+
+fn parse_preview_args(args: &[String]) -> Result<PreviewArgs> {
+    let mut out = PreviewArgs::default();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().cloned().ok_or_else(|| anyhow!("{arg} needs a value\n{PREVIEW_USAGE}"));
+        match arg.as_str() {
+            "--readings" => out.readings = value()?,
+            "--nws-observations" => out.nws_observations = value()?,
+            "--dem" => out.dem = Some(value()?),
+            "--features" => {
+                out.features = value()?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty() && *f != ConsensusFeature::ReferenceSeaLevelPressure.name())
+                    .map(str::to_string)
+                    .collect();
+            },
+            "--per-reading" => out.per_reading = true,
+            other => bail!("unknown argument {other}\n{PREVIEW_USAGE}"),
+        }
+    }
+    if out.readings.is_empty() || out.nws_observations.is_empty() {
+        bail!("{PREVIEW_USAGE}");
+    }
+    Ok(out)
+}
+
+/// Readings file: a JSON array of [`PreviewReading`], or an object with an
+/// `observations` array (a saved `GET /transactions/oracle/pending` body).
+fn parse_preview_readings(body: &str) -> Result<Vec<PreviewReading>> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        List(Vec<PreviewReading>),
+        Pending { observations: Vec<PreviewReading> },
+    }
+    Ok(match serde_json::from_str(body).context("readings file is not valid JSON")? {
+        Shape::List(list) | Shape::Pending { observations: list } => list,
+    })
+}
+
+/// #3299 shadow preview: per station, the tier each reading gets under
+/// (1) the live policy (`--features`, sea-level OFF — what 888 does today),
+/// (2) #3285 sea-level ON with the registered elevation trusted unbounded (the
+///     merged rule before #3299: the band is satisfied by construction, the
+///     DEM taken as the registered elevation itself), and
+/// (3) #3285 + #3299: sea-level ON, elevation bounded by the `--dem` table.
+///
+/// Offline and read-only: no node, no key, no network, nothing signed or
+/// submitted. Freshness is evaluated at each reading's own timestamp, so the
+/// tiers reflect the reading, not how old the export is.
+fn sea_level_preview(
+    args: &PreviewArgs,
+    base: &MechanicalPolicy,
+    readings: &[PreviewReading],
+    references: &[StationReferenceObservation],
+    dem: &DemTable,
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+    let mut live_features = args.features.clone();
+    let live = cycle_policy_override(base, &live_features).unwrap_or_else(|| base.clone());
+    live_features.push(ConsensusFeature::ReferenceSeaLevelPressure.name().to_string());
+    let active = cycle_policy_override(base, &live_features).unwrap_or_else(|| base.clone());
+
+    #[derive(Default)]
+    struct Row {
+        readings: usize,
+        live: BTreeMap<String, usize>,
+        unbounded: BTreeMap<String, usize>,
+        bounded: BTreeMap<String, usize>,
+        outcomes: BTreeMap<String, usize>,
+        changed: usize,
+        good_to_unverified: usize,
+    }
+    let mut rows: BTreeMap<String, Row> = BTreeMap::new();
+    let mut lines = String::new();
+    // Repeated snapshots of the pending surface carry the same commit more
+    // than once; count each commit once.
+    let mut seen = std::collections::HashSet::new();
+    for reading in readings {
+        if let Some(commit_id) = reading.commit_id.as_deref().filter(|c| !c.is_empty()) {
+            if !seen.insert(commit_id.to_string()) {
+                continue;
+            }
+        }
+        let entry = PendingEntry {
+            commit_id: reading.commit_id.clone().unwrap_or_default(),
+            station_id: reading.station_id.clone(),
+            timestamp: reading.timestamp,
+            nonce: String::new(),
+            contribution_type: "contribution".to_string(),
+            data: reading.data.clone(),
+            source: "preview".to_string(),
+            attesting_oracles: Vec::new(),
+            has_quorum: false,
+            elevation_meters: reading.elevation_meters,
+            station_location: reading.station_location,
+        };
+        // determinism-ok: offline preview evaluation; never consensus-executed
+        let eval = |policy: &MechanicalPolicy, dem_m: Option<f64>| {
+            evaluate_entry(&entry, policy, references, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp, dem_m)
+        };
+        let old = eval(&live, None);
+        let unbounded = eval(&active, entry.elevation_meters);
+        let bounded = eval(&active, dem.lookup(&entry.station_id, entry.station_location));
+        let row = rows.entry(entry.station_id.clone()).or_default();
+        row.readings += 1;
+        *row.live.entry(old.tier_label()).or_default() += 1;
+        *row.unbounded.entry(unbounded.tier_label()).or_default() += 1;
+        *row.bounded.entry(bounded.tier_label()).or_default() += 1;
+        let outcome = format!("{:?}", bounded.sea_level.outcome);
+        let outcome = outcome.split([' ', '{', '(']).next().unwrap_or_default().to_string();
+        *row.outcomes.entry(outcome).or_default() += 1;
+        if bounded.tier_label() != unbounded.tier_label() {
+            row.changed += 1;
+        }
+        if unbounded.verdict.tier == wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier::Good
+            && unbounded.tier_label() != "PHYSICS-ONLY"
+            && bounded.sea_level.pairing == PressurePairing::Unverified
+        {
+            row.good_to_unverified += 1;
+        }
+        if args.per_reading {
+            let _ = writeln!(
+                lines,
+                "  {} {} ts={} live={} 3285={} 3285+3299={} pairing={:?} {}",
+                entry.station_id,
+                if entry.commit_id.is_empty() { "-" } else { &entry.commit_id },
+                entry.timestamp,
+                old.tier_label(),
+                unbounded.tier_label(),
+                bounded.tier_label(),
+                bounded.sea_level.pairing,
+                bounded.sea_level.audit_reason().unwrap_or_default()
+            );
+        }
+    }
+    let counts = |m: &BTreeMap<String, usize>| {
+        m.iter().map(|(k, v)| format!("{k}:{v}")).collect::<Vec<_>>().join(",")
+    };
+    let mut out = format!(
+        "#3299 sea-level DEM band preview (offline; nothing submitted)\n\
+         live features: [{}]; band DEM -{}/+{} m; DEM table: {} station(s); references: {}\n\
+         station readings live(sea-level off) | 3285 unbounded | 3285+3299 bounded | changed | outcomes(bounded)\n",
+        args.features.join(","),
+        wrfcoin_shared_protocol::weather::station_reference::DEM_BAND_BELOW_M,
+        wrfcoin_shared_protocol::weather::station_reference::DEM_BAND_ABOVE_M,
+        dem.len(),
+        references.len()
+    );
+    for (station, row) in &rows {
+        let _ = writeln!(
+            out,
+            "{station} {} {} | {} | {} | {} | {}",
+            row.readings,
+            counts(&row.live),
+            counts(&row.unbounded),
+            counts(&row.bounded),
+            row.changed,
+            counts(&row.outcomes)
+        );
+    }
+    // The scheduling gate (README): NoDemElevation=0 for every station with a
+    // registered elevation, and every GoodToUnverified flip explained.
+    let total = |f: &dyn Fn(&Row) -> usize| rows.values().map(f).sum::<usize>();
+    let _ = writeln!(
+        out,
+        "summary: NoDemElevation={} ElevationOutsideDemBand={} GoodToUnverified={}",
+        total(&|r| r.outcomes.get("NoDemElevation").copied().unwrap_or(0)),
+        total(&|r| r.outcomes.get("ElevationOutsideDemBand").copied().unwrap_or(0)),
+        total(&|r| r.good_to_unverified)
+    );
+    out.push_str(&lines);
+    out
+}
+
+fn run_sea_level_preview(args: &[String]) -> Result<()> {
+    let args = parse_preview_args(args)?;
+    let readings = parse_preview_readings(
+        &std::fs::read_to_string(&args.readings).with_context(|| format!("cannot read {}", args.readings))?, // key-file-exempt: #3299 preview readings JSON, not key material
+    )?;
+    let references = parse_nws_observations(
+        &std::fs::read_to_string(&args.nws_observations) // key-file-exempt: #3299 preview NWS observations JSON, not key material
+            .with_context(|| format!("cannot read {}", args.nws_observations))?,
+    )?;
+    let dem = match &args.dem {
+        Some(path) => DemTable::parse(
+            &std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?, // key-file-exempt: #3299 preview DEM table JSON, not key material
+        )?,
+        None => DemTable::default(),
+    };
+    let base = mechanical_policy_from_env()?;
+    print!("{}", sea_level_preview(&args, &base, &readings, &references, &dem));
+    Ok(())
+}
+
+/// What the command line asks for (after `--sea-level-preview`, handled first).
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// No arguments: run from the environment.
+    Run,
+    /// Exactly one of `--help`, `-h`, `--version`, `-V`.
+    Usage,
+    /// Anything else: refuse, naming the first offending argument.
+    Refuse(String),
+}
+
+fn parse_args(args: &[String]) -> CliAction {
+    let is_usage = |a: &String| matches!(a.as_str(), "--help" | "-h" | "--version" | "-V");
+    if args.is_empty() {
+        return CliAction::Run;
+    }
+    if args.len() == 1 && is_usage(&args[0]) {
+        return CliAction::Usage;
+    }
+    // The first argument that is not a usage flag, or the second one if both are.
+    let offending = args.iter().find(|a| !is_usage(a)).unwrap_or_else(|| &args[1]);
+    CliAction::Refuse(offending.clone())
+}
+
+/// `--help` / `--version` text. Configuration is environment-only, so this
+/// names the required variables rather than flags.
+fn usage() -> String {
+    format!(
+        "oracle_attester {version}\n\
+         Polls a node's pending oracle surface, checks each reading mechanically, signs and\n\
+         submits attestations. Configured entirely through the environment.\n\
+         \n\
+         Required: WRFCOIN_ATTESTER_NODE_URL, WRFCOIN_ATTESTER_API_TOKEN, WRFCOIN_CHAIN_ID,\n\
+         WRFCOIN_NETWORK_ID, WRFCOIN_ATTESTER_FORBID_{{GOVERNANCE,SNAPSHOT,PRODUCER}}_PUBKEY, and\n\
+         an oracle signer: WRFCOIN_HSM_MODULE_PATH + WRFCOIN_HSM_ORACLE_KEY_LABEL (PKCS#11),\n\
+         or a testnet key file (see the module docs).\n\
+         \n\
+         Usage:\n\
+         \x20 oracle_attester                       run (reads the environment)\n\
+         \x20 oracle_attester --sea-level-preview   offline sea-level pressure preview\n\
+         \x20 oracle_attester --help | --version    this text\n",
+        version = env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+
+    // #3299 offline shadow preview: no config, key or network is touched.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--sea-level-preview") {
+        return run_sea_level_preview(&args[1..]);
+    }
+    // Offline: prints usage and exits; touches no config, key or network.
+    // Anything else on the command line is refused, never ignored: a typo
+    // must not start a live attester.
+    match parse_args(&args) {
+        CliAction::Run => {},
+        CliAction::Usage => {
+            print!("{}", usage());
+            return Ok(());
+        },
+        CliAction::Refuse(arg) => {
+            bail!("unrecognised argument '{arg}'. Configuration is environment-only; see --help")
+        },
+    }
 
     let config = Config::from_env()?;
     let policy = mechanical_policy_from_env()?;
@@ -1837,6 +2288,12 @@ async fn main() -> Result<()> {
                 ""
             }
         );
+    }
+
+    if config.dem_table.len() == 0 {
+        log::warn!("{}", config.dem_table.startup_line());
+    } else {
+        log::info!("{}", config.dem_table.startup_line());
     }
 
     let client = build_attester_http_client()?;
@@ -1931,6 +2388,29 @@ mod tests {
     use super::*;
     use wrfcoin_shared_protocol::crypto::signature::PrivateKey;
 
+    #[test]
+    fn only_no_arguments_runs_and_anything_unrecognised_is_refused() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&a(&[])), CliAction::Run);
+        for flag in ["--help", "-h", "--version", "-V"] {
+            assert_eq!(parse_args(&a(&[flag])), CliAction::Usage);
+        }
+        assert_eq!(parse_args(&a(&["foo", "--help"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--help", "foo"])), CliAction::Refuse("foo".into()));
+        assert_eq!(parse_args(&a(&["--once"])), CliAction::Refuse("--once".into()));
+        assert_eq!(parse_args(&a(&[""])), CliAction::Refuse(String::new()));
+    }
+
+    #[test]
+    fn usage_names_the_required_environment_and_no_secret_values() {
+        let text = usage();
+        assert!(text.starts_with("oracle_attester "));
+        for var in ["WRFCOIN_ATTESTER_NODE_URL", "WRFCOIN_CHAIN_ID", "WRFCOIN_NETWORK_ID"] {
+            assert!(text.contains(var), "usage does not name {var}");
+        }
+        assert!(text.contains("WRFCOIN_ATTESTER_FORBID_{GOVERNANCE,SNAPSHOT,PRODUCER}_PUBKEY"));
+    }
+
     /// #2833: entries with quorum land in `ready_to_mine`, which this binary
     /// previously did not even deserialize — a fully-attested backlog read as
     /// `pending=0` and looked idle during the 2026-08-28 quorum outage. The
@@ -2016,6 +2496,10 @@ mod tests {
     /// 1001.2 hPa at the registered 227.7 m, submitted with its altimeter
     /// setting as `pressure_sea_level_hpa`, against KDLH's 1027.8 hPa. The
     /// other variables agree with KDLH.
+    /// USGS 3DEP DEM ground elevation at the reference station's site; its
+    /// barometer-confirmed 227.7 m is 20.2 m below it (#3299).
+    const JON_DEM_M: f64 = 247.9;
+
     const JON_PENDING: &str = r#"{
         "chain_id": "777", "network_id": "testnet", "height": 21400,
         "oracle_set": [], "oracle_quorum": 2, "effective_quorum": 2,
@@ -2056,6 +2540,7 @@ mod tests {
             &kdlh,
             DEFAULT_MAX_PAIR_DELTA_SECS,
             entry.timestamp + 60,
+            Some(JON_DEM_M),
         );
         assert!(eval.comparison.is_some(), "KDLH is inside the pair window");
         assert!(eval.verdict.approved);
@@ -2098,13 +2583,242 @@ mod tests {
         let base = MechanicalPolicy::default();
         let cycle = cycle_policy_override(&base, &pending.active_features);
         let policy = cycle.as_ref().unwrap_or(&base);
-        evaluate_entry(entry, policy, &kdlh, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp)
+        evaluate_entry(entry, policy, &kdlh, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp, Some(JON_DEM_M))
     }
 
     fn has_pressure_residual(eval: &EntryEvaluation) -> bool {
         eval.comparison
             .as_ref()
             .is_some_and(|c| c.residuals.iter().any(|r| r.variable == "pressure_hpa"))
+    }
+
+    /// #3299 laundering cases (review probe, "Delta review 4"): a biased
+    /// barometer at the reference station's site plus a false registered
+    /// elevation whose recompute cancels the bias. `bias_hpa` shifts the raw
+    /// station pressure; the claim is the honest recompute at the false
+    /// elevation, so today it is Verified and tiers Good.
+    fn laundered_eval(bias_hpa: f64, registered_m: f64) -> EntryEvaluation {
+        use wrfcoin_shared_protocol::weather::station_reference::altimeter_setting_hpa;
+        let raw = 1001.2 + bias_hpa;
+        let claim = altimeter_setting_hpa(raw, registered_m).unwrap();
+        jon_eval_with(
+            |s| {
+                s.replace(r#""elevation_meters": 227.7,"#, &format!(r#""elevation_meters": {registered_m},"#))
+                    .replace(
+                        r#""pressure_hpa": 1001.2, "pressure_sea_level_hpa": 1028.29,"#,
+                        &format!(r#""pressure_hpa": {raw}, "pressure_sea_level_hpa": {claim},"#),
+                    )
+            },
+            r#"["reference_sea_level_pressure"]"#,
+        )
+    }
+
+    /// #3299 owner ruling (2026-10-24): the trusted elevation is bounded to
+    /// the DEM ground elevation −50 m / +60 m. Each laundering case is far
+    /// outside the band of the site's DEM (247.9 m), so it is never Good.
+    #[test]
+    fn false_elevation_cannot_launder_barometer_bias_3299() {
+        use wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier;
+        let laundered: Vec<String> = [(-27.0, 453.0), (-50.0, 653.0), (27.0, -1.0)]
+            .into_iter()
+            .map(|(bias_hpa, registered_m)| (bias_hpa, registered_m, laundered_eval(bias_hpa, registered_m)))
+            .filter(|(_, _, eval)| {
+                eval.verdict.tier == ReadingQualityTier::Good
+                    || eval.sea_level.pairing != PressurePairing::Unverified
+            })
+            .map(|(bias_hpa, registered_m, eval)| {
+                format!("bias {bias_hpa} hPa at {registered_m} m: tier {} {:?}", eval.verdict.tier, eval.sea_level)
+            })
+            .collect();
+        assert!(laundered.is_empty(), "laundered:\n{}", laundered.join("\n"));
+    }
+
+    /// #3299: the reference station's honest case (227.7 m, 20.2 m BELOW its
+    /// DEM) stays Verified and Good through the full tier fold, and so do
+    /// honest claims at both band edges; 0.1 m past either edge the claim is
+    /// not trusted and the reading is never Good.
+    #[test]
+    fn honest_elevation_and_band_edges_through_the_tier_fold_3299() {
+        use wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier;
+        let honest = laundered_eval(0.0, 227.7);
+        assert!(matches!(honest.sea_level.outcome, SeaLevelPressureOutcome::Verified { .. }), "{:?}", honest.sea_level);
+        assert_eq!(honest.verdict.tier, ReadingQualityTier::Good);
+
+        // An honest barometer at the edge elevation: the raw station pressure
+        // that elevation implies for the same sea-level value, so only the
+        // band decides.
+        for (elevation, inside) in [
+            (JON_DEM_M - 50.0, true),
+            (JON_DEM_M + 60.0, true),
+            (JON_DEM_M - 50.1, false),
+            (JON_DEM_M + 60.1, false),
+        ] {
+            let bias = (elevation - 227.7) * -0.1185;
+            let eval = laundered_eval(bias, elevation);
+            if inside {
+                assert_eq!(eval.sea_level.pairing, PressurePairing::SeaLevel, "{elevation}: {:?}", eval.sea_level);
+                assert_eq!(eval.verdict.tier, ReadingQualityTier::Good, "{elevation}");
+            } else {
+                assert_eq!(eval.sea_level.pairing, PressurePairing::Unverified, "{elevation}: {:?}", eval.sea_level);
+                assert_ne!(eval.verdict.tier, ReadingQualityTier::Good, "{elevation}");
+                assert!(eval.verdict.reasons.iter().any(|r| r.contains("outside the DEM band")), "{:?}", eval.verdict.reasons);
+            }
+        }
+    }
+
+    /// #3299 fail-closed: with no trusted DEM for the station, the laundering
+    /// cases are not Good either (the claim is not trusted at all).
+    #[test]
+    fn no_dem_entry_never_launders_3299() {
+        use wrfcoin_shared_protocol::weather::quality_tier::ReadingQualityTier;
+        use wrfcoin_shared_protocol::weather::station_reference::altimeter_setting_hpa;
+        for (bias_hpa, registered_m) in [(-27.0, 453.0), (-50.0, 653.0), (27.0, -1.0), (0.0, 227.7)] {
+            let raw = 1001.2 + bias_hpa;
+            let claim = altimeter_setting_hpa(raw, registered_m).unwrap();
+            let edit = |s: String| {
+                s.replace(r#""elevation_meters": 227.7,"#, &format!(r#""elevation_meters": {registered_m},"#))
+                    .replace(
+                        r#""pressure_hpa": 1001.2, "pressure_sea_level_hpa": 1028.29,"#,
+                        &format!(r#""pressure_hpa": {raw}, "pressure_sea_level_hpa": {claim},"#),
+                    )
+            };
+            let pending: PendingResponse = serde_json::from_str(
+                &edit(JON_PENDING.to_string()).replace("ACTIVE", r#"["reference_sea_level_pressure"]"#),
+            )
+            .unwrap();
+            let entry = &pending.observations[0];
+            let kdlh = vec![StationReferenceObservation {
+                timestamp: entry.timestamp,
+                temperature_c: Some(10.0),
+                pressure_hpa: Some(1027.8),
+                humidity_pct: Some(93.0),
+                wind_speed_ms: Some(2.1),
+            }];
+            let base = MechanicalPolicy::default();
+            let policy = cycle_policy_override(&base, &pending.active_features).unwrap();
+            let eval = evaluate_entry(entry, &policy, &kdlh, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp, None);
+            assert_eq!(eval.sea_level.outcome, SeaLevelPressureOutcome::NoDemElevation);
+            assert_ne!(eval.verdict.tier, ReadingQualityTier::Good, "{bias_hpa} @ {registered_m}");
+        }
+    }
+
+    const DEM_FILE: &str = r#"{"version": 1, "source": "usgs_3dep_epqs", "stations": [
+        {"station_id": "PWS-EXAMPLE-WS5000", "latitude": 46.8123, "longitude": -92.1031,
+         "dem_ground_elevation_m": 247.9}
+    ]}"#;
+
+    /// #3299 DEM table: an entry is used only for the station whose served
+    /// coarse location matches; malformed or duplicate entries refuse the file.
+    #[test]
+    fn dem_table_binds_entries_to_the_coarse_location_3299() {
+        let table = DemTable::parse(DEM_FILE).unwrap();
+        assert_eq!(table.len(), 1);
+        let here = ReferenceLocation { latitude: 46.81, longitude: -92.10 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(here)), Some(247.9));
+        // Exact coordinates served by a node coarsen to the same key.
+        let exact = ReferenceLocation { latitude: 46.8119, longitude: -92.1018 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(exact)), Some(247.9));
+        let moved = ReferenceLocation { latitude: 46.85, longitude: -92.10 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(moved)), None);
+        // A non-operator node view at 0.1 degree matches the entry's 0.1 cell,
+        // and only that cell.
+        let public = ReferenceLocation { latitude: 46.8, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(public)), Some(247.9));
+        let next_cell = ReferenceLocation { latitude: 46.9, longitude: -92.1 };
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", Some(next_cell)), None);
+        assert_eq!(table.lookup("PWS-EXAMPLE-WS5000", None), None);
+        assert_eq!(table.lookup("PWS-OTHER", Some(here)), None);
+
+        let dup = DEM_FILE.replace(
+            r#"]}"#,
+            r#", {"station_id": "PWS-EXAMPLE-WS5000", "latitude": 46.81, "longitude": -92.10, "dem_ground_elevation_m": 250.0}]}"#,
+        );
+        assert!(DemTable::parse(&dup).is_err());
+        assert!(DemTable::parse(&DEM_FILE.replace("247.9", "-1000000")).is_err());
+        assert!(DemTable::parse(&DEM_FILE.replace(r#""version": 1"#, r#""version": 2"#)).is_err());
+        assert!(DemTable::parse(&DEM_FILE.replace("46.8123", "123.0")).is_err());
+        assert!(DemTable::parse(&DEM_FILE.replace(r#""source""#, r#""typo""#)).is_err());
+    }
+
+    /// #3299: the startup line carries the table's sha256 and entry count and
+    /// nothing else, so attesters on different tables are told apart.
+    #[test]
+    fn dem_table_startup_line_logs_sha256_and_count_only_3299() {
+        use sha2::{Digest, Sha256};
+        let table = DemTable::parse(DEM_FILE).unwrap();
+        let sha = hex::encode(Sha256::digest(DEM_FILE.as_bytes()));
+        assert_eq!(table.startup_line(), format!("[attester] #3299 DEM table sha256={sha} entries=1"));
+        let other = DemTable::parse(&DEM_FILE.replace("247.9", "248.0")).unwrap();
+        assert_ne!(other.startup_line(), table.startup_line());
+        assert_eq!(DemTable::parse(DEM_FILE).unwrap().startup_line(), table.startup_line());
+        for leak in ["PWS-", "46.8", "92.1", "247.9"] {
+            assert!(!table.startup_line().contains(leak), "{leak}");
+        }
+        assert!(DemTable::default().startup_line().contains("none configured"));
+    }
+
+    /// #3299 shadow preview: per station, live (sea-level off) vs #3285
+    /// unbounded vs #3285+#3299; an honest and a laundering station side by
+    /// side, and nothing but text comes out.
+    #[test]
+    fn sea_level_preview_reports_old_and_new_tier_per_station_3299() {
+        use wrfcoin_shared_protocol::weather::station_reference::altimeter_setting_hpa;
+        let reading = |station: &str, raw: f64, elevation: f64| {
+            serde_json::json!({
+                "station_id": station, "timestamp": 1790224800, "elevation_meters": elevation,
+                "station_location": {"latitude": 46.81, "longitude": -92.10},
+                "data": {
+                    "temperature_c": 10.2, "humidity_percent": 97.0, "pressure_hpa": raw,
+                    "pressure_sea_level_hpa": altimeter_setting_hpa(raw, elevation).unwrap(),
+                    "pressure_kind": "station", "wind_speed_ms": 1.0, "precipitation_mm": 0.0
+                }
+            })
+        };
+        let mut repeated = reading("PWS-LAUNDER", 974.2, 453.0);
+        repeated["commit_id"] = serde_json::json!("c1");
+        let body = serde_json::json!({ "observations": [
+            reading("PWS-EXAMPLE-WS5000", 1001.2, 227.7),
+            repeated.clone(),
+            repeated,
+        ]})
+        .to_string();
+        let readings = parse_preview_readings(&body).unwrap();
+        let dem = DemTable::parse(&DEM_FILE.replace(
+            r#"]}"#,
+            r#", {"station_id": "PWS-LAUNDER", "latitude": 46.81, "longitude": -92.10, "dem_ground_elevation_m": 247.9}]}"#,
+        ))
+        .unwrap();
+        let kdlh = vec![StationReferenceObservation {
+            timestamp: 1790224800,
+            temperature_c: Some(10.0),
+            pressure_hpa: Some(1027.8),
+            humidity_pct: Some(93.0),
+            wind_speed_ms: Some(2.1),
+        }];
+        let args = parse_preview_args(&[
+            "--readings".into(), "r.json".into(), "--nws-observations".into(), "n.json".into(),
+            "--features".into(), "reward_gross_outlier_guard,reference_sea_level_pressure".into(),
+            "--per-reading".into(),
+        ])
+        .unwrap();
+        assert_eq!(args.features, vec!["reward_gross_outlier_guard".to_string()]);
+        let report = sea_level_preview(&args, &MechanicalPolicy::default(), &readings, &kdlh, &dem);
+        let line = |station: &str| {
+            report.lines().find(|l| l.starts_with(&format!("{station} "))).unwrap().to_string()
+        };
+        assert_eq!(line("PWS-EXAMPLE-WS5000"), "PWS-EXAMPLE-WS5000 1 degraded:1 | good:1 | good:1 | 0 | Verified:1");
+        assert_eq!(line("PWS-LAUNDER"), "PWS-LAUNDER 1 degraded:1 | good:1 | degraded:1 | 1 | ElevationOutsideDemBand:1");
+        assert!(report.contains("outside the DEM band"), "{report}");
+        assert!(
+            report.contains("summary: NoDemElevation=0 ElevationOutsideDemBand=1 GoodToUnverified=1\n"),
+            "{report}"
+        );
+        let no_dem = sea_level_preview(&args, &MechanicalPolicy::default(), &readings, &kdlh, &DemTable::default());
+        assert!(
+            no_dem.contains("summary: NoDemElevation=2 ElevationOutsideDemBand=0 GoodToUnverified=2\n"),
+            "{no_dem}"
+        );
+        assert!(parse_preview_args(&["--readings".into(), "r.json".into()]).is_err());
     }
 
     /// Owner rulings (#3285): active + registered elevation + a reveal with
@@ -2305,7 +3019,7 @@ mod tests {
         let policy = cycle_policy_override(&MechanicalPolicy::default(), &pending.active_features)
             .unwrap();
         let eval =
-            evaluate_entry(entry, &policy, &kdlh, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp);
+            evaluate_entry(entry, &policy, &kdlh, DEFAULT_MAX_PAIR_DELTA_SECS, entry.timestamp, Some(JON_DEM_M));
         assert_eq!(eval.sea_level.outcome, SeaLevelPressureOutcome::NoElevation);
         assert_eq!(eval.verdict.tier, ReadingQualityTier::Degraded);
         assert!(eval.verdict.reasons.iter().any(|r| r.contains("no registered elevation")));

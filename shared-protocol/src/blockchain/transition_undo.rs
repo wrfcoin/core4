@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 77],
+    records: [Option<Undo>; 81],
 }
 
 impl TransitionUndo {
@@ -94,6 +94,10 @@ impl TransitionUndo {
             node_receipt_registry: _,
             node_settlement: _,
             node_fraud: _,
+            send_allowlists: _,
+            advisory_proposals: _,
+            forecast_late_score: _,
+            station_submitters: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -184,6 +188,10 @@ impl TransitionUndo {
             capture!(node_receipt_registry),
             capture!(node_settlement),
             capture!(node_fraud),
+            capture!(send_allowlists),
+            capture!(advisory_proposals),
+            capture!(forecast_late_score),
+            capture!(station_submitters),
         ];
         Self { records }
     }
@@ -236,7 +244,16 @@ const GOVERNANCE: &[&str] = &[
     "archived_quality_policy_event_through_event_id",
 ];
 const PROTOCOL: &[&str] = &[
+    // Sponsored first sends: a transfer carrying a sponsorship updates the
+    // sponsor's rate-limit record once `paymaster` is active.
+    "paymasters",
+    "session_keys",
     "governance",
+    // `SecurityKeyAction` (security_key_spend) writes the account's
+    // declaration through the governance sink, and `enable` revokes the
+    // account's session keys.
+    "authorization_declarations",
+    "session_keys",
     "audit_events",
     "oracle_set",
     "oracle_quorum",
@@ -264,8 +281,13 @@ const PROTOCOL: &[&str] = &[
     "quality_policy_event_archive",
     "archived_quality_policy_event_count",
     "archived_quality_policy_event_through_event_id",
+    "send_allowlists",
+    // `AdvisoryGovernance` (advisory_governance) writes the proposal map
+    // through the governance sink; balances and nonces are in COMMON.
+    "advisory_proposals",
 ];
-const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger"];
+// `station_submitters`: owner steps can clear an approved submitter key.
+const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger", "station_submitters"];
 const NODE: &[&str] = &[
     "node_bond_registry",
     "node_receipt_registry",
@@ -294,7 +316,16 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         ApplyGamificationReward { .. } => &["gamification_claims_seen"],
         ApplyProducerSettlement { .. } => &["last_producer_settlement"],
         ApplyAttesterSettlements { .. } => &["attester_settlements", "attester_settlement_due"],
-        RegisterCommit { .. } => &["commit_reveal_state", "pending_commits", "pending_reveals"],
+        // `forecast_late_score`: a forecast commit notes its signer; a
+        // forecast reveal stores a record.
+        // `device_submission_limit`: a contribution commit records its signer class.
+        RegisterCommit { .. } => &[
+            "commit_reveal_state",
+            "pending_commits",
+            "pending_reveals",
+            "forecast_late_score",
+            "station_submitters",
+        ],
         ApplyReveal { .. } => &[
             "commit_reveal_state",
             "pending_commits",
@@ -309,6 +340,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             "slashing_engine",
             "slashing_reason_counts",
             "zk_verified_proofs",
+            "forecast_late_score",
         ],
         ApplyConfidentialTransfer { .. }
         | ApplyShieldedDeposit { .. }
@@ -347,7 +379,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             &["mining_pools"]
         },
         RecordGenesisEmissionConfig { .. } => &["genesis_emission_config"],
-        ApplyAccountRecovery { .. } => &["account_recovery"],
+        ApplyAccountRecovery { .. } => &["account_recovery", "send_allowlists"],
         ApplySessionKeyAction { .. } => &["session_keys"],
         DeclareAuthorization { .. } => &["authorization_declarations"],
         ApplyPaymasterAction { .. } => &["paymasters"],
@@ -355,15 +387,22 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         ApplyStationRegistration { .. }
         | ApplyStationRegistrationWithOwnerConsent { .. }
         | ApplyStationRegistrationV2 { .. }
+        | ApplyStationRegistrarRegistration { .. }
         | ApplyStationOwnerTransfer { .. }
         | ApplyStationOwnerAction { .. }
         | ApplyStationOwnerRecoveryFiling { .. }
         | ApplyStationOwnerRecoveryCancel { .. }
-        | ApplyStationOwnerRecoveryExecute { .. } => STATION,
+        | ApplyStationOwnerRecoveryExecute { .. }
+        | ApplyStationSubmitterKey { .. } => STATION,
         BeginNodeServiceBlock { .. }
         | ApplyNodeBondLifecycle { .. }
         | ApplyNodeServiceBatch { .. }
         | ApplyNodeFraudReport { .. } => NODE,
+        // Writes the record; the deposit refund is a balance (COMMON).
+        FinalizeAdvisoryProposal { .. } => &["advisory_proposals"],
+        // Scores and bucket closes write only the lane's own state; the
+        // close's mints are balances and the emission ledger (COMMON).
+        ApplyForecastScore { .. } | CloseForecastBuckets { .. } => &["forecast_late_score"],
     }
 }
 
@@ -383,7 +422,7 @@ impl CompletenessGuard {
     pub(super) fn capture(state: &State, transition: &StateTransition) -> Self {
         Self {
             bytes: state.state_root_material(),
-            root: state.state_root.clone(),
+            root: state.state_root,
             variant: transition_name(transition),
         }
     }
@@ -469,8 +508,13 @@ fn transition_name(t: &StateTransition) -> &'static str {
         },
         StateTransition::ApplyStationRegistrationV2 { .. } => "ApplyStationRegistrationV2",
         StateTransition::BeginNodeServiceBlock { .. } => "BeginNodeServiceBlock",
+        StateTransition::ApplyStationRegistrarRegistration { .. } => "ApplyStationRegistrarRegistration",
+        StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
+        StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
+        StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
+        StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
     }
 }

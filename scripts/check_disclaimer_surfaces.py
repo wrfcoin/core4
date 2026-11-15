@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-URL = "https://wrfcoin-testnet.taila1c049.ts.net/testnet-disclaimer.html"
+URL = "https://wrfcoin.com/testnet-disclaimer.html"
 NOTICE = "This is a test network. It may be reset without notice. Balances and tokens have no monetary value. No migration to mainnet is promised or implied. Please attach no production bridges, exchange listings or irreplaceable assets."
 
 

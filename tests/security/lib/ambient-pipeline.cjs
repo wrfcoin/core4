@@ -150,9 +150,9 @@ function httpGet(host, port, urlPath, token, options = {}) {
             res.on('data', (chunk) => { raw += chunk; });
             res.on('end', () => {
                 try {
-                    resolve({ status: res.statusCode, data: JSON.parse(raw) });
+                    resolve({ status: res.statusCode, headers: res.headers, data: JSON.parse(raw) });
                 } catch (_) {
-                    resolve({ status: res.statusCode, data: raw });
+                    resolve({ status: res.statusCode, headers: res.headers, data: raw });
                 }
             });
         });
@@ -1926,7 +1926,7 @@ async function classifyMinedRevealInclusion(entry, options = {}) {
             options.host,
             options.port,
             `/transactions/commit/${encodeURIComponent(commitId)}/status`,
-            null,
+            options.token,
         );
     } catch (_) {
         return { state: 'unverified', reason: 'request_failed' };
@@ -2149,6 +2149,23 @@ function collectorMineEnabled(options = {}) {
     throw new Error('COLLECTOR_MINE must be true or false');
 }
 
+// The node's per-IP read limiter (launch_api rate_limit.rs: 100 GETs/min
+// unauthenticated, 10x with a known bearer) answers 429 with a fixed
+// Retry-After of 60 s, whatever the sliding window actually frees. A 429 is
+// no evidence about a record: stop the pass so the budget is not spent on
+// more 429s, and back off. Retry-After is honoured up to a cap that still
+// leaves several polls inside a 3-block reveal window.
+const READ_THROTTLE_BACKOFF_MIN_MS = 2000;
+const READ_THROTTLE_BACKOFF_MAX_MS = 15000;
+
+function readThrottleBackoffMs(response, attempt) {
+    const retryAfter = Number(response?.headers?.['retry-after']);
+    const wanted = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : READ_THROTTLE_BACKOFF_MIN_MS * 2 ** Math.min(attempt, 3);
+    return Math.max(READ_THROTTLE_BACKOFF_MIN_MS, Math.min(READ_THROTTLE_BACKOFF_MAX_MS, wanted));
+}
+
 // Each COMMITTED record has its own evidence and expiry. One lost record must
 // not hold back a confirmed neighbour or admission of fresh work next cycle.
 // A transient 404 stays pending; local abandonment uses the existing age
@@ -2165,8 +2182,19 @@ async function waitForHeartbeatCommits(entries, options = {}) {
     const wallStart = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
     const request = options.httpGet || httpGet;
     const sleepFn = options.sleepFn || sleep;
-    const pending = new Map(entries.map((entry) => [entry.commit_hash, entry]));
+    // Newest commits first: a throttled pass ends early, and the records this
+    // cycle can still reveal must not queue behind ones whose window closed.
+    const pending = new Map([...entries]
+        .sort((a, b) => (Number.isFinite(b.commit_block_height) ? b.commit_block_height : -1)
+            - (Number.isFinite(a.commit_block_height) ? a.commit_block_height : -1))
+        .map((entry) => [entry.commit_hash, entry]));
     const previous = new Map();
+    // Records seen bound with the same committed_at in two consecutive
+    // informative reads; a 429 in between neither confirms nor resets.
+    const sighted = new Set();
+    let throttle = null;
+    let throttleAttempts = 0;
+    let heldForSecondSighting = false;
     // Tip/status endpoints do not provide an atomic snapshot. Bracket a fresh
     // status with matching canonical tips before any durable local retirement.
     // Read failures, a changed tip/hash, or a surviving live record fail closed.
@@ -2174,14 +2202,17 @@ async function waitForHeartbeatCommits(entries, options = {}) {
         async function read(route, token) {
             if (now() >= deadline) return null;
             try {
-                return await request(options.host, options.port, route, token,
+                const response = await request(options.host, options.port, route, token,
                     { timeoutMs: Math.min(10000, Math.max(1, deadline - now())) });
+                if (response?.status === 429) throttle = response;
+                return response;
             } catch (_) { return null; }
         }
         const firstResponse = await read('/blockchain', options.token);
         const first = firstResponse?.data?.data || firstResponse?.data;
         if (firstResponse?.status !== 200 || !Number.isSafeInteger(first?.height) || first.height < 0) return null;
-        const statusResponse = await read(`/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`, null);
+        const statusResponse = await read(`/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`,
+            options.token);
         const body = statusResponse?.data?.data || statusResponse?.data;
         const lastResponse = await read('/blockchain', options.token);
         const last = lastResponse?.data?.data || lastResponse?.data;
@@ -2209,22 +2240,29 @@ async function waitForHeartbeatCommits(entries, options = {}) {
     }
     let height = options.currentBlockHeight;
     while (pending.size > 0 && now() < deadline) {
+        throttle = null;
         try {
             const chainResponse = await request(options.host, options.port, '/blockchain', options.token,
                 { timeoutMs: Math.min(10000, Math.max(1, deadline - now())) });
             const chain = chainResponse?.data?.data || chainResponse?.data;
+            if (chainResponse?.status === 429) throttle = chainResponse;
             if (chainResponse?.status === 200 && Number.isSafeInteger(chain?.height)) height = chain.height;
         } catch (_) { /* no height evidence; keep per-record state */ }
-        const included = [];
         const promoted = new Set();
-        for (const entry of pending.values()) {
+        let partialPass = Boolean(throttle);
+        for (const entry of throttle ? [] : pending.values()) {
             if (now() >= deadline) break;
             let response;
             try {
                 response = await request(options.host, options.port,
-                    `/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`, null,
+                    `/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`, options.token,
                     { timeoutMs: Math.min(10000, Math.max(1, deadline - now())) });
             } catch (_) { response = null; }
+            if (response?.status === 429) { throttle = response; partialPass = true; break; }
+            // Only a 200 or a 404 says anything about the record. A transport
+            // failure or other error keeps its streak and its pending state,
+            // and does not hold back records that were read.
+            if (response?.status !== 200 && response?.status !== 404) continue;
             const body = response?.data?.data || response?.data;
             const bound = response?.status === 200 && body
                 && body.commit_id === entry.commit_hash && body.station_id === entry.station_id;
@@ -2258,22 +2296,38 @@ async function waitForHeartbeatCommits(entries, options = {}) {
                     height = confirmed.height;
                 }
                 previous.delete(entry.commit_hash);
+                sighted.delete(entry.commit_hash);
+                if (throttle) { partialPass = true; break; }
                 continue;
             }
             const signature = bound && Number.isSafeInteger(body.committed_at) && body.committed_at >= 1
                 ? String(body.committed_at) : null;
-            if (signature && previous.get(entry.commit_hash) === signature) included.push(entry);
+            if (signature && previous.get(entry.commit_hash) === signature) sighted.add(entry.commit_hash);
+            else sighted.delete(entry.commit_hash);
             previous.set(entry.commit_hash, signature);
             if (signature) height = Math.max(height || 0, body.committed_at);
+        }
+        const included = [...pending.values()].filter((entry) => sighted.has(entry.commit_hash));
+        // Under throttling, records are confirmed on different passes. Settle
+        // only on a pass the limiter did not cut short, and give a record seen
+        // bound once one more pass, so one batch is not revealed piecemeal.
+        const halfSighted = [...pending.values()].some((entry) =>
+            previous.get(entry.commit_hash) && !sighted.has(entry.commit_hash));
+        let settled = included.length > 0 && !partialPass;
+        if (settled && halfSighted && !heldForSecondSighting) {
+            heldForSecondSighting = true;
+            settled = false;
         }
         if (promoted.size > 0) {
             const stateFilePath = getPendingRevealsPath(options);
             savePendingRevealEntries(stateFilePath, loadPendingRevealEntries(stateFilePath).map((entry) =>
                 promoted.has(entry.commit_hash) ? { ...entry, phase: PENDING_PHASE_AWAITING_QUORUM } : entry));
         }
-        if (included.length > 0 || pending.size === 0) return { included, height };
+        if (settled || pending.size === 0) return { included, height };
+        throttleAttempts = throttle ? throttleAttempts + 1 : 0;
+        const pause = throttle ? readThrottleBackoffMs(throttle, throttleAttempts - 1) : 1000;
         const remaining = deadline - now();
-        if (remaining > 0) await sleepFn(Math.min(1000, remaining));
+        if (remaining > 0) await sleepFn(Math.min(pause, remaining));
     }
     return { included: [], height };
 }
@@ -2293,16 +2347,26 @@ async function waitForHeartbeatInclusion(entries, phase, options = {}) {
     const request = options.httpGet || httpGet;
     const deadline = now() + Number(interval) * 3000;
     let previous = null;
+    let throttleAttempts = 0;
     while (now() < deadline) {
         const observations = [];
+        // A pass with a 429 or another non-200/404 answer is no information:
+        // it neither confirms nor resets the previous observation.
+        let throttle = null;
+        let informative = true;
         for (const entry of entries) {
             if (now() >= deadline) { observations.length = 0; break; }
             let response;
             try {
                 response = await request(options.host, options.port,
-                    `/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`, null,
+                    `/transactions/commit/${encodeURIComponent(entry.commit_hash)}/status`, options.token,
                     { timeoutMs: Math.min(10000, Math.max(1, deadline - now())) });
             } catch (_) { response = null; }
+            if (response?.status !== 200 && response?.status !== 404) {
+                if (response?.status === 429) throttle = response;
+                informative = false;
+                break;
+            }
             const body = response?.data?.data || response?.data;
             const bound = response?.status === 200 && body
                 && body.commit_id === entry.commit_hash && body.station_id === entry.station_id;
@@ -2315,13 +2379,17 @@ async function waitForHeartbeatInclusion(entries, phase, options = {}) {
         }
         const signature = observations.length === entries.length && entries.length > 0
             ? JSON.stringify(observations) : null;
-        if (signature && signature === previous && now() <= deadline) {
-            return { status: 201, data: { height: Math.max(...observations.map((item) => item.height)) },
-                externalMining: true };
+        if (informative) {
+            if (signature && signature === previous && now() <= deadline) {
+                return { status: 201, data: { height: Math.max(...observations.map((item) => item.height)) },
+                    externalMining: true };
+            }
+            previous = signature;
         }
-        previous = signature;
+        throttleAttempts = throttle ? throttleAttempts + 1 : 0;
+        const pause = throttle ? readThrottleBackoffMs(throttle, throttleAttempts - 1) : 1000;
         const remaining = deadline - now();
-        if (remaining > 0) await sleepFn(Math.min(1000, remaining));
+        if (remaining > 0) await sleepFn(Math.min(pause, remaining));
     }
     return { status: null, data: { code: 'HEARTBEAT_INCLUSION_TIMEOUT' }, externalMining: true };
 }

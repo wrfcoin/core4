@@ -113,7 +113,7 @@ jobs:
   # ── TDD-12.2 through 12.5: pure Rust, run on every push/PR ─────────────────
   tdd-phase3c-rust:
     name: "Phase 3C TDD 12.2–12.5 (Rust)"
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     # Hosted main/PR spent 17m01s/17m37s in Rust steps; both reached the
     # 20m deadline during cache upload. 35m exceeds 1.5x that observed bound
     # and includes setup, compilation, tests and the cache-save post step.
@@ -207,7 +207,7 @@ jobs:
   # ── TDD-12.1 + 12.6–12.11: ephemeral localhost API, manual trigger only ────
   tdd-phase3c-api:
     name: "Phase 3C TDD 12.1, 12.6–12.11 (API — manual)"
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     if: >
       github.event_name == 'workflow_dispatch' &&
@@ -327,7 +327,7 @@ jobs:
     name: "Phase 3C manual API terminal guard"
     needs: [tdd-phase3c-api]
     if: always() && github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -350,7 +350,7 @@ jobs:
     # must never be counted as a skipped automatic gate.
     needs: [tdd-phase3c-rust]
     if: always() && github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest  # #2921 decision 2 (owner, 2026-08-31): hosted runs were billing-VOID since ~Aug 12
+    runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:

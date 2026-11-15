@@ -39,12 +39,20 @@ pub fn extract_transitions(
     if state.node_share_activation_height().is_some_and(|a| block_height >= a) {
         transitions.push(StateTransition::BeginNodeServiceBlock { block_height, parent_hash: *block.prev_block_hash.as_bytes() });
     }
+    // Where the block's governance transitions go under
+    // `governance_before_launch`: here, straight after the node-service begin and before the
+    // launch batch, which is the order the producer applies them in.
+    let governance_slot = transitions.len();
     let mut launch_transitions = Vec::new();
     if let Some(config) = wrfcoin_shared_protocol::crypto::chain_binding::GenesisEmissionConfig::from_block(block) {
         let transition = StateTransition::RecordGenesisEmissionConfig { config };
         transitions.push(transition);
     }
 
+    // `station_registrar_key`: the same per-block slot as the PoP producer
+    // path, so producer == applier == WAL replay. Inert while inactive.
+    let mut registrar_slot =
+        wrfcoin_shared_protocol::consensus::station_registrar::RegistrarBlockSlot::new();
     for tx in &block.transactions {
         match tx.tx_type {
             TransactionType::NodeFraudReport => {
@@ -65,12 +73,34 @@ pub fn extract_transitions(
                     launch_transitions.push(transition.clone()); transitions.push(transition);
                 }
             },
+            // Session-key register/revoke: the same parse as the PoP producer
+            // arm, so producer == applier == WAL replay. The apply arm is gated
+            // on `ConsensusFeature::SessionKeys` and fails closed.
+            TransactionType::SessionKeyAction => {
+                if let Some(action) = wrfcoin_shared_protocol::accounts::session_keys::SessionKeyActionPayload::parse(tx) {
+                    let transition = StateTransition::ApplySessionKeyAction {
+                        action,
+                        block_height,
+                        security_key_auth: tx.security_key_spend_proof(),
+                    };
+                    launch_transitions.push(transition.clone()); transitions.push(transition);
+                }
+            },
+            // Forecast late score: the same parse as the PoP producer arm, with
+            // the block's own height and timestamp, so producer == applier ==
+            // WAL replay. The apply arm is gated and fails closed.
+            TransactionType::ForecastScore => {
+                if let Some(payload) = wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload::parse(tx) {
+                    let transition = StateTransition::ApplyForecastScore { payload, block_height, block_timestamp };
+                    launch_transitions.push(transition.clone()); transitions.push(transition);
+                }
+            },
             // --- Commit/Reveal protocol (PoP core) ---
             // Fail-closed sender auth (#1848): a commit without a valid
             // authorization emits no transition so a forged payload injected
             // via P2P cannot register a commit in state.
             TransactionType::ContributionCommit | TransactionType::ForecastCommit => {
-                if tx.verify_commit_authorization() {
+                if tx.verify_commit_authorization_at_height(block_height) {
                     if let Some(payload) = tx.parse_commit_payload() {
                         let transition = StateTransition::RegisterCommit {
                             payload,
@@ -247,7 +277,9 @@ pub fn extract_transitions(
                     // The SAME shared step as the PoP producer arm: the
                     // format-vs-activation rule, authorization and the variant
                     // by height, so producer == applier == WAL replay.
-                    if let Some(transition) = tx.station_registration_step(block_height) {
+                    if let Some(transition) =
+                        registrar_slot.admit(tx.station_registration_step(block_height))
+                    {
                         transitions.push(transition);
                     }
                 } else if tx.parse_station_registration().is_none() {
@@ -328,6 +360,15 @@ pub fn extract_transitions(
             | TransactionType::ShieldedDeposit
             | TransactionType::ShieldedWithdrawal
             | TransactionType::RewardClaim
+            // Security-key wallet actions (`security_key_spend`) apply through
+            // the same governance sink; a direct transition here would apply
+            // them twice.
+            | TransactionType::SecurityKeyAction
+            // Send-allowlist actions use the same governance-routed sink.
+            | TransactionType::SendAllowlist
+            // Advisory governance actions use the same governance-routed sink;
+            // their finalize comes from `governance_transitions_for_block`.
+            | TransactionType::AdvisoryGovernance
             // Governance proposal/vote/etc. were already governance-routed.
             | TransactionType::GovernanceProposal
             | TransactionType::GovernanceVote
@@ -351,6 +392,13 @@ pub fn extract_transitions(
                 // No direct transition emitted here; see comment above.
             },
         }
+    }
+
+    // `forecast_late_score`: one bucket close per block, after the block's
+    // transactions, from the same constructor as the PoP producer's launch
+    // batch. `None` (nothing emitted) while the feature is not in force.
+    if let Some(close) = wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing::forecast_bucket_close_transition(block_height, block_timestamp) {
+        transitions.push(close);
     }
 
     // Governance transitions — read from block metadata if available (miner
@@ -382,13 +430,49 @@ pub fn extract_transitions(
             block_timestamp,
         )
     };
-    let low_quality_streak_transitions = derive_low_quality_streak_transitions(
-        state,
-        block,
-        &governance_transitions,
-        &launch_transitions,
-    );
-    transitions.extend(governance_transitions);
+    // #3591: the producer begins the node-service block before its launch
+    // batch, so from `streak_replay_node_service` the replay does too.
+    let replay_node_service_begin = wrfcoin_shared_protocol::crypto::chain_binding::feature_active(
+        wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::StreakReplayNodeService,
+        block_height,
+    )
+    .then(|| {
+        transitions
+            .iter()
+            .find(|t| matches!(t, StateTransition::BeginNodeServiceBlock { .. }))
+            .cloned()
+    })
+    .flatten();
+    // From `streak_replay_recipient_parity` the replay is the producer's own
+    // pre-reward state and recipient rule; it implies the node-service begin
+    // above, so `streak_replay_node_service` is not consulted then.
+    let low_quality_streak_transitions = if wrfcoin_shared_protocol::crypto::chain_binding::feature_active(
+        wrfcoin_shared_protocol::crypto::chain_binding::ConsensusFeature::StreakReplayRecipientParity,
+        block_height,
+    ) {
+        derive_low_quality_streak_transitions_from_producer_state(state, block, &governance_transitions)
+    } else {
+        derive_low_quality_streak_transitions(
+            state,
+            block,
+            &governance_transitions,
+            replay_node_service_begin.as_ref(),
+            &launch_transitions,
+        )
+    };
+    // The producer applies governance BEFORE its launch batch
+    // (`create_next_block`: governance, then launch transitions, then
+    // rewards). A forecast score reads the oracle set, the quorum and the
+    // signing-key registry, and a bucket close reads `stake_required`, all of
+    // which a governance transition of the same block can change; so from
+    // `forecast_late_score` the replay uses the producer's order. Below it the
+    // order is unchanged (governance after the launch batch), so no existing
+    // block replays differently.
+    if wrfcoin_shared_protocol::crypto::chain_binding::governance_before_launch(block_height) {
+        transitions.splice(governance_slot..governance_slot, governance_transitions);
+    } else {
+        transitions.extend(governance_transitions);
+    }
     transitions.extend(low_quality_streak_transitions);
 
     if let Some(entries_json) = block
@@ -509,11 +593,18 @@ fn derive_low_quality_streak_transitions(
     state: &State,
     block: &Block,
     governance_transitions: &[StateTransition],
+    // #3591: `Some` only under `streak_replay_node_service`; `None` replays
+    // exactly the pre-#3591 sequence.
+    node_service_begin: Option<&StateTransition>,
     launch_transitions: &[StateTransition],
 ) -> Vec<StateTransition> {
     let mut replay_state = state.clone();
 
-    for transition in governance_transitions.iter().chain(launch_transitions.iter()) {
+    for transition in governance_transitions
+        .iter()
+        .chain(node_service_begin)
+        .chain(launch_transitions.iter())
+    {
         // #2032: this replay clone exists only to derive streak/attestation
         // views (below); its `state_root` is never read, so skip the
         // O(state_size) per-transition root recompute that `apply_transition`
@@ -594,6 +685,104 @@ fn derive_low_quality_streak_transitions(
                 };
                 if replay_state
                     .apply_transition_without_root_recompute(slash.clone())
+                    .is_ok()
+                {
+                    transitions.push(slash);
+                    replay_state.reset_low_quality_streak(&recipient_address);
+                    transitions.push(StateTransition::SetLowQualityStreak {
+                        address: recipient_address,
+                        streak: None,
+                    });
+                }
+            }
+        } else {
+            replay_state.reset_low_quality_streak(&recipient_address);
+            transitions.push(StateTransition::SetLowQualityStreak {
+                address: recipient_address,
+                streak: None,
+            });
+        }
+    }
+
+    transitions
+}
+
+/// `streak_replay_recipient_parity`: the streak transitions the producer's
+/// `process_contribution_rewards` emits, derived from the producer's pre-reward
+/// state (`ProofOfPublishing::pre_reward_state_for_replay`) with the producer's
+/// recipient rule (`ProofOfPublishing::streak_recipient_for_reveal`).
+fn derive_low_quality_streak_transitions_from_producer_state(
+    state: &State,
+    block: &Block,
+    governance_transitions: &[StateTransition],
+) -> Vec<StateTransition> {
+    use wrfcoin_native_chain::consensus::proof_of_publishing::ProofOfPublishing;
+    let (mut replay_state, revealed_commit_ids) =
+        match ProofOfPublishing::pre_reward_state_for_replay(state, block, governance_transitions) {
+            Ok(replayed) => replayed,
+            Err(err) => {
+                log::warn!(
+                    "low-quality-streak replay aborted at block {}: the pre-reward state \
+                     did not replay (error={err:?}); deriving no streak transitions",
+                    block.height
+                );
+                return Vec::new();
+            },
+        };
+    let quorum = replay_state.oracle_quorum.max(1);
+    let quality_policy = replay_state.governance.params.data_quality_policy.clone();
+    let mut transitions = Vec::new();
+    for tx in &block.transactions {
+        if tx.tx_type != TransactionType::ContributionReveal {
+            continue;
+        }
+        let Some(reveal_payload) = tx.parse_reveal_payload() else {
+            continue;
+        };
+        let commit_id = reveal_payload.commit_id.clone();
+        if commit_id.is_empty()
+            || !revealed_commit_ids.contains(&commit_id)
+            || !replay_state
+                .attestations
+                .get(&commit_id)
+                .is_some_and(|set| set.has_quorum(quorum))
+        {
+            continue;
+        }
+        let Some(recipient_address) = ProofOfPublishing::streak_recipient_for_reveal(
+            &replay_state,
+            block.height,
+            tx,
+            &reveal_payload,
+        ) else {
+            continue;
+        };
+        let quality_score = derive_quality_score(
+            tx,
+            replay_state
+                .pending_reveals
+                .get(&commit_id)
+                .and_then(|record| record.quality_score.as_ref()),
+        );
+        let quality_eval = quality_policy.evaluate(quality_score.as_ref());
+
+        if quality_eval.counts_toward_low_quality_streak {
+            let streak = replay_state.increment_low_quality_streak(recipient_address);
+            transitions.push(StateTransition::SetLowQualityStreak {
+                address: recipient_address,
+                streak: Some(streak),
+            });
+            if streak >= quality_policy.low_quality_slash_streak {
+                let slash = StateTransition::Slash {
+                    address: recipient_address,
+                    amount: Balance::new(quality_policy.low_quality_slash_amount),
+                    reason: format!(
+                        "repeated_low_quality:commit={commit_id}:streak={streak}:threshold={}",
+                        quality_policy.low_quality_slash_streak
+                    ),
+                };
+                if replay_state
+                    .apply_transitions_batch(std::iter::once(slash.clone()))
                     .is_ok()
                 {
                     transitions.push(slash);

@@ -20,9 +20,14 @@ transfer asks `feature_active(ConsensusFeature::PasskeyP256Auth, height)`:
 | block validation (sync + producer self-screen) | `classify_block_transaction` → `Transaction::verify_transparent_transfer_authorization_at_height(ctx.height)` | ed25519 rule only | ed25519 **or** valid passkey |
 | state apply | `State::apply_transparent_transfer` → `TransparentTransferPayload::verify_authorization_at_height(nonce, current_block)` | ed25519 rule only | ed25519 **or** valid passkey |
 | mempool admission (no height) | `verify_authorization_for_admission` | ed25519 rule only unless the chain **schedules** the feature | admitted when scheduled; the exact height is enforced downstream by the three height-aware sites |
+| API `/transactions/submit` (`passkey_auth` member) | `submit_transaction_compat` → `passkey_auth_active(tip+1)` then `verify_passkey_authorization` | refused `503 FEATURE_NOT_ACTIVE` | accepted and enqueued |
 
 The ed25519 rule (`TransparentTransferPayload::verify_authorization`) is unchanged at every
-height and never reads the passkey member. `tests/passkey_activation_2169.rs` proves the flip at
+height and never reads the passkey member. "Schedules" for admission means the base schedule
+(genesis ∪ bootstrap) **or** an applied governance schedule extension (`feature_scheduled`, the
+same source `feature_active` reads) — chain 888 activates the feature at h3400 through extension
+#0. A passkey transfer admitted before H (e.g. via gossip) is dropped by the producer self-screen
+and evicted from the mempool; it is never mined below H. `tests/passkey_activation_2169.rs` proves the flip at
 exactly H on the payload, state-apply and mempool surfaces; `tests/integration/
 passkey_feature_parity_2169.rs` replays the committed determinism fixture with the feature active
 from height 5 and requires `expected_roots.json` unchanged.
@@ -54,7 +59,7 @@ both until H.
 message   = "wrfcoin_passkey_transfer_auth_v1"
           ‖ u32le(len chain_id) ‖ chain_id ‖ u32le(len network_id) ‖ network_id
           ‖ u32le(len from) ‖ from ‖ u32le(len to) ‖ to ‖ u64le(amount) ‖ u64le(nonce)
-challenge = blake3(message)                       # 32 bytes → navigator.credentials.get
+challenge = sha3_256(message)                     # 32 bytes → navigator.credentials.get
 ```
 
 Same framing as the ed25519 message, under a different tag, so neither signature is a valid
@@ -76,8 +81,8 @@ In order, cheapest first, one typed refusal each (`PasskeyError`):
 
 ## Address derivation
 
-`blake3("wrfcoin.passkey_address.v1" ‖ rp_id_hash ‖ 0x04 ‖ X ‖ Y)[..20]`. Folding the tag means no
-ed25519 key (address `blake3(key)[..20]`) can derive a passkey address; folding the RP ID hash means
+`sha3_256("wrfcoin.passkey_address.v1" ‖ rp_id_hash ‖ 0x04 ‖ X ‖ Y)[..20]`. Folding the tag means no
+ed25519 key (address `sha3_256(key)[..20]`) can derive a passkey address; folding the RP ID hash means
 one key under two relying parties is two accounts. `from` must equal this address for the
 credential the payload names — the same `from`-binding the ed25519 rule enforces (#1727).
 
@@ -108,6 +113,11 @@ credential the payload names — the same `from`-binding the ed25519 rule enforc
 - `shared-protocol/tests/passkey_activation_2169.rs`: the activation flip at H on payload, mempool
   and state apply; ed25519 unchanged on every surface at every height.
 - `tests/integration/passkey_feature_parity_2169.rs`: roots unchanged with the feature active.
+- `shared-protocol/tests/passkey_extension_admission_3400.rs`: extension-scheduled activation —
+  admitted once the extension is applied, self-screened below H and packed at H, state apply
+  refused below H; ed25519 unchanged.
+- `launch_api` `transactions_submit_accepts_passkey_transfer_only_once_active_at_next_height`: the
+  route refuses a passkey transfer below tip+1 activation and accepts it at activation.
 
 ## Not in this story
 

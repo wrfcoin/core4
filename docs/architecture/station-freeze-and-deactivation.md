@@ -29,7 +29,7 @@ An owner has no way to react to theft or to retire a station.
   (`state.rs` ~7712). `proof_of_publishing.rs` itself reads `is_active` only in test fixtures, as the
   survey suspected.
 
-Why a freeze matters even though the payee is owner-bound since h11,000: a stolen device still reports
+Why a freeze matters even though the payee is owner-bound since h3,000 on chain 888 (`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`): a stolen device still reports
 under the owner's `station_id`, so (1) its data — possibly from a new location — keeps earning and
 keeps exposing the OWNER to data-quality slashing once `station_owner_slash_identity` (#3214) is
 active, and (2) without #3346 the thief can register the device again under a new `station_id`.

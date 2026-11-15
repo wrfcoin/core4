@@ -1,0 +1,292 @@
+{
+  "purpose": "learned-conv1d/v1 trained on real hourly station observations; not validated for payouts",
+  "model_id": "learned-conv1d/v1",
+  "trained_on_device": "directml",
+  "exported_on": "cpu",
+  "data": {
+    "source": "IEM ASOS hourly METAR archive (public, read-only): airport stations in the two US regions where the chain's stations sit",
+    "observations_dir": "observations",
+    "stations": [
+      "BRD",
+      "DLH",
+      "HIB",
+      "INL",
+      "LVK",
+      "MSP",
+      "OAK",
+      "SCK",
+      "SFO",
+      "SJC",
+      "STC"
+    ],
+    "station_count": 11,
+    "window_first": "2026-06-01T01:00:00+00:00",
+    "window_last": "2026-10-19T00:00:00+00:00",
+    "holdout_start": "2026-10-09T01:00:00+00:00",
+    "holdout_days": 10,
+    "inner_validation_days": 5,
+    "max_gap_hours_interpolated": 2
+  },
+  "windows": {
+    "fit": 32403,
+    "inner_validation": 1286,
+    "held_out": 2557
+  },
+  "training": {
+    "device": "directml",
+    "params": 182915,
+    "epochs_run": 29,
+    "best_epoch": 17,
+    "seconds": 42.612,
+    "ms_per_epoch": 1469.4,
+    "best_inner_val_normalized_mae": 0.2640974223613739,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "batch_size": 512,
+    "channels": 128,
+    "seed": 20260909
+  },
+  "held_out": {
+    "climatology_mae": {
+      "temperature_c": 4.100100040435791,
+      "pressure_hpa": 3.951200008392334,
+      "humidity_pct": 14.429100036621094
+    },
+    "persistence_trend_v1": {
+      "mae": {
+        "temperature_c": 5.2305,
+        "pressure_hpa": 1.945,
+        "humidity_pct": 19.0325
+      },
+      "rmse": {
+        "temperature_c": 6.7175,
+        "pressure_hpa": 2.6123,
+        "humidity_pct": 23.9561
+      },
+      "aggregate_skill_vs_climatology": {
+        "temperature_c": 0.0,
+        "pressure_hpa": 0.5077,
+        "humidity_pct": 0.0
+      },
+      "mean_per_forecast_skill": {
+        "temperature_c": 0.2,
+        "pressure_hpa": 0.4377,
+        "humidity_pct": 0.2001
+      },
+      "mean_skill_score": 0.2793,
+      "per_station_mean_skill_score": {
+        "BRD": 0.3206,
+        "DLH": 0.3221,
+        "HIB": 0.3371,
+        "INL": 0.3428,
+        "LVK": 0.2418,
+        "MSP": 0.2995,
+        "OAK": 0.2333,
+        "SCK": 0.2356,
+        "SFO": 0.2346,
+        "SJC": 0.2282,
+        "STC": 0.2707
+      },
+      "label": "persistence-trend/v1 (shipped fallback)"
+    },
+    "learned_conv1d_v1": {
+      "mae": {
+        "temperature_c": 2.5083999633789062,
+        "pressure_hpa": 1.4450000524520874,
+        "humidity_pct": 10.531499862670898
+      },
+      "rmse": {
+        "temperature_c": 3.420300006866455,
+        "pressure_hpa": 1.9878000020980835,
+        "humidity_pct": 13.656800270080566
+      },
+      "aggregate_skill_vs_climatology": {
+        "temperature_c": 0.3882000148296356,
+        "pressure_hpa": 0.6342999935150146,
+        "humidity_pct": 0.2700999975204468
+      },
+      "mean_per_forecast_skill": {
+        "temperature_c": 0.4108,
+        "pressure_hpa": 0.5509,
+        "humidity_pct": 0.3585
+      },
+      "mean_skill_score": 0.4401,
+      "per_station_mean_skill_score": {
+        "BRD": 0.3963,
+        "DLH": 0.3694,
+        "HIB": 0.4232,
+        "INL": 0.355,
+        "LVK": 0.533,
+        "MSP": 0.3652,
+        "OAK": 0.4762,
+        "SCK": 0.5688,
+        "SFO": 0.4481,
+        "SJC": 0.5032,
+        "STC": 0.4138
+      },
+      "label": "learned-conv1d/v1 (this run)",
+      "skill_vs_persistence_trend": {
+        "temperature_c": 0.5204,
+        "pressure_hpa": 0.2571,
+        "humidity_pct": 0.4467
+      }
+    },
+    "reward_ratio_vs_persistence_trend": 1.576,
+    "beats_baseline": true
+  },
+  "seed": 20260909,
+  "opset": 17,
+  "input_shape": [
+    1,
+    24,
+    3
+  ],
+  "output_shape": [
+    1,
+    3
+  ],
+  "variables": [
+    "temperature_c",
+    "pressure_hpa",
+    "humidity_pct"
+  ],
+  "bytes": 744480,
+  "sha256": "sha256:c9975fc5cfa940f0c0ed6d1e1e0e00fe059fbdc0dee961dab6bdcd727d8947f7",
+  "rust_parity_tolerance_abs": 0.005,
+  "python_parity": {
+    "torch_cpu_vs_onnxruntime_max_abs_delta": 0.000946044921875,
+    "windows_checked": 64,
+    "onnxruntime": "1.31.0"
+  },
+  "input": [
+    [
+      [
+        20.0,
+        1012.7999877929688,
+        30.700000762939453
+      ],
+      [
+        19.440000534057617,
+        1013.0,
+        29.34000015258789
+      ],
+      [
+        18.329999923706055,
+        1013.2999877929688,
+        29.020000457763672
+      ],
+      [
+        17.780000686645508,
+        1013.4000244140625,
+        31.290000915527344
+      ],
+      [
+        16.110000610351562,
+        1013.5999755859375,
+        37.65999984741211
+      ],
+      [
+        15.0,
+        1014.2000122070312,
+        40.439998626708984
+      ],
+      [
+        13.329999923706055,
+        1014.9000244140625,
+        46.880001068115234
+      ],
+      [
+        12.779999732971191,
+        1015.2999877929688,
+        48.61000061035156
+      ],
+      [
+        11.109999656677246,
+        1015.5,
+        56.439998626708984
+      ],
+      [
+        8.890000343322754,
+        1015.7000122070312,
+        68.12000274658203
+      ],
+      [
+        10.5600004196167,
+        1016.0,
+        58.56999969482422
+      ],
+      [
+        10.0,
+        1016.4000244140625,
+        58.41999816894531
+      ],
+      [
+        4.440000057220459,
+        1017.0999755859375,
+        85.47000122070312
+      ],
+      [
+        4.440000057220459,
+        1017.2999877929688,
+        88.91000366210938
+      ],
+      [
+        3.890000104904175,
+        1017.7000122070312,
+        88.87000274658203
+      ],
+      [
+        2.7799999713897705,
+        1018.5,
+        92.37999725341797
+      ],
+      [
+        2.7799999713897705,
+        1018.9000244140625,
+        92.37999725341797
+      ],
+      [
+        2.7799999713897705,
+        1019.2999877929688,
+        96.12000274658203
+      ],
+      [
+        5.559999942779541,
+        1019.5999755859375,
+        85.58999633789062
+      ],
+      [
+        10.5600004196167,
+        1019.2999877929688,
+        63.349998474121094
+      ],
+      [
+        13.329999923706055,
+        1019.7000122070312,
+        54.849998474121094
+      ],
+      [
+        15.0,
+        1020.0999755859375,
+        45.529998779296875
+      ],
+      [
+        16.110000610351562,
+        1019.5,
+        44.099998474121094
+      ],
+      [
+        16.110000610351562,
+        1019.0,
+        42.40999984741211
+      ]
+    ]
+  ],
+  "expected_output": [
+    [
+      10.169130325317383,
+      1018.8002319335938,
+      66.81608581542969
+    ]
+  ]
+}

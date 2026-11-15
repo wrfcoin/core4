@@ -9,7 +9,7 @@
 //!    the live v1 chain): a governance-signed `StationRegistration` for an
 //!    EXISTING `station_id` with a DIFFERENT owner, mined by the real
 //!    `ProofOfPublishing::create_next_block`, silently replaces the owner. The
-//!    previous owner signs nothing. Since #2743 (h11,000) the registered owner
+//!    previous owner signs nothing. Since #2743 (`STATION_OWNERSHIP_BINDING_ACTIVATION_HEIGHT`) the registered owner
 //!    is the reward payee, so this redirects the station's earnings. This
 //!    assertion is expected to keep passing below activation: it is the
 //!    "pre-activation behaviour unchanged" half of the acceptance criteria.
@@ -178,7 +178,7 @@ async fn governance_reregistration_reassigns_owner_on_the_production_path(
         );
     }
     // The victim never signed anything in the second block, yet the station
-    // (and, from h11,000, its reward payee) now belongs to the thief.
+    // (and, from the ownership-binding height, its reward payee) now belongs to the thief.
     let chain = chain.read().await;
     assert!(
         chain.block_at_height(2).is_some(),

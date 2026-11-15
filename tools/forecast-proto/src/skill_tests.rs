@@ -77,7 +77,7 @@ fn off_mode_keeps_legacy_report_bytes_even_with_an_unusable_seed() {
             &skill::score(&f, &truth, &climate, &seed, SkillPolicy::Legacy).unwrap()
         )
         .unwrap(),
-        serde_json::to_vec(&score(&f, &truth, &climate)).unwrap(),
+        serde_json::to_vec(&score(&f, &truth, &climate).unwrap()).unwrap(),
     );
 }
 
@@ -142,7 +142,7 @@ fn active_mode_retains_continuous_metrics_and_does_not_mix_units() {
     truth.values.insert("pressure_hpa".into(), 600.0);
     seed.values.insert("pressure_hpa".into(), 400.0);
     let climate = observation(0.0).values;
-    let legacy = score(&f, &truth, &climate);
+    let legacy = score(&f, &truth, &climate).unwrap();
     let active = skill::score(&f, &truth, &climate, &seed, SkillPolicy::Persistence).unwrap();
     assert_eq!(
         (active.metrics.mae, active.metrics.rmse, active.metrics.bias),
@@ -180,10 +180,55 @@ fn active_mode_refuses_aggregate_overflow_from_finite_variable_errors() {
     let climate = observation(0.0).values;
     let mut seed = observation(0.0);
     seed.timestamp = f.issued_at;
-    let legacy = score(&f, &truth, &climate);
+    let legacy = score(&f, &truth, &climate).unwrap();
     assert!(legacy.per_variable.values().all(|value| {
         value.abs_error.is_finite() && (value.abs_error * value.abs_error).is_finite()
     }));
     assert!(legacy.metrics.rmse.is_infinite());
     assert!(skill::score(&f, &truth, &climate, &seed, SkillPolicy::Persistence).is_err());
+}
+
+#[test]
+fn only_declared_and_reported_variables_are_scored() {
+    // Station reports no humidity: the forecast declares two variables, the
+    // truth reports two (plus wind the forecast never declared); skill is
+    // the mean over the two, and the report names them.
+    let mut f = forecast(5.0);
+    f.values.remove("humidity_pct");
+    let mut truth = observation(6.0);
+    truth.values.remove("humidity_pct");
+    truth.values.insert("wind_speed_ms".to_string(), 3.0);
+    let climate = observation(0.0).values;
+    let report = score(&f, &truth, &climate).unwrap();
+    assert_eq!(report.scored_variables, vec!["pressure_hpa", "temperature_c"]);
+    assert_eq!(report.per_variable.len(), 2);
+    // |e| = 1, |e_clim| = 6 -> 5/6 on each scored variable, averaged over two.
+    assert!((report.metrics.skill_score - 5.0 / 6.0).abs() < 1e-12);
+    let active = selected_score(&f, &truth, &climate);
+    assert_eq!(active.scored_variables, report.scored_variables);
+    assert_eq!(active.per_variable.len(), 2);
+}
+
+#[test]
+fn nothing_in_common_signs_no_receipt() {
+    let mut f = forecast(5.0);
+    f.values.retain(|k, _| k == "humidity_pct");
+    let mut truth = observation(6.0);
+    truth.values.remove("humidity_pct");
+    let climate = observation(0.0).values;
+    assert!(score(&f, &truth, &climate).is_err());
+    let mut previous = observation(4.0);
+    previous.timestamp = f.issued_at;
+    assert!(skill::score(&f, &truth, &climate, &previous, SkillPolicy::Persistence).is_err());
+}
+
+#[test]
+fn declared_variables_are_what_every_window_observation_reports() {
+    let mut partial = observation(1.0);
+    partial.values.remove("humidity_pct");
+    assert_eq!(
+        declared_variables(&[observation(1.0), partial, observation(2.0)]),
+        vec!["pressure_hpa", "temperature_c"]
+    );
+    assert_eq!(declared_variables(&[observation(1.0)]), FORECAST_VARIABLES.map(str::to_string).to_vec());
 }

@@ -71,6 +71,13 @@ ALLOWED_SCHEDULES: dict[str, dict[str, str]] = {
     "workflow-path-coverage.yml": {"decision": "#2498", "decided": "2026-10-07"},
     "retired-component-sdks.yml": {"decision": "#2498", "decided": "2026-10-07"},
     "adversarial-tests.yml": {"decision": "#2498", "decided": "2026-10-07"},
+    # The repo went public, so hosted minutes no longer spend a budget (#125).
+    "fuzz-nightly.yml": {"decision": "#125", "decided": "2026-11-05"},
+    "kani.yml": {"decision": "#125", "decided": "2026-11-05"},
+    "loom.yml": {"decision": "#125", "decided": "2026-11-05"},
+    "miri.yml": {"decision": "#125", "decided": "2026-11-05"},
+    "sbom-generate.yml": {"decision": "#125", "decided": "2026-11-05"},
+    "supply-chain-security.yml": {"decision": "#125", "decided": "2026-11-05"},
 }
 
 

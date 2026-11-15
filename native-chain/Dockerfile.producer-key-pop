@@ -11,7 +11,7 @@ ARG RUNTIME_IMAGE=wrfcoin/native-chain:testnet-local
 # This builder is normally kept identical to infra/infra/docker/Dockerfile.core.
 # It intentionally leads that copy at Rust 1.98 during the core4-first upgrade;
 # the wrfcoin/infra#878 follow-up restores the cross-repo invariant.
-FROM rust:1.98.0-slim@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS builder
+FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS builder
 
 ARG WRFCOIN_BUILD_REVISION
 

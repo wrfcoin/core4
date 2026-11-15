@@ -1,12 +1,8 @@
-name: Miri (parked)
-# NO-AUTOMATIC-TRIGGER: parked — schedule commented out and the workflow
-# gh-disabled (2026-07-31, Actions budget), so no undefined-behaviour check runs on
-# any event today. Register and restore: docs/ci/parked-workflows.txt +
-# docs/ci/reenable-parked-workflows.sh.
+name: Miri
 
 # Miri detects undefined behaviour that safe-Rust review does not catch once unsafe, FFI or
-# hand-rolled serialization are involved (#2106). It is an interpreter: expect hours, not
-# minutes.
+# hand-rolled serialization are involved (#2106). It is an interpreter: the scoped legs below
+# take minutes, a whole-crate run takes hours.
 #
 # THERE IS DELIBERATELY NO `pull_request` TRIGGER, and adding one would be a mistake.
 #
@@ -30,12 +26,9 @@ name: Miri (parked)
 # See docs/security/UNSAFE_POLICY.md.
 
 on:
-  # Parked (#2498 schedule lint): this workflow is disabled_manually, but a
-  # UI re-enable would silently re-arm the cron below. File-level park keeps
-  # the August-budget decision visible in the diff; re-arming is a reviewed
-  # edit to ALLOWED_SCHEDULES in scripts/schedule_trigger_lint.py.
-  # schedule:
-  # - cron: '0 5 * * 1'   # weekly, Monday 05:00 UTC
+  # Restored #125 (2026-11-05): public repo, so hosted minutes are free. Nightly: both legs together measured 12 min, no build cache (run 41976301084).
+  schedule:
+    - cron: '17 8 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -75,6 +68,23 @@ jobs:
             filter: 'crypto::'
     steps:
       - uses: actions/checkout@v7
+      # Reclaim hosted disk before the toolchain and build, as sbom-generate does (#3621).
+      - name: Free unused preinstalled toolchains (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          echo "before:"; df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/lib/jvm
+          sudo docker image prune --all --force > /dev/null
+          echo "after:"; df -h /
       - name: Install nightly + miri
         run: |
           rustup toolchain install nightly --component miri

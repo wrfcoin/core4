@@ -11,7 +11,8 @@
 //!   exactly one place: `native-chain/src/upgrade.rs`
 //!   (`install_schedule_extension_authority_for_block1`).
 //! - The test-only constructor is referenced by no production code except its
-//!   own `#[cfg(any(test, feature = "test-support"))]` definition.
+//!   own `#[cfg(any(test, feature = "consensus-test-hooks"))]` definition
+//!   (a dev-dependency-only feature; `test-support` reaches the node binary).
 //! - The old unrestricted installer no longer exists.
 
 use std::path::{Path, PathBuf};
@@ -90,7 +91,7 @@ fn no_production_code_can_construct_an_arbitrary_authority() {
             // The one allowed occurrence: its own definition, gated to tests.
             let gated = line.contains("pub fn install_schedule_extension_authority_for_tests")
                 && index > 0
-                && lines[index - 1].contains("#[cfg(any(test, feature = \"test-support\"))]");
+                && lines[index - 1].contains("#[cfg(any(test, feature = \"consensus-test-hooks\"))]");
             assert!(gated, "{file}: production code references {TEST_ONLY}: {line}");
         }
         for line in &lines {

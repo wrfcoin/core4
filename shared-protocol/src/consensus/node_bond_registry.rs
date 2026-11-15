@@ -61,7 +61,12 @@ impl BondExitBoundary {
 use super::node_share_contracts::{
     MAX_NODE_REGISTRATIONS, MAX_NODE_REGISTRY_BYTES, NODE_BOND_WRF, NodeBondAction,
     NodeBondAuthorization, SignedNodeBondAuthorization, TESTNET_CHALLENGE_BLOCKS,
+    node_bond_payout_passkey_challenge,
 };
+use crate::accounts::passkey::{
+    CONSENSUS_WEBAUTHN_POLICY, PasskeyAuthorization, passkey_account_address, verify_webauthn,
+};
+use crate::crypto::chain_binding::{ConsensusFeature, feature_active};
 use crate::blockchain::state::{Account, State, StateError};
 use crate::common::types::{Address, Balance};
 use crate::crypto::chain_binding::{ChainIdentity, SigningProtocolVersion};
@@ -74,12 +79,14 @@ use std::collections::BTreeMap;
 pub const NODE_BOND_UNITS: u64 = NODE_BOND_WRF * crate::common::constants::WRF_UNITS_PER_COIN;
 pub const MAX_NODE_BOND_LIFECYCLE_TXS_PER_BLOCK: usize = 16;
 pub const MAX_RETAINED_NODE_EPOCHS: usize =
-    ((TESTNET_CHALLENGE_BLOCKS + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS + NODE_EPOCH_BLOCKS - 1)
-        / NODE_EPOCH_BLOCKS
-        + 1) as usize;
+    ((TESTNET_CHALLENGE_BLOCKS + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS)
+        .div_ceil(NODE_EPOCH_BLOCKS) + 1) as usize;
 
 /// Frozen history covers the chain's challenge and withdrawal buffer, plus
 /// its current epoch. The legacy constant above remains the testnet wire pin.
+// Keep the consensus retention arithmetic and authority reads unchanged: div_ceil
+// would remove the existing numerator-overflow boundary for recorded timing values.
+#[allow(clippy::manual_div_ceil)]
 pub fn max_retained_node_epochs(genesis_chain_id: Option<&str>) -> usize {
     ((super::node_share_contracts::node_challenge_blocks(genesis_chain_id)
         + NODE_BOND_WITHDRAWAL_BUFFER_BLOCKS + node_epoch_blocks() - 1)
@@ -96,6 +103,74 @@ pub struct NodeBondLifecycle {
     pub governance_signature: Vec<u8>,
     pub payout_key: Option<[u8; 32]>,
     pub payout_signature: Vec<u8>,
+    /// `passkey_bond_payout`: the payout account's approval as a WebAuthn
+    /// P-256 assertion from the passkey account named as `payout_account`,
+    /// over [`node_bond_payout_passkey_challenge`], instead of
+    /// `payout_key`/`payout_signature`. Read only once the feature is active
+    /// at the carrying height; before that it is ignored exactly as a binary
+    /// without this member ignores an unknown JSON member. Absent members are
+    /// never serialized, so every existing payload's JSON is byte-identical,
+    /// and a malformed member reads as `None` (lenient, as `passkey_auth`).
+    #[serde(
+        default,
+        deserialize_with = "crate::accounts::passkey::deserialize_lenient_passkey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub payout_passkey: Option<PasskeyAuthorization>,
+}
+
+/// Whether [`ConsensusFeature::PasskeyBondPayout`] is in force at `height`.
+pub fn passkey_bond_payout_active(height: u64) -> bool {
+    feature_active(ConsensusFeature::PasskeyBondPayout, height)
+}
+
+/// Whether [`ConsensusFeature::BondAdmissionKey`] is in force at `height`.
+pub fn bond_admission_key_active(height: u64) -> bool {
+    feature_active(ConsensusFeature::BondAdmissionKey, height)
+}
+
+/// Every admission key pinned for the chain `genesis`, retired or not, once
+/// the feature is active at `height`: none before activation, and none on a
+/// chain with no pinned key. The role-key separation check reads this, so a
+/// retired key stays unusable as a node server or consumer key.
+fn pinned_admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
+    if !bond_admission_key_active(height) {
+        return Vec::new();
+    }
+    crate::governance::schedule_extension::bond_admission_keys(&hex::encode(genesis))
+}
+
+/// The admission keys that may co-sign at `height`: the pinned keys minus
+/// every slot whose `bond_admission_key_retire_N` is active at `height`.
+/// Below a retirement the key co-signs exactly as before it existed.
+pub fn admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
+    crate::crypto::chain_binding::retained_pinned_keys(
+        pinned_admission_keys_at(genesis, height),
+        crate::crypto::chain_binding::BOND_ADMISSION_KEY_RETIREMENTS,
+        height,
+        feature_active,
+    )
+}
+
+/// Verify a passkey payout approval for `a`: the credential must derive
+/// `a.payout_account`, and the assertion must pass full WebAuthn verification
+/// (type, challenge, RP ID hash, user presence AND verification, counter,
+/// low-s P-256 signature) for [`node_bond_payout_passkey_challenge`].
+/// Ungated: consensus callers gate it with [`passkey_bond_payout_active`].
+pub fn verify_payout_passkey(
+    a: &NodeBondAuthorization,
+    approval: &PasskeyAuthorization,
+    identity: &ChainIdentity,
+) -> Result<(), StateError> {
+    let credential = approval.credential().map_err(|_| refused())?;
+    if passkey_account_address(&credential) != a.payout_account {
+        return Err(refused());
+    }
+    let assertion = approval.assertion().map_err(|_| refused())?;
+    let challenge = node_bond_payout_passkey_challenge(a, identity);
+    verify_webauthn(&credential, &assertion, &challenge, CONSENSUS_WEBAUTHN_POLICY)
+        .map_err(|_| refused())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,13 +285,59 @@ impl NodeBondLifecycle {
         }
         Some(parsed)
     }
+    /// `height` is the carrying height (the block's, or tip + 1 at
+    /// admission); it only decides whether `passkey_bond_payout` and
+    /// `bond_admission_key` are active.
     pub fn verify(
         &self,
         identity: &ChainIdentity,
         genesis: &[u8; 32],
         governance_keys: &[String],
+        height: u64,
+    ) -> Result<(), StateError> {
+        self.verify_with_gates(
+            identity,
+            genesis,
+            governance_keys,
+            &admission_keys_at(genesis, height),
+            passkey_bond_payout_active(height),
+        )
+    }
+
+    /// [`Self::verify`] with the `passkey_bond_payout` gate given explicitly.
+    /// Consensus callers use [`Self::verify`]; this form is for offline
+    /// tooling (the CLI), which has no feature schedule and checks a packet
+    /// as the chain will once the feature is active.
+    pub fn verify_with_passkey_payout(
+        &self,
+        identity: &ChainIdentity,
+        genesis: &[u8; 32],
+        governance_keys: &[String],
+        passkey_payout_active: bool,
+    ) -> Result<(), StateError> {
+        self.verify_with_gates(identity, genesis, governance_keys, &[], passkey_payout_active)
+    }
+
+    /// [`Self::verify`] with both gates given explicitly. `admission_keys` may
+    /// co-sign a `Deposit` or `Update` alongside `governance_keys`; an `Exit`
+    /// or `Withdraw` refuses any co-sign at all. Consensus callers use
+    /// [`Self::verify`]; this form is for offline tooling.
+    pub fn verify_with_gates(
+        &self,
+        identity: &ChainIdentity,
+        genesis: &[u8; 32],
+        governance_keys: &[String],
+        admission_keys: &[String],
+        passkey_payout_active: bool,
     ) -> Result<(), StateError> {
         let a = &self.signed.authorization;
+        // Below activation the member is invisible, exactly as to a binary
+        // that does not know it.
+        let payout_passkey = if passkey_payout_active {
+            self.payout_passkey.as_ref()
+        } else {
+            None
+        };
         if Address::from_public_key(&public(&self.owner_key)?) != a.owner_account {
             return Err(refused());
         }
@@ -229,23 +350,34 @@ impl NodeBondLifecycle {
             let governance_key = self.governance_key.as_ref().ok_or_else(refused)?;
             if !governance_keys
                 .iter()
+                .chain(admission_keys)
                 .any(|key| key == &hex::encode(governance_key))
             {
                 return Err(refused());
             }
             approval(a, governance_key, &self.governance_signature, identity)?;
-            let payout_key = self.payout_key.as_ref().ok_or_else(refused)?;
-            if Address::from_public_key(&public(payout_key)?) != a.payout_account
-                || *payout_key == a.server_key
-                || *payout_key == a.consumer_key
-            {
-                return Err(refused());
+            match (self.payout_key.as_ref(), payout_passkey) {
+                (Some(payout_key), None) => {
+                    if Address::from_public_key(&public(payout_key)?) != a.payout_account
+                        || *payout_key == a.server_key
+                        || *payout_key == a.consumer_key
+                    {
+                        return Err(refused());
+                    }
+                    approval(a, payout_key, &self.payout_signature, identity)?;
+                },
+                // Exactly one payout approval: a passkey approval carries no
+                // ed25519 key or signature.
+                (None, Some(passkey)) if self.payout_signature.is_empty() => {
+                    verify_payout_passkey(a, passkey, identity)?;
+                },
+                _ => return Err(refused()),
             }
-            approval(a, payout_key, &self.payout_signature, identity)?;
         } else if self.governance_key.is_some()
             || !self.governance_signature.is_empty()
             || self.payout_key.is_some()
             || !self.payout_signature.is_empty()
+            || payout_passkey.is_some()
         {
             return Err(refused());
         }
@@ -467,7 +599,7 @@ pub(crate) fn apply_lifecycle(
     genesis: &[u8; 32],
     governance_keys: &[String],
 ) -> Result<(), StateError> {
-    payload.verify(identity, genesis, governance_keys)?;
+    payload.verify(identity, genesis, governance_keys, height)?;
     let a = &payload.signed.authorization;
     use crate::accounts::authorization::{
         AuthorizationRule, AuthorizationView, DEBIT_TIME_UNPLUMBED_2168, authorization_for,
@@ -657,10 +789,12 @@ pub(crate) fn apply_lifecycle(
     }
     if matches!(a.action, NodeBondAction::Deposit | NodeBondAction::Update) {
         let role_keys = state.signing_keys.all_registered_public_keys();
+        let admission_keys = pinned_admission_keys_at(genesis, height);
         let mut forbidden: Vec<[u8; 32]> = role_keys
             .iter()
             .chain(state.oracle_set.iter())
             .chain(governance_keys.iter())
+            .chain(admission_keys.iter())
             .filter_map(|k| hex::decode(k).ok()?.try_into().ok())
             .collect();
         for change in &state.producer_set_history {

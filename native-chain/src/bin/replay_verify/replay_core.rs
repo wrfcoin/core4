@@ -60,7 +60,7 @@
 //!
 //! [`STATE_ROOT_METADATA_KEY`]: wrfcoin_native_chain::blockchain::block::STATE_ROOT_METADATA_KEY
 
-use wrfcoin_native_chain::blockchain::block::STATE_ROOT_METADATA_KEY;
+use wrfcoin_native_chain::blockchain::block::{Block, STATE_ROOT_METADATA_KEY};
 use wrfcoin_native_chain::blockchain::chain::Blockchain;
 use wrfcoin_native_chain::blockchain::state::State;
 use wrfcoin_native_chain::storage::Storage;
@@ -68,6 +68,147 @@ use wrfcoin_native_chain::upgrade::refresh_schedule_from_canonical_state;
 use wrfcoin_shared_protocol::crypto::chain_binding::{SigningProtocolVersion, protocol_version_at};
 
 use crate::transition_extractor::extract_transitions;
+
+/// What applying one block's transitions in two orders does (see
+/// [`probe_governance_order`]). Each root is the post-finalization state root,
+/// or the error the batch failed with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceOrderProbe {
+    /// Entries in the block's `governance_transitions` metadata.
+    pub governance_transitions: usize,
+    /// Commit, reveal, oracle-attestation and node-service transactions in
+    /// the block.
+    pub launch_transactions: usize,
+    /// Transitions the follower applies ahead of the governance batch, not
+    /// counting the block-opening ones. Zero means the two orders are the
+    /// same list and nothing was applied.
+    pub transitions_before_governance: usize,
+    /// The follower's order today: launch transitions, then governance.
+    pub launch_first: Result<String, String>,
+    /// The producer's order: governance, then launch transitions.
+    pub governance_first: Result<String, String>,
+    /// The state root the block itself commits to, when it carries one.
+    pub committed_state_root: Option<String>,
+}
+
+impl GovernanceOrderProbe {
+    /// Whether the follower's order reproduces the root the block commits to.
+    /// `None` when the block carries no commitment, or when the two orders are
+    /// the same list (nothing was applied here; the replay itself asserts the
+    /// commitment).
+    pub fn launch_first_matches_committed(&self) -> Option<bool> {
+        if self.transitions_before_governance == 0 {
+            return None;
+        }
+        let committed = self.committed_state_root.as_ref()?;
+        Some(matches!(&self.launch_first, Ok(root) if root == committed))
+    }
+
+    /// Both orders applied and reached the same state root (or are the same
+    /// list).
+    pub fn orders_agree(&self) -> bool {
+        self.transitions_before_governance == 0
+            || matches!((&self.launch_first, &self.governance_first), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+/// For a block whose `governance_transitions` metadata is non-empty: apply the
+/// block's extracted transitions to two copies of the pre-block `state`, once
+/// in the follower's order (launch transitions before the governance batch)
+/// and once in the producer's (governance batch first), and report both
+/// resulting state roots. `None` for a block with no governance transitions.
+///
+/// Read-only: `state` and `block` are not changed. It answers one question
+/// about a chain's history: has the difference between the two orders ever
+/// mattered? If no replayed block disagrees, making the orders one can be a
+/// forward-only change.
+pub fn probe_governance_order(state: &State, block: &Block) -> Option<GovernanceOrderProbe> {
+    use wrfcoin_native_chain::blockchain::state::StateTransition;
+    use wrfcoin_native_chain::blockchain::transaction::TransactionType;
+
+    let governance: Vec<StateTransition> =
+        serde_json::from_str(block.metadata.get("governance_transitions")?).ok()?;
+    if governance.is_empty() {
+        return None;
+    }
+    let launch_transactions = block
+        .transactions
+        .iter()
+        .filter(|tx| {
+            matches!(
+                tx.tx_type,
+                TransactionType::ContributionCommit
+                    | TransactionType::ForecastCommit
+                    | TransactionType::ContributionReveal
+                    | TransactionType::ForecastReveal
+                    | TransactionType::OracleAttestation
+                    | TransactionType::NodeServiceBatch
+                    | TransactionType::NodeFraudReport
+                    | TransactionType::NodeBondLifecycle
+            )
+        })
+        .count();
+
+    let committed_state_root = block.metadata.get(STATE_ROOT_METADATA_KEY).cloned();
+    let height = block.height;
+    let extracted = extract_transitions(state, block, height, block.timestamp.timestamp());
+    let as_json = |t: &StateTransition| serde_json::to_string(t).unwrap_or_default();
+    let extracted_json: Vec<String> = extracted.iter().map(as_json).collect();
+    let governance_json: Vec<String> = governance.iter().map(as_json).collect();
+    let opening = extracted
+        .iter()
+        .take_while(|t| {
+            matches!(
+                t,
+                StateTransition::BeginNodeServiceBlock { .. }
+                    | StateTransition::RecordGenesisEmissionConfig { .. }
+            )
+        })
+        .count();
+    let Some(start) = (opening..=extracted.len().saturating_sub(governance.len()))
+        .find(|&i| extracted_json.get(i..i + governance.len()) == Some(&governance_json[..]))
+    else {
+        let missing = Err("the governance batch was not found among the extracted transitions"
+            .to_string());
+        return Some(GovernanceOrderProbe {
+            governance_transitions: governance.len(),
+            launch_transactions,
+            transitions_before_governance: usize::MAX,
+            launch_first: missing.clone(),
+            governance_first: missing,
+            committed_state_root,
+        });
+    };
+    let end = start + governance.len();
+    let transitions_before_governance = start - opening;
+
+    let root_after = |order: Vec<StateTransition>| -> Result<String, String> {
+        let mut copy = state.clone();
+        copy.apply_transitions_batch_at_height(height, order)
+            .map_err(|e| e.to_string())?;
+        copy.apply_block_finalization(height);
+        Ok(copy.state_root.to_string())
+    };
+    let (launch_first, governance_first) = if transitions_before_governance == 0 {
+        let same = Ok("<same order>".to_string());
+        (same.clone(), same)
+    } else {
+        let mut reordered = Vec::with_capacity(extracted.len());
+        reordered.extend_from_slice(&extracted[..opening]);
+        reordered.extend_from_slice(&extracted[start..end]);
+        reordered.extend_from_slice(&extracted[opening..start]);
+        reordered.extend_from_slice(&extracted[end..]);
+        (root_after(extracted.clone()), root_after(reordered))
+    };
+    Some(GovernanceOrderProbe {
+        governance_transitions: governance.len(),
+        launch_transactions,
+        transitions_before_governance,
+        launch_first,
+        governance_first,
+        committed_state_root,
+    })
+}
 
 /// Outcome of a replay run. `Unverified` is deliberately distinct from both
 /// success and divergence: it means the run **asserted nothing**, and a run
@@ -143,7 +284,25 @@ pub fn replay_persisted_chain_with_checkpoint_observer<F>(
 where
     F: FnMut(&CheckpointAssertion),
 {
-    replay_persisted_chain_observed_and_checkpoints(storage, up_to, |_, _| {}, checkpoint_observe)
+    replay_persisted_chain_observed_and_checkpoints(storage, up_to, |_, _| {}, |_, _| {}, checkpoint_observe)
+}
+
+/// [`replay_persisted_chain_with_checkpoint_observer`] with a hook that sees
+/// every block together with the state BEFORE it, ahead of
+/// `extract_transitions`. The hook cannot change either, so the replay itself
+/// is the same one. `replay_verify --compare-metadata` uses it to count blocks
+/// whose producer-written metadata differs from this binary's own derivation.
+pub fn replay_persisted_chain_with_block_precheck<P, C>(
+    storage: &Storage,
+    up_to: Option<u64>,
+    precheck: P,
+    checkpoint_observe: C,
+) -> ReplayVerdict
+where
+    P: FnMut(&State, &Block),
+    C: FnMut(&CheckpointAssertion),
+{
+    replay_persisted_chain_observed_and_checkpoints(storage, up_to, precheck, |_, _| {}, checkpoint_observe)
 }
 
 /// Replay the persisted chain in `storage` from its stored genesis state up
@@ -171,16 +330,18 @@ pub fn replay_persisted_chain_observed<F>(
 where
     F: FnMut(u64, &mut State),
 {
-    replay_persisted_chain_observed_and_checkpoints(storage, up_to, observe, |_| {})
+    replay_persisted_chain_observed_and_checkpoints(storage, up_to, |_, _| {}, observe, |_| {})
 }
 
-fn replay_persisted_chain_observed_and_checkpoints<F, C>(
+fn replay_persisted_chain_observed_and_checkpoints<P, F, C>(
     storage: &Storage,
     up_to: Option<u64>,
+    mut precheck: P,
     mut observe: F,
     mut checkpoint_observe: C,
 ) -> ReplayVerdict
 where
+    P: FnMut(&State, &Block),
     F: FnMut(u64, &mut State),
     C: FnMut(&CheckpointAssertion),
 {
@@ -278,6 +439,8 @@ where
                 ),
             };
         }
+
+        precheck(&chain.state, &block);
 
         // The follower apply sequence, byte-for-byte the same calls
         // `apply_p2p_block_at` makes (minus p2p-only fork/orphan handling).

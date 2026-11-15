@@ -1105,6 +1105,39 @@
         }
       }
     },
+    "/network/scarcity": {
+      "get": {
+        "operationId": "get_network_scarcity",
+        "description": "Read-only view of the paid data-scarcity rule. Requires a Reader-or-higher bearer. Invalid lat/lon returns 422.",
+        "x-handler": "scarcity::get_scarcity",
+        "x-rust-cfg": "always",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Optional latitude; supply together with lon to resolve one point."
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Optional longitude; supply together with lat to resolve one point."
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
     "/network/signing-keys/register": {
       "post": {
         "operationId": "post_network_signing_keys_register",
@@ -1304,6 +1337,20 @@
         "operationId": "get_node_capability",
         "description": "Source-registered operation. Handler response schemas and authentication are not checked by this route inventory.",
         "x-handler": "network::get_node_capability",
+        "x-rust-cfg": "always",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Handler-defined response; this document checks paths and methods only."
+          }
+        }
+      }
+    },
+    "/node/fraud/submit": {
+      "post": {
+        "operationId": "post_node_fraud_submit",
+        "description": "Operator-token-gated submission of a signed NodeFraudReport transaction (core4-archive#3589). Not mounted (404) unless WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1 and NodeShareSettlement is active. 30 requests/min per token (429). Advisory blame dry-run at the edge; consensus apply remains the only authority. 202 on admission and gossip; 400 NODE_FRAUD_PAYLOAD; 401/403; 409 NODE_FRAUD_ALREADY_SANCTIONED; 422 NODE_FRAUD_AUTHORIZATION | NODE_FRAUD_EXPIRED | NODE_FRAUD_UNPROVABLE | NODE_FRAUD_REFUSED; 503 NODE_FRAUD_ARCHIVE_UNAVAILABLE | NODE_SERVICE_INACTIVE.",
+        "x-handler": "node_fraud::submit",
         "x-rust-cfg": "always",
         "parameters": [],
         "responses": {

@@ -360,7 +360,7 @@ impl Pkcs11Signer {
         let session = ctx
             .open_ro_session(slot)
             .with_context(|| format!("failed to open read-only session on slot {slot:?}"))?;
-        let auth_pin = AuthPin::new(pin.as_str().to_owned().into());
+        let auth_pin = AuthPin::new(pin.as_str().to_owned());
         match session.login(UserType::User, Some(&auth_pin)) {
             Ok(()) => {}
             // #2724: PKCS#11 login state is per-APPLICATION-per-token, not per
@@ -555,7 +555,7 @@ fn context_specific_login(session: &Session, credential: &ContextPin) -> Result<
         ContextPin::Environment(pin_env) => read_pin_from_env(pin_env)?,
         ContextPin::InMemory(pin) => Zeroizing::new(pin.as_str().to_owned()),
     };
-    let auth_pin = AuthPin::new(pin.as_str().to_owned().into());
+    let auth_pin = AuthPin::new(pin.as_str().to_owned());
     session
         .login(UserType::ContextSpecific, Some(&auth_pin))
         .context(

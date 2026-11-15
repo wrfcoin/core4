@@ -360,6 +360,7 @@ fn tag_checks() -> Vec<(SignedObjectKind, bool)> {
         (K::NodeSettlementEndorsement, tag_matches_registry::<wrfcoin_shared_protocol::consensus::node_share_contracts::NodeSettlementEndorsement>(K::NodeSettlementEndorsement)),
         (K::NodeBondAuthorization, tag_matches_registry::<wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondAuthorization>(K::NodeBondAuthorization)),
         (K::NodeBondPossession, tag_matches_registry::<wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondPossession>(K::NodeBondPossession)),
+        (K::NodeBondPayoutPasskeyApproval, tag_matches_registry::<wrfcoin_shared_protocol::consensus::node_share_contracts::NodeBondPayoutPasskeyApproval>(K::NodeBondPayoutPasskeyApproval)),
     ]
 }
 

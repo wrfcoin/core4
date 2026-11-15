@@ -32,7 +32,7 @@ use wrfcoin_shared_protocol::crypto::domain_signing::{
     signing_chain_id,
     signing_network_id,
 };
-use wrfcoin_shared_protocol::crypto::signer::load_oracle_signer;
+use wrfcoin_shared_protocol::crypto::signer::load_oracle_signer_for_ceremony;
 use wrfcoin_shared_protocol::oracle::ceremony::{
     GenesisOraclePossessionBundle,
     sign_oracle_possession_proof,
@@ -63,7 +63,8 @@ fn main() {
     let timestamp = args[2]
         .parse::<i64>()
         .expect("arg2: timestamp must be unix seconds");
-    let resolved = load_oracle_signer()
+    // HSM / debug paths only: the testnet attester key file is refused here.
+    let resolved = load_oracle_signer_for_ceremony()
         .expect("load local oracle signer")
         .expect("ORACLE CEREMONY REFUSED: no oracle signer configured");
     let signing_public = resolved.signer.public_key();

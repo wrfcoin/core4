@@ -28,6 +28,15 @@ unacknowledged findings and failed the very gate it serves. JSON has no comment
 syntax, so `pragma: allowlist secret` cannot be attached. Python can carry the
 pragmas, and needs no baseline entry.
 
+WHY THE FIXTURE IS GENERATED, NOT COMMITTED
+
+The public tree must not carry a literal Slack-webhook-shaped string: GitHub
+push protection rejects it and secret-scanning alerts watchers, templated or
+not. So the fixture is assembled from split fragments at run time into a
+temporary directory, scanned with the gate's own flags, and discarded. It is
+never tracked, so `.secrets.baseline` needs no entry for it and the main scan
+never sees it.
+
 WHAT THESE ARE
 
 SHA-1 digests, as detect-secrets records them, of three TEMPLATED placeholder
@@ -36,8 +45,13 @@ They are used as sentinels precisely because they are inert, permanent, and are
 the exact findings the verification filter removes.
 """
 
-# The file the sentinels live in. Asserted to exist by the regression test.
-SENTINEL_PATH = ".taskmaster/docs/infrastructure-hardening/ids-ips-configuration.md"
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+# Description of the original in-tree location (not shipped in the public tree).
+SENTINEL_PATH = "<generated at run time by render_fixture()>"
 
 SENTINEL_TYPE = "Slack Token"
 
@@ -46,3 +60,41 @@ HASHED_SECRETS = [
     "2fa1482a0e3f25ab830f4d7db846c19f777e74e7",  # pragma: allowlist secret
     "3aadf42805a20beba0579130a9afed57a2a98be2",  # pragma: allowlist secret
 ]
+
+
+def render_fixture() -> str:
+    """Assemble the three templated webhooks from fragments.
+
+    No fragment matches a webhook pattern on its own, so this file stays inert
+    to push protection and to the repository scan.
+    """
+    host = "https://hooks." + "slack" + ".com/" + "services/"
+    team = "T" + "0" * 8
+    pad = "X" * 24
+    return "".join(
+        f"{label}: {host}{team}/B{n:08d}/{pad}\n"
+        for label, n in (("a", 0), ("b", 1), ("c", 2))
+    )
+
+
+def scan_generated(flags, generator=render_fixture) -> set:
+    """Scan a freshly generated fixture; return the hashed secrets found."""
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "sentinel-fixture.md").write_text(generator(), encoding="utf-8")
+        r = subprocess.run(
+            ["detect-secrets", "scan", *flags, "sentinel-fixture.md"],
+            capture_output=True,
+            text=True,
+            cwd=td,
+        )
+    if r.returncode != 0:
+        return set()
+    return {
+        f["hashed_secret"]
+        for fs in json.loads(r.stdout or "{}").get("results", {}).values()
+        for f in fs
+    }
+
+
+def absent_sentinels(flags, generator=render_fixture) -> list:
+    return sorted(set(HASHED_SECRETS) - scan_generated(flags, generator))

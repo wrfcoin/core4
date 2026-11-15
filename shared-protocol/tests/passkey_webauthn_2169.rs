@@ -443,7 +443,7 @@ fn the_authorization_message_bytes_are_pinned() {
         PASSKEY_TRANSFER_AUTH_DOMAIN,
         TRANSPARENT_TRANSFER_AUTH_DOMAIN
     );
-    // The challenge is the blake3 of the message: 32 bytes, deterministic.
+    // The challenge is the SHA3-256 of the message: 32 bytes, deterministic.
     assert_eq!(
         passkey_transfer_challenge(&message),
         passkey_transfer_challenge(&message)
@@ -471,6 +471,8 @@ fn passkey_payload(
         authority: None,
         authority_signature: None,
         passkey_auth: Some(auth.authorize_transfer(&to.to_hex(), amount, nonce)),
+        sponsorship: None,
+        session_key_auth: None,
     }
 }
 
@@ -581,6 +583,8 @@ fn the_ed25519_path_is_byte_identical_with_or_without_a_passkey_member() {
         authority: None,
         authority_signature: None,
         passkey_auth: None,
+        sponsorship: None,
+        session_key_auth: None,
     };
     payload.sign_authorization(&sk, 3);
     assert!(payload.verify_authorization(3));
