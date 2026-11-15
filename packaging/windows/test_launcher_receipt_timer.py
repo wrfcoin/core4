@@ -67,7 +67,7 @@ class ReceiptTimer(unittest.TestCase):
         pattern = re.compile(url)
         for good in ["https://wrfcoin.com/api/claim-mailbox/claims", "https://x.example:8443/claims"]:
             self.assertTrue(pattern.match(good), good)
-        for bad in ["http://wrfcoin.com/claims", "https://user:pw@wrfcoin.com/claims", "https://wrfcoin.com/claims?x=1",
+        for bad in ["http://wrfcoin.com/claims", "https://user:pw@wrfcoin.com/claims", "https://wrfcoin.com/claims?x=1",  # pragma: allowlist secret -- placeholder userinfo the URL check must reject
                     "https://wrfcoin.com/claims#f", "https://wrfcoin.com/a b"]:
             self.assertFalse(pattern.match(bad), bad)
 
