@@ -74,10 +74,13 @@ Nothing prescribes the model; the chain pays for skill against what the station 
 
 ```sh
 python $KIT prepare-commit --forecast ./fc/forecast.json --window ./fc/window.json \
-  --forecaster 0xYOURWALLET --chain-id 777 --network-id testnet \
+  --forecaster 0xYOURWALLET --chain-id 888 --network-id testnet \
   --node http://127.0.0.1:8556 --cli /path/to/wrfcoin --out ./fc/prepared
 SIGNER_KEY=/secure/forecaster.key ./fc/prepared/commit.sh | tee ./fc/prepared/commit-validate.json
 ```
+
+Pass the chain id explicitly (the public testnet is `888`). Validate-only signs locally: it
+does not check that the node you later submit to has this chain id.
 
 Writes:
 
