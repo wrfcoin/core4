@@ -28548,7 +28548,7 @@ mod forecast_late_score_block_guards {
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
                 ("forecaster_key_binding".into(), 0),
-                ("forecast_late_score".into(), 0),
+                ("forecast_late_score_v2".into(), 0),
             ])
             .unwrap(),
         );

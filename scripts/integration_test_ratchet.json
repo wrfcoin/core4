@@ -1070,6 +1070,14 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score_paid_leads_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "forecast_late_score_schedulable"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "station_submitter_key"
     },
     {

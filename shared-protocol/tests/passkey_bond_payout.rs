@@ -143,9 +143,10 @@ fn feature_is_registered_appended_unscheduled_by_default_and_schedulable() {
     // `station_registrar_key` (32), `advisory_governance` (33) and
     // `forecast_late_score` (34), `late_data_pay` (35) and
     // `station_submitter_key` (36) and the four pinned-key retirements
-    // (37..=40) are appended after this feature.
+    // (37..=40) and `forecast_late_score_v2` (41) are appended after this
+    // feature.
     assert_eq!(ConsensusFeature::ALL.get(29), Some(&f));
-    assert_eq!(ConsensusFeature::ALL.len(), 41);
+    assert_eq!(ConsensusFeature::ALL.len(), 42);
     assert_eq!(bincode::serialize(&f).unwrap(), 29u32.to_le_bytes());
     assert!(f.schedulable(None));
     assert!(f.has_behaviour());

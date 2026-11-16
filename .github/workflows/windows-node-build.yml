@@ -502,6 +502,51 @@ jobs:
             if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin receipt' -ErrorAction SilentlyContinue) { throw 'StopReceiptTimer left the task' }
             Remove-Item -LiteralPath $bondConf, $ownerKey
             Write-Host 'receipts: timer refused without bond.conf/owner.key, registered per user every 30 min, one pass logged without secrets, removed by StopReceiptTimer'
+
+            # Bonded address record: -Action AddressTimer refuses outside bonded
+            # mode, with a /dns4/ external address and without address.conf, then
+            # registers a per-user task that runs -Action PublishAddress hourly.
+            # With the node stopped a pass is a quiet wait (exit 0, one line,
+            # not repeated). 192.0.2.1 is TEST-NET-1: never dialled here.
+            $addrConf = Join-Path $root 'address.conf'
+            $addrLog = Join-Path $root 'logs\address.log'
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action AddressTimer -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'AddressTimer ran outside bonded mode' }
+            $global:LASTEXITCODE = 0
+            if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'the address record is for a bonded node' -SimpleMatch -Quiet)) { throw 'launcher.log does not explain the bonded-mode requirement' }
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=/dns4/reachable-check.invalid/tcp/9000`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`nWRFCOIN_SERVICE_ID=ci-bonded-1`r`n")
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action AddressTimer -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'AddressTimer accepted a /dns4/ external address' }
+            $global:LASTEXITCODE = 0
+            [System.IO.File]::WriteAllText($reach, "WRFCOIN_P2P_HOST=0.0.0.0`r`nWRFCOIN_P2P_EXTERNAL_ADDR=/ip4/192.0.2.1/tcp/9000`r`nWRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS=1`r`nWRFCOIN_SERVICE_ID=ci-bonded-1`r`n")
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action AddressTimer -Quiet
+            if ($LASTEXITCODE -eq 0) { throw 'AddressTimer ran without address.conf' }
+            $global:LASTEXITCODE = 0
+            if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin address' -ErrorAction SilentlyContinue) { throw 'a refused AddressTimer registered a task' }
+            [System.IO.File]::WriteAllText($addrConf, "# CI`r`nWRFCOIN_BOND_DEPLOYMENT_ID=$('ab' * 32)`r`nWRFCOIN_ADDRESS_MAILBOX_URL=https://address-mailbox.invalid/node-addresses`r`n")
+            try {
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action AddressTimer -Quiet
+              if ($LASTEXITCODE -ne 0) { throw "AddressTimer exited $LASTEXITCODE" }
+              $task = Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin address'
+              if ("$($task.Actions[0].Arguments)" -notlike '*-Action PublishAddress -Quiet*') { throw "task arguments: $($task.Actions[0].Arguments)" }
+              if ("$($task.Triggers[0].Repetition.Interval)" -ne 'PT1H') { throw "task interval: $($task.Triggers[0].Repetition.Interval)" }
+              if ("$($task.Principal.RunLevel)" -ne 'Limited' -or "$($task.Principal.LogonType)" -ne 'Interactive') { throw "task principal: $($task.Principal.RunLevel) $($task.Principal.LogonType)" }
+              foreach ($i in 1, 2) {
+                & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action PublishAddress -Quiet
+                if ($LASTEXITCODE -ne 0) { throw "a pass with the node stopped exited $LASTEXITCODE (expected a quiet wait)" }
+              }
+              $lines = @(Get-Content -LiteralPath $addrLog)
+              Write-Host "address.log: $($lines -join ' | ')"
+              if ($lines.Count -ne 1 -or $lines[0] -notmatch 'node not running, retry later') { throw 'address.log should hold one wait line for two identical passes' }
+              $logText = Get-Content -LiteralPath $addrLog -Raw
+              if ($logText.Contains('192.0.2.1') -or $logText.Contains($tok)) { throw 'address.log contains the address or the operator token' }
+            } finally {
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcher -Action StopAddressTimer -Quiet
+              $global:LASTEXITCODE = 0
+            }
+            if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin address' -ErrorAction SilentlyContinue) { throw 'StopAddressTimer left the task' }
+            Remove-Item -LiteralPath $addrConf, $reach
+            Write-Host 'address record: timer refused outside bonded mode, with /dns4/ and without address.conf, registered per user hourly, a stopped node is one quiet wait line, removed by StopAddressTimer'
           } finally {
             Show-NodeLog
             Get-Process launch_api -ErrorAction SilentlyContinue | Stop-Process -Force
