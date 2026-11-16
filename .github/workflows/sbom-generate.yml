@@ -82,7 +82,7 @@ jobs:
           python3 -c "import shutil; print(f'free for the heavy-build guard: {shutil.disk_usage(\".\").free / 1024**3:.1f} GiB (hosted floor 10)')"
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -303,7 +303,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download SBOM artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: sbom-${{ github.sha }}
           path: sbom/
