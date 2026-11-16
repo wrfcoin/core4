@@ -180,6 +180,21 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
         && !ConsensusFeature::StationRegistrarKey.schedulable(Some(&block.calculate_hash().to_hex())) {
         return Err("station_registrar_key needs a pinned key for this genesis".into());
     }
+    // The late score pays the key-bound forecaster: a genesis naming it must
+    // name `forecaster_key_binding` at least the lead earlier, the same rule
+    // a schedule extension is admitted under.
+    if let Some((_, late)) = parsed.features.iter()
+        .find(|(name, _)| name == ConsensusFeature::ForecastLateScore.name()) {
+        let bound = parsed.features.iter()
+            .find(|(name, _)| name == ConsensusFeature::ForecasterKeyBinding.name())
+            .map(|(_, height)| *height);
+        if !forecast_late_score_schedule_allowed(*late, bound) {
+            return Err(format!(
+                "forecast_late_score must activate at least {FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS} blocks \
+                 after forecaster_key_binding in this genesis"
+            ));
+        }
+    }
     // Every listed retirement, not just the first: each needs its own slot.
     if let Some(feature) = BOND_ADMISSION_KEY_RETIREMENTS.iter().chain(STATION_REGISTRAR_KEY_RETIREMENTS)
         .filter(|f| parsed.features.iter().any(|(name, _)| name == f.name()))
@@ -1283,9 +1298,13 @@ pub enum ConsensusFeature {
     /// ([`forecast_late_score_active`]): the forecaster paid is the key-bound
     /// commit signer.
     ///
-    /// Wire ordinal 34. Ships UNSCHEDULED and NOT live-schedulable: it appears
-    /// in no genesis, default schedule or cut pin. Scheduling is the owner's
-    /// signature only, in a later release that makes it schedulable.
+    /// Paid leads: 6 h and 12 h only (`forecast_late_score::LEAD_HOURS`).
+    ///
+    /// Wire ordinal 34. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. A live schedule extension may name it, admitted
+    /// only at least [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] after
+    /// `forecaster_key_binding` (`forecast_late_score_schedule_allowed`);
+    /// scheduling is the owner's signature only.
     ForecastLateScore,
     /// #3565 split (owner 2026-11-14): the late-data pay reduction
     /// (`late_data_multiplier_bps` of the reveal's age at its including block,
@@ -1653,11 +1672,6 @@ impl ConsensusFeature {
             // Transfer fee burn: wired and tested; scheduled together with
             // `paymaster` in one owner-signed release, never alone.
             | Self::TransferFeeBurn
-            // Held until review and the determinism differential; then a
-            // release makes it schedulable, no earlier than the key binding's
-            // activation + `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`
-            // (`forecast_late_score_schedule_allowed`).
-            | Self::ForecastLateScore
             // #3565 split: the device-signed clock comes first (owner 11-12);
             // a later release makes it schedulable.
             | Self::LateDataPay => false,
@@ -1702,7 +1716,14 @@ impl ConsensusFeature {
             // `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` after
             // `station_submitter_key` (`device_submission_limit_schedule_allowed`,
             // enforced at admission), so a schedule cannot refuse collected readings.
-            | Self::DeviceSubmissionLimit => true,
+            | Self::DeviceSubmissionLimit
+            // Skill pay (6 h and 12 h leads): wired end to end (reveal records,
+            // score transaction, bucket close and pay); schedulable only at
+            // least `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` after
+            // `forecaster_key_binding` (`forecast_late_score_schedule_allowed`,
+            // enforced at admission and by `forecast_late_score_active`). The
+            // owner signs the schedule.
+            | Self::ForecastLateScore => true,
         }
     }
 
@@ -3352,6 +3373,9 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // Ordinal 34: skill pay (6 h / 12 h), schedulable under its
+        // key-binding lead rule; the owner signs it.
+        expected.push("forecast_late_score");
         // #3565 design 1: ordinal 36, the binary accepts a schedule.
         expected.push("station_submitter_key");
         for node in [None, Some(other.as_str())] {
@@ -3373,7 +3397,6 @@ mod tests {
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
-            ConsensusFeature::ForecastLateScore,
             ConsensusFeature::LateDataPay,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
@@ -3400,6 +3423,9 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // Ordinal 34: skill pay (6 h / 12 h), schedulable under its
+        // key-binding lead rule; the owner signs it.
+        expected.push("forecast_late_score");
         // #3565 design 1: ordinal 36, the binary accepts a schedule.
         expected.push("station_submitter_key");
         assert_eq!(schedulable, expected);

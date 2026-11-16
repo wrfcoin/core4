@@ -100,13 +100,20 @@ pub const MAX_OBSERVATION_SIGNATURES: usize = 16;
 /// Longest station id or commit id accepted in a score transaction.
 pub const MAX_ID_BYTES: usize = 128;
 
-/// The leads a forecast may be scored at, in hours. No 1 h lead: at one hour
-/// cheap baselines (persistence or a 3 h trend, nudged past the copy
-/// tolerance) and honest forecasters cannot be told apart (synthetic
-/// backtest 2026-11-12), so a 1 h forecast is not recorded and never paid.
-/// Every lead's reference also has a same-hour-yesterday (lag-24) term from
-/// a 48 h window (`late_score::reference_for_lead`).
-pub const LEAD_HOURS: [u32; 3] = [6, 12, 24];
+/// The leads a forecast may be scored at, in hours: only 6 h and 12 h are
+/// paid. A forecast at any other lead is not recorded, so it is never scored
+/// or paid.
+///
+/// - No 1 h lead: at one hour cheap baselines (persistence or a 3 h trend,
+///   nudged past the copy tolerance) and honest forecasters cannot be told
+///   apart.
+/// - No 24 h lead for now: at 24 h the same-hour-yesterday forecast IS the
+///   lag-24 reference, so the lead is not paid until real station data shows
+///   the rule separates honest forecasters there.
+///
+/// Every paid lead's reference has a same-hour-yesterday (lag-24) term from a
+/// 48 h window (`late_score::reference_for_lead`).
+pub const LEAD_HOURS: [u32; 2] = [6, 12];
 /// A forecast may be scored from its target time plus this many seconds:
 /// 15 minutes of readings plus 20 minutes for them to land and reach quorum.
 pub const SCORE_OPENS_AFTER_SECS: i64 = SCORE_DELAY_SECS;
@@ -439,7 +446,7 @@ impl ObservationAttestation {
         }
         if target_for(self.commit_time, self.lead_hours) != Some(self.target) {
             return Err(Malformed(
-                "target is not commit_time + a lead of 6, 12 or 24 hours",
+                "target is not commit_time + a lead of 6 or 12 hours",
             ));
         }
         // Rule 1: every reading-derived value is inside the variable's range.
@@ -1839,14 +1846,15 @@ mod tests {
     fn target_is_commit_time_plus_lead_and_buckets_are_whole_hours() {
         assert_eq!(target_for(0, 6), Some(6 * 3_600));
         assert_eq!(target_for(0, 12), Some(12 * 3_600));
-        assert_eq!(target_for(1_762_646_461, 24), Some(1_762_732_861));
-        // No 1 h lead: it is never recorded, so never scored or paid.
-        for lead in [0, 1, 2, 3, 5, 7, 23, 25, 48, u32::MAX] {
+        assert_eq!(target_for(1_762_646_461, 12), Some(1_762_689_661));
+        // No 1 h and no 24 h lead: never recorded, so never scored or paid.
+        for lead in [0, 1, 2, 3, 5, 7, 23, 24, 25, 48, u32::MAX] {
             assert_eq!(target_for(1_000, lead), None, "lead {lead}");
         }
-        assert_eq!(LEAD_HOURS, [6, 12, 24]);
+        assert_eq!(target_for(1_762_646_461, 24), None);
+        assert_eq!(LEAD_HOURS, [6, 12]);
         assert_eq!(target_for(-1, 6), None);
-        assert_eq!(target_for(i64::MAX, 24), None);
+        assert_eq!(target_for(i64::MAX, 12), None);
         assert_eq!(bucket_hour(0), Some(0));
         assert_eq!(bucket_hour(3_599), Some(0));
         assert_eq!(bucket_hour(3_600), Some(3_600));
@@ -2281,6 +2289,18 @@ mod tests {
         truth: i64,
         scored: &[u8],
     ) -> Vec<(u8, u128)> {
+        play_round_at(state, round, 6, forecasts, truth, scored)
+    }
+
+    /// [`play_round_scoring`] at lead `lead` (a paid lead).
+    fn play_round_at(
+        state: &mut ForecastLateScoreState,
+        round: u64,
+        lead: u32,
+        forecasts: &[(u8, i64)],
+        truth: i64,
+        scored: &[u8],
+    ) -> Vec<(u8, u128)> {
         let height = 10 + round * 10;
         let commit_time = 1_000_000 + i64::try_from(round).unwrap() * 200_000;
         let ids: Vec<String> = forecasts
@@ -2306,7 +2326,7 @@ mod tests {
                     "output_hash": "22".repeat(32),
                     "produced_at": commit_time,
                     "region": "st-1",
-                    "horizon_hours": 6,
+                    "horizon_hours": lead,
                     "input_variables": ["temp_c"],
                     "output_variables": ["temp_c"],
                 },
@@ -2314,7 +2334,7 @@ mod tests {
             .expect("reveal payload");
             assert!(state.note_reveal(&payload, height + 1, commit_time + 77, Some(addr(OWNER))));
         }
-        let target = commit_time + 6 * SECS_PER_HOUR;
+        let target = commit_time + i64::from(lead) * SECS_PER_HOUR;
         let mut sorted: Vec<String> = forecasts
             .iter()
             .zip(&ids)
@@ -2326,7 +2346,7 @@ mod tests {
             attestation: ObservationAttestation {
                 station_id: "st-1".into(),
                 variable: LateScoreVariable::TemperatureC,
-                lead_hours: 6,
+                lead_hours: lead,
                 commit_height: height,
                 commit_time,
                 target,
@@ -2668,5 +2688,139 @@ mod tests {
         assert!(play_round_scoring(&mut state, 20, &[(10, LAST + 10)], LAST + 30, &[]).is_empty());
         assert_eq!(state.track_records[&track_key(addr(10))], before);
         assert_eq!(play_round(&mut state, 21, &[(10, LAST + 10)], LAST + 30).len(), 1);
+    }
+
+    // ---- paid leads (6 h and 12 h only) ----
+
+    fn track_key_at(forecaster: Address, lead: u32) -> String {
+        track_record_key(&forecaster, "st-1", LateScoreVariable::TemperatureC, lead)
+    }
+
+    fn reveal_at_lead(id: &str, lead: u32, commit_time: i64) -> RevealPayload {
+        serde_json::from_value(serde_json::json!({
+            "commit_id": id,
+            "station_id": "st-1",
+            "timestamp": commit_time,
+            "contribution_type": "forecast",
+            "data": { "temp_c_centi": LAST + 10 },
+            "nonce": "n",
+            "manifest": {
+                "schema_version": 1,
+                "model_id": "m",
+                "input_hash": "11".repeat(32),
+                "output_hash": "22".repeat(32),
+                "produced_at": commit_time,
+                "region": "st-1",
+                "horizon_hours": lead,
+                "input_variables": ["temp_c"],
+                "output_variables": ["temp_c"],
+            },
+        }))
+        .expect("reveal payload")
+    }
+
+    #[test]
+    fn only_the_6_and_12_hour_leads_are_recorded() {
+        assert_eq!(LEAD_HOURS, [6, 12]);
+        let commit_time = 1_000_000;
+        for lead in [1u32, 3, 6, 12, 24, 48] {
+            let mut state = ForecastLateScoreState::default();
+            let id = format!("lead-{lead}");
+            state.note_commit(&id, addr(0x21), 10, 15);
+            state.close_due(10, commit_time, |_| Some(addr(OWNER)));
+            let recorded =
+                state.note_reveal(&reveal_at_lead(&id, lead, commit_time), 11, commit_time + 77, Some(addr(OWNER)));
+            let paid = lead == 6 || lead == 12;
+            assert_eq!(recorded, paid, "lead {lead}");
+            assert_eq!(state.records.len(), usize::from(paid), "lead {lead}");
+            assert_eq!(state.buckets.len(), usize::from(paid), "lead {lead}");
+            if !paid {
+                // Nothing at all: the pending commit is consumed, no bucket,
+                // no record, so nothing can ever be scored or paid.
+                assert!(state.is_empty(), "lead {lead}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_6_and_12_hour_leads_are_paid_on_a_full_positive_record() {
+        for lead in [6u32, 12] {
+            let mut state = ForecastLateScoreState::default();
+            let f = 0x22;
+            for round in 0..19 {
+                assert!(
+                    play_round_at(&mut state, round, lead, &[(f, LAST + 10)], LAST + 30, &[f]).is_empty(),
+                    "lead {lead} round {round}"
+                );
+            }
+            let paid = play_round_at(&mut state, 19, lead, &[(f, LAST + 10)], LAST + 30, &[f]);
+            assert_eq!(paid, vec![(f, 80_000_000)], "lead {lead}");
+            let record = &state.track_records[&track_key_at(addr(f), lead)];
+            assert_eq!(record.skills, vec![800_000; TRACK_RECORD_LEN], "lead {lead}");
+            // The record is per lead: the other paid lead has none.
+            let other = if lead == 6 { 12 } else { 6 };
+            assert!(!state.track_records.contains_key(&track_key_at(addr(f), other)));
+        }
+    }
+
+    #[test]
+    fn the_track_record_pays_only_above_a_zero_sum() {
+        assert_eq!(TRACK_RECORD_MIN_SUM, 0, "the margin is set later, from real data");
+        let at = |skills: Vec<i64>| TrackRecord { skills, last_scored_at: 0 }.is_eligible();
+        // Average exactly 0: not paid. Average just above 0: paid.
+        let mut zero = vec![500_000; 10];
+        zero.extend(vec![-500_000; 10]);
+        assert!(!at(zero.clone()));
+        zero[0] += 1;
+        assert!(at(zero));
+        // 19 scored forecasts, however good: not paid.
+        assert!(!at(vec![1_000_000; TRACK_RECORD_LEN - 1]));
+        assert!(at(vec![1; TRACK_RECORD_LEN]));
+        assert!(!at(vec![0; TRACK_RECORD_LEN]));
+
+        // Through a real round at each paid lead: 19 earlier entries summing
+        // to −800_000 − 1 + d, then a round of skill 800_000. The 20 sum to
+        // d − 1: d = 1 (sum 0) is not paid, d = 2 (sum 1) is.
+        for lead in [6u32, 12] {
+            for (d, expect_paid) in [(1i64, false), (2, true)] {
+                let mut state = ForecastLateScoreState::default();
+                let f = 0x23;
+                let mut skills = vec![-40_000; TRACK_RECORD_LEN - 2];
+                skills.push(-80_000 - 1 + d);
+                assert_eq!(skills.iter().sum::<i64>(), -800_000 - 1 + d);
+                state
+                    .track_records
+                    .insert(track_key_at(addr(f), lead), TrackRecord { skills, last_scored_at: 0 });
+                let paid = play_round_at(&mut state, 0, lead, &[(f, LAST + 10)], LAST + 30, &[f]);
+                assert_eq!(!paid.is_empty(), expect_paid, "lead {lead} d {d}");
+                let record = &state.track_records[&track_key_at(addr(f), lead)];
+                assert_eq!(record.skills.len(), TRACK_RECORD_LEN);
+                assert_eq!(record.skills.iter().sum::<i64>(), d - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn at_each_paid_lead_unscored_counts_at_the_minimum_and_an_outage_counts_nothing() {
+        for lead in [6u32, 12] {
+            let mut state = ForecastLateScoreState::default();
+            let (a, b) = (0x24, 0x25);
+            // The score lists only b: a's forecast had an observation for its
+            // commit block, so it counts at the minimum when the bucket closes.
+            play_round_at(&mut state, 0, lead, &[(a, LAST + 10), (b, LAST + 10)], LAST + 30, &[b]);
+            assert_eq!(
+                state.track_records[&track_key_at(addr(a), lead)].skills,
+                vec![SIGNED_SKILL_FLOOR],
+                "lead {lead}"
+            );
+            assert_eq!(state.track_records[&track_key_at(addr(b), lead)].skills, vec![800_000]);
+            // An outage: no score at all for the commit block. Nothing moves.
+            let before = state.track_records.clone();
+            assert!(
+                play_round_at(&mut state, 1, lead, &[(a, LAST + 10), (b, LAST + 10)], LAST + 30, &[]).is_empty()
+            );
+            assert_eq!(state.track_records, before, "lead {lead}: an outage adds nothing");
+            assert!(state.buckets.is_empty() && state.records.is_empty());
+        }
     }
 }

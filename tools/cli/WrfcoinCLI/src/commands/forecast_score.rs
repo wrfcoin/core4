@@ -49,7 +49,7 @@ pub enum ForecastScoreCommands {
         /// temperature_c (0.01 °C) or pressure_hpa (Pa).
         #[clap(long)]
         variable: String,
-        /// 6, 12 or 24.
+        /// 6 or 12 (the leads the chain pays).
         #[clap(long)]
         lead_hours: u32,
         #[clap(long)]

@@ -78,7 +78,7 @@ pub struct AttestationReport {
 /// window readings) and when the truth would be refused on chain.
 pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Result<AttestationReport> {
     let target = target_for(block.commit_time, block.lead_hours)
-        .ok_or_else(|| anyhow!("lead must be 6, 12 or 24 hours and commit_time non-negative"))?;
+        .ok_or_else(|| anyhow!("lead must be 6 or 12 hours and commit_time non-negative"))?;
     let variable = block.variable;
 
     let truths = truth_candidates(samples, variable, target);
@@ -376,9 +376,9 @@ mod tests {
                 commit_height: case["commit_height"].as_u64().unwrap(),
                 commit_time: case["commit_time"].as_i64().unwrap(),
             };
-            // The shared vectors also cover the 1 h lead (the backend's
-            // practice score); the chain does not score it, so the oracle job
-            // refuses it.
+            // The shared vectors also cover the 1 h and 24 h leads (the backend's
+            // practice score); the chain pays neither, so the oracle job
+            // refuses them.
             if !LEAD_HOURS.contains(&block.lead_hours) {
                 let error = attest_observation(&samples, &block).unwrap_err().to_string();
                 assert!(error.contains("lead must be"), "{error}");
@@ -478,14 +478,18 @@ mod tests {
         let mut bad_lead = block.clone();
         bad_lead.lead_hours = 3;
         assert!(attest_observation(&samples, &bad_lead).is_err());
-        // The 1 h lead is not scored any more.
-        bad_lead.lead_hours = 1;
-        assert!(attest_observation(&samples, &bad_lead).is_err());
+        // The 1 h and 24 h leads are not scored.
+        for lead in [1, 24] {
+            bad_lead.lead_hours = lead;
+            let error = attest_observation(&samples, &bad_lead).unwrap_err().to_string();
+            assert!(error.contains("lead must be"), "{lead}: {error}");
+        }
     }
 
     /// Two days of hourly readings ending just before `commit_time`, all
-    /// landed below the commit height, and a truth reading at the target.
-    fn two_days(commit_time: i64, commit_height: u64, value: impl Fn(usize) -> i64) -> Vec<ChainSample> {
+    /// landed below the commit height, and a truth reading at the target
+    /// (`commit_time + lead_hours`).
+    fn two_days(commit_time: i64, commit_height: u64, lead_hours: u32, value: impl Fn(usize) -> i64) -> Vec<ChainSample> {
         let mut samples: Vec<ChainSample> = (0..48)
             .map(|slot| {
                 let observed_at = commit_time - (48 - slot as i64) * 3_600 + 600;
@@ -500,7 +504,7 @@ mod tests {
                 }
             })
             .collect();
-        let target = commit_time + 24 * 3_600;
+        let target = commit_time + i64::from(lead_hours) * 3_600;
         samples.push(ChainSample {
             id: "t".into(),
             observed_at: target,
@@ -514,14 +518,50 @@ mod tests {
     }
 
     #[test]
-    fn the_24_hour_lead_is_attested_from_a_48_hour_window() {
+    fn the_paid_leads_are_attested_from_a_48_hour_window() {
         let commit_time = 1_800_000_000 - 1_800_000_000 % 3_600;
         let commit_height = 5_000;
         let daily = |slot: usize| {
             let hour = (slot % 24) as i64;
             2_000 + 80 * if hour < 12 { hour } else { 24 - hour } + (slot as i64 * 7) % 5
         };
-        let samples = two_days(commit_time, commit_height, daily);
+        for lead in [6u32, 12] {
+            let samples = two_days(commit_time, commit_height, lead, daily);
+            let block = CommitBlock {
+                station_id: "st1".into(),
+                variable: LateScoreVariable::TemperatureC,
+                lead_hours: lead,
+                commit_height,
+                commit_time,
+            };
+            let report = attest_observation(&samples, &block).expect("two full days are attestable");
+            let a = &report.attestation;
+            assert_eq!(report.window.len(), 48, "{lead}");
+            assert_eq!(a.window_commit_ids.len(), 48, "both days are cited");
+            assert_eq!(a.window_hash, hex::encode(window_hash(&report.window).unwrap()));
+            let reference = reference_for_lead(&report.window, lead).unwrap().unwrap();
+            assert_eq!((a.reference, a.mean24), (reference.reference, reference.mean24));
+            assert_eq!(reference.pairs, 24);
+            // The lag-24 term is far below the one-day rule (spread or lag-lead
+            // persistence) on a daily cycle.
+            let old = wrfcoin_forecast_score::late_score::reference_from_window(&report.window[24..], lead as usize)
+                .unwrap()
+                .unwrap();
+            assert!(a.reference < old.reference / 10, "{lead}: {} vs {}", a.reference, old.reference);
+            assert_eq!(a.mean24, old.mean24);
+            assert_eq!(a.last, daily(47));
+
+            // Only one day of history: the lag-24 term has no pairs, so the
+            // lead falls back to the one-day rule (still scored).
+            let one_day: Vec<ChainSample> =
+                samples.iter().filter(|s| s.id == "t" || s.id.as_str() >= "w24").cloned().collect();
+            let thin = attest_observation(&one_day, &block).unwrap();
+            assert_eq!(thin.attestation.reference, old.reference, "{lead}");
+        }
+
+        // The 24 h lead is not paid, so the oracle job refuses it even with
+        // two full days of readings and a truth at its target.
+        let samples = two_days(commit_time, commit_height, 24, daily);
         let block = CommitBlock {
             station_id: "st1".into(),
             variable: LateScoreVariable::TemperatureC,
@@ -529,49 +569,7 @@ mod tests {
             commit_height,
             commit_time,
         };
-        let report = attest_observation(&samples, &block).expect("two full days are attestable");
-        let a = &report.attestation;
-        assert_eq!(report.window.len(), 48);
-        assert_eq!(a.window_commit_ids.len(), 48, "both days are cited");
-        assert_eq!(a.window_hash, hex::encode(window_hash(&report.window).unwrap()));
-        let reference = reference_for_lead(&report.window, 24).unwrap().unwrap();
-        assert_eq!((a.reference, a.mean24), (reference.reference, reference.mean24));
-        assert_eq!(reference.pairs, 24);
-        // The lag-24 term is far below the day's spread on a daily cycle; the
-        // old 24-slot rule had no lag-24 pairs and used the spread.
-        let old = wrfcoin_forecast_score::late_score::reference_from_window(&report.window[24..], 24)
-            .unwrap()
-            .unwrap();
-        assert!(a.reference < old.reference / 10, "{} vs {}", a.reference, old.reference);
-        assert_eq!(a.mean24, old.mean24);
-        assert_eq!(a.last, daily(47));
-
-        // A 6 h lead uses the same 48 h window and gets the lag-24 term too.
-        let six = CommitBlock { lead_hours: 6, ..block.clone() };
-        let six_samples: Vec<ChainSample> = samples
-            .iter()
-            .map(|s| {
-                let mut s = s.clone();
-                if s.id == "t" {
-                    s.observed_at = commit_time + 6 * 3_600;
-                    s.block_time = s.observed_at + 60;
-                }
-                s
-            })
-            .collect();
-        let six_report = attest_observation(&six_samples, &six).unwrap();
-        assert_eq!(six_report.window.len(), 48);
-        assert_eq!(six_report.attestation.window_commit_ids.len(), 48);
-        let six_day = wrfcoin_forecast_score::late_score::reference_from_window(&six_report.window[24..], 6)
-            .unwrap()
-            .unwrap();
-        assert!(six_report.attestation.reference < six_day.reference / 10);
-
-        // Only one day of history: the lag-24 term has no pairs, so the 24 h
-        // lead falls back to the spread (still scored, as before).
-        let one_day: Vec<ChainSample> =
-            samples.iter().filter(|s| s.id == "t" || s.id.as_str() >= "w24").cloned().collect();
-        let thin = attest_observation(&one_day, &block).unwrap();
-        assert_eq!(thin.attestation.reference, old.reference);
+        let error = attest_observation(&samples, &block).unwrap_err().to_string();
+        assert!(error.contains("lead must be"), "{error}");
     }
 }

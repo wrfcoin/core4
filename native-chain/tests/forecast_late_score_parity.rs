@@ -129,7 +129,7 @@ const STATION: &str = "st-parity-1";
 /// A whole hour.
 const START: i64 = 1_800_000_000 - 1_800_000_000 % 3_600;
 const HOUR: i64 = 3_600;
-/// The lead every forecast here uses (the chain scores 6, 12 and 24 h).
+/// The lead every forecast here uses (the chain scores and pays 6 h and 12 h).
 const LEAD: u32 = 6;
 const LEAD_SECS: i64 = LEAD as i64 * HOUR;
 

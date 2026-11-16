@@ -399,8 +399,9 @@ fn forecast_late_score_end_to_end() {
         u64::MAX,
         Some(u64::MAX)
     ));
-    assert!(!ConsensusFeature::ForecastLateScore.schedulable(None));
-    assert!(!ConsensusFeature::ForecastLateScore.schedulable(Some(&"ab".repeat(32))));
+    // Schedulable (under the key-binding lead rule above), but unscheduled.
+    assert!(ConsensusFeature::ForecastLateScore.schedulable(None));
+    assert!(ConsensusFeature::ForecastLateScore.schedulable(Some(&"ab".repeat(32))));
 
     // Unscheduled: inert at every height.
     for height in [0, 1, ACTIVE, u64::MAX] {
@@ -818,6 +819,8 @@ fn forecast_late_score_end_to_end() {
         // The 1 h lead is not scored (cheap baselines and honest
         // forecasters overlap there), so a 1 h forecast is not recorded.
         (key(0x37), 1, STATION, "lead-1"),
+        // The 24 h lead is not paid for now: not recorded either.
+        (key(0x38), 24, STATION, "lead-24"),
         (key(0x34), 6, "st-unregistered", "no-station"),
     ] {
         let (commit, reveal) = forecast(
@@ -842,19 +845,19 @@ fn forecast_late_score_end_to_end() {
     );
     commit_at(&mut state, &never_revealed, h);
     assert_eq!(state.forecast_late_score.pending.len(), 1);
-    // A second bucket (24 h lead) that nobody scores.
-    let (commit_24, reveal_24) = forecast(
+    // A second bucket (12 h lead) that nobody scores.
+    let (commit_12, reveal_12) = forecast(
         &bob,
         STATION,
         serde_json::json!({"temp_c_centi": 2_101}),
-        24,
-        "bob-24h",
+        12,
+        "bob-12h",
     );
-    commit_at(&mut state, &commit_24, h);
-    reveal_at(&mut state, &reveal_24, h, t_d + 100);
+    commit_at(&mut state, &commit_12, h);
+    reveal_at(&mut state, &reveal_12, h, t_d + 100);
     close_at(&mut state, h, t_d + 100).expect("end of block");
     let unscored_bucket =
-        bucket_id(STATION, LateScoreVariable::TemperatureC, 24, T0 + 24 * HOUR).unwrap();
+        bucket_id(STATION, LateScoreVariable::TemperatureC, 12, T0 + 12 * HOUR).unwrap();
     assert!(
         state
             .forecast_late_score
@@ -1475,7 +1478,7 @@ fn forecast_late_score_end_to_end() {
     close_at(
         &mut state,
         close_height + 2,
-        bucket_closes_at(T0 + 24 * HOUR),
+        bucket_closes_at(T0 + 12 * HOUR),
     )
     .expect("unscored close");
     assert!(state.forecast_late_score.buckets.is_empty());
