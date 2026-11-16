@@ -432,16 +432,21 @@ fn drop_older_records(state_dir: &Path, epoch: u64) {
 }
 
 /// Mailbox refusals worth another pass later rather than a hard failure.
+/// `ADDRESSES_DISABLED` (and a bare 404 with no mailbox code: the route is not
+/// deployed there) means the mailbox is not open yet; a timer keeps retrying
+/// quietly until it is.
 fn retryable(error: &str) -> bool {
     ["RECEIPT_TRANSPORT", "RECEIPT_HTTP_429", "RECEIPT_HTTP_5"]
         .iter()
         .any(|p| error.starts_with(p))
+        || error == "RECEIPT_HTTP_404"
         || [
             "STALE_EPOCH",
             "FUTURE_EPOCH",
             "FUTURE_HEIGHT",
             "NODE_UNAVAILABLE",
             "BUSY",
+            "ADDRESSES_DISABLED",
         ]
         .iter()
         .any(|code| error.contains(&format!(" {code}")) || error.contains(&format!("_{code}")))
@@ -1161,6 +1166,8 @@ mod tests {
             (409, "STALE_EPOCH"),
             (409, "FUTURE_HEIGHT"),
             (503, "NODE_UNAVAILABLE"),
+            // The mailbox is not open yet (the live answer while it is switched off).
+            (404, "ADDRESSES_DISABLED"),
         ] {
             let post = f
                 .mailbox
@@ -1175,6 +1182,19 @@ mod tests {
             assert_eq!(crate::commands::emit::classify_exit_code(&err), 2, "{err}");
             post.assert();
         }
+        // No mailbox route at all (404 without a mailbox code): also retry later.
+        let post = f
+            .mailbox
+            .mock("POST", "/addresses")
+            .with_status(404)
+            .with_body("<html>not found</html>")
+            .expect(1)
+            .create();
+        let err = run(&command(&f, &addrs, false)).unwrap_err();
+        assert_eq!(crate::commands::emit::classify_exit_code(&err), 2, "{err}");
+        assert!(err.to_string().contains("RECEIPT_HTTP_404"), "{err}");
+        post.assert();
+        drop(post);
         // A hard refusal (not bonded per the mailbox) is not retried.
         let post = f
             .mailbox
