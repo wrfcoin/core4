@@ -830,7 +830,8 @@ async fn run() -> Result<()> {
             }
         },
         Commands::Oracle { action } => {
-            match commands::oracle::handle_oracle_command(&action).await {
+            let interactive = !context.non_interactive && !context.output_format.is_machine_readable();
+            match commands::oracle::handle_oracle_command_with(&action, interactive).await {
                 Ok(data) => emit_success(&context, "oracle", &data)?,
                 Err(err) => {
                     emit_error(&context, "oracle", &err)?;
