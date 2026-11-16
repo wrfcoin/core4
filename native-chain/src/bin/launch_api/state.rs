@@ -573,6 +573,29 @@ impl Clone for GenesisHashCell {
     }
 }
 
+/// Unix seconds of the last `/transactions/oracle/pending` read made with an
+/// Oracle-role token; 0 = none since this node started. The local attester
+/// polls that route every few seconds, so the status page (`GET
+/// /node/attester`) reads this as "the attester program is running". Lives
+/// here, not in the route module, because `routes/oracle.rs` is also compiled
+/// into integration tests that include `state.rs` but not `node_attester.rs`.
+pub static ORACLE_POLL_AT: AtomicU64 = AtomicU64::new(0);
+
+/// Wall-clock Unix seconds for process-local bookkeeping.
+pub fn unix_now_secs() -> u64 {
+    // determinism-ok: process-local attester liveness for the status page, never a consensus input.
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Called by `oracle::get_pending_attestations` when an Oracle-role bearer
+/// reads the pending list: the local attester is alive.
+pub fn note_oracle_poll() {
+    ORACLE_POLL_AT.store(unix_now_secs(), Ordering::Relaxed);
+}
+
 // Production never clones AppState: Actix workers share it through the Arc
 // inside `web::Data<AppState>`, whose Clone does not require `AppState: Clone`
 // (verified by removing the derive — both feature sets compile). Only the

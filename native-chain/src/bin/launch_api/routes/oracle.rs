@@ -1108,7 +1108,7 @@ pub async fn get_pending_attestations(
     // The local attester polls here with its Oracle-role token: the status
     // page reads this as "the attester is running".
     if caller == ApiRole::Oracle {
-        super::node_attester::note_oracle_poll();
+        crate::state::note_oracle_poll();
     }
     let limit = query
         .limit

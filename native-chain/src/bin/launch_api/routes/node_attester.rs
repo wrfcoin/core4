@@ -22,7 +22,7 @@
 //! data (the oracle id is already on chain once seated).
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use serde::{Deserialize, Serialize};
@@ -46,23 +46,6 @@ const SCAN_BATCH_BLOCKS: u64 = 500;
 pub const ATTESTER_POLL_FRESH_SECS: u64 = 120;
 /// Largest key file the node reads (the real one is 65 or 66 bytes).
 const MAX_KEY_FILE_BYTES: u64 = 1024;
-
-/// Unix seconds of the last `/transactions/oracle/pending` read made with an
-/// Oracle-role token; 0 = none since this node started.
-static ORACLE_POLL_AT: AtomicU64 = AtomicU64::new(0);
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Called by `oracle::get_pending_attestations` when an Oracle-role bearer
-/// reads the pending list: the local attester is alive.
-pub fn note_oracle_poll() {
-    ORACLE_POLL_AT.store(now_secs(), Ordering::Relaxed);
-}
 
 /// Where this node's oracle public key comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +90,7 @@ pub fn resolve_local_key(env_key: Option<String>, env_file: Option<String>) -> L
         Ok(m) if !m.is_file() || m.len() > MAX_KEY_FILE_BYTES => {
             LocalOracleKey::Unreadable("the oracle public key file is not a public key")
         },
-        Ok(_) => match std::fs::read_to_string(path) {
+        Ok(_) => match std::fs::read_to_string(path) { // key-file-exempt: the PUBLIC oracle key (oracle id), never key material
             Ok(text) => match parse_public_key_text(&text) {
                 Some(k) => LocalOracleKey::Key(k),
                 None => {
@@ -121,7 +104,9 @@ pub fn resolve_local_key(env_key: Option<String>, env_file: Option<String>) -> L
 
 fn local_key_from_env() -> LocalOracleKey {
     resolve_local_key(
+        // determinism-ok: operator config for the status page, never a consensus input.
         std::env::var("WRFCOIN_ORACLE_PUBLIC_KEY").ok(),
+        // determinism-ok: operator config for the status page, never a consensus input.
         std::env::var("WRFCOIN_ORACLE_PUBLIC_KEY_FILE").ok(),
     )
 }
@@ -438,8 +423,8 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
         scanned_from = entry.scanned_from;
     }
 
-    let poll_at = ORACLE_POLL_AT.load(Ordering::Relaxed);
-    let poll_ago = (poll_at > 0).then(|| now_secs().saturating_sub(poll_at));
+    let poll_at = crate::state::ORACLE_POLL_AT.load(Ordering::Relaxed);
+    let poll_ago = (poll_at > 0).then(|| crate::state::unix_now_secs().saturating_sub(poll_at));
     let polling = poll_ago.is_some_and(|s| s <= ATTESTER_POLL_FRESH_SECS);
     let status = decide_status(
         &key,
@@ -477,7 +462,7 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
 mod tests {
     use super::*;
 
-    const K: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
+    const K: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725"; // pragma: allowlist secret -- public oracle id fixture
 
     fn key() -> LocalOracleKey {
         LocalOracleKey::Key(K.to_string())
