@@ -72,6 +72,9 @@ const SYNC_RETRY_MAX_JITTER: Duration = Duration::from_millis(250);
 /// candidate left for a needed range. Starving with pending work and
 /// connected peers is never better than a bounded retry.
 const LAST_RESORT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+/// Longest retry hint honoured from a peer's `BlockResponse::retry_after_ms`.
+/// The hint is peer-supplied; honest servers send seconds at most.
+const MAX_PEER_RETRY_HINT: Duration = Duration::from_secs(30);
 const RETAINED_SYNC_PEER_HEALTH_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_RETAINED_SYNC_PEER_HEALTH: usize = 1_024;
 /// While latched on a missing genesis parent (#2036), how long to wait between
@@ -642,8 +645,10 @@ pub struct SyncManager {
     peer_chains: FxHashMap<PeerId, PeerChainInfo>,
     retained_peer_health: FxHashMap<PeerId, RetainedPeerSyncHealth>,
     pending_ranges: VecDeque<HeightRange>,
-    /// Ranges refused by a peer, held until its wire-visible retry deadline.
-    deferred_ranges: Vec<(HeightRange, Instant)>,
+    /// Ranges held until a retry deadline, with the peer that refused them
+    /// (`None` for locally scheduled holds). A refused range is held only while
+    /// no other peer can take it, and is released when its peer disconnects.
+    deferred_ranges: Vec<(HeightRange, Instant, Option<PeerId>)>,
     in_flight: FxHashMap<OutboundRequestId, InFlightRange>,
     orphans: BTreeMap<u64, Vec<OrphanBlock>>,
     missing_genesis_parent: Option<Hash>,
@@ -1240,6 +1245,21 @@ impl SyncManager {
             self.note_request_failure_at(request_id, now);
         }
 
+        // Ranges this peer refused are no longer held for it.
+        let mut released = Vec::new();
+        self.deferred_ranges.retain(|(range, _, owner)| {
+            if owner.as_ref() == Some(peer_id) {
+                released.push(*range);
+                false
+            } else {
+                true
+            }
+        });
+        released.sort_unstable_by_key(|range| (range.start, range.end));
+        for range in released.into_iter().rev() {
+            self.requeue_range(range);
+        }
+
         if let Some(info) = self.peer_chains.remove(peer_id) {
             debug!(
                 "Retaining sync health for disconnected peer {peer_id}: failures={} \
@@ -1298,13 +1318,28 @@ impl SyncManager {
             return Vec::new();
         }
         let mut ready = Vec::new();
-        self.deferred_ranges.retain(|(range, not_before)| {
-            if *not_before <= now {
+        let peer_chains = &self.peer_chains;
+        self.deferred_ranges.retain(|(range, not_before, owner)| {
+            // A refusal holds the range only against its own peer: once the
+            // deadline passes, the peer is gone, or another peer can serve it,
+            // the range goes back to the queue.
+            let release = *not_before <= now
+                || owner.is_some_and(|owner| {
+                    !peer_chains.contains_key(&owner)
+                        || peer_chains.iter().any(|(peer_id, info)| {
+                            *peer_id != owner
+                                && info.height >= range.end
+                                && !info.health.score.is_banned()
+                                && !info
+                                    .health
+                                    .retry_not_before
+                                    .is_some_and(|deadline| deadline > now)
+                        })
+                });
+            if release {
                 ready.push(*range);
-                false
-            } else {
-                true
             }
+            !release
         });
         // `requeue_range` uses `push_front`, so feeding ready ranges in
         // ascending order reverses them and retries the HIGHEST gap first.
@@ -1535,7 +1570,7 @@ impl SyncManager {
         }
         let scheduled = self.pending_ranges.contains(&bt.range)
             || self.in_flight.values().any(|e| e.range == bt.range)
-            || self.deferred_ranges.iter().any(|(r, _)| *r == bt.range);
+            || self.deferred_ranges.iter().any(|(r, _, _)| *r == bt.range);
         if !scheduled {
             self.requeue_range(bt.range);
         }
@@ -1652,8 +1687,21 @@ impl SyncManager {
                 self.refresh_target_from_peers();
                 return Ok(Vec::new());
             }
-            let not_before = now + Duration::from_millis(retry_after_ms);
-            self.deferred_ranges.push((in_flight.range, not_before));
+            // The hint is peer-supplied: clamp it, and back off the refusing
+            // peer rather than the range, so other peers can serve it now. A
+            // zero hint gets the base retry delay, so the same peer is not
+            // asked again on every tick.
+            let hint = if retry_after_ms == 0 {
+                SYNC_RETRY_BASE_DELAY
+            } else {
+                Duration::from_millis(retry_after_ms).min(MAX_PEER_RETRY_HINT)
+            };
+            let not_before = now.checked_add(hint).unwrap_or(now);
+            if let Some(info) = self.peer_chains.get_mut(&in_flight.peer_id) {
+                info.health.retry_not_before = Some(not_before);
+            }
+            self.deferred_ranges
+                .push((in_flight.range, not_before, Some(in_flight.peer_id)));
             self.refresh_target_from_peers();
             return Ok(Vec::new());
         }
@@ -1837,8 +1885,8 @@ impl SyncManager {
             let not_before = open
                 .and_then(|bt| bt.answered_at)
                 .map_or(now, |t| t + FORK_BACKTRACK_REOPEN_AFTER);
-            if !self.deferred_ranges.iter().any(|(r, _)| *r == range) {
-                self.deferred_ranges.push((range, not_before));
+            if !self.deferred_ranges.iter().any(|(r, _, _)| *r == range) {
+                self.deferred_ranges.push((range, not_before, None));
             }
         } else if next_missing <= in_flight.range.end {
             self.requeue_range(HeightRange {
@@ -2188,7 +2236,7 @@ impl SyncManager {
             // let refill regenerate the same heights before the deadline — the
             // exact resend the deferral exists to prevent. Ported from #2599,
             // which is the only place this was handled.
-            .chain(self.deferred_ranges.iter().map(|(range, _)| range.end))
+            .chain(self.deferred_ranges.iter().map(|(range, _, _)| range.end))
             .max()
             .unwrap_or(self.local_height);
 
@@ -2221,7 +2269,7 @@ impl SyncManager {
             if !self
                 .deferred_ranges
                 .iter()
-                .any(|(deferred, _)| deferred.start <= range.end && range.start <= deferred.end)
+                .any(|(deferred, _, _)| deferred.start <= range.end && range.start <= deferred.end)
             {
                 self.pending_ranges.push_back(range);
             }
@@ -3402,19 +3450,120 @@ mod tests {
         // A second peer now advertises a much longer chain. The target jumps,
         // so refill no longer wants a 4-block range — it wants a full
         // MAX_BLOCKS_PER_REQUEST one, which OVERLAPS [1, 4] without equalling it.
-        mgr.record_peer_status(fake_peer(), 500);
+        let other = fake_peer();
+        mgr.record_peer_status(other, 500);
 
         let planned = mgr.plan_requests(now + Duration::from_millis(1));
         for entry in &planned {
             let start = entry.request.start_height;
             let end = start + u64::from(entry.request.count) - 1;
             assert!(
-                end < 1 || start > 4,
-                "planned range {start}..={end} overlaps the range this peer \
-                 refused until +10s; a deferral that only survives an exact \
-                 alignment match is not a deferral"
+                entry.peer_id != peer || end < 1 || start > 4,
+                "planned range {start}..={end} for the refusing peer overlaps \
+                 the range it refused until +10s"
+            );
+            assert!(
+                (start, end) == (1, 4) || end < 1 || start > 4,
+                "planned range {start}..={end} straddles the refused [1, 4]; \
+                 the held range must be re-issued whole, not re-aligned"
             );
         }
+        assert!(
+            planned
+                .iter()
+                .any(|e| e.peer_id == other && (e.request.start_height, e.request.count) == (1, 4)),
+            "the refused range must go to the other peer at once"
+        );
+    }
+
+    /// A peer's retry hint is untrusted. A peer that refuses a needed range
+    /// with `retry_after_ms = u64::MAX` must not hold that range: an honest
+    /// peer gets it in the next planning round, the refusing peer is backed
+    /// off for at most `MAX_PEER_RETRY_HINT`, and a disconnect releases what
+    /// it refused.
+    #[test]
+    fn a_peer_refusing_with_a_huge_retry_hint_does_not_stall_sync() {
+        let refusing = fake_peer();
+        let honest = fake_peer();
+        let mut mgr = SyncManager::new(0);
+        mgr.record_peer_status(refusing, 4);
+        let mut behaviour = RequestResponseBehaviour::with_codec(
+            BlockSyncCodec,
+            std::iter::once((StreamProtocol::new(BLOCK_SYNC_PROTOCOL), ProtocolSupport::Full)),
+            Config::default(),
+        );
+        let now = Instant::now();
+        let mut chain = Blockchain::default();
+
+        let refuse = |mgr: &mut SyncManager, behaviour: &mut RequestResponseBehaviour<BlockSyncCodec>, at: Instant, chain: &mut Blockchain| {
+            let planned = mgr.plan_requests(at);
+            assert_eq!(planned.len(), 1);
+            assert_eq!(planned[0].peer_id, refusing);
+            let request = planned[0].request.clone();
+            let id = behaviour.send_request(&refusing, request.clone());
+            mgr.register_request(id, refusing, &request, at);
+            mgr.handle_response(id, BlockResponse { blocks: Vec::new(), retry_after_ms: Some(u64::MAX) }, at, chain)
+                .expect("a refusal is a valid response");
+        };
+
+        // Alone, the refusing peer holds the range only for the clamped hint.
+        refuse(&mut mgr, &mut behaviour, now, &mut chain);
+        assert!(mgr.plan_requests(now + MAX_PEER_RETRY_HINT - Duration::from_millis(1)).is_empty());
+        let again = mgr.plan_requests(now + MAX_PEER_RETRY_HINT);
+        assert_eq!(again.len(), 1, "a u64::MAX hint must be clamped, not honoured");
+        assert_eq!(again[0].request.start_height, 1);
+        mgr.pending_ranges.clear();
+        mgr.requeue_range(HeightRange { start: 1, end: 4 });
+
+        // With an honest peer connected, the next round serves it there.
+        let t1 = now + MAX_PEER_RETRY_HINT;
+        refuse(&mut mgr, &mut behaviour, t1, &mut chain);
+        mgr.record_peer_status(honest, 4);
+        let planned = mgr.plan_requests(t1 + Duration::from_millis(1));
+        assert_eq!(planned.len(), 1, "the honest peer must be asked now: {planned:?}");
+        assert_eq!(planned[0].peer_id, honest);
+        assert_eq!((planned[0].request.start_height, planned[0].request.count), (1, 4));
+
+        // A disconnect releases the ranges the peer refused.
+        let mut mgr = SyncManager::new(0);
+        mgr.record_peer_status(refusing, 4);
+        refuse(&mut mgr, &mut behaviour, now, &mut chain);
+        assert_eq!(mgr.deferred_ranges.len(), 1);
+        mgr.remove_peer_at(&refusing, now);
+        assert!(mgr.deferred_ranges.is_empty(), "disconnect must release the refused range");
+        mgr.record_peer_status(honest, 4);
+        let planned = mgr.plan_requests(now + Duration::from_millis(1));
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].peer_id, honest);
+        assert_eq!(planned[0].request.start_height, 1);
+    }
+
+    /// A zero retry hint backs the peer off for `SYNC_RETRY_BASE_DELAY`
+    /// instead of letting it be asked again on the very next tick.
+    #[test]
+    fn a_zero_retry_hint_backs_off_for_the_base_delay() {
+        let peer = fake_peer();
+        let mut mgr = SyncManager::new(0);
+        mgr.record_peer_status(peer, 4);
+        let mut behaviour = RequestResponseBehaviour::with_codec(
+            BlockSyncCodec,
+            std::iter::once((StreamProtocol::new(BLOCK_SYNC_PROTOCOL), ProtocolSupport::Full)),
+            Config::default(),
+        );
+        let now = Instant::now();
+        let mut chain = Blockchain::default();
+        let planned = mgr.plan_requests(now);
+        assert_eq!(planned.len(), 1);
+        let request = planned[0].request.clone();
+        let id = behaviour.send_request(&peer, request.clone());
+        mgr.register_request(id, peer, &request, now);
+        mgr.handle_response(id, BlockResponse { blocks: Vec::new(), retry_after_ms: Some(0) }, now, &mut chain)
+            .expect("a refusal is a valid response");
+        assert!(mgr.plan_requests(now + Duration::from_millis(1)).is_empty(), "a zero hint must not re-ask at once");
+        assert!(mgr.plan_requests(now + SYNC_RETRY_BASE_DELAY - Duration::from_millis(1)).is_empty());
+        let again = mgr.plan_requests(now + SYNC_RETRY_BASE_DELAY);
+        assert_eq!(again.len(), 1, "the range is retried once the base delay passes");
+        assert_eq!(again[0].peer_id, peer);
     }
 
     /// Deferring a range must hold back THAT range, not the rest of the chain.
@@ -3450,8 +3599,13 @@ mod tests {
         )
         .unwrap();
         mgr.record_peer_status(fake_peer(), 500);
+        mgr.record_peer_status(fake_peer(), 500);
 
         let planned = mgr.plan_requests(now + Duration::from_millis(1));
+        assert!(
+            planned.iter().any(|entry| entry.request.start_height == 1 && entry.peer_id != peer),
+            "the refused range goes to another peer"
+        );
         assert!(
             planned.iter().any(|entry| entry.request.start_height == 5),
             "the block immediately after the deferred range must be fetched \
@@ -3493,18 +3647,25 @@ mod tests {
         let base = Instant::now();
         let mut chain = Blockchain::default();
 
-        for (index, elapsed_ms) in [0u64, 10, 20, 30].into_iter().enumerate() {
-            let now = base + Duration::from_millis(elapsed_ms);
-            let planned = mgr.plan_requests(now);
-            assert_eq!(planned.len(), 1, "one peer can carry one range at a time");
-            let request = planned[0].request.clone();
-            assert_eq!(
-                request.start_height,
-                1 + index as u64 * u64::from(MAX_BLOCKS_PER_REQUEST),
-                "pre-deadline planning must walk adjacent ranges in height order"
-            );
+        // A refusal now backs off the refusing peer itself, so it is not asked
+        // for the next range before the deadline. Put four adjacent ranges in
+        // flight at once (as before the refusals arrive) and refuse them all.
+        let first = mgr.plan_requests(base);
+        assert_eq!(first.len(), 1, "one peer can carry one range at a time");
+        assert_eq!(first[0].request.start_height, 1);
+        let mut requests = Vec::new();
+        for index in 0..4u64 {
+            let request = BlockRequest {
+                start_height: 1 + index * u64::from(MAX_BLOCKS_PER_REQUEST),
+                count: MAX_BLOCKS_PER_REQUEST,
+            };
             let request_id = behaviour.send_request(&peer, request.clone());
-            mgr.register_request(request_id, peer, &request, now);
+            mgr.register_request(request_id, peer, &request, base);
+            requests.push(request_id);
+        }
+        mgr.pending_ranges.clear();
+        for (request_id, elapsed_ms) in requests.into_iter().zip([0u64, 10, 20, 30]) {
+            let now = base + Duration::from_millis(elapsed_ms);
             mgr.handle_response(
                 request_id,
                 BlockResponse {

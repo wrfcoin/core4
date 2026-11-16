@@ -28,7 +28,7 @@ def function_body(name: str) -> str:
 
 class ReceiptTimer(unittest.TestCase):
     def test_actions_are_offered_and_dispatched(self) -> None:
-        self.assertIn("'ReceiptTimer', 'Receipt', 'StopReceiptTimer')]", LAUNCHER)
+        self.assertIn("'ReceiptTimer', 'Receipt', 'StopReceiptTimer', ", LAUNCHER)
         self.assertIn("'ReceiptTimer' { Initialize-UserState; Register-ReceiptTimer }", LAUNCHER)
         self.assertIn("'Receipt' { Initialize-UserState; Invoke-Receipt }", LAUNCHER)
         self.assertIn("'StopReceiptTimer' { Unregister-ReceiptTimer }", LAUNCHER)
