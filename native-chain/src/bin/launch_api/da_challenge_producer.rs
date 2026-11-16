@@ -157,6 +157,7 @@ impl DaChallengeRuntime {
         }
 
         let mut cache = self.fragment_cache.write().await;
+        // determinism-ok: process-local DA cache retention, never a consensus input.
         cache.expire(Instant::now());
         if let Some(existing_payload) = cache.get(&content_ref.data_cid) {
             if existing_payload.as_slice() != payload {
@@ -168,6 +169,7 @@ impl DaChallengeRuntime {
             return;
         }
 
+        // determinism-ok: process-local DA cache retention, never a consensus input.
         cache.insert(content_ref.data_cid.clone(), payload.to_vec(), Instant::now());
     }
 
