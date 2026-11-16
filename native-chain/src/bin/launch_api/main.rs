@@ -6186,6 +6186,37 @@ mod tests {
         }
     }
 
+    /// `GET /node/attester` is Operator-only, validates `?oracle=`, and answers
+    /// with public chain facts for the named oracle.
+    #[actix_web::test]
+    async fn node_attester_route_is_operator_only_and_reports_public_facts() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let me = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
+        let path = format!("/node/attester?oracle={me}");
+        let response = test::call_service(&app, test::TestRequest::get().uri(&path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(&path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let operator = || ("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}")); // secret-leak-ok: fixed test bearer, never a deployed credential.
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri("/node/attester?oracle=c4db").insert_header(operator()).to_request()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = test::call_service(&app, test::TestRequest::get()
+            .uri(&path).insert_header(operator()).to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["oracle_id"], me);
+        assert_eq!(body["seated"], false);
+        assert_eq!(body["payee_address"], "0x5e0030865d3c59cabf338d5fafc578af9f651eba");
+        assert_eq!(body["payee_balance_units"], "0");
+        assert_eq!(body["recent"]["attestations_included"], 0);
+    }
+
     /// The dashboard's Stop button: `POST /node/shutdown` is Operator-only, a
     /// refused caller signals nothing, and the operator's call answers 202 and
     /// wakes the graceful-shutdown task's wait.

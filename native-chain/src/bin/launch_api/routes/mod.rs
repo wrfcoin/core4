@@ -5,6 +5,7 @@ pub mod security_key;
 pub mod node_shutdown;
 pub mod send_allowlist;
 pub mod advisory_governance;
+pub mod attester;
 pub mod forecast_late_score;
 pub mod bridge;
 pub mod chain;
@@ -426,6 +427,8 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         )
         .route("/node/resources", web::get().to(network::get_node_resources))
         .route("/node/capability", web::get().to(network::get_node_capability))
+        // Local attester status for the dashboard (Operator; public chain facts only).
+        .route("/node/attester", web::get().to(attester::get_node_attester))
         .route("/node/metrics/host", web::get().to(host_metrics::get_host_metrics))
         // #3599: the operator status page — one embedded HTML document that
         // renders the routes above in a browser. Carries no data; no token.
