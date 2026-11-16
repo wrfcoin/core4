@@ -328,7 +328,7 @@ fn forecast_late_score_producer_follower_wal() {
     }
     refresh_feature_schedule_extensions(vec![
         ("forecaster_key_binding".to_string(), 0),
-        ("forecast_late_score".to_string(), 0),
+        ("forecast_late_score_v2".to_string(), 0),
     ]);
     assert!(!forecast_late_score_active(ACTIVE - 1));
     assert!(forecast_late_score_active(ACTIVE));

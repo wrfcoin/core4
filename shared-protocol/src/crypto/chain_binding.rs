@@ -184,13 +184,13 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
     // name `forecaster_key_binding` at least the lead earlier, the same rule
     // a schedule extension is admitted under.
     if let Some((_, late)) = parsed.features.iter()
-        .find(|(name, _)| name == ConsensusFeature::ForecastLateScore.name()) {
+        .find(|(name, _)| name == ConsensusFeature::ForecastLateScoreV2.name()) {
         let bound = parsed.features.iter()
             .find(|(name, _)| name == ConsensusFeature::ForecasterKeyBinding.name())
             .map(|(_, height)| *height);
         if !forecast_late_score_schedule_allowed(*late, bound) {
             return Err(format!(
-                "forecast_late_score must activate at least {FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS} blocks \
+                "forecast_late_score_v2 must activate at least {FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS} blocks \
                  after forecaster_key_binding in this genesis"
             ));
         }
@@ -1298,13 +1298,17 @@ pub enum ConsensusFeature {
     /// ([`forecast_late_score_active`]): the forecaster paid is the key-bound
     /// commit signer.
     ///
-    /// Paid leads: 6 h and 12 h only (`forecast_late_score::LEAD_HOURS`).
+    /// RETIRED: superseded by [`Self::ForecastLateScoreV2`], which carries
+    /// the lane. Wire ordinal 34 stays fixed; the name is never schedulable
+    /// and reads nothing (`has_behaviour` is false, so a genesis naming it is
+    /// refused).
     ///
-    /// Wire ordinal 34. Ships UNSCHEDULED: it appears in no genesis, default
-    /// schedule or cut pin. A live schedule extension may name it, admitted
-    /// only at least [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] after
-    /// `forecaster_key_binding` (`forecast_late_score_schedule_allowed`);
-    /// scheduling is the owner's signature only.
+    /// Every binary released before the v2 name lists `forecast_late_score`
+    /// as known, each with its own lane rule (other paid leads), so it would
+    /// never halt at an activation of this name and would diverge from
+    /// current nodes. A schedule names `forecast_late_score_v2` instead: an
+    /// older binary does not know that name and stops cleanly at its
+    /// activation height (`upgrade_required_in_feature_schedule`).
     ForecastLateScore,
     /// #3565 split (owner 2026-11-14): the late-data pay reduction
     /// (`late_data_multiplier_bps` of the reveal's age at its including block,
@@ -1357,6 +1361,24 @@ pub enum ConsensusFeature {
     /// [`Self::StationRegistrarKeyRetire0`] for slot 1 (the cold spare on
     /// chain 888). Wire ordinal 40. Ships UNSCHEDULED.
     StationRegistrarKeyRetire1,
+    /// Forecast late score (skill pay), the lane described on
+    /// [`Self::ForecastLateScore`], under a name no earlier binary knows, so
+    /// a node that has not upgraded halts at its activation instead of
+    /// running an older lane rule. Paid leads: 6 h and 12 h only
+    /// (`forecast_late_score::LEAD_HOURS`).
+    ///
+    /// In force only once `forecaster_key_binding` has itself been active for
+    /// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks
+    /// ([`forecast_late_score_active`]). Below that the transaction type is
+    /// refused everywhere and `State::forecast_late_score` stays empty, so
+    /// blocks and `state_root` are byte-identical.
+    ///
+    /// Wire ordinal 41. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. A live schedule extension may name it, admitted
+    /// only at least [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] after
+    /// `forecaster_key_binding` (`forecast_late_score_schedule_allowed`);
+    /// scheduling is the owner's signature only.
+    ForecastLateScoreV2,
 }
 
 /// The retirement feature for each slot of a `BOND_ADMISSION_KEY_PINS` row,
@@ -1393,14 +1415,14 @@ pub fn retained_pinned_keys(
 }
 
 /// Blocks `forecaster_key_binding` must already have been active before
-/// `forecast_late_score` takes effect.
+/// `forecast_late_score_v2` takes effect.
 pub const FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS: u64 = 2_000;
 
 /// Whether the forecast late score is in force at `height`: the feature is
 /// active AND `forecaster_key_binding` has been active for at least
 /// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks. Every consensus
 /// read of the feature goes through this, so a schedule that names
-/// `forecast_late_score` too early (or without the key binding) leaves the
+/// `forecast_late_score_v2` too early (or without the key binding) leaves the
 /// lane dormant on every node rather than paying unbound forecasters.
 pub fn forecast_late_score_active(height: u64) -> bool {
     forecast_late_score_active_with(feature_active, height)
@@ -1422,7 +1444,7 @@ pub fn forecast_late_score_active_with(
     active: impl Fn(ConsensusFeature, u64) -> bool,
     height: u64,
 ) -> bool {
-    active(ConsensusFeature::ForecastLateScore, height)
+    active(ConsensusFeature::ForecastLateScoreV2, height)
         && height
             .checked_sub(FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS)
             .is_some_and(|bound_since| active(ConsensusFeature::ForecasterKeyBinding, bound_since))
@@ -1471,7 +1493,7 @@ pub fn device_submission_limit_schedule_allowed(
         .is_some_and(|earliest| activation_height >= earliest)
 }
 
-/// Admission rule for a schedule naming `forecast_late_score` at
+/// Admission rule for a schedule naming `forecast_late_score_v2` at
 /// `activation_height`: `forecaster_key_binding` must be scheduled (already,
 /// or in the same extension) and the late score must activate at least
 /// [`FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`] blocks after it.
@@ -1539,6 +1561,7 @@ impl ConsensusFeature {
         Self::BondAdmissionKeyRetire1,
         Self::StationRegistrarKeyRetire0,
         Self::StationRegistrarKeyRetire1,
+        Self::ForecastLateScoreV2,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1585,6 +1608,7 @@ impl ConsensusFeature {
             Self::BondAdmissionKeyRetire1 => "bond_admission_key_retire_1",
             Self::StationRegistrarKeyRetire0 => "station_registrar_key_retire_0",
             Self::StationRegistrarKeyRetire1 => "station_registrar_key_retire_1",
+            Self::ForecastLateScoreV2 => "forecast_late_score_v2",
         }
     }
 
@@ -1672,6 +1696,9 @@ impl ConsensusFeature {
             // Transfer fee burn: wired and tested; scheduled together with
             // `paymaster` in one owner-signed release, never alone.
             | Self::TransferFeeBurn
+            // Retired: superseded by `forecast_late_score_v2`, which every
+            // earlier binary halts on; never scheduled under this name.
+            | Self::ForecastLateScore
             // #3565 split: the device-signed clock comes first (owner 11-12);
             // a later release makes it schedulable.
             | Self::LateDataPay => false,
@@ -1723,7 +1750,7 @@ impl ConsensusFeature {
             // `forecaster_key_binding` (`forecast_late_score_schedule_allowed`,
             // enforced at admission and by `forecast_late_score_active`). The
             // owner signs the schedule.
-            | Self::ForecastLateScore => true,
+            | Self::ForecastLateScoreV2 => true,
         }
     }
 
@@ -1763,9 +1790,12 @@ impl ConsensusFeature {
             Self::StationRegistrarKey => true,
             // Advisory governance: admission, classifier, apply and finalize read it.
             Self::AdvisoryGovernance => true,
+            // Retired name: nothing reads it (the lane reads
+            // `forecast_late_score_v2`), so a genesis naming it is refused.
+            Self::ForecastLateScore => false,
             // Reveal records, the score transaction, bucket close and pay, and
             // the baseline-credit switch all read it.
-            Self::ForecastLateScore => true,
+            Self::ForecastLateScoreV2 => true,
             // The contribution reward reads it (late-data reduction).
             Self::LateDataPay => true,
             // The owner-action extractor, admission, apply and the commit check read it.
@@ -1877,11 +1907,13 @@ mod forecast_skill_baseline_tests {
             (38, ConsensusFeature::BondAdmissionKeyRetire1),
             (39, ConsensusFeature::StationRegistrarKeyRetire0),
             (40, ConsensusFeature::StationRegistrarKeyRetire1),
+            // The forecast late score's live name, appended at 41.
+            (41, ConsensusFeature::ForecastLateScoreV2),
         ] {
             assert_eq!(ConsensusFeature::ALL[ordinal as usize], feature);
             assert_eq!(bincode::serialize(&feature).unwrap(), ordinal.to_le_bytes());
         }
-        assert_eq!(ConsensusFeature::ALL.len(), 41);
+        assert_eq!(ConsensusFeature::ALL.len(), 42);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3347,7 +3379,10 @@ mod tests {
         for feature in ConsensusFeature::ALL {
             assert_eq!(
                 feature.has_behaviour(),
-                !matches!(feature, ConsensusFeature::StakeSubmissionNonce),
+                !matches!(
+                    feature,
+                    ConsensusFeature::StakeSubmissionNonce | ConsensusFeature::ForecastLateScore
+                ),
                 "{feature}"
             );
         }
@@ -3373,11 +3408,12 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
-        // Ordinal 34: skill pay (6 h / 12 h), schedulable under its
-        // key-binding lead rule; the owner signs it.
-        expected.push("forecast_late_score");
         // #3565 design 1: ordinal 36, the binary accepts a schedule.
         expected.push("station_submitter_key");
+        // Ordinal 41: skill pay (6 h / 12 h), schedulable under its
+        // key-binding lead rule; the owner signs it. Ordinal 34
+        // (`forecast_late_score`) is retired and never schedulable.
+        expected.push("forecast_late_score_v2");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -3397,6 +3433,7 @@ mod tests {
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
+            ConsensusFeature::ForecastLateScore,
             ConsensusFeature::LateDataPay,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
@@ -3423,11 +3460,12 @@ mod tests {
         expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
-        // Ordinal 34: skill pay (6 h / 12 h), schedulable under its
-        // key-binding lead rule; the owner signs it.
-        expected.push("forecast_late_score");
         // #3565 design 1: ordinal 36, the binary accepts a schedule.
         expected.push("station_submitter_key");
+        // Ordinal 41: skill pay (6 h / 12 h), schedulable under its
+        // key-binding lead rule; the owner signs it. Ordinal 34
+        // (`forecast_late_score`) is retired and never schedulable.
+        expected.push("forecast_late_score_v2");
         assert_eq!(schedulable, expected);
     }
 

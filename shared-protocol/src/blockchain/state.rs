@@ -3930,7 +3930,7 @@ impl State {
             crate::governance::advisory::root_material(&self.advisory_proposals, &mut material);
         }
 
-        // --- forecast_late_score (ConsensusFeature::ForecastLateScore) ---
+        // --- forecast_late_score (ConsensusFeature::ForecastLateScoreV2) ---
         //
         // CONDITIONAL, like `send_allowlists`: absent from the pre-image (not
         // even a tag) while empty, and empty until the unscheduled feature is

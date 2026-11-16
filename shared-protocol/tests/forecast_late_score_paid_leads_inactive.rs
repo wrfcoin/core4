@@ -1,5 +1,6 @@
-//! Paying only the 6 h and 12 h leads, and making `forecast_late_score`
-//! schedulable, changes nothing while the feature is not scheduled.
+//! Paying only the 6 h and 12 h leads, moving the lane to the new feature
+//! name `forecast_late_score_v2` (retiring `forecast_late_score`) and making
+//! it schedulable changes nothing while it is not scheduled.
 //!
 //! Forecasts at every lead any rule took (1, 6, 12 and 24 h) and leads none
 //! took (2, 3 and 48 h), for both scored variables, two stations and two
@@ -171,10 +172,9 @@ fn paid_leads_and_schedulability_leave_an_unscheduled_root_and_snapshot_byte_ide
     for height in [0, 100, 2_010, u64::MAX] {
         assert!(!forecast_late_score_active(height), "never scheduled here");
     }
-    assert!(
-        !FeatureSchedule::default().active(ConsensusFeature::ForecastLateScore, u64::MAX),
-        "unscheduled by default"
-    );
+    for feature in [ConsensusFeature::ForecastLateScore, ConsensusFeature::ForecastLateScoreV2] {
+        assert!(!FeatureSchedule::default().active(feature, u64::MAX), "{feature} unscheduled by default");
+    }
     let state = run();
     assert!(state.forecast_late_score.is_empty(), "nothing is written while inactive");
     let material = state.state_root_material();

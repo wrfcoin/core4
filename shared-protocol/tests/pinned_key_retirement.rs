@@ -177,7 +177,8 @@ fn retirement_features_are_appended_known_and_unscheduled_by_default() {
         assert!(KNOWN_FEATURES.contains(&name), "{name}");
         assert!(!FeatureSchedule::default().active(f, u64::MAX), "{name} unscheduled by default");
     }
-    assert_eq!(ConsensusFeature::ALL.len(), 41);
+    // `forecast_late_score_v2` is appended after them at ordinal 41.
+    assert_eq!(ConsensusFeature::ALL.len(), 42);
     assert_eq!(
         BOND_ADMISSION_KEY_RETIREMENTS,
         &[ConsensusFeature::BondAdmissionKeyRetire0, ConsensusFeature::BondAdmissionKeyRetire1]

@@ -12,7 +12,7 @@
 //!   (`WRFCOIN_API_URL`, token from `WRFCOIN_OPERATOR_TOKEN` / `WRFCOIN_READER_TOKEN`).
 //!
 //! Keys are read from files (hex, at most 0600) and are never printed. The
-//! node refuses a score while `forecast_late_score` is not in force.
+//! node refuses a score while `forecast_late_score_v2` is not in force.
 
 use std::path::{Path, PathBuf};
 

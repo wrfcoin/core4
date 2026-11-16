@@ -1,4 +1,4 @@
-//! Forecast late score (`ConsensusFeature::ForecastLateScore`).
+//! Forecast late score (`ConsensusFeature::ForecastLateScoreV2`).
 //!
 //! A forecast is revealed within a few blocks of its commit, but the truth it
 //! predicts is observed hours later. This module is the lane that scores a

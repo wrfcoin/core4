@@ -429,7 +429,7 @@ pub enum ScheduleExtensionError {
     /// ADMISSION POLICY, not validity: a feature this binary implements but
     /// marks not schedulable ([`ConsensusFeature::schedulable`]).
     FeatureNotSchedulable { feature: String },
-    /// ADMISSION POLICY, not validity: `forecast_late_score` named before
+    /// ADMISSION POLICY, not validity: `forecast_late_score_v2` named before
     /// `forecaster_key_binding` has been (or will have been) active for
     /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks, or without the
     /// key binding scheduled at all.
@@ -582,7 +582,7 @@ impl std::fmt::Display for ScheduleExtensionError {
             ),
             Self::ForecastLateScoreTooEarly { activation_height, key_binding_activation } => write!(
                 f,
-                "forecast_late_score at height {activation_height} is too early: it must activate at \
+                "forecast_late_score_v2 at height {activation_height} is too early: it must activate at \
                  least {} blocks after forecaster_key_binding ({})",
                 crate::crypto::chain_binding::FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
                 key_binding_activation
@@ -1128,8 +1128,8 @@ pub fn check_admission_policy(
     Ok(())
 }
 
-/// `forecast_late_score` pays the key-bound forecaster, so an extension naming
-/// it is admitted only when `forecaster_key_binding` activates at least
+/// `forecast_late_score_v2` pays the key-bound forecaster, so an extension
+/// naming it is admitted only when `forecaster_key_binding` activates at least
 /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks earlier.
 /// `scheduled_key_binding` is the key binding's activation on this node, if
 /// any; the same extension may also carry it. ADMISSION POLICY; the consensus
@@ -1146,7 +1146,7 @@ pub fn check_forecast_late_score_dependency(
             .find(|entry| entry.feature == feature.name())
             .map(|entry| entry.activation_height)
     };
-    let Some(activation_height) = height_of(ConsensusFeature::ForecastLateScore) else {
+    let Some(activation_height) = height_of(ConsensusFeature::ForecastLateScoreV2) else {
         return Ok(());
     };
     let key_binding_activation =

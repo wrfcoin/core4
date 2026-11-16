@@ -1,4 +1,4 @@
-//! Forecast late score (`ConsensusFeature::ForecastLateScore`) through the
+//! Forecast late score (`ConsensusFeature::ForecastLateScoreV2`) through the
 //! real `State` apply path: the activation boundary (dormant = nothing
 //! written, root material byte-identical, both transitions refused), records
 //! at reveal, every score check, bucket close and pay, the pool ledger,
@@ -382,7 +382,7 @@ fn forecast_late_score_end_to_end() {
         (Some(0), Some(0), 2_000, true),
     ] {
         let active = |feature: ConsensusFeature, at: u64| match feature {
-            ConsensusFeature::ForecastLateScore => late.is_some_and(|h| at >= h),
+            ConsensusFeature::ForecastLateScoreV2 => late.is_some_and(|h| at >= h),
             ConsensusFeature::ForecasterKeyBinding => bound.is_some_and(|h| at >= h),
             _ => false,
         };
@@ -400,8 +400,11 @@ fn forecast_late_score_end_to_end() {
         Some(u64::MAX)
     ));
     // Schedulable (under the key-binding lead rule above), but unscheduled.
-    assert!(ConsensusFeature::ForecastLateScore.schedulable(None));
-    assert!(ConsensusFeature::ForecastLateScore.schedulable(Some(&"ab".repeat(32))));
+    assert!(ConsensusFeature::ForecastLateScoreV2.schedulable(None));
+    assert!(ConsensusFeature::ForecastLateScoreV2.schedulable(Some(&"ab".repeat(32))));
+    // The retired ordinal-34 name is never schedulable.
+    assert!(!ConsensusFeature::ForecastLateScore.schedulable(None));
+    assert!(!ConsensusFeature::ForecastLateScore.schedulable(Some(&"ab".repeat(32))));
 
     // Unscheduled: inert at every height.
     for height in [0, 1, ACTIVE, u64::MAX] {
@@ -463,10 +466,10 @@ fn forecast_late_score_end_to_end() {
 
     refresh_feature_schedule_extensions(vec![
         ("forecaster_key_binding".to_string(), BOUND),
-        ("forecast_late_score".to_string(), SCHEDULED),
+        ("forecast_late_score_v2".to_string(), SCHEDULED),
     ]);
     assert!(feature_active(
-        ConsensusFeature::ForecastLateScore,
+        ConsensusFeature::ForecastLateScoreV2,
         SCHEDULED
     ));
     assert!(
