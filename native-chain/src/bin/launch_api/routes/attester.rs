@@ -246,7 +246,7 @@ mod tests {
     };
     use wrfcoin_shared_protocol::oracle::statement::IncludedVote;
 
-    const ME: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
+    const ME: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725"; // pragma: allowlist secret -- public ed25519 oracle id (a public key), test data
 
     #[test]
     fn seated_since_is_the_start_of_the_latest_run() {

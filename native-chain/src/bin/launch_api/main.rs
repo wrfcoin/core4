@@ -6191,7 +6191,7 @@ mod tests {
     #[actix_web::test]
     async fn node_attester_route_is_operator_only_and_reports_public_facts() {
         let app = test::init_service(test_app(test_state(None))).await;
-        let me = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
+        let me = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725"; // pragma: allowlist secret -- public ed25519 oracle id (a public key), test data
         let path = format!("/node/attester?oracle={me}");
         let response = test::call_service(&app, test::TestRequest::get().uri(&path).to_request()).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
