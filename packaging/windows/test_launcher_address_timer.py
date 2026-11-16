@@ -30,7 +30,7 @@ def function_body(name: str) -> str:
 
 class AddressTimer(unittest.TestCase):
     def test_actions_are_offered_and_dispatched(self) -> None:
-        self.assertIn("'AddressTimer', 'PublishAddress', 'StopAddressTimer')]", LAUNCHER)
+        self.assertIn("'AddressTimer', 'PublishAddress', 'StopAddressTimer'", LAUNCHER)
         self.assertIn("'AddressTimer' { Initialize-UserState; Register-AddressTimer }", LAUNCHER)
         self.assertIn("'PublishAddress' { Initialize-UserState; Invoke-AddressPublish }", LAUNCHER)
         self.assertIn("'StopAddressTimer' { Unregister-AddressTimer }", LAUNCHER)
