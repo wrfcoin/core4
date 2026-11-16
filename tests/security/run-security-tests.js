@@ -50,9 +50,6 @@ class SecurityTestRunner {
       // Generate comprehensive report
       await this.generateReport();
 
-      // Update Task Master with results
-      await this.updateTaskMaster();
-
       console.log('\n✅ Security testing completed successfully!');
     } catch (error) {
       console.error('❌ Security testing failed:', error);
@@ -307,34 +304,6 @@ ${report.recommendations.map(r => `- ${r}`).join('\n')}
 4. Monitor production security metrics
 5. Update security documentation based on test findings
 `;
-  }
-
-  async updateTaskMaster() {
-    console.log('\n📋 Updating Task Master with test results...');
-
-    const updateMessage = `Security testing completed with ${this.testResults.summary.passed}/${this.testResults.summary.total} tests passing. 
-    
-Coverage achieved:
-- MEV Protection: ${this.testResults.coverage.mevProtection ? '✅' : '❌'}
-- Privacy Settings: ${this.testResults.coverage.privacySettings ? '✅' : '❌'}
-- Secure Messaging: ${this.testResults.coverage.secureMessaging ? '✅' : '❌'}
-- Security Dashboard: ${this.testResults.coverage.securityDashboard ? '✅' : '❌'}
-
-Overall Risk Level: ${this.calculateOverallRisk()}
-
-Test execution completed with comprehensive security validation.`;
-
-    try {
-      // Update the main task
-      execSync(`task-master update-task --id=13 --prompt="${updateMessage}"`, {
-        cwd: path.join(__dirname, '../..'),
-        stdio: 'pipe',
-      });
-
-      console.log('✅ Task Master updated with test results');
-    } catch (error) {
-      console.log('⚠️ Could not update Task Master automatically');
-    }
   }
 
   async cleanup() {
