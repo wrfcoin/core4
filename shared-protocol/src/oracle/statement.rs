@@ -297,8 +297,8 @@ mod tests {
     use super::*;
     use crate::oracle::attestation::AttesterAllocation;
 
-    const ME: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
-    const HOUSE: &str = "781fd34338fa7f846cd4032256179b6f389404cd519fa6eaa3ed097a5a83dcdb";
+    const ME: &str = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725"; // pragma: allowlist secret -- public ed25519 oracle id (a public key), test data
+    const HOUSE: &str = "781fd34338fa7f846cd4032256179b6f389404cd519fa6eaa3ed097a5a83dcdb"; // pragma: allowlist secret -- public ed25519 oracle id (a public key), test data
 
     fn vote(oracle: &str, commit: &str, approved: bool) -> IncludedVote {
         IncludedVote {

@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn statement_against_a_fake_node() {
-        let me = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725";
+        let me = "c4dbd69bc84a4651db0a03ccc142a019c0856126ac3c920e361cba2269034725"; // pragma: allowlist secret -- public ed25519 oracle id (a public key), test data
         let mut node = mockito::Server::new();
         let _info = node
             .mock("GET", "/network/info")
