@@ -177,7 +177,7 @@ jobs:
           $attHelp = & (Join-Path $app 'oracle_attester.exe') --help | Out-String
           if ($LASTEXITCODE -ne 0 -or $attHelp -notmatch 'WRFCOIN_ATTESTER_NODE_URL') { throw "installed oracle_attester.exe --help failed: $attHelp" }
           Write-Host 'installed oracle_attester.exe --help: OK'
-          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk','Create Attester Key.lnk','Start WRFCoin Attester.lnk','Stop WRFCoin Attester.lnk') {
+          foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk','Create Attester Key.lnk','Start WRFCoin Attester.lnk','Stop WRFCoin Attester.lnk','Attester Auto-Start On.lnk','Attester Auto-Start Off.lnk') {
             if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
           }
           if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
@@ -400,6 +400,46 @@ jobs:
               Get-Process oracle_attester -ErrorAction SilentlyContinue | Stop-Process -Force
             }
             Write-Host 'attester: unset reference mode refused; runs on the user-only key file with its own token; Stop Attester and Stop (node) stop it'
+
+            # Attester auto-start: the node Start above (oracle.key present)
+            # registered the per-user, seat-gated task by itself. With the node
+            # stopped a pass is one quiet wait line; 'Attester Auto-Start Off'
+            # removes the task and sticks; 'On' brings it back; StopAttesterTimer
+            # (the uninstaller's step) removes it.
+            $attLauncher = Join-Path $app 'wrfcoin-node.ps1'
+            $autoLog = Join-Path $root 'logs\attester-auto.log'
+            $optOut = Join-Path $root 'attester-autostart.off'
+            $task = Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin Attester' -ErrorAction SilentlyContinue
+            if (-not $task) { throw 'node Start with oracle.key did not register the attester auto-start task' }
+            if ("$($task.Actions[0].Arguments)" -notlike '*-Action AttesterAutoStart -Quiet*') { throw "task arguments: $($task.Actions[0].Arguments)" }
+            if ("$($task.Triggers[0].Repetition.Interval)" -ne 'PT5M') { throw "task interval: $($task.Triggers[0].Repetition.Interval)" }
+            if ("$($task.Principal.RunLevel)" -ne 'Limited' -or "$($task.Principal.LogonType)" -ne 'Interactive') { throw "task principal: $($task.Principal.RunLevel) $($task.Principal.LogonType)" }
+            try {
+              Remove-Item -LiteralPath $autoLog -ErrorAction SilentlyContinue
+              foreach ($i in 1, 2) {
+                & $ps -NoProfile -ExecutionPolicy Bypass -File $attLauncher -Action AttesterAutoStart -Quiet
+                if ($LASTEXITCODE -ne 0) { throw "an auto-start pass with the node stopped exited $LASTEXITCODE (expected a quiet wait)" }
+              }
+              $lines = @(Get-Content -LiteralPath $autoLog)
+              Write-Host "attester-auto.log: $($lines -join ' | ')"
+              if ($lines.Count -ne 1 -or $lines[0] -notmatch 'waiting \(node not running\)') { throw 'attester-auto.log should hold one wait line for two identical passes' }
+              if (@(Get-Process oracle_attester -ErrorAction SilentlyContinue).Count -ne 0) { throw 'an unseated pass started the attester' }
+              Invoke-Shortcut 'Attester Auto-Start Off.lnk' '-Quiet'
+              if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin Attester' -ErrorAction SilentlyContinue) { throw 'Attester Auto-Start Off left the task' }
+              if (-not (Test-Path -LiteralPath $optOut)) { throw 'Attester Auto-Start Off wrote no opt-out file' }
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $attLauncher -Action AttesterAutoStart -Quiet
+              if ((Get-Content -LiteralPath $autoLog -Tail 1) -notmatch 'auto-start is off') { throw 'a pass after the opt-out did not say auto-start is off' }
+              Invoke-Shortcut 'Attester Auto-Start On.lnk' '-Quiet'
+              if (-not (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin Attester' -ErrorAction SilentlyContinue)) { throw 'Attester Auto-Start On did not register the task' }
+              if (Test-Path -LiteralPath $optOut) { throw 'Attester Auto-Start On left the opt-out file' }
+              $logText = Get-Content -LiteralPath $autoLog -Raw
+              if ($logText.Contains($tok) -or $logText.Contains($seed) -or $logText.Contains($oracleTok)) { throw 'attester-auto.log contains a token or the seed' }
+            } finally {
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $attLauncher -Action StopAttesterTimer -Quiet
+              $global:LASTEXITCODE = 0
+            }
+            if (Get-ScheduledTask -TaskPath '\WRFCoin\' -TaskName 'WRFCoin Attester' -ErrorAction SilentlyContinue) { throw 'StopAttesterTimer left the task' }
+            Write-Host 'attester auto-start: registered by node Start once oracle.key exists, per user every 5 min, an unseated pass is one quiet wait line, Off sticks, On restores, removed by StopAttesterTimer'
 
             # reachable.conf ("Open your port"): the two allowed keys reach the node
             # and the dashboard shows the announced address; any other key stops
