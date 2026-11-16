@@ -12,7 +12,7 @@
 //!   (`WRFCOIN_API_URL`, token from `WRFCOIN_OPERATOR_TOKEN` / `WRFCOIN_READER_TOKEN`).
 //!
 //! Keys are read from files (hex, at most 0600) and are never printed. The
-//! node refuses a score while `forecast_late_score` is not in force.
+//! node refuses a score while `forecast_late_score_v2` is not in force.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,7 @@ pub enum ForecastScoreCommands {
         /// temperature_c (0.01 °C) or pressure_hpa (Pa).
         #[clap(long)]
         variable: String,
-        /// 6, 12 or 24.
+        /// 6 or 12 (the leads the chain pays).
         #[clap(long)]
         lead_hours: u32,
         #[clap(long)]

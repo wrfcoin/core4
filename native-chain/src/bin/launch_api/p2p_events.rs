@@ -13369,7 +13369,7 @@ mod tests {
         install_feature_schedule(
             FeatureSchedule::from_entries(vec![
                 (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 1),
-                (ConsensusFeature::ForecastLateScore.name().to_string(), 1),
+                (ConsensusFeature::ForecastLateScoreV2.name().to_string(), 1),
             ])
             .expect("schedule"),
         );
@@ -16853,7 +16853,7 @@ mod station_registration_admission_tests {
         use wrfcoin_shared_protocol::security::key_registry::{SigningKeyRegistry, SigningRole};
         refresh_feature_schedule_extensions(vec![
             (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 0),
-            (ConsensusFeature::ForecastLateScore.name().to_string(), 0),
+            (ConsensusFeature::ForecastLateScoreV2.name().to_string(), 0),
         ]);
         const HEIGHT: u64 = 3_000;
         let key = |seed: u8| PrivateKey::from_bytes(&[seed; 32]).unwrap();

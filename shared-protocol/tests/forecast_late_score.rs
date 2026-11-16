@@ -1,4 +1,4 @@
-//! Forecast late score (`ConsensusFeature::ForecastLateScore`) through the
+//! Forecast late score (`ConsensusFeature::ForecastLateScoreV2`) through the
 //! real `State` apply path: the activation boundary (dormant = nothing
 //! written, root material byte-identical, both transitions refused), records
 //! at reveal, every score check, bucket close and pay, the pool ledger,
@@ -382,7 +382,7 @@ fn forecast_late_score_end_to_end() {
         (Some(0), Some(0), 2_000, true),
     ] {
         let active = |feature: ConsensusFeature, at: u64| match feature {
-            ConsensusFeature::ForecastLateScore => late.is_some_and(|h| at >= h),
+            ConsensusFeature::ForecastLateScoreV2 => late.is_some_and(|h| at >= h),
             ConsensusFeature::ForecasterKeyBinding => bound.is_some_and(|h| at >= h),
             _ => false,
         };
@@ -399,6 +399,10 @@ fn forecast_late_score_end_to_end() {
         u64::MAX,
         Some(u64::MAX)
     ));
+    // Schedulable (under the key-binding lead rule above), but unscheduled.
+    assert!(ConsensusFeature::ForecastLateScoreV2.schedulable(None));
+    assert!(ConsensusFeature::ForecastLateScoreV2.schedulable(Some(&"ab".repeat(32))));
+    // The retired ordinal-34 name is never schedulable.
     assert!(!ConsensusFeature::ForecastLateScore.schedulable(None));
     assert!(!ConsensusFeature::ForecastLateScore.schedulable(Some(&"ab".repeat(32))));
 
@@ -462,10 +466,10 @@ fn forecast_late_score_end_to_end() {
 
     refresh_feature_schedule_extensions(vec![
         ("forecaster_key_binding".to_string(), BOUND),
-        ("forecast_late_score".to_string(), SCHEDULED),
+        ("forecast_late_score_v2".to_string(), SCHEDULED),
     ]);
     assert!(feature_active(
-        ConsensusFeature::ForecastLateScore,
+        ConsensusFeature::ForecastLateScoreV2,
         SCHEDULED
     ));
     assert!(
@@ -818,6 +822,8 @@ fn forecast_late_score_end_to_end() {
         // The 1 h lead is not scored (cheap baselines and honest
         // forecasters overlap there), so a 1 h forecast is not recorded.
         (key(0x37), 1, STATION, "lead-1"),
+        // The 24 h lead is not paid for now: not recorded either.
+        (key(0x38), 24, STATION, "lead-24"),
         (key(0x34), 6, "st-unregistered", "no-station"),
     ] {
         let (commit, reveal) = forecast(
@@ -842,19 +848,19 @@ fn forecast_late_score_end_to_end() {
     );
     commit_at(&mut state, &never_revealed, h);
     assert_eq!(state.forecast_late_score.pending.len(), 1);
-    // A second bucket (24 h lead) that nobody scores.
-    let (commit_24, reveal_24) = forecast(
+    // A second bucket (12 h lead) that nobody scores.
+    let (commit_12, reveal_12) = forecast(
         &bob,
         STATION,
         serde_json::json!({"temp_c_centi": 2_101}),
-        24,
-        "bob-24h",
+        12,
+        "bob-12h",
     );
-    commit_at(&mut state, &commit_24, h);
-    reveal_at(&mut state, &reveal_24, h, t_d + 100);
+    commit_at(&mut state, &commit_12, h);
+    reveal_at(&mut state, &reveal_12, h, t_d + 100);
     close_at(&mut state, h, t_d + 100).expect("end of block");
     let unscored_bucket =
-        bucket_id(STATION, LateScoreVariable::TemperatureC, 24, T0 + 24 * HOUR).unwrap();
+        bucket_id(STATION, LateScoreVariable::TemperatureC, 12, T0 + 12 * HOUR).unwrap();
     assert!(
         state
             .forecast_late_score
@@ -1475,7 +1481,7 @@ fn forecast_late_score_end_to_end() {
     close_at(
         &mut state,
         close_height + 2,
-        bucket_closes_at(T0 + 24 * HOUR),
+        bucket_closes_at(T0 + 12 * HOUR),
     )
     .expect("unscored close");
     assert!(state.forecast_late_score.buckets.is_empty());

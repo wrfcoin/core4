@@ -4,7 +4,7 @@
 //!   transaction (built offline by `wrfcoin forecast score build`), admits it
 //!   to the mempool with the chain's signing-key registry, and gossips it.
 //!   Anyone with a contributor token may relay a score; it pays the relay
-//!   nothing. Refused with 503 `FEATURE_NOT_ACTIVE` until `forecast_late_score`
+//!   nothing. Refused with 503 `FEATURE_NOT_ACTIVE` until `forecast_late_score_v2`
 //!   is in force at tip + 1. Before admission the node checks, read-only at
 //!   the tip, that every signer is in the oracle set and that every signature
 //!   verifies through the signing-key registry; a forged or outside signature
@@ -121,7 +121,7 @@ pub async fn submit(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             &req,
             StatusCode::SERVICE_UNAVAILABLE,
             "FEATURE_NOT_ACTIVE",
-            "forecast_late_score is not in force at the next height",
+            "forecast_late_score_v2 is not in force at the next height",
         );
     }
     if tx.tx_type != TransactionType::ForecastScore {

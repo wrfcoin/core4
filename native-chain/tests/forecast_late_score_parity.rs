@@ -129,7 +129,7 @@ const STATION: &str = "st-parity-1";
 /// A whole hour.
 const START: i64 = 1_800_000_000 - 1_800_000_000 % 3_600;
 const HOUR: i64 = 3_600;
-/// The lead every forecast here uses (the chain scores 6, 12 and 24 h).
+/// The lead every forecast here uses (the chain scores and pays 6 h and 12 h).
 const LEAD: u32 = 6;
 const LEAD_SECS: i64 = LEAD as i64 * HOUR;
 
@@ -328,7 +328,7 @@ fn forecast_late_score_producer_follower_wal() {
     }
     refresh_feature_schedule_extensions(vec![
         ("forecaster_key_binding".to_string(), 0),
-        ("forecast_late_score".to_string(), 0),
+        ("forecast_late_score_v2".to_string(), 0),
     ]);
     assert!(!forecast_late_score_active(ACTIVE - 1));
     assert!(forecast_late_score_active(ACTIVE));
