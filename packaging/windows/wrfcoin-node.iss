@@ -80,6 +80,8 @@ Name: "{group}\Stop WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#Launc
 Name: "{group}\Create Attester Key"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action NewOracleKey"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Create the testnet oracle attester key (shows only its public key)"
 Name: "{group}\Start WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StartAttester"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Start the oracle attester against the running node"
 Name: "{group}\Stop WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAttester"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Stop the oracle attester cleanly"
+Name: "{group}\Attester Auto-Start On"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action AttesterTimer"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Start the attester by itself once your oracle key is seated"
+Name: "{group}\Attester Auto-Start Off"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action AttesterAutoStartOff"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Never start the attester by itself"
 Name: "{group}\WRFCoin Node Status"; Filename: "{app}\WRFCoin Node Status.url"; Comment: "Open the node's status page in your browser"
 Name: "{group}\WRFCoin Node Data Folder"; Filename: "{localappdata}\WRFCoin"; Comment: "Chain data, identity key and logs"
 Name: "{group}\Uninstall WRFCoin Node"; Filename: "{uninstallexe}"
@@ -97,6 +99,8 @@ Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop -Quiet"; Flag
 Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopReceiptTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopReceiptTimer"
 ; Remove the address Scheduled Task if this user set one up (-Action AddressTimer).
 Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAddressTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopAddressTimer"
+; Remove the attester auto-start Scheduled Task if one was registered (-Action AttesterTimer).
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAttesterTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopAttesterTimer"
 
 [UninstallDelete]
 Type: files; Name: "{app}\WRFCoin Node Status.url"

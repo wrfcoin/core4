@@ -85,6 +85,26 @@
       in logs\address.log (repeats are not written again).
   -Action StopAddressTimer
       Removes the address Scheduled Task (the uninstaller does this too).
+  -Action AttesterTimer
+      Turns attester auto-start on: registers a per-user Scheduled Task,
+      \WRFCoin\WRFCoin Attester, that runs -Action AttesterAutoStart every 5
+      minutes while this user is signed in (no admin), and clears an earlier
+      opt-out. Needs oracle.key (testnet). Every node Start and 'Create
+      Attester Key' do this by themselves once oracle.key exists, unless
+      auto-start was turned off.
+  -Action AttesterAutoStart
+      One pass of the seat gate. Starts the attester only when this node's
+      oracle id is in the chain's oracle set AND the tip is at least 3 blocks
+      past the first height this launcher saw it seated (kept in
+      attester-seat.json), so the set change is at least 3 blocks deep. While
+      not seated it waits (leaving the set restarts the count; it never stops
+      a running attester). One line per change in logs\attester-auto.log.
+  -Action AttesterAutoStartOff
+      The opt-out: writes attester-autostart.off and removes the task. Node
+      Starts then never re-register it; -Action AttesterTimer turns it back on.
+      A running attester keeps running until stopped.
+  -Action StopAttesterTimer
+      Removes the attester Scheduled Task only (the uninstaller does this).
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
 
@@ -133,6 +153,9 @@
                          WRFCOIN_ADDRESS_MAILBOX_URL  https://... (the address mailbox route)
     addresses\         this epoch's signed address record (address-record-epoch-<E>.json)
     logs\address.log   one line per address-publish outcome
+    attester-seat.json      the first height the launcher saw the oracle id seated
+    attester-autostart.off  present = attester auto-start turned off (opt-out)
+    logs\attester-auto.log  one line per attester auto-start outcome
     attester.conf      attester settings the operator chooses (see StartAttester); only
                        these WRFCOIN_ATTESTER_* keys: REFERENCE_MODE, MAX_REFERENCE_KM,
                        NWS_STATION, DEM_ELEVATIONS_FILE, POLL_SECS, MAX_AGE_SECS,
@@ -143,7 +166,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer', 'AddressTimer', 'PublishAddress', 'StopAddressTimer')]
+    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer', 'AddressTimer', 'PublishAddress', 'StopAddressTimer', 'AttesterTimer', 'AttesterAutoStart', 'AttesterAutoStartOff', 'StopAttesterTimer')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -213,6 +236,18 @@ $AddressLogMaxBytes = 1MB
 $AddressTaskPath = '\WRFCoin\'
 $AddressTaskName = 'WRFCoin address'
 $AddressIntervalMinutes = 60
+# Attester auto-start (testnet): -Action AttesterTimer / AttesterAutoStart / AttesterAutoStartOff / StopAttesterTimer.
+$AttesterTaskPath = '\WRFCoin\'
+$AttesterTaskName = 'WRFCoin Attester'
+$AttesterIntervalMinutes = 5
+$AttesterSeatFile = Join-Path $Root 'attester-seat.json'
+$AttesterOptOutFile = Join-Path $Root 'attester-autostart.off'
+$AttesterAutoLog = Join-Path $LogDir 'attester-auto.log'
+$AttesterAutoLogMaxBytes = 1MB
+# The set change that seats the oracle must be at least this many blocks deep.
+$AttesterSeatDepthBlocks = 3
+# Set by a pass that must log a refusal instead of exiting through Fail.
+$script:FailThrows = $false
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
     # Stop detaches from its own console to signal the node's, so writing to
@@ -226,6 +261,8 @@ function Show-Message([string]$Text, [string]$Icon = 'Information') {
 }
 
 function Fail([string]$Message) {
+    # The auto-start pass turns a refusal into one deduplicated log line.
+    if ($script:FailThrows) { throw [System.InvalidOperationException]::new($Message) }
     try {
         if (Test-Path -LiteralPath $LogDir) {
             Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) $Action failed: $Message"
@@ -1039,15 +1076,171 @@ function Unregister-AddressTimer {
     Show-Message 'The WRFCoin address timer is removed.'
 }
 
+function Write-AttesterAutoLog([string]$Line) {
+    # One line per change: a pass whose outcome matches the last line writes
+    # nothing, so a five-minute "waiting for your seat" never piles up.
+    if (Test-Path -LiteralPath $AttesterAutoLog) {
+        $last = Get-Content -LiteralPath $AttesterAutoLog -Tail 1 -ErrorAction SilentlyContinue
+        if ($last -and (($last -replace '^\S+ ', '') -ceq $Line)) { return }
+        if ((Get-Item -LiteralPath $AttesterAutoLog).Length -gt $AttesterAutoLogMaxBytes) {
+            Move-Item -LiteralPath $AttesterAutoLog -Destination "$AttesterAutoLog.1" -Force
+        }
+    }
+    Add-Content -LiteralPath $AttesterAutoLog -Value "$(Get-Date -Format o) $Line"
+}
+
+function Get-AttesterOracleId {
+    # The PUBLIC id only: oracle-public.txt, else derived from the key by wrfcoin.exe.
+    if (Test-Path -LiteralPath $OraclePublicFile) {
+        $pub = ([System.IO.File]::ReadAllText($OraclePublicFile)).Trim().ToLower()
+        if ($pub -cmatch '^[0-9a-f]{64}$') { return $pub }
+    }
+    return (Get-OraclePublicKey $OracleKeyFile)
+}
+
+function Test-AttesterSeatDepth([string]$OracleId, [bool]$Seated, [long]$Height) {
+    # Pure bookkeeping for the seat gate. Returns the number of blocks the seat
+    # has been seen for, or -1 while not seated. The first height a pass sees
+    # the id seated is kept; the real seating height is never later than it,
+    # so "Height - first seen >= 3" means the set change is at least 3 deep.
+    if (-not $Seated) {
+        if (Test-Path -LiteralPath $AttesterSeatFile) { Remove-Item -LiteralPath $AttesterSeatFile -Force }
+        return -1
+    }
+    $first = $null
+    if (Test-Path -LiteralPath $AttesterSeatFile) {
+        try {
+            $seat = ConvertFrom-Json ([System.IO.File]::ReadAllText($AttesterSeatFile))
+            $seen = Get-JsonField $seat 'first_seen_height'
+            # A file without a height (or for another key) starts the count again.
+            if ("$(Get-JsonField $seat 'oracle_id')" -ceq $OracleId -and "$seen" -cmatch '^[0-9]+$') { $first = [long]$seen }
+        } catch { $first = $null }
+    }
+    if ($null -eq $first -or $first -gt $Height) {
+        $first = $Height
+        [System.IO.File]::WriteAllText($AttesterSeatFile, (ConvertTo-Json @{ oracle_id = $OracleId; first_seen_height = $Height } -Compress))
+    }
+    return ($Height - $first)
+}
+
+function Invoke-AttesterAutoStart {
+    if (Test-Path -LiteralPath $AttesterOptOutFile) { Write-AttesterAutoLog 'auto-start is off (attester-autostart.off)'; return }
+    if (-not (Test-OracleKey)) { Write-AttesterAutoLog 'no attester key yet'; return }
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Write-AttesterAutoLog 'not started: the software oracle key is for testnet only'; exit 1 }
+    if (@(Get-NodeProcess).Count -eq 0) { Write-AttesterAutoLog 'waiting (node not running)'; return }
+    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $script:FailThrows = $true
+    try {
+        $id = Get-AttesterOracleId
+    } catch {
+        Write-AttesterAutoLog "not started: $($_.Exception.Message)"
+        exit 1
+    } finally {
+        $script:FailThrows = $false
+    }
+    try {
+        # The operator token reads the seated set (a Reader route); it is sent
+        # only to this node and never logged.
+        $token = [System.IO.File]::ReadAllText($TokenFile).Trim()
+        $set = Invoke-RestMethod -Uri "$api/transactions/oracle/config" -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
+        $data = Get-JsonField $set 'data'
+        if ($null -ne $data) { $set = $data }
+        $members = @(Get-JsonField $set 'oracle_set' | ForEach-Object { "$_".ToLower() })
+        $info = Invoke-RestMethod -Uri "$api/network/info" -TimeoutSec 10
+        $height = [long](Get-JsonField $info 'chain_height')
+    } catch {
+        Write-AttesterAutoLog 'waiting (the node did not answer; retry later)'
+        return
+    }
+    if ($height -le 0) { Write-AttesterAutoLog 'waiting (the node reported no height; retry later)'; return }
+    $short = $id.Substring(0, 8)
+    $depth = Test-AttesterSeatDepth $id ($members -ccontains $id) $height
+    if ($depth -lt 0) {
+        # Never stops an attester: one started by hand keeps running until the
+        # operator stops it. Leaving the set only resets the depth count.
+        Write-AttesterAutoLog "waiting for your seat (oracle $short is not in the oracle set)"
+        return
+    }
+    if (@(Get-AttesterProcess).Count -gt 0) { Write-AttesterAutoLog "seated (oracle $short): attester running"; return }
+    if ($depth -lt $AttesterSeatDepthBlocks) {
+        Write-AttesterAutoLog "seated (oracle $short): waiting until the seat is $AttesterSeatDepthBlocks blocks deep"
+        return
+    }
+    $script:FailThrows = $true
+    try {
+        Start-Attester
+    } catch {
+        $msg = "$($_.Exception.Message)" -replace '\s+', ' '
+        Write-AttesterAutoLog "not started: $($msg.Substring(0, [Math]::Min(300, $msg.Length)))"
+        exit 1
+    } finally {
+        $script:FailThrows = $false
+    }
+    Write-AttesterAutoLog "seated (oracle $short): attester started"
+}
+
+function Register-AttesterTimer([bool]$Automatic = $false) {
+    if (-not (Test-OracleKey)) { Fail "no attester key yet: use 'Create attester key' first" }
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'the software oracle key is for testnet only' }
+    if (-not $Automatic -and (Test-Path -LiteralPath $AttesterOptOutFile)) { Remove-Item -LiteralPath $AttesterOptOutFile -Force }
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $argLine = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action AttesterAutoStart -Quiet"
+    $taskAction = New-ScheduledTaskAction -Execute $ps -Argument $argLine -WorkingDirectory $AppDir
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+        -RepetitionInterval (New-TimeSpan -Minutes $AttesterIntervalMinutes)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 4)
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -Action $taskAction -Trigger $trigger `
+        -Settings $settings -Principal $principal -Description 'WRFCoin attester: start the attester once this node''s oracle key is seated' -Force | Out-Null
+    if (-not $Automatic) {
+        Show-Message "Attester auto-start is on: checked every $AttesterIntervalMinutes minutes while you are signed in; the attester starts once your seat is $AttesterSeatDepthBlocks blocks deep. Log: $AttesterAutoLog"
+    }
+}
+
+function Enable-AttesterAutoStart {
+    # Called by node Start and 'Create Attester Key': registers the task once a
+    # key exists, unless the operator turned auto-start off. Never fails the
+    # caller; a problem is one launcher.log line.
+    try {
+        if ((Test-Path -LiteralPath $AttesterOptOutFile) -or -not (Test-OracleKey)) { return }
+        if (Get-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -ErrorAction SilentlyContinue) { return }
+        $script:FailThrows = $true
+        Register-AttesterTimer $true
+        Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) attester auto-start task registered"
+    } catch {
+        try { Add-Content -LiteralPath $LauncherLog -Value "$(Get-Date -Format o) attester auto-start not registered: $($_.Exception.Message)" } catch { }
+    } finally {
+        $script:FailThrows = $false
+    }
+}
+
+function Disable-AttesterAutoStart {
+    [System.IO.File]::WriteAllText($AttesterOptOutFile, "Attester auto-start was turned off. Remove this file or run -Action AttesterTimer to turn it on.`r`n")
+    $task = Get-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -ErrorAction SilentlyContinue
+    if ($task) { Unregister-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -Confirm:$false }
+    Show-Message 'Attester auto-start is off. A running attester keeps running until you stop it.'
+}
+
+function Unregister-AttesterTimer {
+    $task = Get-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -ErrorAction SilentlyContinue
+    if (-not $task) { Show-Message 'The WRFCoin attester auto-start task is not set up.'; return }
+    Unregister-ScheduledTask -TaskPath $AttesterTaskPath -TaskName $AttesterTaskName -Confirm:$false
+    Show-Message 'The WRFCoin attester auto-start task is removed.'
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
     switch ($Action) {
         'Setup' { Initialize-UserState }
         'ServerKey' { Initialize-UserState; New-ServerKey }
-        'NewOracleKey' { Initialize-UserState; New-OracleKey }
+        'NewOracleKey' { Initialize-UserState; New-OracleKey; Enable-AttesterAutoStart }
         'StartAttester' { Initialize-UserState; Start-Attester }
         'StopAttester' { Stop-Attester }
-        'Start' { Initialize-UserState; Start-Node }
+        'Start' { Initialize-UserState; Start-Node; Enable-AttesterAutoStart }
         'Stop'  { Stop-Node }
         'ReceiptTimer' { Initialize-UserState; Register-ReceiptTimer }
         'Receipt' { Initialize-UserState; Invoke-Receipt }
@@ -1055,6 +1248,10 @@ try {
         'AddressTimer' { Initialize-UserState; Register-AddressTimer }
         'PublishAddress' { Initialize-UserState; Invoke-AddressPublish }
         'StopAddressTimer' { Unregister-AddressTimer }
+        'AttesterTimer' { Initialize-UserState; Register-AttesterTimer }
+        'AttesterAutoStart' { Initialize-UserState; Invoke-AttesterAutoStart }
+        'AttesterAutoStartOff' { Initialize-UserState; Disable-AttesterAutoStart }
+        'StopAttesterTimer' { Unregister-AttesterTimer }
     }
 } catch {
     Fail "$($_.Exception.Message) ($($_.InvocationInfo.PositionMessage))"

@@ -123,6 +123,16 @@ pub enum OracleCommands {
         #[clap(long)]
         key_file: PathBuf,
     },
+
+    /// Read-only attester statement for one oracle id over a height range:
+    /// attestations included, decisions paid, approve votes not paid and the
+    /// amount paid, recomputed from public block data.
+    Statement(super::oracle_attester::StatementArgs),
+
+    /// Move the balance of the oracle key's own address (where attester pay
+    /// lands) to a wallet. Testnet only; `--to` is required; asks before
+    /// sending unless `--yes`.
+    Sweep(super::oracle_attester::SweepArgs),
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,8 +155,17 @@ struct RegistrationSubmitBody<'a> {
     transactions: &'a [wrfcoin_shared_protocol::blockchain::transaction::Transaction],
 }
 
-pub async fn handle_oracle_command(command: &OracleCommands) -> Result<Value> {
+/// `interactive` is whether a person at a terminal can confirm a sweep.
+pub async fn handle_oracle_command_with(command: &OracleCommands, interactive: bool) -> Result<Value> {
     match command {
+        OracleCommands::Statement(args) => super::oracle_attester::statement(args).await,
+        OracleCommands::Sweep(args) => {
+            super::oracle_attester::sweep(
+                args,
+                super::oracle_attester::terminal_confirm(interactive),
+            )
+            .await
+        },
         OracleCommands::PublicKey { key_file } => {
             let public_key = oracle_public_key_from_file(key_file)?.to_hex();
             Ok(json!({
@@ -527,7 +546,13 @@ const MAX_ORACLE_KEY_FILE_BYTES: u64 = 4096;
 /// Opened only through `open_owner_only_key_file`, so a file another account
 /// can read is refused before a byte is read. Errors name the path, never the
 /// file's contents.
-fn oracle_public_key_from_file(path: &Path) -> Result<PublicKey> {
+pub(crate) fn oracle_public_key_from_file(path: &Path) -> Result<PublicKey> {
+    Ok(PublicKey::from_private_key(&oracle_private_key_from_file(path)?))
+}
+
+/// Load the private half of a software oracle key file, under the same
+/// owner-only and format checks. Errors name the path, never the contents.
+pub(crate) fn oracle_private_key_from_file(path: &Path) -> Result<PrivateKey> {
     use std::io::Read;
     let file = open_owner_only_key_file(path).map_err(|e| anyhow!("oracle key file: {e}"))?;
     let mut raw = zeroize::Zeroizing::new(Vec::new());
@@ -548,8 +573,7 @@ fn oracle_public_key_from_file(path: &Path) -> Result<PublicKey> {
         return Err(malformed());
     }
     let seed = zeroize::Zeroizing::new(hex::decode(text).map_err(|_| malformed())?);
-    let key = PrivateKey::from_bytes(&seed).map_err(|_| malformed())?;
-    Ok(PublicKey::from_private_key(&key))
+    PrivateKey::from_bytes(&seed).map_err(|_| malformed())
 }
 
 fn read_private_key(path: &Path) -> Result<PrivateKey> {
@@ -630,7 +654,7 @@ mod tests {
         assert_eq!(seed_hex.len(), 64); // secret-leak-ok: compares the fixture length only
 
         let good = key_file(&dir, "oracle.key", &format!("{seed_hex}\r\n"), 0o600); // secret-leak-ok: writes the fixed test fixture to a temp file
-        let out = handle_oracle_command(&OracleCommands::PublicKey { key_file: good })
+        let out = handle_oracle_command_with(&OracleCommands::PublicKey { key_file: good }, false)
             .await
             .unwrap();
         assert_eq!(out["publicKey"], expected);
