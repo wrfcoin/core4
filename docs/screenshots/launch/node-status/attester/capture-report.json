@@ -1,0 +1,134 @@
+[
+  {
+    "name": "no-key-bonded",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": true,
+    "title": "",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "no-key-bonded",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": true,
+    "title": "",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "waiting-to-be-seated",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": false,
+    "title": "Attester key created; waiting to be seated",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "waiting-to-be-seated",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": false,
+    "title": "Attester key created; waiting to be seated",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "attesting",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "attesting",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "seated-quiet",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "seated-quiet",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "seated-idle",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "seated-idle",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": false,
+    "title": "You're an attester",
+    "here": [
+      "Attester (oracle) You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "removed",
+    "vp": "phone-390",
+    "errors": [],
+    "cardHidden": false,
+    "title": "No longer seated as an attester",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  },
+  {
+    "name": "removed",
+    "vp": "desktop-1440",
+    "errors": [],
+    "cardHidden": false,
+    "title": "No longer seated as an attester",
+    "here": [
+      "Bonded node You are here"
+    ],
+    "hscroll": false
+  }
+]

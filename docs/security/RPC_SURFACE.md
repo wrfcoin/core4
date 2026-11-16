@@ -150,6 +150,7 @@ that exploitation is currently demonstrated.
 | `GET /node/resources` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_node_resources` | `public` | no | no | global-read |
 | `GET /node/capability` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_node_capability` | `public` | no | no | global-read |
 | `GET /node/metrics/host` | `http` | `native-chain/src/bin/launch_api/routes/host_metrics.rs:host_metrics::get_host_metrics` | `admin` | no | no | global-read |
+| `GET /node/attester` | `http` | `native-chain/src/bin/launch_api/routes/node_attester.rs:node_attester::get_node_attester` | `admin` | no | no | global-read |
 | `GET /dashboard` | `http` | `native-chain/src/bin/launch_api/routes/status_page.rs:status_page::dashboard` | `public` | no | no | global-read |
 | `POST /node/shutdown` | `http` | `native-chain/src/bin/launch_api/routes/node_shutdown.rs:node_shutdown::shutdown_node` | `admin` | yes | no | global-write |
 | `GET /node/partition-status` | `http` | `native-chain/src/bin/launch_api/routes/network.rs:network::get_partition_status` | `public` | no | no | global-read |

@@ -3,6 +3,7 @@ pub mod node_bonds;
 pub mod node_fraud;
 pub mod security_key;
 pub mod node_shutdown;
+pub mod node_attester;
 pub mod send_allowlist;
 pub mod advisory_governance;
 pub mod forecast_late_score;
@@ -427,6 +428,8 @@ pub fn configure_launch_routes(cfg: &mut web::ServiceConfig) {
         .route("/node/resources", web::get().to(network::get_node_resources))
         .route("/node/capability", web::get().to(network::get_node_capability))
         .route("/node/metrics/host", web::get().to(host_metrics::get_host_metrics))
+        // The status page's attester rung: this node's oracle key vs the seated set. Operator only.
+        .route("/node/attester", web::get().to(node_attester::get_node_attester))
         // #3599: the operator status page — one embedded HTML document that
         // renders the routes above in a browser. Carries no data; no token.
         .route("/dashboard", web::get().to(status_page::dashboard))

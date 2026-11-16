@@ -230,6 +230,17 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
 .upgrade-title { margin: 0; font-size: 1.0625rem; font-weight: 700; overflow-wrap: anywhere; }
 .upgrade-detail { margin: 0; color: var(--text-2); font-size: 0.9375rem; max-width: 80ch; overflow-wrap: anywhere; }
 .upgrade-links { margin: 0; font-size: 0.875rem; font-weight: 600; }
+/* Attester card: this node's own oracle seat, from GET /node/attester. */
+.attester { border-top: 1px solid var(--border); padding-top: var(--s-sm); margin-top: var(--s-xs); display: grid; gap: var(--s-sm); min-width: 0; }
+.attester-title { margin: 0; font-size: 0.9375rem; font-weight: 700; color: var(--text); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-xs) var(--s-sm); }
+.attester-detail { margin: 0; color: var(--text-2); font-size: 0.875rem; }
+.attester-facts { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-sm); }
+.attester-facts div { min-width: 0; }
+.attester-facts dt { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.attester-facts dd { margin: 2px 0 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+.attester-facts dd.mono { font-family: var(--mono); font-size: 0.75rem; }
+.attester-warn { margin: 0; font-size: 0.8125rem; color: var(--warning); max-width: 80ch; }
+.attester-warn.info { color: var(--text-2); }
 .next-note { margin: 0; font-size: 0.8125rem; color: var(--text-2); border-top: 1px solid var(--border); padding-top: var(--s-md); }
 .details-title { font-size: 0.8125rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 var(--s-sm); }
 footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: var(--s-sm) var(--s-md); justify-content: space-between; }
@@ -305,22 +316,34 @@ footer { margin-top: var(--s-xl); color: var(--muted); font-size: 0.8125rem; dis
           <p class="links"><a href="#open-port" id="open-port-link">Open your port (TCP 9000)</a><a href="https://wrfcoin.com/downloads" target="_blank" rel="noopener noreferrer">Bonded node guide</a><a href="https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md" target="_blank" rel="noopener noreferrer">Join the testnet</a></p>
         </div>
       </li>
-      <li class="rung">
+      <li class="rung" id="rung-attester">
         <span class="num" aria-hidden="true">3</span>
         <div class="rung-body">
-          <h3>Attester (oracle) <span class="pill">Coming</span></h3>
+          <h3>Attester (oracle) <span class="pill" id="pill-attester">By invitation</span></h3>
           <p>Vouches for the quality of weather data. Seated by governance after proven service as a bonded node.</p>
+          <div class="attester" id="attester-card" role="status" aria-live="polite" hidden>
+            <p class="attester-title" id="attester-title"></p>
+            <p class="attester-detail" id="attester-detail"></p>
+            <dl class="attester-facts">
+              <div><dt>Oracle public key</dt><dd class="mono" id="att-key">—</dd></div>
+              <div id="att-since-row"><dt>Seated since</dt><dd id="att-since">—</dd></div>
+              <div id="att-count-row"><dt>Attestations</dt><dd id="att-count">—</dd></div>
+              <div id="att-proc-row"><dt>Attester program</dt><dd id="att-proc">—</dd></div>
+            </dl>
+            <p class="attester-warn" id="attester-warn" hidden></p>
+            <p class="attester-detail" id="attester-next" hidden>Next rung: <strong>Producer: by invitation for now.</strong> There is no schedule for opening it yet.</p>
+          </div>
         </div>
       </li>
-      <li class="rung">
+      <li class="rung" id="rung-producer">
         <span class="num" aria-hidden="true">4</span>
         <div class="rung-body">
-          <h3>Block producer <span class="pill">Coming</span></h3>
+          <h3>Block producer <span class="pill" id="pill-producer">Coming</span></h3>
           <p>Makes blocks. Seated by governance from proven bonded nodes.</p>
         </div>
       </li>
     </ol>
-    <p class="next-note">Nothing here happens by itself, and this page promises no income. Steps marked Coming are not open yet.</p>
+    <p class="next-note">Nothing here happens by itself, and this page promises no income. Steps marked By invitation are seated by governance on request; steps marked Coming are not open yet.</p>
   </section>
 
   <details class="next guide" id="open-port">
@@ -484,6 +507,7 @@ const ROUTES = {
   peer: '/network/peer_id',
   health: '/health',
   host: '/node/metrics/host',
+  attester: '/node/attester',
   shutdown: '/node/shutdown'
 };
 const TOKEN_KEY = 'wrfcoin.dashboard.operatorToken';
@@ -1099,6 +1123,103 @@ function renderMode(peerInfo, ext) {
   $('rung-bonded').className = serving ? 'rung here' : 'rung';
   $('pill-bonded').className = serving ? 'pill ok' : 'pill info';
   $('pill-bonded').textContent = serving ? 'You are here' : 'Preview';
+  renderAttester(serving);
+}
+
+// ---------- attester rung ----------
+// GET /node/attester (operator token): this node's oracle public key, read by
+// the node from WRFCOIN_ORACLE_PUBLIC_KEY(_FILE), checked against the CURRENT
+// seated oracle set in the node's own state, with this oracle's attestations
+// in its own recent blocks. No answer (no token, older node): nothing changes.
+const ATTESTER_START_HINT = 'Start it from the Start menu (Start WRFCoin Attester) if it is stopped.';
+function setRung(id, pillId, here, text, cls) {
+  $(id).className = here ? 'rung here' : 'rung';
+  setPill($(pillId), text, cls);
+}
+function attesterView(a) {
+  if (!a || typeof a !== 'object' || typeof a.status !== 'string') return null;
+  const st = a.status;
+  if (st === 'no_key') return null;
+  const n = typeof a.window_blocks === 'number' ? a.window_blocks : 100;
+  const count = typeof a.attestations_in_window === 'number' ? a.attestations_in_window : 0;
+  const pending = typeof a.mempool_attestations === 'number' ? a.mempool_attestations : 0;
+  const ago = typeof a.attester_last_poll_secs_ago === 'number' ? a.attester_last_poll_secs_ago : null;
+  const proc = a.attester_polling === true
+    ? 'Running (last asked the node for work ' + humanDuration(ago) + ' ago)'
+    : (ago !== null ? 'Not seen for ' + humanDuration(ago) + '. ' : 'Not seen since the node started. ') + ATTESTER_START_HINT;
+  const v = { status: st, seated: false, cls: '', title: '', detail: '', warn: null, warnInfo: false,
+    key: typeof a.oracle_id === 'string' ? a.oracle_id : null, since: null, count: null, proc: null, next: false };
+  if (st === 'key_unreadable') {
+    v.cls = 'warn';
+    v.title = 'Attester key not readable';
+    v.detail = 'This node is set up with an oracle public key, but ' + (a.key_problem || 'it cannot be read') + '. Run Create Attester Key from the Start menu again; it keeps an existing key.';
+    return v;
+  }
+  if (st === 'waiting_to_be_seated') {
+    v.cls = 'wait';
+    v.title = 'Attester key created; waiting to be seated';
+    v.detail = 'This node has an oracle key, but it is not in the current seated oracle set. Governance seats attesters on request; share the public key below (it is safe to share).';
+    v.proc = proc;
+    return v;
+  }
+  if (st === 'removed') {
+    v.cls = 'warn';
+    v.title = 'No longer seated as an attester';
+    v.detail = "This node's oracle key is no longer in the seated oracle set"
+      + (typeof a.removed_at_height === 'number' ? ' (removed at block ' + fmtInt(a.removed_at_height) + ')' : '')
+      + ', so it is back on the rung below. Its attestations are no longer counted.';
+    return v;
+  }
+  if (st !== 'attesting' && st !== 'seated_quiet' && st !== 'seated_idle') return null;
+  v.seated = true;
+  v.title = "You're an attester";
+  v.detail = "This node's oracle key is in the current seated oracle set ("
+    + fmtInt(a.oracle_set_size) + ' oracle' + (a.oracle_set_size === 1 ? '' : 's') + ', ' + fmtInt(a.oracle_quorum) + ' needed to agree).';
+  v.since = typeof a.seated_since_height === 'number' ? 'Block ' + fmtInt(a.seated_since_height)
+    : (typeof a.history_scanned_from === 'number' && a.history_scanned_from > 1 ? 'Before block ' + fmtInt(a.history_scanned_from) : 'Since the chain began');
+  v.count = fmtInt(count) + ' in the last ' + fmtInt(n) + ' blocks'
+    + (typeof a.last_attestation_height === 'number' ? ' (newest in block ' + fmtInt(a.last_attestation_height) + ')' : '')
+    + (pending > 0 ? ', ' + fmtInt(pending) + ' waiting for a block' : '');
+  v.proc = proc;
+  v.next = true;
+  if (st === 'seated_idle') {
+    v.cls = 'warn';
+    v.proc = ago !== null ? 'Not seen for ' + humanDuration(ago) : 'Not seen since the node started';
+    v.warn = 'No attestations by this oracle in the last ' + fmtInt(n) + ' blocks, and the attester program has not asked the node for work. ' + ATTESTER_START_HINT;
+  } else if (st === 'seated_quiet') {
+    v.warn = 'The attester is running. No reading needed its attestation in the last ' + fmtInt(n) + ' blocks.';
+    v.warnInfo = true;
+  }
+  return v;
+}
+function renderAttester(serving) {
+  const v = attesterView(last.attester);
+  const card = $('attester-card');
+  card.hidden = !v;
+  // Defaults: attester by invitation, producer coming (renderMode set the lower rungs).
+  setRung('rung-attester', 'pill-attester', false, 'By invitation', '');
+  setRung('rung-producer', 'pill-producer', false, 'Coming', '');
+  if (!v) return;
+  $('attester-title').textContent = v.title;
+  $('attester-detail').textContent = v.detail;
+  $('att-key').textContent = v.key || '—';
+  $('att-since-row').hidden = v.since === null;
+  $('att-since').textContent = v.since || '—';
+  $('att-count-row').hidden = v.count === null;
+  $('att-count').textContent = v.count || '—';
+  $('att-proc-row').hidden = v.proc === null;
+  $('att-proc').textContent = v.proc || '—';
+  $('attester-warn').hidden = !v.warn;
+  $('attester-warn').className = 'attester-warn' + (v.warnInfo ? ' info' : '');
+  $('attester-warn').textContent = v.warn || '';
+  $('attester-next').hidden = !v.next;
+  if (v.status === 'waiting_to_be_seated') setPill($('pill-attester'), 'Waiting to be seated', 'info');
+  if (!v.seated) return;
+  // Seated: the attester rung is this node's own, the lower rungs are behind it.
+  setRung('rung-sync', 'pill-sync', false, 'Done', '');
+  if (serving) setRung('rung-bonded', 'pill-bonded', false, 'Done', '');
+  else setRung('rung-bonded', 'pill-bonded', false, 'Preview', 'info');
+  setRung('rung-attester', 'pill-attester', true, 'You are here', v.cls === 'warn' ? 'warn' : 'ok');
 }
 $('open-port-link').addEventListener('click', () => { $('open-port').open = true; });
 if ((location.hash || '').indexOf('#open-port') === 0) $('open-port').open = true;
@@ -1176,7 +1297,8 @@ async function tick() {
   const keys = ['info', 'sync', 'stats', 'resources', 'capability'];
   if (slow) keys.push('upgrade', 'health', 'peer');
   if (token) keys.push('host');
-  const results = await Promise.all(keys.map((k) => getJson(ROUTES[k], k === 'host')));
+  if (token && slow) keys.push('attester');
+  const results = await Promise.all(keys.map((k) => getJson(ROUTES[k], k === 'host' || k === 'attester')));
   let anyOk = false, any429 = false;
   results.forEach((r, i) => {
     const k = keys[i];
@@ -1190,7 +1312,9 @@ async function tick() {
       failedCode[k] = errorCode(r.data);
       if (r.status === 429) any429 = true;
       // A refused read means no current host data, whichever layer refused it.
-      if (k === 'host' && (r.status === 401 || r.status === 403)) delete last.host;
+      if ((k === 'host' || k === 'attester') && (r.status === 401 || r.status === 403)) delete last[k];
+      // A node built before /node/attester answers 404: no attester data, ladder as before.
+      if (k === 'attester' && r.status === 404) delete last.attester;
     }
   });
   if (anyOk) lastOkAt = Date.now();
@@ -1234,6 +1358,7 @@ $('token-form').addEventListener('submit', (ev) => {
 $('forget-token').addEventListener('click', () => {
   token = null;
   delete last.host;
+  delete last.attester;
   delete failed.host;
   delete failedCode.host;
   try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* nothing stored */ }
