@@ -522,6 +522,28 @@ Rules the attester enforces (it refuses to start otherwise): testnet only
 read the key file, and not together with an HSM. Back up `oracle.key` somewhere
 only you can read: a new key means a new oracle registration.
 
+### Auto-start after seating
+
+Once `oracle.key` exists, **WRFCoin Node** and **Create Attester Key** also
+register a per-user Scheduled Task, `\WRFCoin\WRFCoin Attester` (no admin; it
+runs only while you are signed in). Every 5 minutes it checks, on your own node,
+whether your oracle id is in the chain's oracle set. It starts the attester only
+once your seat is at least 3 blocks deep: the tip must be 3 blocks past the
+first height the check saw you seated (kept in `attester-seat.json`). Until
+then it waits. If your id leaves the set, the count starts again; it never stops
+an attester you started yourself. One line per change goes to
+`logs\attester-auto.log`.
+
+- To turn it off: Start menu → **Attester Auto-Start Off**. This writes
+  `attester-autostart.off` and removes the task, and node starts then leave it
+  off. A running attester keeps running until you stop it.
+- To turn it back on: **Attester Auto-Start On**
+  (`-Action AttesterTimer`).
+- Uninstalling removes the task.
+
+You still choose the reference mode in `attester.conf` (above). Until you do,
+the auto-start check logs which setting is missing and does not start.
+
 ## Not done yet
 
 - **Update notice.** The node does not yet tell you when a newer version exists;
