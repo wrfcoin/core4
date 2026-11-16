@@ -1,6 +1,11 @@
 # WRFCoin MVP Quick Start Guide
 
-Get up and running with the WRFCoin MVP in under 5 minutes.
+> **Historical guide.** This page describes the old all-in-one repository. Its
+> commands do not start the current public testnet apps.
+>
+> - To use WRFCoin: the [public testnet quickstart](https://github.com/wrfcoin/docs/blob/main/testnet/quickstart.md).
+> - To run a sync node: [JOIN_TESTNET.md](https://github.com/wrfcoin/infra/blob/main/testnet/JOIN_TESTNET.md) in wrfcoin/infra.
+> - To work on the website or the API: the README in [wrfcoin/frontend](https://github.com/wrfcoin/frontend) or [wrfcoin/backend](https://github.com/wrfcoin/backend).
 
 ## What is WRFCoin?
 
@@ -21,23 +26,9 @@ The MVP delivers the essential end-to-end experience: submit weather data, parti
 
 ## Quick Start
 
-```bash
-# 1. Clone and install
-git clone https://github.com/your-org/wrfcoin.git
-cd wrfcoin
-npm install
-
-# 2. Start the MVP
-npm run dev:mvp
-
-# 3. Open the app
-open http://localhost:5000
-```
-
-That's it. `dev:mvp` starts:
-- frontend Vite app on `:5000`
-- simple backend API on `:3001`
-- MVP feature flags (`VITE_MVP_MODE=true` and `MVP_MODE=true`)
+The old `npm run dev:mvp` starter no longer starts anything (it only prints a message):
+the website and API moved to wrfcoin/frontend and wrfcoin/backend. Use the
+links at the top of this page.
 
 If you need the native-chain launch protocol API for commit/reveal + oracle-quorum testing, run:
 
