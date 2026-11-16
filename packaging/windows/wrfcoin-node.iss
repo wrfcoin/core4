@@ -95,6 +95,8 @@ Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start"; WorkingDir
 Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Stop -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopNode"
 ; Remove the receipt Scheduled Task if this user set one up (-Action ReceiptTimer).
 Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopReceiptTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopReceiptTimer"
+; Remove the address Scheduled Task if this user set one up (-Action AddressTimer).
+Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAddressTimer -Quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopAddressTimer"
 
 [UninstallDelete]
 Type: files; Name: "{app}\WRFCoin Node Status.url"
