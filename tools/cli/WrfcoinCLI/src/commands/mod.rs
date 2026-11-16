@@ -26,6 +26,7 @@ pub mod node_deposit;
 pub mod node_fraud;
 pub mod node_receipt;
 pub mod oracle;
+pub mod oracle_attester;
 pub mod security_key;
 pub mod operator;
 pub mod send_interactive;
