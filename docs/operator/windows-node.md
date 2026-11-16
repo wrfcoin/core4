@@ -356,6 +356,54 @@ waits for a block. `LOW_OWNER_BALANCE` means the owner account holds under
 The task runs only while you are signed in and the PC is awake. Remove it with
 `-Action StopReceiptTimer` (uninstalling also removes it).
 
+## Address record: letting other nodes find yours (testnet)
+
+The chain names each bond's server key but not where that node is. A bonded
+node therefore publishes a signed **address record** once per epoch: "this
+server key is at this address", signed with `server.key` and the node's peer
+key. The launcher can do this for you every hour while you are signed in, with
+no window and no admin rights. It is off until you switch it on.
+
+You need:
+
+1. bonded mode working ([Bonded mode](#bonded-mode-testnet)), with
+   `WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/<port>` in
+   reachable.conf (a `/dns4/` name is not accepted in the record);
+2. `%LOCALAPPDATA%\WRFCoin\address.conf` with exactly these two lines:
+
+```
+WRFCOIN_BOND_DEPLOYMENT_ID=<your bond id, 64 lowercase hex>
+WRFCOIN_ADDRESS_MAILBOX_URL=https://wrfcoin.com/api/node-addresses
+```
+
+The address mailbox is not open yet. Until it is, each run just notes
+`mailbox not open yet, retry later` once and tries again the next hour; that
+is normal, not an error.
+
+Then switch the timer on (PowerShell):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\WRFCoin Node\wrfcoin-node.ps1" -Action AddressTimer
+```
+
+It checks bonded mode and address.conf first and refuses with a message if
+anything is missing or wrong. It then adds a Scheduled Task,
+**\WRFCoin\WRFCoin address**, for your user only. Each run:
+
+- reads the address your node announces (`/network/peer_id`); if the node is
+  not running it waits for the next run;
+- runs `wrfcoin.exe node address publish`, which checks the bond is registered
+  with this server key, signs the record **once** per epoch (kept in
+  `%LOCALAPPDATA%\WRFCoin\addresses\`) and posts it; later runs in the same
+  epoch post the same record again.
+
+`logs\address.log` gets one line when the outcome changes (a repeat of the same
+outcome is not written again): `exit=0 (done)` once the mailbox stored the
+record, `exit=2 (retry later)` while it is busy. The log never holds your
+address.
+
+Remove the task with `-Action StopAddressTimer` (uninstalling also removes it).
+
 ## The operator CLI (wrfcoin.exe)
 
 The installer also puts `wrfcoin.exe`, the WRFCoin operator command line, in

@@ -67,6 +67,22 @@
       line per pass in logs\receipt.log. Never shows a window.
   -Action StopReceiptTimer
       Removes the Scheduled Task (the uninstaller does this too).
+  -Action AddressTimer
+      For a bonded node (testnet): registers a per-user Scheduled Task,
+      \WRFCoin\WRFCoin address, that runs -Action PublishAddress every 60
+      minutes while this user is signed in (no admin). Needs bonded mode
+      (reachable.conf with an /ip4/ external address, server.key) and
+      address.conf (below); stops with a message if anything is missing.
+      Running it again replaces the task.
+  -Action PublishAddress
+      One pass of `wrfcoin.exe node address publish`: signs this node's
+      address record once per epoch with server.key and the node's peer key,
+      and posts it to the address mailbox (later passes in the same epoch
+      re-post the same bytes). While the mailbox is not open yet, or the node
+      is not running, a pass just waits for the next one. One line per change
+      in logs\address.log (repeats are not written again).
+  -Action StopAddressTimer
+      Removes the address Scheduled Task (the uninstaller does this too).
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
 
@@ -110,6 +126,11 @@
     owner.key          the bond owner's key, locked to this user; signs receipts
     receipts\          one signed receipt packet per epoch (public data)
     logs\receipt.log   one line per receipt pass
+    address.conf       a bonded node's address-record settings, only these keys:
+                         WRFCOIN_BOND_DEPLOYMENT_ID   the bond id (64 lowercase hex)
+                         WRFCOIN_ADDRESS_MAILBOX_URL  https://... (the address mailbox route)
+    addresses\         this epoch's signed address record (address-record-epoch-<E>.json)
+    logs\address.log   one line per address-publish outcome
     attester.conf      attester settings the operator chooses (see StartAttester); only
                        these WRFCOIN_ATTESTER_* keys: REFERENCE_MODE, MAX_REFERENCE_KM,
                        NWS_STATION, DEM_ELEVATIONS_FILE, POLL_SECS, MAX_AGE_SECS,
@@ -120,7 +141,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer')]
+    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer', 'AddressTimer', 'PublishAddress', 'StopAddressTimer')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -181,6 +202,15 @@ $ReceiptLogMaxBytes = 1MB
 $ReceiptTaskPath = '\WRFCoin\'
 $ReceiptTaskName = 'WRFCoin receipt'
 $ReceiptIntervalMinutes = 30
+# Bonded node address record (testnet): -Action AddressTimer / PublishAddress / StopAddressTimer.
+$AddressConfig = Join-Path $Root 'address.conf'
+$AddressKeys = @('WRFCOIN_BOND_DEPLOYMENT_ID', 'WRFCOIN_ADDRESS_MAILBOX_URL')
+$AddressStateDir = Join-Path $Root 'addresses'
+$AddressLog = Join-Path $LogDir 'address.log'
+$AddressLogMaxBytes = 1MB
+$AddressTaskPath = '\WRFCoin\'
+$AddressTaskName = 'WRFCoin address'
+$AddressIntervalMinutes = 60
 
 function Show-Message([string]$Text, [string]$Icon = 'Information') {
     # Stop detaches from its own console to signal the node's, so writing to
@@ -854,6 +884,156 @@ function Unregister-ReceiptTimer {
     Show-Message 'The WRFCoin receipt timer is removed.'
 }
 
+function Read-AddressConfig {
+    # Like bond.conf: per user, comments and blank lines allowed, only
+    # $AddressKeys, each exactly once. Both are required.
+    if (-not (Test-Path -LiteralPath $AddressConfig)) {
+        Fail "missing $AddressConfig. Publishing a bonded node's address needs it: see windows-node.md, 'Address record'."
+    }
+    $pairs = [ordered]@{}
+    $n = 0
+    foreach ($raw in [System.IO.File]::ReadAllLines($AddressConfig)) {
+        $n++
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { Fail "${AddressConfig} line ${n} is not KEY=VALUE" }
+        $key = $line.Substring(0, $eq).Trim()
+        $value = $line.Substring($eq + 1).Trim()
+        if ($AddressKeys -cnotcontains $key) { Fail "${AddressConfig} line ${n}: $key cannot be set there (only $($AddressKeys -join ', '))" }
+        if ($pairs.Contains($key)) { Fail "${AddressConfig} defines $key twice" }
+        $ok = switch ($key) {
+            'WRFCOIN_BOND_DEPLOYMENT_ID' { $value -cmatch '^[0-9a-f]{64}$' }
+            'WRFCOIN_ADDRESS_MAILBOX_URL' { $value -cmatch '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$' }
+        }
+        if (-not $ok) { Fail "${AddressConfig} line ${n}: '$value' is not a valid $key" }
+        $pairs[$key] = $value
+    }
+    foreach ($key in $AddressKeys) {
+        if (-not $pairs.Contains($key)) { Fail "${AddressConfig} is missing $key" }
+    }
+    return $pairs
+}
+
+function Assert-AddressReady {
+    # Everything a publish pass needs, checked before a task is registered.
+    $cfg = Read-NodeConfig $Config
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'unattended address records are for testnet only' }
+    $reach = Read-ReachableConfig
+    if ((Resolve-NodeMode $reach) -ne 'bonded') { Fail "the address record is for a bonded node: set up bonded mode in $ReachableConfig first" }
+    if ([string]$reach['WRFCOIN_P2P_EXTERNAL_ADDR'] -cnotmatch '^/ip4/') {
+        Fail "${ReachableConfig}: the address record needs WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/<port> (a /dns4/ name is not accepted there)"
+    }
+    $addr = Read-AddressConfig
+    Protect-UserOnly $ServerKeyFile
+    if (-not (Test-Path -LiteralPath $CliExe)) { Fail "missing $CliExe - reinstall the package" }
+    return @{ Node = $cfg; Address = $addr }
+}
+
+function Write-AddressLog([string]$Line) {
+    # One line per change: a pass whose outcome matches the last line writes
+    # nothing, so an hourly "not open yet" never piles up.
+    if (Test-Path -LiteralPath $AddressLog) {
+        $last = Get-Content -LiteralPath $AddressLog -Tail 1 -ErrorAction SilentlyContinue
+        if ($last -and (($last -replace '^\S+ ', '') -ceq $Line)) { return }
+        if ((Get-Item -LiteralPath $AddressLog).Length -gt $AddressLogMaxBytes) {
+            Move-Item -LiteralPath $AddressLog -Destination "$AddressLog.1" -Force
+        }
+    }
+    Add-Content -LiteralPath $AddressLog -Value "$(Get-Date -Format o) $Line"
+}
+
+function Hide-Addresses([string]$Text) {
+    # The log never holds this node's public address.
+    $Text = $Text -replace '/(ip4|ip6|dns4)/[^/\s]+', '/$1/<addr>'
+    return ($Text -replace '\b\d{1,3}(\.\d{1,3}){3}\b', '<addr>')
+}
+
+function Invoke-AddressPublish {
+    $ready = Assert-AddressReady
+    $cfg = $ready.Node; $addr = $ready.Address
+    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    # The address the node itself announces, ending in /p2p/<its peer id>.
+    $announced = ''
+    try {
+        $peer = Invoke-RestMethod -Uri "$api/network/peer_id" -TimeoutSec 10
+        $announced = [string](Get-JsonField $peer 'external_addr')
+    } catch { }
+    if (-not $announced) {
+        Write-AddressLog 'address skipped (node not running, retry later)'
+        return
+    }
+    if ($announced -cnotmatch '^/ip4/[0-9.]+/tcp/[0-9]{1,5}/p2p/[1-9A-HJ-NP-Za-km-z]{40,60}$') {
+        Write-AddressLog 'address skipped (the node announces no /ip4/ address with a peer id; restart it after editing reachable.conf)'
+        exit 1
+    }
+    if (-not (Test-Path -LiteralPath $AddressStateDir)) { New-Item -ItemType Directory -Path $AddressStateDir | Out-Null }
+    Protect-UserOnly $AddressStateDir
+    # The keys and token go by file path only; wrfcoin.exe checks they are
+    # owner-only and never prints them. The mailbox gets no credential.
+    $cliArgs = @('--output', 'json', 'node', 'address', 'publish',
+        '--deployment-id', $addr['WRFCOIN_BOND_DEPLOYMENT_ID'],
+        '--multiaddr', $announced,
+        '--mailbox-url', $addr['WRFCOIN_ADDRESS_MAILBOX_URL'],
+        '--api-url', $api,
+        '--chain-id', $cfg['WRFCOIN_CHAIN_ID'],
+        '--network-id', $cfg['WRFCOIN_NETWORK_ID'],
+        '--genesis-hash', $cfg['WRFCOIN_GENESIS_HASH'],
+        '--state-dir', $AddressStateDir,
+        '--server-key-file', $ServerKeyFile,
+        '--p2p-key-file', (Join-Path $DataDir 'peer_identity.key'),
+        '--operator-token-file', $TokenFile)
+    # A native command's stderr must not become a terminating error here; the exit code decides.
+    $ErrorActionPreference = 'Continue'
+    $out = & $CliExe @cliArgs 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $status = ''
+    $last = @($out -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') }) | Select-Object -Last 1
+    if ($last) {
+        try {
+            $j = ConvertFrom-Json $last
+            $data = Get-JsonField $j 'data'
+            $err = Get-JsonField (Get-JsonField $j 'error') 'message'
+            if (Get-JsonField $data 'status') { $status = "status=$(Get-JsonField $data 'status') epoch=$(Get-JsonField (Get-JsonField $data 'summary') 'epoch')" }
+            if ($err -and $code -ne 2) { $status = "error=$(Hide-Addresses ("$err".Substring(0, [Math]::Min(300, "$err".Length))))" }
+        } catch { }
+    }
+    # The mailbox route is switched off server-side until it opens
+    # (404 ADDRESSES_DISABLED, or no route at all): wait quietly, no error.
+    $meaning = switch ($code) {
+        0 { 'done' }
+        2 { if ($out -match 'ADDRESSES_DISABLED|RECEIPT_HTTP_404') { 'mailbox not open yet, retry later' } else { 'retry later' } }
+        default { 'FAILED' }
+    }
+    Write-AddressLog ("address exit=$code ($meaning) $status".TrimEnd())
+    # 0 = stored or unchanged, 2 = run again later: both are normal for the timer.
+    if ($code -ne 0 -and $code -ne 2) { exit 1 }
+}
+
+function Register-AddressTimer {
+    [void](Assert-AddressReady)
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $argLine = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action PublishAddress -Quiet"
+    $taskAction = New-ScheduledTaskAction -Execute $ps -Argument $argLine -WorkingDirectory $AppDir
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+        -RepetitionInterval (New-TimeSpan -Minutes $AddressIntervalMinutes)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskPath $AddressTaskPath -TaskName $AddressTaskName -Action $taskAction -Trigger $trigger `
+        -Settings $settings -Principal $principal -Description 'WRFCoin bonded node: publish this epoch''s signed address record' -Force | Out-Null
+    Show-Message "Address publishing is on: every $AddressIntervalMinutes minutes while you are signed in. Log: $AddressLog"
+}
+
+function Unregister-AddressTimer {
+    $task = Get-ScheduledTask -TaskPath $AddressTaskPath -TaskName $AddressTaskName -ErrorAction SilentlyContinue
+    if (-not $task) { Show-Message 'The WRFCoin address timer is not set up.'; return }
+    Unregister-ScheduledTask -TaskPath $AddressTaskPath -TaskName $AddressTaskName -Confirm:$false
+    Show-Message 'The WRFCoin address timer is removed.'
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Config)) { Fail "missing $Config - reinstall the package" }
     switch ($Action) {
@@ -867,6 +1047,9 @@ try {
         'ReceiptTimer' { Initialize-UserState; Register-ReceiptTimer }
         'Receipt' { Initialize-UserState; Invoke-Receipt }
         'StopReceiptTimer' { Unregister-ReceiptTimer }
+        'AddressTimer' { Initialize-UserState; Register-AddressTimer }
+        'PublishAddress' { Initialize-UserState; Invoke-AddressPublish }
+        'StopAddressTimer' { Unregister-AddressTimer }
     }
 } catch {
     Fail "$($_.Exception.Message) ($($_.InvocationInfo.PositionMessage))"
