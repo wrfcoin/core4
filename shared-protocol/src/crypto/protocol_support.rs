@@ -94,6 +94,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     "bond_admission_key_retire_1",
     "station_registrar_key_retire_0",
     "station_registrar_key_retire_1",
+    "forecast_late_score_v2",
 ];
 
 /// One entry of the known-vulnerable registry: a version that must never be
@@ -363,7 +364,8 @@ mod tests {
                 "bond_admission_key_retire_0",
                 "bond_admission_key_retire_1",
                 "station_registrar_key_retire_0",
-                "station_registrar_key_retire_1"
+                "station_registrar_key_retire_1",
+                "forecast_late_score_v2"
             ]
         );
     }

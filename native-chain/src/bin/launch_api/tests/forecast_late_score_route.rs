@@ -97,7 +97,7 @@ mod tests {
     fn activate() {
         refresh_feature_schedule_extensions(vec![
             (ConsensusFeature::ForecasterKeyBinding.name().to_string(), 0),
-            (ConsensusFeature::ForecastLateScore.name().to_string(), 0),
+            (ConsensusFeature::ForecastLateScoreV2.name().to_string(), 0),
         ]);
     }
     /// Oracles 0x21..=0x23 in the oracle set and the key registry, quorum 2.
