@@ -255,6 +255,11 @@ pub enum ForecastCommands {
         #[clap(long)]
         forecast_type: Option<String>,
     },
+
+    /// Forecast late score: attest an observation (oracle job), sign it,
+    /// build and submit the ForecastScore transaction, read buckets.
+    #[clap(subcommand)]
+    Score(super::forecast_score::ForecastScoreCommands),
 }
 
 fn parse_pattern(pattern: &str) -> (&str, &str) {
@@ -338,12 +343,16 @@ pub async fn handle_forecast_command(
             "skill_score": receipt.metrics.skill_score,
         }));
     }
+    if let ForecastCommands::Score(action) = command {
+        return super::forecast_score::handle_forecast_score_command(action).await;
+    }
     let client = ApiClient::new(ApiConfig::default())?;
 
     match command {
         ForecastCommands::Commit { .. }
         | ForecastCommands::Reveal { .. }
-        | ForecastCommands::SignReceipt { .. } => unreachable!(),
+        | ForecastCommands::SignReceipt { .. }
+        | ForecastCommands::Score(_) => unreachable!(),
         ForecastCommands::Publish {
             title,
             description: _,

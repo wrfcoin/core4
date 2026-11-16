@@ -57,16 +57,24 @@ pub fn station_registrar_key_active(height: u64) -> bool {
 
 /// The registrar keys in force at `height` on this node's chain instance: none
 /// before activation, none on a chain with no pinned key, and none on a node
-/// that has not installed its chain authority (fail closed).
+/// that has not installed its chain authority (fail closed). A slot whose
+/// `station_registrar_key_retire_N` is active at `height` is left out; below
+/// that height the key authorizes exactly as before.
 pub fn registrar_keys_at(height: u64) -> Vec<String> {
     if !station_registrar_key_active(height) {
         return Vec::new();
     }
-    crate::governance::schedule_extension::schedule_extension_authority()
+    let pinned = crate::governance::schedule_extension::schedule_extension_authority()
         .map(|authority| {
             crate::governance::schedule_extension::station_registrar_keys(authority.genesis_hash())
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::crypto::chain_binding::retained_pinned_keys(
+        pinned,
+        crate::crypto::chain_binding::STATION_REGISTRAR_KEY_RETIREMENTS,
+        height,
+        feature_active,
+    )
 }
 
 /// `mob-` + the first 32 hex of

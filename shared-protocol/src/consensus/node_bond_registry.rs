@@ -129,13 +129,27 @@ pub fn bond_admission_key_active(height: u64) -> bool {
     feature_active(ConsensusFeature::BondAdmissionKey, height)
 }
 
-/// The admission keys in force on the chain `genesis` at `height`: none before
-/// activation, and none on a chain with no pinned key.
-fn admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
+/// Every admission key pinned for the chain `genesis`, retired or not, once
+/// the feature is active at `height`: none before activation, and none on a
+/// chain with no pinned key. The role-key separation check reads this, so a
+/// retired key stays unusable as a node server or consumer key.
+fn pinned_admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
     if !bond_admission_key_active(height) {
         return Vec::new();
     }
     crate::governance::schedule_extension::bond_admission_keys(&hex::encode(genesis))
+}
+
+/// The admission keys that may co-sign at `height`: the pinned keys minus
+/// every slot whose `bond_admission_key_retire_N` is active at `height`.
+/// Below a retirement the key co-signs exactly as before it existed.
+pub fn admission_keys_at(genesis: &[u8; 32], height: u64) -> Vec<String> {
+    crate::crypto::chain_binding::retained_pinned_keys(
+        pinned_admission_keys_at(genesis, height),
+        crate::crypto::chain_binding::BOND_ADMISSION_KEY_RETIREMENTS,
+        height,
+        feature_active,
+    )
 }
 
 /// Verify a passkey payout approval for `a`: the credential must derive
@@ -775,7 +789,7 @@ pub(crate) fn apply_lifecycle(
     }
     if matches!(a.action, NodeBondAction::Deposit | NodeBondAction::Update) {
         let role_keys = state.signing_keys.all_registered_public_keys();
-        let admission_keys = admission_keys_at(genesis, height);
+        let admission_keys = pinned_admission_keys_at(genesis, height);
         let mut forbidden: Vec<[u8; 32]> = role_keys
             .iter()
             .chain(state.oracle_set.iter())

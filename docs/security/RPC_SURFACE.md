@@ -66,6 +66,9 @@ that exploitation is currently demonstrated.
 | `GET /governance/advisory/proposals` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::list` | `public` | no | no | global-read |
 | `GET /governance/advisory/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::show` | `public` | no | no | global-read |
 | `GET /governance/advisory/proposals/{id}/eligibility` | `http` | `native-chain/src/bin/launch_api/routes/advisory_governance.rs:advisory_governance::eligibility` | `public` | no | no | global-read |
+| `GET /forecast/late-score` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::status` | `public` | no | no | global-read |
+| `GET /forecast/late-score/buckets/{id}` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::bucket` | `public` | no | no | global-read |
+| `GET /forecast/late-score/records/{commit_id}` | `http` | `native-chain/src/bin/launch_api/routes/forecast_late_score.rs:forecast_late_score::record` | `public` | no | no | global-read |
 | `GET /governance/proposals` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::list_governance_proposals` | `public` | no | yes | global-read |
 | `POST /governance/proposals/submit` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::submit_governance_proposal` | `admin` | yes | no | global-write |
 | `GET /governance/proposals/{id}` | `http` | `native-chain/src/bin/launch_api/routes/governance.rs:governance::get_governance_proposal` | `public` | no | no | global-read |
@@ -452,6 +455,22 @@ token), mutates state (mempool admission and gossip), no unbounded work (40 KiB 
 per-token limit 30 requests/minute (429). It is **not mounted** (404) unless
 `WRFCOIN_ENABLE_NODE_FRAUD_REPORT_API=1` (default off) and `NodeShareSettlement` is active. A non-forking
 change: it admits a transaction type the mempool and `apply` already handle.
+
+## Forecast late-score relay route (`forecast_late_score`)
+
+`POST /forecast/late-score/submit` (`routes/forecast_late_score.rs:forecast_late_score::submit`) is registered
+through a `web::resource(..)` (256 KiB JSON limit), which the table scanner (`.route(` only) does not see.
+Classification: `authenticated` (Contributor token), mutates state (mempool admission and gossip of a
+`ForecastScore`), bounded work. Each token may submit 60 scores a minute (429 `RATE_LIMITED`). A duplicate (409
+`ALREADY_PENDING`), a full pool (503 `MEMPOOL_FULL`) and the admission-cost check are refused before any signature
+work. Then, read-only at the tip, a signer outside the oracle set or a signature that does not verify through the
+signing-key registry is refused (422), with at most 16 ed25519 verifications, and the same again in mempool
+admission. Every listed forecast must be recorded, unscored and of the attested commit block (a read-only pre-check), and the one input must be the outpoint derived from the signed payload, so the pool holds one transaction per signed payload: a score with more valid signatures replaces a pending one with fewer, and an equal or smaller signer set is answered 409 before any signature work. A score with fewer signatures than the tip's quorum is admitted with `below_quorum_at_tip: true`, as the
+mempool and the P2P path admit it, because the including block may change the quorum. A score that does not apply is
+dropped at assembly and removed from that producer's mempool. It answers 503 `FEATURE_NOT_ACTIVE` until
+`forecast_late_score` is in force at the next block. Non-forking: it only admits a transaction the mempool and apply
+already handle, and consensus re-checks it at the inclusion height. The reads `GET /forecast/late-score`,
+`/forecast/late-score/buckets/{id}` and `/forecast/late-score/records/{commit_id}` are in the table above.
 
 ## Security-key wallet action route (`security_key_spend`)
 

@@ -446,6 +446,161 @@ async fn a_committed_fixture_chain_replays_to_verified() {
     let _ = std::fs::remove_file(&fixture.db_path);
 }
 
+/// Compare mode (`replay_verify --compare-metadata`): on the producer-built
+/// fixture chain, the metadata a validating follower derives equals what every
+/// block carries. The same comparison flags an edited copy of the reward
+/// block, so a zero count is a finding rather than a check that cannot fire.
+#[tokio::test]
+async fn compare_mode_finds_no_metadata_difference_on_the_fixture_chain() {
+    use replay_core::replay_persisted_chain_with_block_precheck;
+    use wrfcoin_consensus_engines::{ConsensusFactory, ConsensusType};
+    use wrfcoin_shared_protocol::blockchain::state::ContributionRewardRecord;
+
+    let fixture = build_fixture("compare").await;
+    let _env = helpers::test_env::lock();
+    let mut rng = StdRng::seed_from_u64(2_055_215);
+    let governance_key = PrivateKey::generate(&mut rng);
+    std::env::set_var(
+        GOVERNANCE_ENV,
+        PublicKey::from_private_key(&governance_key).to_hex(),
+    );
+
+    // The node's own consensus construction, as `replay_verify` builds it.
+    let adapter = ConsensusFactory::create_pop_adapter(&ConsensusFactory::default_config(
+        ConsensusType::ProofOfPublishing,
+    ));
+    let storage = Storage::open(&fixture.db_path, CHECKPOINT_INTERVAL).expect("reopen fixture");
+    let mut compared = 0u64;
+    let mut differences = Vec::new();
+    let mut reward_blocks_compared = 0u64;
+    let mut edited_reward_block_codes = Vec::new();
+    let verdict = replay_persisted_chain_with_block_precheck(
+        &storage,
+        None,
+        |state, block| {
+            compared += 1;
+            for mismatch in adapter.producer_metadata_mismatches_blocking(state, block) {
+                differences.push((block.height, mismatch));
+            }
+            let Some(raw) = block.metadata.get("reward_entries") else {
+                return;
+            };
+            reward_blocks_compared += 1;
+            let mut entries: Vec<ContributionRewardRecord> =
+                serde_json::from_str(raw).expect("fixture reward_entries decode");
+            entries[0].address = Address([0x5a; 20]);
+            let mut edited = block.clone();
+            edited.metadata.insert(
+                "reward_entries".to_string(),
+                serde_json::to_string(&entries).expect("entries serialize"),
+            );
+            edited_reward_block_codes.extend(
+                adapter
+                    .producer_metadata_mismatches_blocking(state, &edited)
+                    .into_iter()
+                    .map(|mismatch| mismatch.code),
+            );
+        },
+        |_| {},
+    );
+
+    assert!(
+        matches!(verdict, ReplayVerdict::Verified { .. }),
+        "compare mode must not change the replay itself, got {verdict:?}"
+    );
+    assert_eq!(compared, fixture.blocks, "every fixture block is compared");
+    assert!(
+        reward_blocks_compared >= 1,
+        "vacuity guard: the fixture carries a block with reward_entries"
+    );
+    assert_eq!(
+        differences,
+        Vec::new(),
+        "a producer-built chain carries exactly the metadata a follower derives"
+    );
+    assert_eq!(
+        edited_reward_block_codes,
+        vec!["SP_CONS_METADATA_REWARD_ENTRIES_MISMATCH"],
+        "the comparison must flag a reward entry with a changed payee"
+    );
+    let _ = std::fs::remove_file(&fixture.db_path);
+}
+
+/// The governance-order probe of `replay_verify --compare-metadata`. A block
+/// with no governance transitions is not probed. With a governance batch that
+/// commutes with the block's other transitions (a transfer between two
+/// accounts the block does not otherwise touch), both orders reach one root.
+/// A batch that cannot apply at all is reported as a failure, never as
+/// agreement.
+#[tokio::test]
+async fn the_governance_order_probe_reports_whether_the_two_orders_agree() {
+    use replay_core::probe_governance_order;
+
+    let fixture = build_fixture("order-probe").await;
+    let _env = helpers::test_env::lock();
+    let storage = Storage::open(&fixture.db_path, CHECKPOINT_INTERVAL).expect("reopen fixture");
+    let mut state = storage
+        .load_genesis_state()
+        .expect("genesis state loads")
+        .expect("fixture persists a genesis state");
+    let block = storage
+        .load_blocks_range(1, 1)
+        .expect("block 1 loads")
+        .pop()
+        .expect("fixture has block 1");
+    assert!(
+        probe_governance_order(&state, &block).is_none(),
+        "a block without governance transitions is not probed"
+    );
+
+    let payer = Address([0x61; 20]);
+    let payee = Address([0x62; 20]);
+    state.create_account(payer, Balance::new(1_000));
+    state.recalculate_state_root();
+    let transfer = |amount: u128| {
+        serde_json::to_string(&vec![StateTransition::BalanceTransfer {
+            from: payer,
+            to: payee,
+            amount: Balance::new(amount),
+            nonce: Some(0),
+            current_block: 1,
+        }])
+        .expect("transition list serializes")
+    };
+
+    let mut commuting = block.clone();
+    commuting.metadata.insert("governance_transitions".to_string(), transfer(10));
+    let probe = probe_governance_order(&state, &commuting).expect("a governance block is probed");
+    assert_eq!(probe.governance_transitions, 1);
+    assert!(
+        probe.transitions_before_governance > 0,
+        "vacuity guard: the block has transitions the follower applies before governance, so \
+         two different orders were really applied: {probe:?}"
+    );
+    assert!(probe.launch_first.is_ok() && probe.governance_first.is_ok(), "{probe:?}");
+    assert!(probe.orders_agree(), "an unrelated transfer commutes: {probe:?}");
+    // The fixture block commits to the root of a state without the extra
+    // account and transfer, so the comparison with it must report a mismatch
+    // here, and must report nothing for a block that carries no commitment.
+    assert_eq!(probe.launch_first_matches_committed(), Some(false), "{probe:?}");
+    let mut uncommitted = commuting.clone();
+    uncommitted.metadata.remove(STATE_ROOT_METADATA_KEY);
+    let probe_uncommitted =
+        probe_governance_order(&state, &uncommitted).expect("a governance block is probed");
+    assert_eq!(probe_uncommitted.launch_first_matches_committed(), None);
+
+    // A batch neither order can apply (the payer does not have the funds):
+    // the probe must report a failure rather than agreement.
+    let mut failing = block.clone();
+    failing.metadata.insert("governance_transitions".to_string(), transfer(1_000_000));
+    let probe = probe_governance_order(&state, &failing).expect("a governance block is probed");
+    assert!(
+        !probe.orders_agree() && probe.launch_first.is_err() && probe.governance_first.is_err(),
+        "a batch that cannot apply must not read as agreement: {probe:?}"
+    );
+    let _ = std::fs::remove_file(&fixture.db_path);
+}
+
 /// RED control: perturb the replaying state at a chosen height and the
 /// harness must FAIL and name exactly that height. This is the harness's
 /// permanently-wired proof that it can detect divergence at all — the height

@@ -39,6 +39,10 @@ pub fn extract_transitions(
     if state.node_share_activation_height().is_some_and(|a| block_height >= a) {
         transitions.push(StateTransition::BeginNodeServiceBlock { block_height, parent_hash: *block.prev_block_hash.as_bytes() });
     }
+    // Where the block's governance transitions go under
+    // `governance_before_launch`: here, straight after the node-service begin and before the
+    // launch batch, which is the order the producer applies them in.
+    let governance_slot = transitions.len();
     let mut launch_transitions = Vec::new();
     if let Some(config) = wrfcoin_shared_protocol::crypto::chain_binding::GenesisEmissionConfig::from_block(block) {
         let transition = StateTransition::RecordGenesisEmissionConfig { config };
@@ -79,6 +83,15 @@ pub fn extract_transitions(
                         block_height,
                         security_key_auth: tx.security_key_spend_proof(),
                     };
+                    launch_transitions.push(transition.clone()); transitions.push(transition);
+                }
+            },
+            // Forecast late score: the same parse as the PoP producer arm, with
+            // the block's own height and timestamp, so producer == applier ==
+            // WAL replay. The apply arm is gated and fails closed.
+            TransactionType::ForecastScore => {
+                if let Some(payload) = wrfcoin_shared_protocol::consensus::forecast_late_score::ForecastScorePayload::parse(tx) {
+                    let transition = StateTransition::ApplyForecastScore { payload, block_height, block_timestamp };
                     launch_transitions.push(transition.clone()); transitions.push(transition);
                 }
             },
@@ -381,6 +394,13 @@ pub fn extract_transitions(
         }
     }
 
+    // `forecast_late_score`: one bucket close per block, after the block's
+    // transactions, from the same constructor as the PoP producer's launch
+    // batch. `None` (nothing emitted) while the feature is not in force.
+    if let Some(close) = wrfcoin_shared_protocol::consensus::proof_of_publishing::ProofOfPublishing::forecast_bucket_close_transition(block_height, block_timestamp) {
+        transitions.push(close);
+    }
+
     // Governance transitions — read from block metadata if available (miner
     // already computed them in apply_governance_transitions, #940), otherwise
     // fall back to simulation (needed for legacy blocks without the key).
@@ -440,7 +460,19 @@ pub fn extract_transitions(
             &launch_transitions,
         )
     };
-    transitions.extend(governance_transitions);
+    // The producer applies governance BEFORE its launch batch
+    // (`create_next_block`: governance, then launch transitions, then
+    // rewards). A forecast score reads the oracle set, the quorum and the
+    // signing-key registry, and a bucket close reads `stake_required`, all of
+    // which a governance transition of the same block can change; so from
+    // `forecast_late_score` the replay uses the producer's order. Below it the
+    // order is unchanged (governance after the launch batch), so no existing
+    // block replays differently.
+    if wrfcoin_shared_protocol::crypto::chain_binding::governance_before_launch(block_height) {
+        transitions.splice(governance_slot..governance_slot, governance_transitions);
+    } else {
+        transitions.extend(governance_transitions);
+    }
     transitions.extend(low_quality_streak_transitions);
 
     if let Some(entries_json) = block

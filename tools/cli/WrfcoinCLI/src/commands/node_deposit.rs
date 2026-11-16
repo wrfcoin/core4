@@ -14,9 +14,70 @@ use wrfcoin_shared_protocol::{
         node_bond_registry::{NODE_BOND_UNITS, NodeBondLifecycle, node_bond_escrow_address},
         node_share_contracts::*,
     },
-    crypto::{chain_binding::ChainIdentity, hash::hash_bytes, signature::PublicKey},
+    crypto::{
+        chain_binding::{BOND_ADMISSION_KEY_RETIREMENTS, ChainIdentity, retained_pinned_keys},
+        hash::hash_bytes,
+        signature::PublicKey,
+    },
     governance::schedule_extension::bond_admission_keys,
 };
+
+/// The bond admission keys a co-sign may come from at the node's next height:
+/// this binary's pins for `genesis_hex`, in slot order, minus every slot whose
+/// `bond_admission_key_retire_N` is active there (the same rule as
+/// `chain_binding::retained_pinned_keys`, which consensus applies). `upgrade`
+/// is the node's `GET /network/upgrade` answer. Fails closed when the schedule
+/// cannot be read, is still provisional, or is truncated so that a retirement
+/// entry might be missing from it.
+pub(crate) fn admission_keys_in_force(genesis_hex: &str, upgrade: &Value) -> Result<Vec<String>> {
+    let unreadable = || {
+        anyhow::anyhow!(
+            "the node's feature schedule (/network/upgrade) is unreadable; refusing to choose a bond admission key"
+        )
+    };
+    let view = &upgrade["scheduled"];
+    let next = view["next_height"].as_u64().ok_or_else(unreadable)?;
+    let entries = view["entries"].as_array().ok_or_else(unreadable)?;
+    let truncated = view["truncated"].as_bool().ok_or_else(unreadable)?;
+    ensure!(
+        view["base_provisional"] == false,
+        "the node's feature schedule is still provisional (block 1 not synced); run again once it has synced"
+    );
+    let mut active = Vec::new();
+    for feature in BOND_ADMISSION_KEY_RETIREMENTS {
+        let mut found = false;
+        for entry in entries.iter().filter(|e| e["feature"].as_str() == Some(feature.name())) {
+            found = true;
+            if entry["activation_height"].as_u64().ok_or_else(unreadable)? <= next {
+                active.push(*feature);
+            }
+        }
+        ensure!(
+            found || !truncated,
+            "the node's feature schedule is truncated, so whether {} is active cannot be told; refusing to choose a bond admission key",
+            feature.name()
+        );
+    }
+    Ok(retained_pinned_keys(
+        bond_admission_keys(genesis_hex),
+        BOND_ADMISSION_KEY_RETIREMENTS,
+        next,
+        |feature, _| active.contains(&feature),
+    ))
+}
+
+/// [`admission_keys_in_force`] read from the node at `api`.
+pub(crate) async fn read_admission_keys_in_force(api: &ApiClient, genesis_hex: &str) -> Result<Vec<String>> {
+    let upgrade = api
+        .receipt_request("GET", "/network/upgrade", None)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the node's feature schedule (/network/upgrade) could not be read; refusing to choose a bond admission key"
+            )
+        })?;
+    admission_keys_in_force(genesis_hex, &upgrade)
+}
 
 #[derive(Args)]
 pub struct DepositArgs {
@@ -366,6 +427,15 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
         .receipt_request("GET", &format!("/addresses/{owner}"), None)
         .await?;
     let nonce = number(&account["nonce"])?;
+    if args.admission_cosign {
+        let genesis = hex::encode(id(&args.genesis_hash)?);
+        ensure!(
+            read_admission_keys_in_force(&api, &genesis)
+                .await?
+                .contains(&hex::encode(id(&args.governance_key)?)),
+            "--governance-key is a bond admission key retired at the node's next height; use the key in force"
+        );
+    }
     let expected = unsigned(args, nonce, epoch.effective_epoch()?)?;
     let payload = NodeBondLifecycle::parse(&expected).unwrap();
     if args.dry_run {
@@ -492,6 +562,135 @@ pub async fn handle(args: &DepositArgs) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `GET /network/upgrade` with the given `(feature, activation)` entries at tip 1000.
+    fn upgrade(entries: &[(&str, u64)], truncated: bool, provisional: bool) -> Value {
+        json!({"tip_height":1000,"scheduled":{"status":"ready","next_height":1001,"version_at_next":2,
+            "base_provisional":provisional,"total_entries":entries.len(),"truncated":truncated,"warnings":[],
+            "entries":entries.iter().map(|(f, h)| json!({"feature":f,"activation_height":h,"source":"extension",
+                "known":true,"active_at_next":*h <= 1001,"blocks_remaining":h.saturating_sub(1001)})).collect::<Vec<_>>()}})
+    }
+
+    fn shared_pin() -> (String, String, String) {
+        let genesis = hex::encode([7u8; 32]);
+        let (online, spare) = (
+            hex::encode(super::super::node_bond::fixture::pk(60)),
+            hex::encode(super::super::node_bond::fixture::pk(62)),
+        );
+        wrfcoin_shared_protocol::governance::schedule_extension::install_bond_admission_pin_for_tests(
+            &genesis,
+            vec![online.clone(), spare.clone()],
+        );
+        (genesis, online, spare)
+    }
+
+    /// The same slot rule as `chain_binding::retained_pinned_keys`, read from the node's schedule.
+    #[test]
+    fn admission_keys_in_force_drop_retired_slots_at_the_next_height() {
+        let (genesis, online, spare) = shared_pin();
+        let keys = |u: &Value| admission_keys_in_force(&genesis, u).unwrap();
+        assert_eq!(keys(&upgrade(&[], false, false)), [online.clone(), spare.clone()]);
+        assert_eq!(keys(&upgrade(&[("bond_admission_key_retire_0", 1001)], false, false)), std::slice::from_ref(&spare));
+        assert_eq!(keys(&upgrade(&[("bond_admission_key_retire_0", 900)], false, false)), std::slice::from_ref(&spare));
+        // Scheduled but not yet active at tip + 1: still in force.
+        assert_eq!(keys(&upgrade(&[("bond_admission_key_retire_0", 1002)], false, false)), [online.clone(), spare.clone()]);
+        assert_eq!(keys(&upgrade(&[("bond_admission_key_retire_1", 10)], false, false)), std::slice::from_ref(&online));
+        assert!(keys(&upgrade(&[("bond_admission_key_retire_0", 10), ("bond_admission_key_retire_1", 10)], false, false)).is_empty());
+        // Other features never retire a slot.
+        assert_eq!(keys(&upgrade(&[("station_registrar_key_retire_0", 10)], false, false)), [online.clone(), spare.clone()]);
+        // A truncated view may have dropped an old retirement: only an entry that is present decides.
+        assert_eq!(
+            keys(&upgrade(&[("bond_admission_key_retire_0", 10), ("bond_admission_key_retire_1", 5000)], true, false)),
+            std::slice::from_ref(&spare)
+        );
+        // Fail closed: truncated without the entry, provisional, or unreadable.
+        let fails = |u: Value, says: &str| {
+            let err = admission_keys_in_force(&genesis, &u).unwrap_err().to_string();
+            assert!(err.contains(says), "{err}");
+        };
+        fails(upgrade(&[("bond_admission_key_retire_0", 10)], true, false), "truncated");
+        fails(upgrade(&[], false, true), "provisional");
+        fails(json!({}), "unreadable");
+        fails(json!({"scheduled":{"next_height":1001,"truncated":false,"base_provisional":false}}), "unreadable");
+        fails(json!({"scheduled":{"next_height":"1001","entries":[],"truncated":false,"base_provisional":false}}), "unreadable");
+        let mut bad = upgrade(&[("bond_admission_key_retire_0", 10)], false, false);
+        bad["scheduled"]["entries"][0]["activation_height"] = json!("ten");
+        fails(bad, "unreadable");
+        // Another chain's genesis pins nothing here.
+        assert!(admission_keys_in_force(&hex::encode([8u8; 32]), &upgrade(&[], false, false)).unwrap().is_empty());
+    }
+
+    /// A Deposit plan naming a retired admission key is refused before anything is written;
+    /// the key in force passes; an unreadable schedule fails closed.
+    #[test]
+    fn a_deposit_naming_a_retired_admission_key_is_refused() {
+        let (genesis, online, spare) = shared_pin();
+        let key = |n: u8| OperatorKey::from_seed(&[n; 32]).unwrap();
+        let hexpk = |n: u8| hex::encode(key(n).public_key().as_bytes());
+        let owner = key(1).address();
+        let dir = std::env::temp_dir().join(format!("wrfcoin-deposit-retire-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        std::fs::write(&token, "synthetic-deposit-cli-bearer").unwrap(); // secret-leak-ok: fixed synthetic bearer for mock server only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let deployment = hex::encode([9u8; 32]);
+        let envelope = |data: Value| json!({"ok":true,"data":data,"error":null,"meta":{"request_id":"r"}}).to_string();
+        let mut server = mockito::Server::new();
+        let url = server.url();
+        let _n = server.mock("GET", "/network/info")
+            .with_body(json!({"network_id":"testnet","chain_id":"777","genesis_hash":format!("0x{genesis}")}).to_string())
+            .create();
+        let _b = server.mock("GET", "/blockchain").with_body(envelope(json!({"height":48001}))).create();
+        let _r = server.mock("GET", format!("/node/bonds/{deployment}").as_str())
+            .with_body(json!({"height":"48001","activation_height":"48000","epoch":"0","deployment_id":deployment,
+                "status":"UNKNOWN","registration":null}).to_string())
+            .create();
+        let _a = server.mock("GET", format!("/addresses/{owner}").as_str())
+            .with_body(envelope(json!({"address":owner.to_string(),"balance":"1","nonce":"3"})))
+            .create();
+        let args = |governance_key: &str| DepositArgs {
+            deployment_id: deployment.clone(),
+            owner_key: hexpk(1),
+            payout_address: key(2).address().to_string(),
+            payout_key: Some(hexpk(2)),
+            payout_passkey_assertion: None,
+            server_key: hexpk(3),
+            consumer_key: hexpk(4),
+            governance_key: governance_key.into(),
+            admission_cosign: true,
+            service_alias: "node-a".into(),
+            genesis_hash: genesis.clone(),
+            chain_id: "777".into(),
+            network_id: "testnet".into(),
+            activation_height: 48000,
+            api_url: url.clone(),
+            operator_token_file: token.clone(),
+            key_file: None,
+            approvals_file: None,
+            fee: 1_000_000,
+            out: None,
+            dry_run: true,
+        };
+        let run = |a: &DepositArgs| tokio::runtime::Runtime::new().unwrap().block_on(handle(a));
+        {
+            let _u = server.mock("GET", "/network/upgrade")
+                .with_body(upgrade(&[("bond_admission_key_retire_0", 900)], false, false).to_string())
+                .create();
+            let err = run(&args(&online)).unwrap_err().to_string();
+            assert!(err.contains("retired"), "{err}");
+            assert_eq!(run(&args(&spare)).unwrap()["dry_run"], true);
+        }
+        {
+            let _u = server.mock("GET", "/network/upgrade").with_status(503).create();
+            let err = run(&args(&spare)).unwrap_err().to_string();
+            assert!(err.contains("could not be read"), "{err}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn api_hash_accepts_launch_api_0x_form_and_bare_hex() {

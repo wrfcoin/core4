@@ -154,6 +154,10 @@ pub async fn inspect(
     let escrow = registration.and_then(|r| chain.state.accounts.get(&r.binding.escrow_account));
     HttpResponse::Ok().json(serde_json::json!({"height":chain.height.to_string(),"activation_height":registry.activation_height.to_string(),
         "epoch":wrfcoin_shared_protocol::consensus::node_bond_registry::epoch_at(registry.activation_height,chain.height).map(|e|e.to_string()),
+        // Last height of the current epoch: a receipt for this epoch must be included by then
+        // (`wrfcoin node receipt auto` stops re-posting shortly before it).
+        "epoch_close_height":wrfcoin_shared_protocol::consensus::node_bond_registry::epoch_at(registry.activation_height,chain.height)
+            .and_then(|e|wrfcoin_shared_protocol::consensus::node_bond_registry::epoch_close(registry.activation_height,e)).map(|h|h.to_string()),
         "deployment_id":hex::encode(id),"status":if registration.is_some(){"REGISTERED"}else{"UNKNOWN"},
         "principal_base_units":registration.map(|r|r.principal_units.to_string()),
         "escrow_balance_base_units":escrow.map(|a|a.balance.0.to_string()),

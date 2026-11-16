@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 79],
+    records: [Option<Undo>; 81],
 }
 
 impl TransitionUndo {
@@ -96,6 +96,8 @@ impl TransitionUndo {
             node_fraud: _,
             send_allowlists: _,
             advisory_proposals: _,
+            forecast_late_score: _,
+            station_submitters: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -188,6 +190,8 @@ impl TransitionUndo {
             capture!(node_fraud),
             capture!(send_allowlists),
             capture!(advisory_proposals),
+            capture!(forecast_late_score),
+            capture!(station_submitters),
         ];
         Self { records }
     }
@@ -282,7 +286,8 @@ const PROTOCOL: &[&str] = &[
     // through the governance sink; balances and nonces are in COMMON.
     "advisory_proposals",
 ];
-const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger"];
+// `station_submitters`: owner steps can clear an approved submitter key.
+const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger", "station_submitters"];
 const NODE: &[&str] = &[
     "node_bond_registry",
     "node_receipt_registry",
@@ -311,7 +316,16 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         ApplyGamificationReward { .. } => &["gamification_claims_seen"],
         ApplyProducerSettlement { .. } => &["last_producer_settlement"],
         ApplyAttesterSettlements { .. } => &["attester_settlements", "attester_settlement_due"],
-        RegisterCommit { .. } => &["commit_reveal_state", "pending_commits", "pending_reveals"],
+        // `forecast_late_score`: a forecast commit notes its signer; a
+        // forecast reveal stores a record.
+        // `device_submission_limit`: a contribution commit records its signer class.
+        RegisterCommit { .. } => &[
+            "commit_reveal_state",
+            "pending_commits",
+            "pending_reveals",
+            "forecast_late_score",
+            "station_submitters",
+        ],
         ApplyReveal { .. } => &[
             "commit_reveal_state",
             "pending_commits",
@@ -326,6 +340,7 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             "slashing_engine",
             "slashing_reason_counts",
             "zk_verified_proofs",
+            "forecast_late_score",
         ],
         ApplyConfidentialTransfer { .. }
         | ApplyShieldedDeposit { .. }
@@ -377,13 +392,17 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
         | ApplyStationOwnerAction { .. }
         | ApplyStationOwnerRecoveryFiling { .. }
         | ApplyStationOwnerRecoveryCancel { .. }
-        | ApplyStationOwnerRecoveryExecute { .. } => STATION,
+        | ApplyStationOwnerRecoveryExecute { .. }
+        | ApplyStationSubmitterKey { .. } => STATION,
         BeginNodeServiceBlock { .. }
         | ApplyNodeBondLifecycle { .. }
         | ApplyNodeServiceBatch { .. }
         | ApplyNodeFraudReport { .. } => NODE,
         // Writes the record; the deposit refund is a balance (COMMON).
         FinalizeAdvisoryProposal { .. } => &["advisory_proposals"],
+        // Scores and bucket closes write only the lane's own state; the
+        // close's mints are balances and the emission ledger (COMMON).
+        ApplyForecastScore { .. } | CloseForecastBuckets { .. } => &["forecast_late_score"],
     }
 }
 
@@ -494,5 +513,8 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyNodeBondLifecycle { .. } => "ApplyNodeBondLifecycle",
         StateTransition::ApplyNodeServiceBatch { .. } => "ApplyNodeServiceBatch",
         StateTransition::ApplyNodeFraudReport { .. } => "ApplyNodeFraudReport",
+        StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
+        StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
+        StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
     }
 }
