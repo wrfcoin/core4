@@ -40,6 +40,8 @@ const GOVERNANCE: u8 = 0x60;
 const WOULD_BE_REGISTRAR: u8 = 0x51;
 /// Chain 888's public block-1 hash, from `packaging/windows/chain-888.conf`.
 const CHAIN_888: &str = "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+/// A chain instance with no registrar pin (a made-up block-1 hash).
+const OTHER_CHAIN: &str = "1111111111111111111111111111111111111111111111111111111111111111"; // pragma: allowlist secret -- not a real chain
 
 fn install() {
     std::env::set_var(GOVERNANCE_ENV, pk_hex(GOVERNANCE));
@@ -123,9 +125,10 @@ fn signed(mut p: StationRegistrationPayload, owner: &PrivateKey, signer: u8) -> 
 }
 
 #[test]
-fn this_binary_pins_no_registrar_key_on_any_chain() {
-    assert!(STATION_REGISTRAR_KEY_PINS.is_empty());
-    assert!(station_registrar_keys(CHAIN_888).is_empty());
+fn this_binary_pins_registrar_keys_on_chain_888_only() {
+    assert_eq!(STATION_REGISTRAR_KEY_PINS.len(), 1);
+    assert_eq!(station_registrar_keys(CHAIN_888).len(), 2);
+    assert!(station_registrar_keys(OTHER_CHAIN).is_empty());
     assert!(station_registrar_keys(&genesis_hex()).is_empty());
 }
 
@@ -161,19 +164,27 @@ fn a_binary_without_the_key_stops_cleanly_at_the_activation() {
 }
 
 #[test]
-fn it_cannot_be_scheduled_on_chain_888_or_anywhere_else() {
+fn it_is_schedulable_on_chain_888_only_once_pinned() {
+    let f = ConsensusFeature::StationRegistrarKey;
+    assert!(f.schedulable(Some(CHAIN_888)));
+    assert!(!f.schedulable(Some(OTHER_CHAIN)));
+    assert!(!f.schedulable(None));
+}
+
+#[test]
+fn it_cannot_be_scheduled_on_an_unpinned_chain() {
     let f = ConsensusFeature::StationRegistrarKey;
     let extension = FeatureScheduleExtension {
-        chain_id: "888".into(),
+        chain_id: "999".into(),
         network_id: "testnet".into(),
-        genesis_hash: CHAIN_888.into(),
+        genesis_hash: OTHER_CHAIN.into(),
         sequence: 0,
         entries: vec![ScheduleEntry::new(f.name(), 21_200 + MIN_RUNUP_BLOCKS)],
         version_steps: Vec::new(),
         min_protocol_version: 3,
         release_commit: "ab1b1a4930000000000000000000000000000000".into(),
     };
-    for node in [None, Some(CHAIN_888)] {
+    for node in [None, Some(OTHER_CHAIN)] {
         assert!(!f.schedulable(node), "{node:?}");
         assert_eq!(
             check_admission_policy(&extension, node),

@@ -1196,6 +1196,12 @@ pub enum StationOwnerActionKind {
     Deactivate,
     /// Owner reactivation of a self-deactivated (not frozen) station.
     Reactivate,
+    /// `station_submitter_key` (#3565 design 1): approve (or clear) the ONE key
+    /// that may sign contribution commits for this station besides the owner
+    /// key. The key and its [`SubmitterClass`] ride the payload's
+    /// `submitter_pubkey` / `submitter_class` and are part of the signed
+    /// preimage ([`station_owner_set_submitter_message_with_domain`]).
+    SetSubmitterKey,
 }
 
 impl StationOwnerActionKind {
@@ -1206,6 +1212,61 @@ impl StationOwnerActionKind {
             Self::Unfreeze => 2,
             Self::Deactivate => 3,
             Self::Reactivate => 4,
+            Self::SetSubmitterKey => 5,
+        }
+    }
+}
+
+/// Who an approved submitter key belongs to (`station_submitter_key`). Values
+/// are frozen: append, never renumber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitterClass {
+    /// The key lives on the device that measures (a phone collect key, a
+    /// station's own key): its committed `timestamp` is the device's clock.
+    Device,
+    /// A service relays readings it fetched elsewhere (the house collector):
+    /// its committed `timestamp` is the relay's claim.
+    Relay,
+}
+
+impl SubmitterClass {
+    /// Frozen preimage / state-root discriminant.
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            Self::Device => 1,
+            Self::Relay => 2,
+        }
+    }
+}
+
+/// Which key signed an accepted contribution commit for a registered station
+/// while `device_submission_limit` is active: the owner key, or the station's
+/// approved submitter key of a given class. Recorded on chain so a later
+/// late-data rule can tell device clocks from relayed ones. Values are frozen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitSignerClass {
+    Owner,
+    Device,
+    Relay,
+}
+
+impl CommitSignerClass {
+    /// Frozen state-root discriminant.
+    pub const fn discriminant(self) -> u8 {
+        match self {
+            Self::Owner => 1,
+            Self::Device => 2,
+            Self::Relay => 3,
+        }
+    }
+
+    /// The signer class of an approved submitter key.
+    pub const fn of_submitter(class: SubmitterClass) -> Self {
+        match class {
+            SubmitterClass::Device => Self::Device,
+            SubmitterClass::Relay => Self::Relay,
         }
     }
 }
@@ -1246,6 +1307,43 @@ pub fn station_owner_action_message_with_domain(
     buf.push(action.discriminant());
     buf.extend_from_slice(&action_nonce.to_le_bytes());
     buf.extend_from_slice(&expires_at_height.to_le_bytes());
+    buf
+}
+
+/// Preimage of a `set_submitter_key` owner action (`station_submitter_key`):
+/// the [`station_owner_action_message_with_domain`] bytes for
+/// [`StationOwnerActionKind::SetSubmitterKey`], then `0` (clear) or `1`,
+/// the length-prefixed lowercase-hex submitter key and its class
+/// discriminant. The four older actions never use this, so their signed bytes
+/// are unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn station_owner_set_submitter_message_with_domain(
+    chain_id: &str,
+    network_id: &str,
+    station_id: &str,
+    owner_address: &str,
+    action_nonce: u64,
+    expires_at_height: u64,
+    submitter: Option<(&str, SubmitterClass)>,
+) -> Vec<u8> {
+    let mut buf = station_owner_action_message_with_domain(
+        chain_id,
+        network_id,
+        station_id,
+        owner_address,
+        StationOwnerActionKind::SetSubmitterKey,
+        action_nonce,
+        expires_at_height,
+    );
+    match submitter {
+        None => buf.push(0),
+        Some((pubkey, class)) => {
+            buf.push(1);
+            buf.extend_from_slice(&(pubkey.len() as u32).to_le_bytes());
+            buf.extend_from_slice(pubkey.as_bytes());
+            buf.push(class.discriminant());
+        },
+    }
     buf
 }
 

@@ -129,6 +129,9 @@ const STATION: &str = "st-parity-1";
 /// A whole hour.
 const START: i64 = 1_800_000_000 - 1_800_000_000 % 3_600;
 const HOUR: i64 = 3_600;
+/// The lead every forecast here uses (the chain scores 6, 12 and 24 h).
+const LEAD: u32 = 6;
+const LEAD_SECS: i64 = LEAD as i64 * HOUR;
 
 struct ManualClock(AtomicI64);
 impl Clock for ManualClock {
@@ -629,7 +632,7 @@ async fn run() {
                 who,
                 "forecast",
                 serde_json::json!({ "temp_c_centi": t }),
-                Some(1),
+                Some(LEAD),
                 now,
                 &format!("warm{round}-{name}"),
             ));
@@ -637,7 +640,7 @@ async fn run() {
                 who,
                 "forecast",
                 serde_json::json!({ "pressure_pa": p }),
-                Some(1),
+                Some(LEAD),
                 now,
                 &format!("warm{round}-{name}-p"),
             ));
@@ -706,10 +709,10 @@ async fn run() {
         let attestation = ObservationAttestation {
             station_id: STATION.to_string(),
             variable,
-            lead_hours: 1,
+            lead_hours: LEAD,
             commit_height,
             commit_time,
-            target: commit_time + HOUR,
+            target: commit_time + LEAD_SECS,
             truth: truth_value,
             truth_commit_id: warm_truth.commit_id.clone(),
             reference: 300,
@@ -759,7 +762,7 @@ async fn run() {
         ));
     }
     assert_eq!(warm_scores.len(), WARMUP_SCORES);
-    let last_warm_target = warm_rounds.last().map(|r| r.1 + HOUR).unwrap();
+    let last_warm_target = warm_rounds.last().map(|r| r.1 + LEAD_SECS).unwrap();
     now = last_warm_target + SCORE_OPENS_AFTER_SECS;
     let warm_relay = Address([0x78; 20]);
     for chunk in warm_scores.chunks(MAX_FORECAST_SCORE_TXS_PER_BLOCK) {
@@ -775,7 +778,7 @@ async fn run() {
     let record_len = |s: &State, who: &PrivateKey, variable| {
         s.forecast_late_score
             .track_records
-            .get(&track_record_key(&address_of(who), STATION, variable, 1))
+            .get(&track_record_key(&address_of(who), STATION, variable, LEAD))
             .map_or(0, |record| record.skills.len())
     };
     for who in [&alice, &bob, &carol] {
@@ -801,11 +804,11 @@ async fn run() {
     }
     assert_eq!(height, ACTIVE + 2 + WARMUP_BLOCKS);
 
-    // ---- Three forecasters, 1 h lead, temperature and pressure: two
+    // ---- Three forecasters, 6 h lead, temperature and pressure: two
     // buckets, all six commits in one block. ----
     now += 60;
     let forecast = |who: &PrivateKey, data: serde_json::Value, tag: &str| {
-        commit_reveal(who, "forecast", data, Some(1), now, tag)
+        commit_reveal(who, "forecast", data, Some(LEAD), now, tag)
     };
     let f_alice = forecast(&alice, serde_json::json!({"temp_c_centi": 2_040}), "alice");
     let f_bob = forecast(&bob, serde_json::json!({"temp_c_centi": 2_150}), "bob");
@@ -835,7 +838,7 @@ async fn run() {
             .map(|f| ("forecast reveal", f.reveal.clone()))
             .collect()
     );
-    let target = commit_time + HOUR;
+    let target = commit_time + LEAD_SECS;
     {
         let lane = &follower.forecast_late_score;
         assert_eq!(lane.records.len(), 6);
@@ -876,7 +879,7 @@ async fn run() {
         let attestation = ObservationAttestation {
             station_id: STATION.to_string(),
             variable,
-            lead_hours: 1,
+            lead_hours: LEAD,
             commit_height,
             commit_time,
             target,

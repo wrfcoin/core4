@@ -434,6 +434,12 @@ pub enum ScheduleExtensionError {
     /// `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS` blocks, or without the
     /// key binding scheduled at all.
     ForecastLateScoreTooEarly { activation_height: u64, key_binding_activation: Option<u64> },
+    /// ADMISSION POLICY, not validity: `device_submission_limit` named less
+    /// than `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` blocks after
+    /// `station_submitter_key`, or without it scheduled at all (also when an
+    /// extension schedules `station_submitter_key` too late for an already
+    /// scheduled limit).
+    DeviceSubmissionLimitTooEarly { activation_height: u64, submitter_key_activation: Option<u64> },
     /// SIGNING policy: a name held by [`HELD_FEATURE_PREFIXES`] is refused by
     /// every library signer that takes no faucet proof of possession
     /// ([`sign_feature_schedule_extension`] and `…_with_key`); it is signed
@@ -580,6 +586,14 @@ impl std::fmt::Display for ScheduleExtensionError {
                  least {} blocks after forecaster_key_binding ({})",
                 crate::crypto::chain_binding::FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS,
                 key_binding_activation
+                    .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
+            ),
+            Self::DeviceSubmissionLimitTooEarly { activation_height, submitter_key_activation } => write!(
+                f,
+                "device_submission_limit at height {activation_height} is too early: it must activate at \
+                 least {} blocks after station_submitter_key ({})",
+                crate::crypto::chain_binding::DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS,
+                submitter_key_activation
                     .map_or_else(|| "not scheduled".to_string(), |h| format!("activates at {h}")),
             ),
             Self::FeatureHeld { feature, until } => write!(
@@ -978,6 +992,16 @@ const BOND_ADMISSION_KEY_HOLD: &str =
 const STATION_REGISTRAR_KEY_HOLD: &str =
     "a key pinned for this chain instance in STATION_REGISTRAR_KEY_PINS";
 
+/// What a `bond_admission_key_retire_N` entry waits on while its chain's pin
+/// row has no slot N.
+const PINNED_SLOT_HOLD_BOND: &str =
+    "a key pinned in that slot for this chain instance in BOND_ADMISSION_KEY_PINS";
+
+/// What a `station_registrar_key_retire_N` entry waits on while its chain's
+/// pin row has no slot N.
+const PINNED_SLOT_HOLD_REGISTRAR: &str =
+    "a key pinned in that slot for this chain instance in STATION_REGISTRAR_KEY_PINS";
+
 fn check_held_features(extension: &FeatureScheduleExtension) -> Result<(), ScheduleExtensionError> {
     if let Some(entry) = extension.entries.iter().find(|entry| {
         entry.feature == ConsensusFeature::BondAdmissionKey.name()
@@ -996,6 +1020,23 @@ fn check_held_features(extension: &FeatureScheduleExtension) -> Result<(), Sched
             feature: entry.feature.clone(),
             until: STATION_REGISTRAR_KEY_HOLD,
         });
+    }
+    use crate::crypto::chain_binding::{
+        BOND_ADMISSION_KEY_RETIREMENTS, STATION_REGISTRAR_KEY_RETIREMENTS,
+    };
+    let retirements = BOND_ADMISSION_KEY_RETIREMENTS
+        .iter()
+        .map(|f| (*f, PINNED_SLOT_HOLD_BOND))
+        .chain(STATION_REGISTRAR_KEY_RETIREMENTS.iter().map(|f| (*f, PINNED_SLOT_HOLD_REGISTRAR)));
+    for (feature, until) in retirements {
+        if let Some(entry) = extension.entries.iter().find(|entry| {
+            entry.feature == feature.name() && !feature.schedulable(Some(&extension.genesis_hash))
+        }) {
+            return Err(ScheduleExtensionError::FeatureHeld {
+                feature: entry.feature.clone(),
+                until,
+            });
+        }
     }
     match extension
         .entries
@@ -1075,6 +1116,12 @@ pub fn check_admission_policy(
         crate::crypto::chain_binding::effective_feature_schedule()
             .activation_height(ConsensusFeature::ForecasterKeyBinding.name()),
     )?;
+    let schedule = crate::crypto::chain_binding::effective_feature_schedule();
+    check_device_submission_limit_dependency(
+        extension,
+        schedule.activation_height(ConsensusFeature::StationSubmitterKey.name()),
+        schedule.activation_height(ConsensusFeature::DeviceSubmissionLimit.name()),
+    )?;
     if !extension.version_steps.is_empty() {
         return Err(ScheduleExtensionError::VersionStepsNotSupported);
     }
@@ -1113,6 +1160,49 @@ pub fn check_forecast_late_score_dependency(
         Err(ScheduleExtensionError::ForecastLateScoreTooEarly {
             activation_height,
             key_binding_activation,
+        })
+    }
+}
+
+/// `device_submission_limit` refuses contribution commits not signed by the
+/// owner key or the station's approved submitter key, so an extension naming
+/// it is admitted only when `station_submitter_key` activates at least
+/// `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` blocks earlier
+/// (already scheduled, or in the same extension). An extension naming only
+/// `station_submitter_key` is checked against an already scheduled limit the
+/// same way. ADMISSION POLICY: a block already carrying such an extension
+/// stays valid.
+pub fn check_device_submission_limit_dependency(
+    extension: &FeatureScheduleExtension,
+    scheduled_submitter_key: Option<u64>,
+    scheduled_limit: Option<u64>,
+) -> Result<(), ScheduleExtensionError> {
+    let height_of = |feature: ConsensusFeature| {
+        extension
+            .entries
+            .iter()
+            .find(|entry| entry.feature == feature.name())
+            .map(|entry| entry.activation_height)
+    };
+    let named_limit = height_of(ConsensusFeature::DeviceSubmissionLimit);
+    let named_keys = height_of(ConsensusFeature::StationSubmitterKey);
+    let (activation_height, submitter_key_activation) = match (named_limit, named_keys) {
+        (Some(limit), keys) => (limit, scheduled_submitter_key.or(keys)),
+        (None, Some(keys)) => match scheduled_limit {
+            Some(limit) => (limit, Some(keys)),
+            None => return Ok(()),
+        },
+        (None, None) => return Ok(()),
+    };
+    if crate::crypto::chain_binding::device_submission_limit_schedule_allowed(
+        activation_height,
+        submitter_key_activation,
+    ) {
+        Ok(())
+    } else {
+        Err(ScheduleExtensionError::DeviceSubmissionLimitTooEarly {
+            activation_height,
+            submitter_key_activation,
         })
     }
 }
@@ -1234,7 +1324,7 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// active. Nothing else reads this table: these keys are not governance keys
 /// and authorize no other action.
 ///
-/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// **ONE ROW: chain 888.** With no row for a chain the feature cannot be
 /// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
 /// the library signers), and if a block schedules it anyway the admission path
 /// accepts nothing. To set one, a reviewed consensus PR appends a row before
@@ -1246,8 +1336,38 @@ pub const SCHEDULE_EXTENSION_GOVERNANCE_PINS: &[GovernancePin] = &[GovernancePin
 /// [`SCHEDULE_EXTENSION_GOVERNANCE_PINS`]: replay re-verifies historical bond
 /// transactions against this table, so a key is never removed or replaced, and
 /// nodes that disagree on the table disagree on block validity. Adding a key
-/// means every producer upgrades together.
-pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[];
+/// means every producer upgrades together, and needs a matching
+/// `bond_admission_key_retire_N` feature first
+/// ([`crate::crypto::chain_binding::BOND_ADMISSION_KEY_RETIREMENTS`]).
+///
+/// **A stolen key is retired, not deleted.** Both slots stay accepted until a
+/// retirement is in force, so moving the service to the spare alone does not
+/// stop a thief. The recovery is: the owner signs a schedule extension naming
+/// `bond_admission_key_retire_N` for the stolen slot N; from its activation
+/// height (at least `MIN_RUNUP_BLOCKS` after the carrying block) that key no
+/// longer co-signs, while blocks below it still verify with it. Then the
+/// service runs on the other slot.
+///
+/// `MIN_RUNUP_BLOCKS` (2,000 blocks, ~43 h at 77 s/block) is only the FLOOR on
+/// that delay. Extensions are append-only in height (`NotAppendOrder`): a new
+/// extension's first activation may not lie below the latest activation
+/// already scheduled. If anything is scheduled far ahead (up to
+/// `MAX_HORIZON_BLOCKS`), the earliest possible retirement is that far out.
+/// While these pins are live, keep scheduled activations near-term.
+///
+/// A transaction already in a mempool when the retirement activates is not
+/// evicted; it is refused when a block would apply it.
+///
+/// 888/testnet: the owner's two bond admission keys, generated offline on
+/// 2026-11-14. Slot 0 is the online key the bond admission service holds; slot
+/// 1 is the cold spare, which never leaves offline storage. Public keys only.
+pub const BOND_ADMISSION_KEY_PINS: &[GovernancePin] = &[GovernancePin {
+    genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
+    keys: &[
+        "33cb201615b374b7ab6f9a81e7df8496a254131ae3c130aaf452d3abc34f7825", // pragma: allowlist secret -- public bond admission KEY (ed25519 public key), online
+        "9208bb380159edcbca57abae17d356e5a32e22a4476e32690a28439371b1c00a",  // pragma: allowlist secret -- public bond admission KEY (ed25519 public key), cold spare
+    ],
+}];
 
 #[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_BOND_ADMISSION_PIN: std::sync::OnceLock<(String, Vec<String>)> =
@@ -1287,7 +1407,7 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// authorize no schedule, upgrade notice, oracle action, bond or other
 /// station registration.
 ///
-/// **EMPTY: NO KEY IS SET.** With no row for a chain the feature cannot be
+/// **ONE ROW: chain 888.** With no row for a chain the feature cannot be
 /// scheduled there ([`ConsensusFeature::schedulable`], [`check_admission_policy`],
 /// the library signers, genesis validation), and if a block schedules it
 /// anyway the registrar path accepts nothing. To set one, a reviewed consensus
@@ -1299,9 +1419,33 @@ pub fn bond_admission_keys(genesis_hash: &str) -> Vec<String> {
 /// **IMMUTABLE once a chain may have used it**, like
 /// [`BOND_ADMISSION_KEY_PINS`]: replay re-verifies historical registrations
 /// against this table, so a key is never removed or replaced, and nodes that
-/// disagree on the table disagree on block validity. Retiring a key takes a
-/// release; adding one means every producer upgrades together.
-pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[];
+/// disagree on the table disagree on block validity. Adding one means every
+/// producer upgrades together, and needs a matching
+/// `station_registrar_key_retire_N` feature first
+/// ([`crate::crypto::chain_binding::STATION_REGISTRAR_KEY_RETIREMENTS`]).
+///
+/// **A stolen key is retired, not deleted**, exactly as for
+/// [`BOND_ADMISSION_KEY_PINS`]: the owner signs a schedule extension naming
+/// `station_registrar_key_retire_N` for the stolen slot N; from its activation
+/// height (at least `MIN_RUNUP_BLOCKS` after the carrying block) that key no
+/// longer authorizes a registration, while blocks below it still verify with
+/// it. Switching the service to the spare alone does not stop a thief.
+/// The same delay rules apply: `MIN_RUNUP_BLOCKS` is a floor, and the
+/// append-order rule (`NotAppendOrder`) pushes the earliest retirement past the
+/// latest activation already scheduled, so keep scheduled activations
+/// near-term while these pins are live.
+///
+/// 888/testnet: the owner's two registrar keys, generated offline on
+/// 2026-11-13 (`docs/plans/2026-11-08-registrar-key-plan.md`, workspace docs).
+/// Slot 0 is the online key the signing service holds; slot 1 is the cold
+/// spare, which never leaves offline storage. Public keys only.
+pub const STATION_REGISTRAR_KEY_PINS: &[GovernancePin] = &[GovernancePin {
+    genesis_hash: "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332", // pragma: allowlist secret -- public genesis hash (chain 888 block 1)
+    keys: &[
+        "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009", // pragma: allowlist secret -- public registrar KEY (ed25519 public key), online
+        "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b",  // pragma: allowlist secret -- public registrar KEY (ed25519 public key), cold spare
+    ],
+}];
 
 #[cfg(any(test, feature = "consensus-test-hooks"))]
 static TEST_STATION_REGISTRAR_PIN: std::sync::OnceLock<(String, Vec<String>)> =
@@ -1583,12 +1727,24 @@ mod tests {
         assert_eq!(row[0].genesis_hash, SCHEDULE_EXTENSION_GOVERNANCE_PINS[0].genesis_hash);
     }
 
-    /// The bond admission table today: no chain has a key. The row that sets
-    /// one changes this test in the same reviewed PR, and it then pins the
-    /// table byte for byte like `governance_pins_are_immutable_3277`.
+    /// The bond admission table, byte for byte. Replay re-verifies historical
+    /// admission co-signs against it, so a key is only ever appended, never
+    /// removed or replaced.
     #[test]
     fn bond_admission_pins_are_immutable() {
-        assert_eq!(BOND_ADMISSION_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        const CHAIN_888_BLOCK1: &str =
+            "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+        const ONLINE: &str = "33cb201615b374b7ab6f9a81e7df8496a254131ae3c130aaf452d3abc34f7825"; // pragma: allowlist secret -- public bond admission KEY
+        const SPARE: &str = "9208bb380159edcbca57abae17d356e5a32e22a4476e32690a28439371b1c00a"; // pragma: allowlist secret -- public bond admission KEY
+        assert_eq!( // secret-leak-ok: test; public block-1 hash and public ed25519 admission keys, no secret material
+            BOND_ADMISSION_KEY_PINS,
+            &[GovernancePin {
+                genesis_hash: CHAIN_888_BLOCK1,
+                keys: &[ONLINE, SPARE],
+            }]
+        );
+        assert_ne!(ONLINE, SPARE, "the spare is a second key, not a copy");
+        // CHAIN_888_BLOCK1 is the hash in packaging/windows/chain-888.conf.
         for pin in BOND_ADMISSION_KEY_PINS {
             assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
             assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message
@@ -1599,15 +1755,32 @@ mod tests {
                     SCHEDULE_EXTENSION_GOVERNANCE_PINS.iter().all(|g| !g.keys.contains(key)),
                     "an admission key must not be a governance key"
                 );
+                assert!(
+                    STATION_REGISTRAR_KEY_PINS.iter().all(|r| !r.keys.contains(key)),
+                    "an admission key must not be a station registrar key"
+                );
             }
         }
     }
 
-    /// The station registrar table today: no chain has a key. The row that
-    /// sets one changes this test in the same reviewed PR.
+    /// The station registrar table, byte for byte. Replay re-verifies
+    /// historical registrar registrations against it, so a key is only ever
+    /// appended, never removed or replaced.
     #[test]
     fn station_registrar_pins_are_immutable() {
-        assert_eq!(STATION_REGISTRAR_KEY_PINS, &[] as &[GovernancePin]); // secret-leak-ok: test; a table of public keys and public block-1 hashes
+        const CHAIN_888_BLOCK1: &str =
+            "553a3758386d9631037d7469686acb4a121ced81dcf5cde256e2d05667c5f332"; // pragma: allowlist secret -- public genesis hash
+        const ONLINE: &str = "d1eb72af85ee850cb58038d4fe37c00f3447f98ab6aa618275ce531fc3fcb009"; // pragma: allowlist secret -- public registrar KEY
+        const SPARE: &str = "bb70652f8c37a7f77300e75b2e92222428b9f1f8a2a2f662aef8067d8fd4139b"; // pragma: allowlist secret -- public registrar KEY
+        assert_eq!( // secret-leak-ok: test; public block-1 hash and public ed25519 registrar keys, no secret material
+            STATION_REGISTRAR_KEY_PINS,
+            &[GovernancePin {
+                genesis_hash: CHAIN_888_BLOCK1,
+                keys: &[ONLINE, SPARE],
+            }]
+        );
+        assert_ne!(ONLINE, SPARE, "the spare is a second key, not a copy");
+        // CHAIN_888_BLOCK1 is the hash in packaging/windows/chain-888.conf.
         for pin in STATION_REGISTRAR_KEY_PINS {
             assert!(is_canonical_genesis_hash(pin.genesis_hash)); // secret-leak-ok: test; the public block-1 hash
             assert!(!pin.keys.is_empty(), "a row with no key is a placeholder"); // secret-leak-ok: test; public keys, a fixed message

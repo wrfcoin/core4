@@ -117,6 +117,12 @@ const MIN_PRODUCTION_RUST_SOURCE_FILES: usize = 400;
 ///   the issue named in the reason rather than silently dropped.
 const UNREGISTERED: &[(&str, &str)] = &[
     (
+        "StationSubmitterKeyPayload",
+        "the `set_submitter_key` shape of `station_owner_action_v1`: signed under the SAME tag as \
+         StationOwnerActionPayload (registered), with action discriminant 5 then the key and class in \
+         the preimage, so it is not a second tag",
+    ),
+    (
         "SecurityKeyAssertionWire",
         "WebAuthn P-256 assertion, not an ed25519 signed object: the authenticator signs \
          authenticatorData || SHA-256(clientDataJSON) whose challenge is SHA3 of a preimage \

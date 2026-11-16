@@ -558,6 +558,7 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::FinalizeAdvisoryProposal { .. } => "FinalizeAdvisoryProposal",
         StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
         StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
+        StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
     }
 }
 
@@ -809,6 +810,14 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
             block_height: fixture::A,
             block_timestamp: 10_000,
         },
+        // `station_submitter_key` (unscheduled here, so refused).
+        62 => StateTransition::ApplyStationSubmitterKey {
+            station_id: "sweep".into(),
+            owner_address: fixture::address(20).to_string(),
+            action_nonce: 0,
+            submitter: None,
+            block_height: fixture::A,
+        },
         _ => {
             // Synthetic zero-value fixtures, preserving the original sweep inputs.
             // StateTransition is not a protocol bincode boundary; keep fixtures JSON.
@@ -887,6 +896,7 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "FinalizeAdvisoryProposal",
         "ApplyForecastScore",
         "CloseForecastBuckets",
+        "ApplyStationSubmitterKey",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {

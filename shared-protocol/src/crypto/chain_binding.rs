@@ -180,6 +180,12 @@ pub fn validate_testnet_genesis(block: &crate::blockchain::block::Block) -> Resu
         && !ConsensusFeature::StationRegistrarKey.schedulable(Some(&block.calculate_hash().to_hex())) {
         return Err("station_registrar_key needs a pinned key for this genesis".into());
     }
+    // Every listed retirement, not just the first: each needs its own slot.
+    if let Some(feature) = BOND_ADMISSION_KEY_RETIREMENTS.iter().chain(STATION_REGISTRAR_KEY_RETIREMENTS)
+        .filter(|f| parsed.features.iter().any(|(name, _)| name == f.name()))
+        .find(|f| !f.schedulable(Some(&block.calculate_hash().to_hex()))) {
+        return Err(format!("{} needs a pinned key in that slot for this genesis", feature.name()));
+    }
     for key in [GENESIS_NODE_EPOCH_KEY, GENESIS_NODE_CHALLENGE_KEY] {
         if block.metadata.get(key).is_some_and(|value| value != "512") {
             return Err("new testnet node timing must be 512 blocks when recorded".into());
@@ -1096,11 +1102,9 @@ pub enum ConsensusFeature {
     /// the owner's signature only.
     ForecasterKeyBinding,
     /// #3565 (white paper §4.6 / §9.2): one accepted `ContributionReveal` per
-    /// registered station (the chain's device identity) per block, plus a
-    /// late-data pay reduction keyed on the observation's age at its
-    /// including block (`late_data_multiplier_bps`). Both read only chain data:
-    /// the reveal's committed `timestamp` and the block HEADER timestamp,
-    /// never a node clock. A second reveal for the same station in one block is
+    /// registered station (the chain's device identity) per block. (The
+    /// late-data pay reduction that used to ride this flag is its own feature,
+    /// `late_data_pay`.) A second reveal for the same station in one block is
     /// refused by `classify_block_transaction` (so `verify_block` refuses the
     /// block); the producer defers it to a later block rather than evicting it.
     /// A contribution commit for a registered station must be authorized by its
@@ -1219,9 +1223,10 @@ pub enum ConsensusFeature {
     /// Includes the `StreakReplayNodeService` ordering, so it is scheduled on
     /// its own, in place of that feature.
     ///
-    /// Wire ordinal 31. Ships
-    /// UNSCHEDULED and NOT live-schedulable; inactive, the replay is byte for
-    /// byte the one before it.
+    /// Wire ordinal 31. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. A live schedule extension may name it; scheduling
+    /// is the owner's signature only. Inactive, the replay is byte for byte
+    /// the one before it.
     StreakReplayRecipientParity,
     /// Limited station registrar key (`consensus::station_registrar`). From
     /// its activation a station registration may be authorized by a key
@@ -1282,6 +1287,90 @@ pub enum ConsensusFeature {
     /// in no genesis, default schedule or cut pin. Scheduling is the owner's
     /// signature only, in a later release that makes it schedulable.
     ForecastLateScore,
+    /// #3565 split (owner 2026-11-14): the late-data pay reduction
+    /// (`late_data_multiplier_bps` of the reveal's age at its including block,
+    /// block HEADER timestamp minus the committed `timestamp`) moves here from
+    /// `device_submission_limit`, so the one-reading-per-block and owner-key
+    /// rules can go live without waiting for a device-signed clock. Reads only
+    /// chain data, never a node clock.
+    ///
+    /// Inactive, a reveal is paid in full, exactly as before (the reduction
+    /// only ever applied while `device_submission_limit` was active, and that
+    /// was never scheduled). Wire ordinal 35. Ships UNSCHEDULED and NOT
+    /// live-schedulable; scheduling is the owner's signature only, in a later
+    /// release, after `device_submission_limit` is active.
+    LateDataPay,
+    /// #3565 design 1: owner-approved submitter keys. From activation an owner
+    /// may sign `station_owner_action_v1` `set_submitter_key` (one key per
+    /// station, class `device` or `relay`; or clear it). While
+    /// `device_submission_limit` is active a contribution commit for a
+    /// registered station applies when its `auth_pubkey` is the owner key OR
+    /// the station's approved key, and the signer class is recorded on chain.
+    /// The key is cleared on report-stolen, self-deactivation, owner transfer
+    /// and executed recovery.
+    ///
+    /// Inactive, `set_submitter_key` is inert (as an unknown action was), the
+    /// key map stays empty and every root, snapshot and checkpoint is
+    /// byte-identical. Wire ordinal 36. Ships UNSCHEDULED and NOT
+    /// live-schedulable in this slice.
+    StationSubmitterKey,
+    /// Retires slot 0 of this chain's `BOND_ADMISSION_KEY_PINS` row (the
+    /// online key on chain 888). From its activation that key no longer
+    /// co-signs a node-bond `Deposit`/`Update`
+    /// ([`retained_pinned_keys`]); below it the key verifies exactly as
+    /// before, so replay of earlier blocks is unchanged. The pin itself is
+    /// never removed. This is the recovery for a stolen admission key: the
+    /// owner schedules the retirement of the stolen slot and the service
+    /// moves to the other slot.
+    ///
+    /// Wire ordinal 37. Adds no state or wire member. Ships UNSCHEDULED;
+    /// schedulable only on a chain whose pin row has a slot 0.
+    BondAdmissionKeyRetire0,
+    /// [`Self::BondAdmissionKeyRetire0`] for slot 1 (the cold spare on chain
+    /// 888). Wire ordinal 38. Ships UNSCHEDULED.
+    BondAdmissionKeyRetire1,
+    /// Retires slot 0 of this chain's `STATION_REGISTRAR_KEY_PINS` row (the
+    /// online key on chain 888): from its activation that key no longer
+    /// authorizes a station registration; below it, unchanged. Wire ordinal
+    /// 39. Ships UNSCHEDULED; schedulable only on a chain whose pin row has a
+    /// slot 0.
+    StationRegistrarKeyRetire0,
+    /// [`Self::StationRegistrarKeyRetire0`] for slot 1 (the cold spare on
+    /// chain 888). Wire ordinal 40. Ships UNSCHEDULED.
+    StationRegistrarKeyRetire1,
+}
+
+/// The retirement feature for each slot of a `BOND_ADMISSION_KEY_PINS` row,
+/// by slot index. A pin row may hold no more keys than this has entries
+/// (pinned by a test): a third key needs a third feature first.
+pub const BOND_ADMISSION_KEY_RETIREMENTS: &[ConsensusFeature] = &[
+    ConsensusFeature::BondAdmissionKeyRetire0,
+    ConsensusFeature::BondAdmissionKeyRetire1,
+];
+
+/// The retirement feature for each slot of a `STATION_REGISTRAR_KEY_PINS`
+/// row, by slot index. Same rule as [`BOND_ADMISSION_KEY_RETIREMENTS`].
+pub const STATION_REGISTRAR_KEY_RETIREMENTS: &[ConsensusFeature] = &[
+    ConsensusFeature::StationRegistrarKeyRetire0,
+    ConsensusFeature::StationRegistrarKeyRetire1,
+];
+
+/// `pinned` (one chain's pin row, in row order) minus every slot whose
+/// retirement feature in `retirements` is active at `height`. With no
+/// retirement active this returns `pinned` unchanged, in the same order. A
+/// slot with no retirement feature is never retired.
+pub fn retained_pinned_keys(
+    pinned: Vec<String>,
+    retirements: &[ConsensusFeature],
+    height: u64,
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+) -> Vec<String> {
+    pinned
+        .into_iter()
+        .enumerate()
+        .filter(|(slot, _)| !retirements.get(*slot).is_some_and(|f| active(*f, height)))
+        .map(|(_, key)| key)
+        .collect()
 }
 
 /// Blocks `forecaster_key_binding` must already have been active before
@@ -1318,6 +1407,49 @@ pub fn forecast_late_score_active_with(
         && height
             .checked_sub(FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS)
             .is_some_and(|bound_since| active(ConsensusFeature::ForecasterKeyBinding, bound_since))
+}
+
+/// Blocks `station_submitter_key` must already have been active before
+/// `device_submission_limit` activates: the window in which owners approve
+/// their collector / phone keys (#3565 design 1).
+pub const DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS: u64 = 2_000;
+
+/// Whether `device_submission_limit` is in force at `height`: the feature is
+/// active AND `station_submitter_key` has been active for at least
+/// [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`] blocks, with no
+/// exemption: false below that height even for a key flag active from
+/// genesis, the same rule the admission check applies. Every consensus read of
+/// the limit goes through this, so a schedule that names the limit too early
+/// (or without the key flag), even one a custom producer included past the
+/// admission rule, leaves the limit dormant on every node instead of refusing
+/// collected readings.
+pub fn device_submission_limit_active(height: u64) -> bool {
+    device_submission_limit_active_with(feature_active, height)
+}
+
+/// [`device_submission_limit_active`] over an explicit activation predicate.
+pub fn device_submission_limit_active_with(
+    active: impl Fn(ConsensusFeature, u64) -> bool,
+    height: u64,
+) -> bool {
+    active(ConsensusFeature::DeviceSubmissionLimit, height)
+        && height
+            .checked_sub(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS)
+            .is_some_and(|keys_since| active(ConsensusFeature::StationSubmitterKey, keys_since))
+}
+
+/// Admission rule for `device_submission_limit` at `activation_height`:
+/// `station_submitter_key` must be scheduled (already, or in the same
+/// extension) at least [`DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS`]
+/// blocks earlier. Without it the limit would refuse every commit a collector
+/// or phone signs.
+pub fn device_submission_limit_schedule_allowed(
+    activation_height: u64,
+    submitter_key_activation: Option<u64>,
+) -> bool {
+    submitter_key_activation
+        .and_then(|keys| keys.checked_add(DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS))
+        .is_some_and(|earliest| activation_height >= earliest)
 }
 
 /// Admission rule for a schedule naming `forecast_late_score` at
@@ -1382,6 +1514,12 @@ impl ConsensusFeature {
         Self::StationRegistrarKey,
         Self::AdvisoryGovernance,
         Self::ForecastLateScore,
+        Self::LateDataPay,
+        Self::StationSubmitterKey,
+        Self::BondAdmissionKeyRetire0,
+        Self::BondAdmissionKeyRetire1,
+        Self::StationRegistrarKeyRetire0,
+        Self::StationRegistrarKeyRetire1,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1422,6 +1560,12 @@ impl ConsensusFeature {
             Self::StationRegistrarKey => "station_registrar_key",
             Self::AdvisoryGovernance => "advisory_governance",
             Self::ForecastLateScore => "forecast_late_score",
+            Self::LateDataPay => "late_data_pay",
+            Self::StationSubmitterKey => "station_submitter_key",
+            Self::BondAdmissionKeyRetire0 => "bond_admission_key_retire_0",
+            Self::BondAdmissionKeyRetire1 => "bond_admission_key_retire_1",
+            Self::StationRegistrarKeyRetire0 => "station_registrar_key_retire_0",
+            Self::StationRegistrarKeyRetire1 => "station_registrar_key_retire_1",
         }
     }
 
@@ -1463,8 +1607,19 @@ impl ConsensusFeature {
     ///   every other chain and on a node with no block-1 hash.
     /// - `station_registrar_key`: the same rule over
     ///   `schedule_extension::STATION_REGISTRAR_KEY_PINS`.
+    /// - `bond_admission_key_retire_N` / `station_registrar_key_retire_N`:
+    ///   schedulable ONLY on a chain instance whose row in that role's pin
+    ///   table has a slot N.
     pub fn schedulable(self, node_genesis_hash: Option<&str>) -> bool {
+        use crate::governance::schedule_extension::{bond_admission_keys, station_registrar_keys};
+        let has_slot = |keys: fn(&str) -> Vec<String>, slot: usize| {
+            node_genesis_hash.is_some_and(|genesis| keys(genesis).len() > slot)
+        };
         match self {
+            Self::BondAdmissionKeyRetire0 => has_slot(bond_admission_keys, 0),
+            Self::BondAdmissionKeyRetire1 => has_slot(bond_admission_keys, 1),
+            Self::StationRegistrarKeyRetire0 => has_slot(station_registrar_keys, 0),
+            Self::StationRegistrarKeyRetire1 => has_slot(station_registrar_keys, 1),
             Self::StationRegistrarKey => node_genesis_hash.is_some_and(|genesis| {
                 !crate::governance::schedule_extension::station_registrar_keys(genesis).is_empty()
             }),
@@ -1490,22 +1645,22 @@ impl ConsensusFeature {
             | Self::StakeSubmissionNonce
             // Refusal behaviour exists, but evidence apply is not implemented.
             | Self::SlashEvidenceReports
-            // #3565: behaviour is wired, but activation is an owner decision.
-            | Self::DeviceSubmissionLimit
-            // #3591: wired and tested; scheduling is a separate owner step.
+            // #3591: superseded by `streak_replay_recipient_parity`, which
+            // includes its ordering; never scheduled on its own.
             | Self::StreakReplayNodeService
             // #3336: wired and tested; scheduling is a separate owner step.
             | Self::StationCoordinatesFixedPoint
             // Transfer fee burn: wired and tested; scheduled together with
             // `paymaster` in one owner-signed release, never alone.
             | Self::TransferFeeBurn
-            // Wired and tested; scheduling is a separate owner step.
-            | Self::StreakReplayRecipientParity
             // Held until review and the determinism differential; then a
             // release makes it schedulable, no earlier than the key binding's
             // activation + `FORECAST_LATE_SCORE_KEY_BINDING_LEAD_BLOCKS`
             // (`forecast_late_score_schedule_allowed`).
-            | Self::ForecastLateScore => false,
+            | Self::ForecastLateScore
+            // #3565 split: the device-signed clock comes first (owner 11-12);
+            // a later release makes it schedulable.
+            | Self::LateDataPay => false,
             Self::NodeShareSettlement => node_share_activation_ready(node_genesis_hash),
             Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1535,7 +1690,19 @@ impl ConsensusFeature {
             // Wired end to end (admission, block classifier, apply, finalize,
             // pricing, checkpoint/snapshot layout); scheduling is the owner's
             // signature, after review and the determinism differential.
-            | Self::AdvisoryGovernance => true,
+            | Self::AdvisoryGovernance
+            // Wired and tested (extractor replay from the producer's pre-reward
+            // state and recipient rule; producer, P2P applier, extraction and
+            // WAL agree); the binary accepts a schedule, the owner signs it.
+            | Self::StreakReplayRecipientParity
+            // #3565 design 1: owners approve submitter keys; the binary
+            // accepts a schedule, the owner signs it.
+            | Self::StationSubmitterKey
+            // #3565 (#60, #73) with design 1: schedulable only at least
+            // `DEVICE_SUBMISSION_LIMIT_SUBMITTER_KEY_LEAD_BLOCKS` after
+            // `station_submitter_key` (`device_submission_limit_schedule_allowed`,
+            // enforced at admission), so a schedule cannot refuse collected readings.
+            | Self::DeviceSubmissionLimit => true,
         }
     }
 
@@ -1578,6 +1745,15 @@ impl ConsensusFeature {
             // Reveal records, the score transaction, bucket close and pay, and
             // the baseline-credit switch all read it.
             Self::ForecastLateScore => true,
+            // The contribution reward reads it (late-data reduction).
+            Self::LateDataPay => true,
+            // The owner-action extractor, admission, apply and the commit check read it.
+            Self::StationSubmitterKey => true,
+            // The bond admission key set and the registrar key set read them.
+            Self::BondAdmissionKeyRetire0
+            | Self::BondAdmissionKeyRetire1
+            | Self::StationRegistrarKeyRetire0
+            | Self::StationRegistrarKeyRetire1 => true,
             Self::SigningV2
             | Self::DomainSeparatedPreimages
             | Self::AccountAuthorizationDispatch
@@ -1663,7 +1839,28 @@ mod forecast_skill_baseline_tests {
             bincode::serialize(&ConsensusFeature::ForecastLateScore).unwrap(),
             34u32.to_le_bytes()
         );
-        assert_eq!(ConsensusFeature::ALL.len(), 35);
+        // The late-data pay split is appended after it at ordinal 35.
+        assert_eq!(ConsensusFeature::ALL[35], ConsensusFeature::LateDataPay);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::LateDataPay).unwrap(),
+            35u32.to_le_bytes()
+        );
+        assert_eq!(ConsensusFeature::ALL[36], ConsensusFeature::StationSubmitterKey);
+        assert_eq!(
+            bincode::serialize(&ConsensusFeature::StationSubmitterKey).unwrap(),
+            36u32.to_le_bytes()
+        );
+        // The four pinned-key retirements follow at ordinals 37..=40.
+        for (ordinal, feature) in [
+            (37u32, ConsensusFeature::BondAdmissionKeyRetire0),
+            (38, ConsensusFeature::BondAdmissionKeyRetire1),
+            (39, ConsensusFeature::StationRegistrarKeyRetire0),
+            (40, ConsensusFeature::StationRegistrarKeyRetire1),
+        ] {
+            assert_eq!(ConsensusFeature::ALL[ordinal as usize], feature);
+            assert_eq!(bincode::serialize(&feature).unwrap(), ordinal.to_le_bytes());
+        }
+        assert_eq!(ConsensusFeature::ALL.len(), 41);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3144,13 +3341,19 @@ mod tests {
         expected.push("node_share_settlement");
         // #3290: the binary accepts a schedule; the owner signs it.
         expected.push("forecaster_key_binding");
+        // #3565: follows it in `ALL`; schedulable under its submitter-key lead rule.
+        expected.push("device_submission_limit");
         // Security-key wallets: the binary accepts a schedule; the owner signs it.
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // #3565 design 1: ordinal 36, the binary accepts a schedule.
+        expected.push("station_submitter_key");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -3167,12 +3370,11 @@ mod tests {
             ConsensusFeature::FaucetSinkBinding,
             ConsensusFeature::ScheduleExtension,
             ConsensusFeature::StakeSubmissionNonce,
-            ConsensusFeature::DeviceSubmissionLimit,
             ConsensusFeature::StreakReplayNodeService,
             ConsensusFeature::StationCoordinatesFixedPoint,
             ConsensusFeature::TransferFeeBurn,
-            ConsensusFeature::StreakReplayRecipientParity,
             ConsensusFeature::ForecastLateScore,
+            ConsensusFeature::LateDataPay,
         ] {
             assert!(!held.schedulable(None), "{held} must not be schedulable yet");
         }
@@ -3189,12 +3391,17 @@ mod tests {
         expected.insert(7, "faucet_sink_binding");
         expected.push("node_share_settlement");
         expected.push("forecaster_key_binding");
+        expected.push("device_submission_limit");
         expected.push("security_key_spend");
         // Appended after it in `ALL`: the binary accepts scheduling it.
         expected.push("send_allowlist");
         expected.push("passkey_bond_payout");
+        // Ordinal 31: the binary accepts scheduling it; the owner signs it.
+        expected.push("streak_replay_recipient_parity");
         // Ordinal 33: the binary accepts scheduling it; the owner signs it.
         expected.push("advisory_governance");
+        // #3565 design 1: ordinal 36, the binary accepts a schedule.
+        expected.push("station_submitter_key");
         assert_eq!(schedulable, expected);
     }
 
@@ -3899,9 +4106,10 @@ mod streak_replay_recipient_parity_pin {
     use super::*;
 
     /// Appended right after `bond_admission_key` (the last public feature,
-    /// core4 #120), so the wire ordinal stays fixed. Unscheduled.
+    /// core4 #120), so the wire ordinal stays fixed. In no genesis or default
+    /// schedule; a live schedule extension may name it (owner-signed).
     #[test]
-    fn feature_follows_bond_admission_key_and_is_unscheduled() {
+    fn feature_follows_bond_admission_key_and_is_schedulable() {
         let f = ConsensusFeature::StreakReplayRecipientParity;
         assert_eq!(ConsensusFeature::parse("streak_replay_recipient_parity"), Some(f));
         let all = ConsensusFeature::ALL;
@@ -3911,8 +4119,10 @@ mod streak_replay_recipient_parity_pin {
         let k = known.iter().position(|x| *x == "streak_replay_recipient_parity").unwrap();
         assert_eq!(known[k - 1], "bond_admission_key");
         assert_eq!(bincode::serialize(&f).unwrap(), 31u32.to_le_bytes(), "ordinal after bond_admission_key");
-        assert!(!f.schedulable(None));
+        assert!(f.schedulable(None));
+        assert!(f.schedulable(Some(&"cd".repeat(32))));
         assert!(f.has_behaviour());
+        assert!(!FeatureSchedule::default().active(f, u64::MAX), "unscheduled by default");
     }
 
     /// `streak_replay_recipient_parity` supersedes `streak_replay_node_service`:
