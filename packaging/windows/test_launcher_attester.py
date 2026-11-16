@@ -118,6 +118,17 @@ class OracleToken(unittest.TestCase):
         self.assertIn("SetEnvironmentVariable('WRFCOIN_ORACLE_TOKEN'", body[guard:])
         self.assertEqual(body.count("WRFCOIN_ORACLE_TOKEN"), 1)
 
+    def test_node_is_told_where_the_public_key_lives(self) -> None:
+        # The status page's attester rung: only the PUBLIC key file, always named
+        # (the node treats a missing file as "no key yet"), never oracle.key.
+        body = function_body("Start-Node")
+        self.assertIn(
+            "SetEnvironmentVariable('WRFCOIN_ORACLE_PUBLIC_KEY_FILE', $OraclePublicFile, 'Process')", body
+        )
+        guard = body.index("if ((Test-OracleKey) -and (Test-Path -LiteralPath $OracleTokenFile)) {")
+        self.assertLess(body.index("WRFCOIN_ORACLE_PUBLIC_KEY_FILE"), guard)
+        self.assertNotIn("$OracleKeyFile", body)
+
     def test_token_is_never_shown(self) -> None:
         for name in ("New-OracleKey", "Start-Attester"):
             for line in function_body(name).splitlines():

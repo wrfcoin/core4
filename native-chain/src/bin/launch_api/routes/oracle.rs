@@ -1105,6 +1105,11 @@ pub async fn get_pending_attestations(
     // Exact coordinates only for the node operator; everyone else, attesters
     // included, gets the public 0.1 degree grid.
     let exact_location = caller == ApiRole::Operator;
+    // The local attester polls here with its Oracle-role token: the status
+    // page reads this as "the attester is running".
+    if caller == ApiRole::Oracle {
+        super::node_attester::note_oracle_poll();
+    }
     let limit = query
         .limit
         .unwrap_or(PENDING_ATTESTATIONS_DEFAULT_LIMIT)

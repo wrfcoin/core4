@@ -292,8 +292,9 @@ mod tests {
         }
     }
 
-    /// The owner's ladder: four rungs, the newcomer's own marked, what is not
-    /// open yet marked "Coming", the climbing principle stated, and no promise
+    /// The owner's ladder: four rungs, the newcomer's own marked, the attester
+    /// rung (seated by governance on request) marked "By invitation", what is
+    /// not open yet marked "Coming", the climbing principle stated, and no promise
     /// of income — a sync-only node is said to be unpaid.
     #[::core::prelude::v1::test]
     fn the_page_shows_the_participation_ladder_and_promises_no_income() {
@@ -305,8 +306,8 @@ mod tests {
         let rungs = [
             "Sync node <span class=\"pill ok\" id=\"pill-sync\">You are here</span>",
             "Bonded node <span class=\"pill info\" id=\"pill-bonded\">Preview</span>",
-            "Attester (oracle) <span class=\"pill\">Coming</span>",
-            "Block producer <span class=\"pill\">Coming</span>",
+            "Attester (oracle) <span class=\"pill\" id=\"pill-attester\">By invitation</span>",
+            "Block producer <span class=\"pill\" id=\"pill-producer\">Coming</span>",
         ];
         let mut at = 0;
         for rung in rungs {
@@ -322,6 +323,9 @@ mod tests {
             "about 11 hours",
             "P2P address other nodes can reach",
             "Seated by governance",
+            "Producer: by invitation for now",
+            "There is no schedule for opening it yet.",
+            "Steps marked By invitation are seated by governance on request; steps marked Coming are not open yet.",
             "A sync node is not paid.",
             "this page promises no income",
             "https://wrfcoin.com/downloads",
@@ -376,6 +380,54 @@ mod tests {
         // The bonded rung links to the guide, which sits after the ladder.
         let ladder_end = STATUS_PAGE_HTML.find("id=\"whats-next\"").unwrap();
         assert!(STATUS_PAGE_HTML.find("id=\"open-port\"").unwrap() > ladder_end);
+    }
+
+    /// The attester rung (owner report 2026-11-16: a seated laptop attester was
+    /// still shown as bonded). `/node/attester` is read with the operator token
+    /// on slow ticks; each status the node reports has its card, and a seated
+    /// node moves "You are here" to the attester rung with the producer rung
+    /// "by invitation for now". No answer leaves the ladder as before.
+    #[::core::prelude::v1::test]
+    fn the_page_shows_the_attester_rung() {
+        assert!(STATUS_PAGE_HTML.contains("attester: '/node/attester',"));
+        assert!(MOD_RS.contains(".route(\"/node/attester\", web::get().to(node_attester::get_node_attester))"));
+        assert!(STATUS_PAGE_HTML.contains("if (token && slow) keys.push('attester');"));
+        assert!(STATUS_PAGE_HTML.contains("getJson(ROUTES[k], k === 'host' || k === 'attester')"));
+        // The facts sit in the Attester rung's own body, between it and the producer rung.
+        let rung = STATUS_PAGE_HTML.find("id=\"rung-attester\"").expect("the attester rung");
+        let card = STATUS_PAGE_HTML.find("id=\"attester-card\"").expect("the attester facts");
+        let producer = STATUS_PAGE_HTML.find("id=\"rung-producer\"").expect("the producer rung");
+        assert!(rung < card && card < producer, "the attester facts sit inside the Attester rung");
+        for text in [
+            "if (st === 'no_key') return null;",
+            "'Attester key created; waiting to be seated'",
+            "share the public key below (it is safe to share)",
+            "if (serving) setRung('rung-bonded', 'pill-bonded', false, 'Done', '');",
+            "'No longer seated as an attester'",
+            "so it is back on the rung below",
+            "\"You're an attester\"",
+            "'Block ' + fmtInt(a.seated_since_height)",
+            "' in the last ' + fmtInt(n) + ' blocks'",
+            "Start it from the Start menu (Start WRFCoin Attester) if it is stopped.",
+            "if (st === 'seated_idle') {",
+            "Next rung: <strong>Producer: by invitation for now.</strong>",
+            "setRung('rung-attester', 'pill-attester', true, 'You are here'",
+            "setRung('rung-producer', 'pill-producer', false, 'Coming', '');",
+            "setPill($('pill-attester'), 'Waiting to be seated', 'info');",
+            "renderAttester(serving);",
+            "delete last.attester;",
+        ] {
+            assert!(STATUS_PAGE_HTML.contains(text), "the attester rung must carry {text:?}");
+        }
+        let start = STATUS_PAGE_HTML.find("// ---------- attester rung ----------").unwrap();
+        let end = STATUS_PAGE_HTML[start..].find("// ---------- stop ----------").unwrap() + start;
+        let logic = STATUS_PAGE_HTML[start..end].to_ascii_lowercase();
+        for word in ["paid", "pay ", "payment", "reward", "income", " wrf ", " wrf'"] {
+            assert!(!logic.contains(word), "the attester card states no pay ({word:?})");
+        }
+        // Only removal or no key leaves the lower rungs in charge: the seated
+        // branch is the only place that marks the attester rung "You are here".
+        assert_eq!(STATUS_PAGE_HTML.matches("'rung-attester', 'pill-attester', true").count(), 1);
     }
 
     /// The Stop button: Operator token required, plain-words confirm, the

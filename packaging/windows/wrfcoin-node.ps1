@@ -35,7 +35,9 @@
       written and never shown. Never overwrites an existing key. Also creates
       oracle.token, the node's Oracle-role API token. Writes only the PUBLIC key
       (the oracle id, from wrfcoin.exe oracle public-key) to oracle-public.txt
-      in the data folder and on the Desktop as wrfcoin-oracle-public.txt. Once
+      in the data folder and on the Desktop as wrfcoin-oracle-public.txt (every
+      node Start names oracle-public.txt to the node as
+      WRFCOIN_ORACLE_PUBLIC_KEY_FILE, for the status page's attester rung). Once
       oracle.key exists, every node Start passes oracle.token to the node as
       WRFCOIN_ORACLE_TOKEN; restart a running node to pick it up.
   -Action StartAttester
@@ -651,6 +653,9 @@ function Start-Node {
         # Locked to this user by Initialize-UserState; the node checks it again.
         [Environment]::SetEnvironmentVariable('WRFCOIN_SNAPSHOT_SERVER_KEY_FILE', $ServerKeyFile, 'Process')
     }
+    # Only the PUBLIC half, for the status page's attester rung; the node reads
+    # the file on each request, so a key created later shows without a restart.
+    [Environment]::SetEnvironmentVariable('WRFCOIN_ORACLE_PUBLIC_KEY_FILE', $OraclePublicFile, 'Process')
     if ((Test-OracleKey) -and (Test-Path -LiteralPath $OracleTokenFile)) {
         # Oracle role for the local attester only; locked by Initialize-UserState.
         [Environment]::SetEnvironmentVariable('WRFCOIN_ORACLE_TOKEN', ([System.IO.File]::ReadAllText($OracleTokenFile).Trim()), 'Process')

@@ -6186,6 +6186,36 @@ mod tests {
         }
     }
 
+    /// The status page's attester rung: `GET /node/attester` is Operator-only
+    /// and, on a node with no oracle public key configured, says `no_key`
+    /// (the page then keeps the sync/bonded ladder unchanged).
+    #[actix_web::test]
+    async fn node_attester_is_operator_only_and_reports_no_key_without_a_key() {
+        let app = test::init_service(test_app(test_state(None))).await;
+        let path = "/node/attester";
+        let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for token in [TEST_READER_TOKEN, TEST_CONTRIBUTOR_TOKEN, TEST_ORACLE_TOKEN] {
+            let response = test::call_service(&app, test::TestRequest::get().uri(path)
+                .insert_header(("Authorization", format!("Bearer {token}"))) // secret-leak-ok: fixed test tokens, never deployed credentials.
+                .to_request()).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let response = test::call_service(&app, test::TestRequest::get().uri(path)
+            .insert_header(("Authorization", format!("Bearer {TEST_OPERATOR_TOKEN}"))) // secret-leak-ok: fixed test bearer, never a deployed credential.
+            .to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        if std::env::var_os("WRFCOIN_ORACLE_PUBLIC_KEY").is_none()
+            && std::env::var_os("WRFCOIN_ORACLE_PUBLIC_KEY_FILE").is_none()
+        {
+            assert_eq!(body["status"], "no_key");
+            assert!(body.get("oracle_id").is_none());
+        }
+        assert_eq!(body["seated"], false);
+        assert_eq!(body["window_blocks"], 100);
+    }
+
     /// The dashboard's Stop button: `POST /node/shutdown` is Operator-only, a
     /// refused caller signals nothing, and the operator's call answers 202 and
     /// wakes the graceful-shutdown task's wait.
