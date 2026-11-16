@@ -6211,6 +6211,8 @@ mod tests {
         {
             assert_eq!(body["status"], "no_key");
             assert!(body.get("oracle_id").is_none());
+            // Pay facts appear only for a configured key.
+            assert!(body.get("pay").is_none());
         }
         assert_eq!(body["seated"], false);
         assert_eq!(body["window_blocks"], 100);

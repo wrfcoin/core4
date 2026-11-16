@@ -17,6 +17,14 @@
 //! when the local attester last polled `/transactions/oracle/pending` with the
 //! Oracle-role token (the attester polls every few seconds while it runs).
 //!
+//! With a key configured, an optional `pay` object adds attester pay as chain
+//! facts only, over the last [`PAY_WINDOW_BLOCKS`] blocks: votes the chain paid
+//! for (from each paying block's `attester_settlements` metadata), approve
+//! votes for settled decisions that did not pay this oracle, the amount paid,
+//! and the oracle key's own address (where attester pay lands) with its
+//! balance. Counted with the same fold as `wrfcoin oracle statement`. No rates
+//! and no projections.
+//!
 //! Read only: no state, validity or schedule change. Operator token required
 //! (the page already holds it for host metrics); the answer carries only public
 //! data (the oracle id is already on chain once seated).
@@ -33,10 +41,16 @@ use crate::state::AppState;
 use wrfcoin_native_chain::blockchain::block::Block;
 use wrfcoin_native_chain::blockchain::transaction::TransactionType;
 use wrfcoin_native_chain::security::api_auth::ApiRole;
+use wrfcoin_shared_protocol::common::types::Address;
+use wrfcoin_shared_protocol::crypto::signature::PublicKey;
+use wrfcoin_shared_protocol::oracle::statement::{StatementBlock, compute_statement, format_units};
 
 /// Attestations are counted over this many most recent blocks (about two
 /// hours at the chain 888 cadence of ~77 s per block).
 pub const ATTESTATION_WINDOW_BLOCKS: u64 = 100;
+/// The `pay` object is counted over this many most recent blocks (one
+/// 512-block epoch, about 11 hours at ~77 s per block).
+pub const PAY_WINDOW_BLOCKS: u64 = 512;
 /// How far back the "seated since" search reads stored blocks.
 pub const REGISTRATION_SCAN_BLOCKS: u64 = 50_000;
 /// Blocks read from storage per batch during that search.
@@ -284,6 +298,63 @@ fn scan_registrations(
     (regs, lowest)
 }
 
+/// Attester pay as chain facts (no rates, no projections). Amounts are base
+/// units as strings so no JSON reader loses precision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttesterPay {
+    pub window_blocks: u64,
+    pub from_height: u64,
+    pub to_height: u64,
+    /// Blocks of the window this node could read.
+    pub blocks_read: u64,
+    /// Blocks whose `attester_settlements` metadata did not parse (not counted).
+    pub blocks_unreadable: u64,
+    /// Votes the chain paid this oracle for.
+    pub paid_votes: u64,
+    /// Approve votes for decisions settled in the window that did not pay it.
+    pub approve_votes_not_paid: u64,
+    pub paid_units: String,
+    pub paid_wrf: String,
+    /// The oracle key's own address: where attester pay lands.
+    pub payee_address: String,
+    pub payee_balance_units: String,
+    pub payee_balance_wrf: String,
+}
+
+/// The oracle key's own address, or `None` for an id that is not a public key.
+pub fn payee_address(oracle_id: &str) -> Option<Address> {
+    PublicKey::from_hex(oracle_id)
+        .ok()
+        .map(|pk| Address::from_public_key(&pk))
+}
+
+/// Build the `pay` object from the window's blocks. Pure, for tests.
+pub fn pay_summary(
+    oracle_id: &str,
+    payee: &Address,
+    from: u64,
+    to: u64,
+    blocks: &[StatementBlock],
+    blocks_unreadable: u64,
+    balance_units: u128,
+) -> AttesterPay {
+    let st = compute_statement(oracle_id, from, to, blocks, None);
+    AttesterPay {
+        window_blocks: PAY_WINDOW_BLOCKS,
+        from_height: from,
+        to_height: to,
+        blocks_read: st.blocks_scanned,
+        blocks_unreadable,
+        paid_votes: st.paid_votes,
+        approve_votes_not_paid: st.unpaid_approve_votes,
+        paid_units: st.paid_units.to_string(),
+        paid_wrf: format_units(st.paid_units),
+        payee_address: payee.to_string(),
+        payee_balance_units: balance_units.to_string(),
+        payee_balance_wrf: format_units(balance_units),
+    }
+}
+
 /// The registration scan is cached: it only changes with the key or the set.
 #[derive(Clone)]
 struct ScanCache {
@@ -322,6 +393,9 @@ pub struct NodeAttesterResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attester_last_poll_secs_ago: Option<u64>,
     pub attester_polling: bool,
+    /// Attester pay as chain facts; present only when a key is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pay: Option<AttesterPay>,
 }
 
 /// `GET /node/attester` (Operator).
@@ -349,7 +423,8 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
         None => 0,
     };
 
-    let (tip, seated, set_size, quorum, mut fingerprint, in_memory) = {
+    let payee = oracle_id.as_deref().and_then(payee_address);
+    let (tip, seated, set_size, quorum, mut fingerprint, in_memory, payee_balance) = {
         let chain = state.blockchain.read().await;
         let mut set: Vec<String> = chain
             .state
@@ -362,13 +437,19 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
             .as_ref()
             .is_some_and(|id| set.binary_search(id).is_ok());
         let tip = chain.height;
-        let from = tip.saturating_sub(ATTESTATION_WINDOW_BLOCKS - 1);
-        // Attestations in the window from the in-memory blocks; heights not in
-        // memory are read from storage below.
+        // The pay window covers the attestation window; blocks in memory are
+        // used first and the rest are read from storage below.
+        let from = tip.saturating_sub(PAY_WINDOW_BLOCKS.max(ATTESTATION_WINDOW_BLOCKS) - 1);
         let in_memory: Vec<Block> = match &oracle_id {
             Some(_) => chain.blocks_range(from, tip).cloned().collect(),
             None => Vec::new(),
         };
+        let payee_balance = payee.as_ref().map(|a| {
+            chain
+                .state
+                .get_account(a)
+                .map_or(0u128, |acct| acct.balance.into_inner() as u128)
+        });
         (
             tip,
             seated,
@@ -376,24 +457,41 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
             chain.state.oracle_quorum,
             set,
             in_memory,
+            payee_balance,
         )
     };
     fingerprint.push(format!("seated={seated}"));
 
     let mut recent = (0u64, None);
+    let mut pay = None;
     let mut history = SeatHistory::default();
     let mut scanned_from = 0u64;
     if let Some(id) = &oracle_id {
         let from = tip.saturating_sub(ATTESTATION_WINDOW_BLOCKS - 1);
+        let pay_from = tip.saturating_sub(PAY_WINDOW_BLOCKS.max(ATTESTATION_WINDOW_BLOCKS) - 1);
         let have: std::collections::BTreeSet<u64> = in_memory.iter().map(|b| b.height).collect();
         let mut window = in_memory;
-        if (from..=tip).any(|h| !have.contains(&h)) {
+        if (pay_from..=tip).any(|h| !have.contains(&h)) {
             let storage = state.storage.read().await;
-            if let Ok(stored) = storage.load_blocks_range(from, tip) {
+            if let Ok(stored) = storage.load_blocks_range(pay_from, tip) {
                 window.extend(stored.into_iter().filter(|b| !have.contains(&b.height)));
             }
         }
-        recent = count_attestations(window.iter(), id);
+        recent = count_attestations(window.iter().filter(|b| b.height >= from), id);
+        if let (Some(payee), Some(balance)) = (&payee, payee_balance) {
+            let mut unreadable = 0u64;
+            let facts: Vec<StatementBlock> = window
+                .iter()
+                .filter_map(|b| match StatementBlock::from_block(b) {
+                    Ok(f) => Some(f),
+                    Err(_) => {
+                        unreadable += 1;
+                        None
+                    },
+                })
+                .collect();
+            pay = Some(pay_summary(id, payee, pay_from, tip, &facts, unreadable, balance));
+        }
 
         let mut cache = SCAN_CACHE.lock().await;
         let hit = cache
@@ -455,6 +553,7 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
         mempool_attestations,
         attester_last_poll_secs_ago: poll_ago,
         attester_polling: polling,
+        pay,
     })
 }
 
@@ -623,5 +722,61 @@ mod tests {
             resolve_local_key(None, Some(p)),
             LocalOracleKey::Unreadable(_)
         ));
+    }
+
+    #[test]
+    fn payee_is_the_oracle_keys_own_address() {
+        assert_eq!(
+            payee_address(K).unwrap().to_string(),
+            "0x5e0030865d3c59cabf338d5fafc578af9f651eba"
+        );
+        assert!(payee_address("c4db").is_none());
+    }
+
+    #[test]
+    fn pay_summary_counts_chain_facts_only() {
+        use wrfcoin_shared_protocol::oracle::attestation::{AttesterAllocation, AttesterSettlementRecord};
+        use wrfcoin_shared_protocol::oracle::statement::IncludedVote;
+        let other = "781fd34338fa7f846cd4032256179b6f389404cd519fa6eaa3ed097a5a83dcdb"; // pragma: allowlist secret -- public oracle id fixture
+        let vote = |id: &str, commit: &str| IncludedVote {
+            oracle_id: id.into(),
+            commit_id: commit.into(),
+            approved: true,
+        };
+        let settle = |commit: &str, h: u64, paid: &[&str]| AttesterSettlementRecord {
+            decision_id: commit.into(),
+            finalization_height: h,
+            allocations: paid
+                .iter()
+                .map(|id| AttesterAllocation { attester_id: (*id).into(), amount: 41_666_667 })
+                .collect(),
+        };
+        let blocks = vec![
+            StatementBlock { height: 100, votes: vec![vote(K, "aa"), vote(other, "aa")], settlements: vec![settle("aa", 100, &[K, other])] },
+            StatementBlock { height: 101, votes: vec![vote(other, "bb")], settlements: vec![settle("bb", 101, &[other])] },
+            StatementBlock { height: 102, votes: vec![vote(K, "bb")], settlements: vec![] },
+            // Outside the window: never counted.
+            StatementBlock { height: 50, votes: vec![vote(K, "zz")], settlements: vec![settle("zz", 50, &[K])] },
+        ];
+        let payee = payee_address(K).unwrap();
+        let pay = pay_summary(K, &payee, 60, 571, &blocks, 1, 583_333_331);
+        assert_eq!(pay.window_blocks, PAY_WINDOW_BLOCKS);
+        assert_eq!((pay.from_height, pay.to_height), (60, 571));
+        assert_eq!(pay.blocks_read, 3);
+        assert_eq!(pay.blocks_unreadable, 1);
+        assert_eq!(pay.paid_votes, 1);
+        assert_eq!(pay.approve_votes_not_paid, 1, "the late vote on bb");
+        assert_eq!(pay.paid_units, "41666667");
+        assert_eq!(pay.paid_wrf, "0.41666667");
+        assert_eq!(pay.payee_address, "0x5e0030865d3c59cabf338d5fafc578af9f651eba");
+        assert_eq!(pay.payee_balance_units, "583333331");
+        assert_eq!(pay.payee_balance_wrf, "5.83333331");
+        // Chain facts only: no rate, projection or estimate fields.
+        let json = serde_json::to_value(&pay).unwrap();
+        for key in json.as_object().unwrap().keys() {
+            for word in ["rate", "per_", "estimate", "projected", "expected", "earn", "payout", "reward"] {
+                assert!(!key.contains(word), "{key}");
+            }
+        }
     }
 }
