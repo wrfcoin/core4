@@ -6800,7 +6800,15 @@ impl State {
                         || (reject_settles && set.has_reject_threshold(oracle_count, quorum))
                 })
                 .unwrap_or(false);
-            if !has_quorum {
+            // From `attester_pay_v2` a debt entry is itself the proof that the
+            // decision crossed its threshold: it is written only on the apply
+            // path, at the crossing block. The live re-check is skipped for an
+            // owed decision, so a later change of the oracle set or quorum
+            // cannot leave one debt unpayable and hold back every other
+            // settlement with it. A decision with no debt entry is refused
+            // just below.
+            let owed = reject_settles && self.attester_settlement_due.contains_key(decision_id);
+            if !has_quorum && !owed {
                 return Err(StateError::AttesterSettlement(format!(
                     "decision {decision_id} has no oracle quorum in state and \
                      cannot be settled"
@@ -6906,16 +6914,30 @@ impl State {
             .map(|public_key| Address::from_public_key(&public_key))
     }
 
-    /// The payout account of the bond `attester_id` is bound to, if it has a
-    /// binding AND that bond is still registered (`attester_pay_v2`). The
-    /// account is the bond's CURRENT binding, never a pending one. `None`
-    /// while the map is empty.
-    pub fn attester_bond_payout_account(&self, attester_id: &str) -> Option<Address> {
-        let deployment_id = self.attester_payout_bonds.get(attester_id)?;
+    /// The registration of bond `deployment_id` if it is registered AND holds
+    /// its full principal (`attester_pay_v2`). A bond whose principal was
+    /// forfeited keeps its registration entry but is not in good standing, the
+    /// same test node settlement applies.
+    fn attester_bond_in_good_standing(
+        &self,
+        deployment_id: &[u8; 32],
+    ) -> Option<&crate::consensus::node_bond_registry::NodeBondRegistration> {
         self.node_bond_registry
             .as_ref()?
             .registrations
             .get(deployment_id)
+            .filter(|registration| {
+                registration.principal_units == crate::consensus::node_bond_registry::NODE_BOND_UNITS
+            })
+    }
+
+    /// The payout account of the bond `attester_id` is bound to, if it has a
+    /// binding AND that bond is still registered with its full principal
+    /// (`attester_pay_v2`). The account is the bond's CURRENT binding, never a
+    /// pending one. `None` while the map is empty.
+    pub fn attester_bond_payout_account(&self, attester_id: &str) -> Option<Address> {
+        let deployment_id = self.attester_payout_bonds.get(attester_id)?;
+        self.attester_bond_in_good_standing(deployment_id)
             .map(|registration| registration.binding.payout_account)
     }
 
@@ -6960,12 +6982,8 @@ impl State {
             .flatten()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| refused("that is not 64 hex characters"))?;
-        let registered = self
-            .node_bond_registry
-            .as_ref()
-            .is_some_and(|registry| registry.registrations.contains_key(&deployment_id));
-        if !registered {
-            return Err(refused("that is not a registered bond"));
+        if self.attester_bond_in_good_standing(&deployment_id).is_none() {
+            return Err(refused("that is not a registered bond holding its full principal"));
         }
         let taken = self.attester_payout_bonds.iter().any(|(other, bound)| {
             other != identity && *bound == deployment_id && oracle_set.contains(other)
@@ -7006,7 +7024,7 @@ impl State {
             self.oracle_set.clone(),
             self.oracle_quorum,
             self.oracle_registry.clone(),
-            self.signing_keys.clone(),
+            self.signing_keys.clone(), // secret-copy-ok: public signing-key registry (public keys only), kept to restore on refusal
             self.governance.params.oracle_set.clone(),
             self.governance.params.oracle_quorum,
             self.attester_payout_bonds.clone(),
@@ -17147,6 +17165,36 @@ mod tests {
             multidomain,
             GovernanceParameterUpdate::MultidomainHydrologyEnabled(true)
         ));
+    }
+
+    #[test]
+    fn a_governance_oracle_set_update_drops_the_payout_bindings_of_removed_identities() {
+        let ids: Vec<String> = (1u8..=4)
+            .map(|n| {
+                PublicKey::from_private_key(&PrivateKey::from_bytes(&[n; 32]).expect("seed")).to_hex()
+            })
+            .collect();
+        let mut state = State::new();
+        state
+            .apply_transition(StateTransition::SetOracleConfig {
+                oracle_set: ids.clone(),
+                oracle_quorum: 2,
+            })
+            .expect("oracle config");
+        state.attester_payout_bonds.insert(ids[0].clone(), [1u8; 32]);
+        state.attester_payout_bonds.insert(ids[3].clone(), [2u8; 32]);
+        state
+            .apply_governance_update(
+                GovernanceParameterUpdate::OracleSet(ids[..3].to_vec()),
+                None,
+                None,
+            )
+            .expect("oracle set update");
+        assert_eq!(
+            state.attester_payout_bonds.keys().collect::<Vec<_>>(),
+            [&ids[0]],
+            "the identity that left the set loses its binding; the one that stayed keeps it"
+        );
     }
 
     #[test]

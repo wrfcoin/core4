@@ -404,21 +404,37 @@ fn a_set_change_between_the_crossing_and_the_paying_block() {
     assert_eq!(paid(&records[0]).len(), 3);
     assert!(balance(&state, &own_address(3)) > before, "the departed identity is paid what it was owed");
 
-    // The set grows before the debt is paid (n = 5: threshold 4): the three
-    // reject votes no longer hold it, so the derivation refuses and the debt
-    // stays owed. A fourth reject vote restores it; the frozen three are paid.
+    // The set grows before the debt is paid (n = 5: threshold 4). The three
+    // reject votes no longer hold the live threshold, but the debt is the
+    // proof of the crossing: it is still paid, to the frozen three, and an
+    // approve decision owed in the same block is paid with it.
     let mut state = plain(4, 2);
     votes(&mut state, H, "d", &[1, 2, 3], false);
+    votes(&mut state, H, "e", &[1, 2], true);
     set_config(&mut state, &[1, 2, 3, 4, 5], 2);
+    assert_eq!(due(&state, "d"), Some((H, oracles(&[1, 2, 3]))), "still owed");
+    assert_eq!(due(&state, "e"), Some((H, oracles(&[1, 2]))), "still owed");
+    let (records, _) = settle(&mut state, H + 1);
+    assert_eq!(records.len(), 2, "one unpayable debt must not hold back the others");
+    assert_eq!(paid(&records[0]).len(), 3);
+    assert_eq!(paid(&records[1]).len(), 2);
+    assert_eq!(due(&state, "d"), None);
+    assert_eq!(due(&state, "e"), None);
+
+    // Quorum raised before an approve debt is paid: also still paid.
+    let mut state = plain(4, 2);
+    votes(&mut state, H, "e", &[1, 2], true);
+    set_config(&mut state, &[1, 2, 3, 4], 3);
+    let (records, _) = settle(&mut state, H + 1);
+    assert_eq!(paid(&records[0]).len(), 2);
+
+    // A decision with no debt entry is never payable, whatever is named.
+    let mut state = plain(4, 2);
+    votes(&mut state, H, "d", &[1, 2], false);
     state.open_emission_block(H + 1);
     let slice = state.emission_ledger.remaining(EmissionRole::Attester);
     let refused = state.derive_attester_settlements(&["d".to_string()], H + 1, slice).unwrap_err();
     assert!(refused.to_string().contains("no oracle quorum"), "{refused}");
-    assert_eq!(due(&state, "d"), Some((H, oracles(&[1, 2, 3]))), "still owed");
-    votes(&mut state, H + 2, "d", &[4], false);
-    assert_eq!(due(&state, "d"), Some((H, oracles(&[1, 2, 3]))), "the later vote is a straggler");
-    let (records, _) = settle(&mut state, H + 2);
-    assert_eq!(paid(&records[0]).len(), 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +564,39 @@ fn a_registration_naming_a_bond_is_refused_unless_the_bond_is_registered_and_fre
         block_height: H - 1,
     };
     assert!(state.apply_transition(below).is_err());
+}
+
+#[test]
+fn a_bond_without_its_full_principal_is_not_paid_and_cannot_be_named() {
+    let _guard = install();
+    let mut state = bonded();
+    register(&mut state, H, &registration(&[1, 2, 3, 4], 1, 1, Some(&bond_hex(1)))).expect("binds oracle 1");
+    assert_eq!(state.attester_settlement_payee(&oracle(1), H), Some(address(10)));
+
+    // Bond 1 loses its principal (a forfeited bond keeps its registration
+    // entry). The binding stays in the map, but pay falls back to the
+    // identity's own address, and no registration may name the bond.
+    state
+        .node_bond_registry
+        .as_mut()
+        .expect("registry")
+        .registrations
+        .get_mut(&[1u8; 32])
+        .expect("bond 1")
+        .principal_units = 0;
+    assert_eq!(state.attester_bond_payout_account(&oracle(1)), None);
+    assert_eq!(state.attester_settlement_payee(&oracle(1), H + 1), Some(own_address(1)));
+    votes(&mut state, H + 1, "d", &[1, 2, 3], false);
+    let payout_before = balance(&state, &address(10));
+    let (records, _) = settle(&mut state, H + 1);
+    let to_one = records[0].allocations.iter().find(|a| a.attester_id == oracle(1)).unwrap().amount;
+    assert!(to_one > 0);
+    assert_eq!(balance(&state, &own_address(1)), to_one, "paid to the identity's own address");
+    assert_eq!(balance(&state, &address(10)), payout_before, "not to the bond payout account");
+    let refused = register(&mut state, H + 2, &registration(&[1, 2, 3, 4], 2, 1, Some(&bond_hex(1)))).unwrap_err();
+    assert!(refused.contains(SP_ATTESTER_PAYOUT_BOND_REFUSED), "{refused}");
+    // A bond in good standing is still accepted.
+    register(&mut state, H + 2, &registration(&[1, 2, 3, 4], 2, 1, Some(&bond_hex(2)))).expect("bond 2");
 }
 
 #[test]
