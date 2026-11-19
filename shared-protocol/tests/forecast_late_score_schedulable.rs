@@ -57,7 +57,8 @@ fn v2_is_schedulable_on_every_chain_but_unscheduled() {
     assert_eq!(v2.name(), V2);
     assert_eq!(ConsensusFeature::parse(V2), Some(v2));
     assert_eq!(bincode::serialize(&v2).unwrap(), 41u32.to_le_bytes(), "appended at ordinal 41");
-    assert_eq!(*ConsensusFeature::ALL.last().unwrap(), v2);
+    // `attester_pay_v2` is appended after it at ordinal 42.
+    assert_eq!(ConsensusFeature::ALL.get(41), Some(&v2));
     for node in [None, Some("ab".repeat(32)), Some("cd".repeat(32))] {
         assert!(v2.schedulable(node.as_deref()), "{node:?}");
     }

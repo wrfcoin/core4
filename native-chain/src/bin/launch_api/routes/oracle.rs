@@ -687,6 +687,11 @@ pub async fn submit_oracle_registrations(
     // silently discarded.
     let admission_window = submission_window / 2;
 
+    // The block these registrations can first be mined in. The parse and the
+    // authorization are the block rules at that height (admission policy
+    // only): below `attester_pay_v2` they are the heightless ones.
+    let next_height = state.blockchain.read().await.height.saturating_add(1);
+
     let mut declared: Option<(Vec<String>, usize)> = None;
     let mut transaction_ids: Vec<String> = Vec::new();
     for (index, tx) in request.transactions.iter().enumerate() {
@@ -701,7 +706,7 @@ pub async fn submit_oracle_registrations(
                 ),
             );
         }
-        let Some(payload) = tx.parse_oracle_registration() else {
+        let Some(payload) = tx.parse_oracle_registration_at(next_height) else {
             return envelope_error(
                 &req,
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -709,7 +714,7 @@ pub async fn submit_oracle_registrations(
                 format!("transactions[{index}] does not carry a parseable oracle registration"),
             );
         };
-        if !tx.verify_oracle_registration_authorization() {
+        if !tx.verify_oracle_registration_authorization_at(next_height) {
             return envelope_error(
                 &req,
                 StatusCode::UNPROCESSABLE_ENTITY,

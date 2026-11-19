@@ -501,7 +501,9 @@ pub fn export_state_entries(state: &State) -> Result<Vec<(Vec<u8>, Vec<u8>)>, St
             // Forecast late score: absent while empty (always, until the feature is in force).
             || (name == "forecast_late_score" && state.forecast_late_score.is_empty())
             // Station submitter keys: absent while empty (always, until `station_submitter_key`).
-            || (name == "station_submitters" && state.station_submitters.is_empty()) {
+            || (name == "station_submitters" && state.station_submitters.is_empty())
+            // Attester payout bonds: absent while empty (always, until `attester_pay_v2`).
+            || (name == "attester_payout_bonds" && state.attester_payout_bonds.is_empty()) {
             continue;
         }
         match value {
@@ -617,7 +619,7 @@ pub fn import_state_entries(
         } else if name == "node_receipt_registry" && version != Some(b"4".as_slice()) && version != Some(b"5".as_slice()) && version != Some(b"6".as_slice()) {
             if carried.contains_key(name) { return Err(malformed(name, "receipt marker in legacy snapshot".into())); }
             Value::Null
-        } else if (name == "send_allowlists" || name == "advisory_proposals" || name == "forecast_late_score" || name == "station_submitters") && !carried.contains_key(name) {
+        } else if (name == "send_allowlists" || name == "advisory_proposals" || name == "forecast_late_score" || name == "station_submitters" || name == "attester_payout_bonds") && !carried.contains_key(name) {
             // Omitted by the exporter while empty; any format version.
             Value::Map(Vec::new())
         } else if is_node_local(name) {
@@ -1164,6 +1166,8 @@ mod tests {
                 committed_at: 8,
             },
         );
+        // Attester payout bonds (`attester_pay_v2`): one bound identity.
+        s.attester_payout_bonds.insert("cd".repeat(32), [0x5a; 32]);
         s
     }
 

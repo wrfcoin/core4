@@ -245,19 +245,14 @@ pub fn extract_transitions(
             // not verify against an allowlisted key emits NO transition (and its
             // block is separately rejected by `verify_block`), so a peer cannot
             // forge or redirect an oracle registration.
+            //
+            // The SAME shared step as the PoP producer arm (parse and
+            // authorization at this height, variant by height): below
+            // `attester_pay_v2` exactly the `ApplyOracleRegistration` this arm
+            // always emitted.
             TransactionType::OracleRegistration => {
-                if let Some(p) = tx
-                    .parse_oracle_registration()
-                    .filter(|_| tx.verify_oracle_registration_authorization())
-                {
-                    transitions.push(StateTransition::ApplyOracleRegistration {
-                        oracle_set: p.oracle_set,
-                        oracle_quorum: p.oracle_quorum,
-                        identity: p.identity,
-                        public_key: p.public_key,
-                        epoch: p.epoch,
-                        activated_at: p.activated_at,
-                    });
+                if let Some(transition) = tx.oracle_registration_step(block_height) {
+                    transitions.push(transition);
                 }
             },
 

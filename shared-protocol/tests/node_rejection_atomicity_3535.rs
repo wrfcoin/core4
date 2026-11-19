@@ -559,6 +559,9 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
         StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
         StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
+        StateTransition::ApplyOracleRegistrationWithPayoutBond { .. } => {
+            "ApplyOracleRegistrationWithPayoutBond"
+        },
     }
 }
 
@@ -818,6 +821,17 @@ fn sweep_transition(ordinal: u32) -> StateTransition {
             submitter: None,
             block_height: fixture::A,
         },
+        // `attester_pay_v2` (unscheduled here, so refused).
+        63 => StateTransition::ApplyOracleRegistrationWithPayoutBond {
+            oracle_set: vec![hex::encode(fixture::pk(20))],
+            oracle_quorum: 1,
+            identity: hex::encode(fixture::pk(20)),
+            public_key: hex::encode(fixture::pk(20)),
+            epoch: 1,
+            activated_at: 0,
+            payout_bond: None,
+            block_height: fixture::A,
+        },
         _ => {
             // Synthetic zero-value fixtures, preserving the original sweep inputs.
             // StateTransition is not a protocol bincode boundary; keep fixtures JSON.
@@ -897,6 +911,7 @@ fn funded_rejection_sweep_covers_every_transition_variant() {
         "ApplyForecastScore",
         "CloseForecastBuckets",
         "ApplyStationSubmitterKey",
+        "ApplyOracleRegistrationWithPayoutBond",
     ];
     let mut late_rejections = 0;
     for (ordinal, name) in names.into_iter().enumerate() {

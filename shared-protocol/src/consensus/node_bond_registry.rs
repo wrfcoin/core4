@@ -231,6 +231,8 @@ pub fn is_protocol_credited_address(state: &State, address: &Address) -> bool {
         || state.producer_set_history.iter().flat_map(|c| &c.members).any(|m| identity(&m.payout_address) || public(&m.public_key).ok().is_some_and(|k| &Address::from_public_key(&k) == address))
         || state.oracle_set.iter().any(|id| identity(id))
         || state.attester_settlement_due.values().flat_map(|d| &d.eligible).any(|id| identity(id))
+        // `attester_pay_v2`: the account a bound attester is paid to (empty map: no-op).
+        || state.attester_payout_bonds.keys().any(|id| state.attester_bond_payout_account(id).as_ref() == Some(address))
         || state.station_registry.entries().any(|(_, station)| identity(&station.owner_address))
         || state.station_owner_ledger.values().filter_map(|l| l.pending_recovery.as_ref()).any(|r| identity(&r.to_owner_address))
         || state.contribution_reward_records.values().any(|r| &r.address == address)

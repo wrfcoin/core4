@@ -55,10 +55,25 @@ impl State {
             ApplyShieldedDeposit { from, .. } => protected(from),
             ApplyShieldedWithdrawal { payload, .. } => identity(&payload.transparent_recipient),
             ApplyRewardClaim { payload, .. } => identity(&payload.destination),
-            ApplyAttesterSettlements { records } => records
-                .iter()
-                .flat_map(|r| &r.allocations)
-                .any(|a| identity(&a.attester_id)),
+            ApplyAttesterSettlements { records } => {
+                // The settlement names the block being applied; its payees
+                // come from the one payee rule (`attester_settlement_payee`).
+                // Below `attester_pay_v2` that is the identity's own address,
+                // checked exactly as before.
+                let height = self.emission_ledger.height();
+                let bound_payees = crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+                    height,
+                );
+                records.iter().flat_map(|r| &r.allocations).any(|a| {
+                    if bound_payees {
+                        self.attester_settlement_payee(&a.attester_id, height)
+                            .is_some_and(|payee| protected(&payee))
+                    } else {
+                        identity(&a.attester_id)
+                    }
+                })
+            },
             ApplyProducerSettlement { record, .. } => identity(&record.payout_address),
             ApplyFaucetReward => self
                 .effective_faucet_address()
@@ -70,7 +85,11 @@ impl State {
             ApplyProducerSetChange { change, .. } => {
                 change.members.iter().any(|m| identity(&m.payout_address) || PublicKey::from_bytes(&m.public_key).ok().is_some_and(|k| protected(&Address::from_public_key(&k))))
             },
-            SetOracleConfig { oracle_set, .. } | ApplyOracleRegistration { oracle_set, .. } => {
+            // The payout bond of the last variant can only be a registered
+            // bond, whose payout account the bond rules keep off every escrow.
+            SetOracleConfig { oracle_set, .. }
+            | ApplyOracleRegistration { oracle_set, .. }
+            | ApplyOracleRegistrationWithPayoutBond { oracle_set, .. } => {
                 oracle_set.iter().any(|s| identity(s.trim()))
             },
             CreateGovernanceProposal { proposer, .. } => protected(proposer),

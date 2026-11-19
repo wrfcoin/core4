@@ -412,6 +412,22 @@ pub struct OracleRegistrationPayload {
     /// Hex ed25519 signature over [`oracle_registration_authorization_message`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_signature: Option<String>,
+    /// `attester_pay_v2`: the bond (`deployment_id`, 64 hex characters) whose
+    /// payout account receives `identity`'s attester pay. `None` means no
+    /// bond: pay goes to the address derived from the identity.
+    ///
+    /// Written like the other optional members (absent when `None`, so every
+    /// earlier payload serializes to the same bytes) and covered by the
+    /// governance signature only when `Some`
+    /// ([`oracle_registration_authorization_message_with_domain`]).
+    ///
+    /// NEVER read by the derived deserializer: a binary without this field
+    /// ignores a JSON member of this name whatever its value and however
+    /// often it appears, and so must every heightless parse here. Only
+    /// [`Transaction::parse_oracle_registration_at`] reads it, and only where
+    /// the feature is active.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub payout_bond: Option<String>,
 }
 
 impl OracleRegistrationPayload {
@@ -439,6 +455,7 @@ impl OracleRegistrationPayload {
             activated_at,
             auth_pubkey: None,
             auth_signature: None,
+            payout_bond: None,
         }
     }
 
@@ -556,7 +573,35 @@ pub fn oracle_registration_authorization_message_with_domain(
     buf.extend_from_slice(p.public_key.as_bytes());
     buf.extend_from_slice(&p.epoch.to_le_bytes());
     buf.extend_from_slice(&p.activated_at.to_le_bytes());
+    // `attester_pay_v2`: a named payout bond is part of what governance
+    // signs. Appended only when present, so a payload without one has exactly
+    // the message it always had. Unambiguous: every earlier field is
+    // length-prefixed or fixed-width, so a message without a bond ends at
+    // `activated_at` and one with a bond continues with this tag.
+    if let Some(payout_bond) = &p.payout_bond {
+        buf.extend_from_slice(ORACLE_REGISTRATION_PAYOUT_BOND_DOMAIN);
+        buf.extend_from_slice(&(payout_bond.len() as u32).to_le_bytes());
+        buf.extend_from_slice(payout_bond.as_bytes());
+    }
     buf
+}
+
+/// Domain tag that introduces the `payout_bond` member in an oracle
+/// registration's authorization message (`attester_pay_v2`).
+pub const ORACLE_REGISTRATION_PAYOUT_BOND_DOMAIN: &[u8] =
+    b"wrfcoin_oracle_registration_payout_bond_v1";
+
+/// The `payout_bond` member of an oracle registration's JSON, read strictly:
+/// absent or `null` is `None`, a string is that string, and anything else
+/// (another JSON type, or the member more than once) is an error. Used only
+/// where `attester_pay_v2` is active.
+fn oracle_registration_payout_bond(data: &str) -> Result<Option<String>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct PayoutBondMember {
+        #[serde(default)]
+        payout_bond: Option<String>,
+    }
+    serde_json::from_str::<PayoutBondMember>(data).map(|member| member.payout_bond)
 }
 
 /// Fork-safe on-chain weather-station registration payload (#2537). Carried in a
@@ -3750,6 +3795,38 @@ impl Transaction {
         activated_at: i64,
         governance_key: &PrivateKey,
     ) -> Self {
+        Self::new_oracle_registration_with_payout_bond_and_domain(
+            chain_id,
+            network_id,
+            oracle_set,
+            oracle_quorum,
+            identity,
+            public_key,
+            epoch,
+            activated_at,
+            None,
+            governance_key,
+        )
+    }
+
+    /// [`Self::new_oracle_registration_with_domain`] naming the bond whose
+    /// payout account receives the identity's attester pay
+    /// (`attester_pay_v2`). With `payout_bond: None` this is that function,
+    /// byte for byte. A registration that names a bond is valid only from the
+    /// feature's activation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_oracle_registration_with_payout_bond_and_domain(
+        chain_id: &str,
+        network_id: &str,
+        oracle_set: Vec<String>,
+        oracle_quorum: usize,
+        identity: &str,
+        public_key: &str,
+        epoch: u64,
+        activated_at: i64,
+        payout_bond: Option<&str>,
+        governance_key: &PrivateKey,
+    ) -> Self {
         let mut payload = OracleRegistrationPayload::new(
             oracle_set,
             oracle_quorum,
@@ -3758,6 +3835,7 @@ impl Transaction {
             epoch,
             activated_at,
         );
+        payload.payout_bond = payout_bond.map(str::to_string);
         payload.sign_with_domain(chain_id, network_id, governance_key);
         let fingerprint = hash_bytes(&payload.authorization_message());
         let input = TransactionInput {
@@ -3919,9 +3997,89 @@ impl Transaction {
     /// allowlist is deployment config ([`oracle_governance_pubkeys`]), resolved
     /// identically by producer, mempool, and every syncing peer.
     pub fn verify_oracle_registration_authorization(&self) -> bool {
-        let Some(payload) = self.parse_oracle_registration() else {
-            return false;
-        };
+        self.parse_oracle_registration()
+            .is_some_and(|payload| Self::oracle_registration_is_authorized(&payload))
+    }
+
+    /// [`Self::parse_oracle_registration`] for a block at `block_height`.
+    ///
+    /// Below `attester_pay_v2` it IS that parse: a `payout_bond` member is
+    /// ignored, whatever its JSON, and the payload's `payout_bond` is `None`.
+    /// From the activation the member is read strictly: a string becomes
+    /// `payout_bond`, an absent or `null` member is `None`, and any other
+    /// shape (another JSON type, or the member twice) makes the registration
+    /// unparseable, so it fails authorization like any other malformed one.
+    pub fn parse_oracle_registration_at(&self, block_height: u64) -> Option<OracleRegistrationPayload> {
+        let mut payload = self.parse_oracle_registration()?;
+        if crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+            block_height,
+        ) {
+            payload.payout_bond = oracle_registration_payout_bond(self.data.as_deref()?).ok()?;
+        }
+        Some(payload)
+    }
+
+    /// [`Self::verify_oracle_registration_authorization`] for a block at
+    /// `block_height`: the same rule over
+    /// [`Self::parse_oracle_registration_at`]. Below `attester_pay_v2` the two
+    /// are identical; from the activation the governance signature must also
+    /// cover a named `payout_bond`.
+    pub fn verify_oracle_registration_authorization_at(&self, block_height: u64) -> bool {
+        self.parse_oracle_registration_at(block_height)
+            .is_some_and(|payload| Self::oracle_registration_is_authorized(&payload))
+    }
+
+    /// The ONE entry point every extractor uses for an oracle-registration tx
+    /// (the PoP producer arm and the P2P/WAL `transition_extractor`, so
+    /// producer == applier == WAL replay): parse and authorize at
+    /// `block_height`, then pick the transition. `None` means the tx yields no
+    /// transition (not a registration, or not authorized).
+    ///
+    /// Below `attester_pay_v2`: `ApplyOracleRegistration`, as always. From the
+    /// activation: `ApplyOracleRegistrationWithPayoutBond`, for EVERY
+    /// registration, so one that names no bond clears the identity's binding.
+    pub fn oracle_registration_step(
+        &self,
+        block_height: u64,
+    ) -> Option<crate::blockchain::state::StateTransition> {
+        use crate::blockchain::state::StateTransition;
+        let p = self.parse_oracle_registration_at(block_height)?;
+        if !Self::oracle_registration_is_authorized(&p) {
+            return None;
+        }
+        Some(
+            if crate::crypto::chain_binding::feature_active(
+                crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+                block_height,
+            ) {
+                StateTransition::ApplyOracleRegistrationWithPayoutBond {
+                    oracle_set: p.oracle_set,
+                    oracle_quorum: p.oracle_quorum,
+                    identity: p.identity,
+                    public_key: p.public_key,
+                    epoch: p.epoch,
+                    activated_at: p.activated_at,
+                    payout_bond: p.payout_bond,
+                    block_height,
+                }
+            } else {
+                StateTransition::ApplyOracleRegistration {
+                    oracle_set: p.oracle_set,
+                    oracle_quorum: p.oracle_quorum,
+                    identity: p.identity,
+                    public_key: p.public_key,
+                    epoch: p.epoch,
+                    activated_at: p.activated_at,
+                }
+            },
+        )
+    }
+
+    /// The authorization rule of an already-parsed registration: an
+    /// allowlisted `auth_pubkey` whose signature verifies over the payload's
+    /// canonical message.
+    fn oracle_registration_is_authorized(payload: &OracleRegistrationPayload) -> bool {
         let Some(pk_hex) = payload.auth_pubkey.as_deref() else {
             return false;
         };

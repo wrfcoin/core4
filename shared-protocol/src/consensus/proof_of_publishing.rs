@@ -5149,7 +5149,8 @@ impl ProofOfPublishing {
         // record its own peers would reject, because there is one implementation
         // and both sides call it.
         //
-        // `crossing` is built from live quorum and unmarked decisions, so this
+        // `crossing` is the outstanding debt (decisions that crossed their
+        // threshold on the apply path and carry no terminal marker), so this
         // cannot error on an honest block; a failure means the producer's own
         // state disagrees with itself, and emitting nothing is the right answer.
         let records = state
@@ -6776,25 +6777,12 @@ impl ProofOfPublishing {
             // extractor emits, so producer == applier == WAL replay. An
             // unauthorized registration yields no transition here (its block is
             // rejected by verify_block), mirroring the gamification/stake gates.
-            TransactionType::OracleRegistration => {
-                if tx.parse_oracle_registration().is_some() {
-                    if let Some(p) = tx
-                        .parse_oracle_registration()
-                        .filter(|_| tx.verify_oracle_registration_authorization())
-                    {
-                        return Ok(Some(StateTransition::ApplyOracleRegistration {
-                            oracle_set: p.oracle_set,
-                            oracle_quorum: p.oracle_quorum,
-                            identity: p.identity,
-                            public_key: p.public_key,
-                            epoch: p.epoch,
-                            activated_at: p.activated_at,
-                        }));
-                    }
-                    return Ok(None);
-                }
-                Ok(None)
-            },
+            //
+            // The ONE shared step (parse and authorization at this height,
+            // variant by height): below `attester_pay_v2` it is exactly the
+            // parse + authorization + `ApplyOracleRegistration` this arm
+            // always performed.
+            TransactionType::OracleRegistration => Ok(tx.oracle_registration_step(block_height)),
             // Fork-safe on-chain station registration (#2537). Same shape as the
             // oracle arm above: identical parse + fail-closed authorization to
             // the P2P/WAL extractor, so producer == applier == WAL replay. A
@@ -8428,6 +8416,30 @@ impl ProofOfPublishing {
             return 0;
         }
 
+        // `attester_pay_v2` (selection only, node policy): a held-back group
+        // whose reject votes would reach the reject threshold in this block is
+        // decided, and its votes are owed pay, so the VOTES are mined. The
+        // reveal is still held back: a real reveal is valid only in a block
+        // that leaves it with approve quorum
+        // (`verify_real_reveal_quorum_after_replay`), which is unchanged.
+        // Below the activation this set is empty and selection is unchanged.
+        let rejected_commit_ids: FxHashSet<String> =
+            if feature_active(ConsensusFeature::AttesterPayV2, block_height) {
+                let oracle_count = effective_state.oracle_set.len();
+                deferred_commit_ids
+                    .iter()
+                    .filter(|commit_id| {
+                        effective_state
+                            .attestations
+                            .get(*commit_id)
+                            .is_some_and(|set| set.has_reject_threshold(oracle_count, quorum))
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                FxHashSet::default()
+            };
+
         transactions.retain(|tx| match tx.tx_type {
             TransactionType::ContributionReveal => tx
                 .parse_reveal_payload()
@@ -8435,7 +8447,10 @@ impl ProofOfPublishing {
                 .unwrap_or(true),
             TransactionType::OracleAttestation => tx
                 .parse_oracle_attestation_payload()
-                .map(|attestation| !deferred_commit_ids.contains(&attestation.commit_id))
+                .map(|attestation| {
+                    !deferred_commit_ids.contains(&attestation.commit_id)
+                        || rejected_commit_ids.contains(&attestation.commit_id)
+                })
                 .unwrap_or(true),
             _ => true,
         });
@@ -9756,9 +9771,13 @@ impl ProofOfPublishing {
         // checkable from the tx alone so producer, mempool and every syncing
         // peer agree. Fail-closed: reject the block, so a peer cannot forge,
         // redirect, or self-authorize an oracle registration.
+        //
+        // Height-aware: below `attester_pay_v2` this is the rule above,
+        // unchanged; from the activation a named `payout_bond` is part of the
+        // signed fields.
         if ctx.check_tx_signatures
             && tx.tx_type == TransactionType::OracleRegistration
-            && !tx.verify_oracle_registration_authorization()
+            && !tx.verify_oracle_registration_authorization_at(ctx.height)
         {
             return Some(
                 "oracle registration without valid governance authorization (forgery rejected, \

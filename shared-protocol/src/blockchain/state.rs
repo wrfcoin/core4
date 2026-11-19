@@ -1040,6 +1040,14 @@ pub struct MiningPoolRecord {
     pub members: Vec<String>,
 }
 
+/// Refusal code of an oracle registration whose `payout_bond` is not a
+/// registered bond free for that identity (`attester_pay_v2`).
+pub const SP_ATTESTER_PAYOUT_BOND_REFUSED: &str = "SP_ATTESTER_PAYOUT_BOND_REFUSED";
+
+/// Domain tag of the `attester_payout_bonds` section of the state-root
+/// pre-image (present only while the map is non-empty).
+pub const ATTESTER_PAYOUT_BONDS_ROOT_TAG: &[u8] = b"wrfcoin_attester_payout_bonds_v1";
+
 /// Top-level state sections that feed `state_root_material`.
 ///
 /// Keep this list in lockstep with `state_root_material`; producer/applier
@@ -1097,6 +1105,7 @@ pub const STATE_ROOT_MATERIAL_FIELD_NAMES: &[&str] = &[
     "advisory_proposals",
     "forecast_late_score",
     "station_submitters",
+    "attester_payout_bonds",
 ];
 
 /// Global state of the blockchain.
@@ -1557,6 +1566,17 @@ pub struct State {
     /// older JSON snapshots deserialize.
     #[serde(default)]
     pub station_submitters: crate::blockchain::station_owner::StationSubmitterState,
+    /// `attester_pay_v2`: the bond each attester's pay goes to, keyed by
+    /// oracle identity; the value is the bond's `deployment_id`. Written only
+    /// by an oracle registration applied while the feature is active, absolute
+    /// per identity (a registration without `payout_bond` removes the entry),
+    /// and never holds an identity outside `oracle_set`. Empty on every chain
+    /// that has not scheduled the feature; while empty it is absent from
+    /// `state_root_material`, from checkpoints (written at format 19 or
+    /// older) and from snapshots. Appended at checkpoint format 20;
+    /// `#[serde(default)]` so older JSON snapshots deserialize.
+    #[serde(default)]
+    pub attester_payout_bonds: BTreeMap<String, [u8; 32]>,
 }
 
 /// The debit seam's consensus view. A missing wrapper is deliberately
@@ -1672,6 +1692,7 @@ impl State {
             advisory_proposals: BTreeMap::new(),
             forecast_late_score: Default::default(),
             station_submitters: Default::default(),
+            attester_payout_bonds: BTreeMap::new(),
         }
     }
 
@@ -2544,7 +2565,19 @@ impl State {
         self.oracle_quorum = oracle_quorum;
         self.oracle_registry = OracleRegistry::with_params(oracle_set, self.oracle_quorum);
         self.ensure_legacy_oracle_keys()?;
+        self.prune_attester_payout_bonds();
         Ok(())
+    }
+
+    /// `attester_pay_v2`: a payout binding lives only while its identity is
+    /// in `oracle_set`. Called wherever the set is replaced; a no-op while the
+    /// map is empty (always, until the feature is active).
+    fn prune_attester_payout_bonds(&mut self) {
+        if self.attester_payout_bonds.is_empty() {
+            return;
+        }
+        let oracle_set = &self.oracle_set;
+        self.attester_payout_bonds.retain(|identity, _| oracle_set.contains(identity));
     }
 
     pub fn get_nft(&self, nft_id: &NFTId) -> Option<&ComputationalNFT> {
@@ -3951,6 +3984,22 @@ impl State {
             material.extend_from_slice(b"wrfcoin_station_submitters_v1");
             push_bytes(&mut material, &self.station_submitters.canonical_body());
         }
+
+        // --- attester_payout_bonds (ConsensusFeature::AttesterPayV2) ---
+        //
+        // CONDITIONAL, like `station_submitters`: absent from the pre-image
+        // (not even a tag) while empty, and empty until a registration names
+        // a bond under the unscheduled feature, so every root is
+        // byte-identical to a binary without this field until then. A
+        // `BTreeMap`: identity order on every node.
+        if !self.attester_payout_bonds.is_empty() {
+            material.extend_from_slice(ATTESTER_PAYOUT_BONDS_ROOT_TAG);
+            push_u64(&mut material, self.attester_payout_bonds.len() as u64);
+            for (identity, deployment_id) in &self.attester_payout_bonds {
+                push_str(&mut material, identity);
+                push_bytes(&mut material, deployment_id);
+            }
+        }
         material
     }
 
@@ -4771,7 +4820,7 @@ impl State {
                         // whole settlement if any payee fails to resolve, so a
                         // partial payment cannot happen here.
                         let Some(address) =
-                            Self::attester_payout_address(&allocation.attester_id)
+                            self.attester_settlement_payee(&allocation.attester_id, height)
                         else {
                             return Err(StateError::AttesterSettlement(format!(
                                 "attester {} does not resolve to a payout address",
@@ -5282,6 +5331,57 @@ impl State {
                                 // Landed in a later block: unpaid (rule 3).
                             },
                         }
+                    } else if crate::crypto::chain_binding::feature_active(
+                        crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+                        current_block,
+                    ) {
+                        // `attester_pay_v2`: the decision is REJECTED once its
+                        // reject votes make approval impossible. Approval is
+                        // handled above, so where both hold approve wins.
+                        //
+                        // The debt is opened only by the accepted reject vote
+                        // that takes the count from below the threshold to it
+                        // (an edge): a repeated vote, an approve vote, or a
+                        // further reject vote on a decision that was already
+                        // past the threshold (for one, every decision rejected
+                        // before the activation) opens nothing. Inside the
+                        // crossing block the freeze rule is the approve one:
+                        // each later vote re-freezes the eligible identities,
+                        // a vote in a later block leaves them untouched.
+                        let threshold = crate::oracle::attestation::reject_threshold(
+                            self.oracle_set.len(),
+                            quorum,
+                        );
+                        let rejections = self
+                            .attestations
+                            .get(&payload.commit_id)
+                            .map_or(0, |set| set.rejections());
+                        if rejections >= threshold {
+                            let eligible =
+                                self.rejecting_attesters_for_decision(&payload.commit_id);
+                            match self.attester_settlement_due.get_mut(&payload.commit_id) {
+                                None => {
+                                    let crossed_here = outcome.accepted
+                                        && !payload.approved
+                                        && rejections - 1 < threshold;
+                                    if crossed_here {
+                                        self.attester_settlement_due.insert(
+                                            payload.commit_id.clone(),
+                                            AttesterSettlementDebt {
+                                                crossing_height: current_block,
+                                                eligible,
+                                            },
+                                        );
+                                    }
+                                },
+                                Some(debt) if debt.crossing_height == current_block => {
+                                    debt.eligible = eligible;
+                                },
+                                Some(_) => {
+                                    // Landed in a later block: unpaid.
+                                },
+                            }
+                        }
                     }
                 }
 
@@ -5369,6 +5469,34 @@ impl State {
                         activated_at,
                     )
                     .map_err(|e| StateError::SigningKey(e.to_string()))?;
+            },
+            StateTransition::ApplyOracleRegistrationWithPayoutBond {
+                oracle_set,
+                oracle_quorum,
+                identity,
+                public_key,
+                epoch,
+                activated_at,
+                payout_bond,
+                block_height,
+            } => {
+                if !crate::crypto::chain_binding::feature_active(
+                    crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+                    block_height,
+                ) {
+                    return Err(StateError::Governance(format!(
+                        "attester_pay_v2 is not active at height {block_height}"
+                    )));
+                }
+                self.apply_oracle_registration_with_payout_bond(
+                    oracle_set,
+                    oracle_quorum,
+                    identity,
+                    public_key,
+                    epoch,
+                    activated_at,
+                    payout_bond,
+                )?;
             },
             StateTransition::ApplyStationRegistration { station } => {
                 // #2537: delegates to the same primitive a direct caller would
@@ -6568,6 +6696,27 @@ impl State {
         eligible
     }
 
+    /// The identities that voted REJECT on a decision, canonically sorted
+    /// (`attester_pay_v2`): the eligible set of a rejected decision, the
+    /// mirror of [`Self::eligible_attesters_for_decision`].
+    pub fn rejecting_attesters_for_decision(&self, decision_id: &str) -> Vec<String> {
+        let mut eligible: Vec<String> = self
+            .attestations
+            .get(decision_id)
+            .map(|set| {
+                set.by_oracle
+                    .values()
+                    .filter(|record| !record.approved)
+                    .map(|record| record.oracle_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // `by_oracle` is an FxHashMap: sorted so its order never reaches state.
+        eligible.sort();
+        eligible.dedup();
+        eligible
+    }
+
     /// DERIVE this block's attester settlement records from committed state
     /// (#2846). The single implementation the producer and every applier use.
     ///
@@ -6590,7 +6739,9 @@ impl State {
     ///   actually attested this decision, which had to pass attestation
     ///   signature verification to be recorded at all;
     /// - **how much** comes from the ADR-003 rule 5 division, recomputed here;
-    /// - **whether it may be paid** requires live quorum and no terminal marker.
+    /// - **whether it may be paid** requires live quorum and no terminal marker
+    ///   (from `attester_pay_v2`: a debt entry, written at the crossing block,
+    ///   and no terminal marker; the live quorum is not re-checked).
     ///
     /// The producer still chooses WHICH decisions settle, because that is the
     /// one part which genuinely is not recoverable from post-state: it needs the
@@ -6598,8 +6749,8 @@ impl State {
     /// oracle's record so a re-attestation is indistinguishable from a first
     /// vote afterwards. That residual is what ADR-003 rule 6's "replayed, never
     /// recomputed from local timing" protects — and it is bounded, because a
-    /// named decision must have live quorum, must carry no marker, and can be
-    /// named at most once.
+    /// named decision must have live quorum (from `attester_pay_v2`: a debt
+    /// entry), must carry no marker, and can be named at most once.
     ///
     /// # Division (ADR-003 rule 5)
     ///
@@ -6630,6 +6781,13 @@ impl State {
         }
 
         let quorum = self.oracle_quorum.max(1);
+        // `attester_pay_v2`: a decision is also settleable while its reject
+        // votes hold the reject threshold in live state.
+        let reject_settles = crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+            finalization_height,
+        );
+        let oracle_count = self.oracle_set.len();
         let mut eligible_per_decision: Vec<(&String, Vec<String>)> =
             Vec::with_capacity(decision_ids.len());
 
@@ -6639,9 +6797,20 @@ impl State {
             let has_quorum = self
                 .attestations
                 .get(decision_id)
-                .map(|set| set.has_quorum(quorum))
+                .map(|set| {
+                    set.has_quorum(quorum)
+                        || (reject_settles && set.has_reject_threshold(oracle_count, quorum))
+                })
                 .unwrap_or(false);
-            if !has_quorum {
+            // From `attester_pay_v2` a debt entry is itself the proof that the
+            // decision crossed its threshold: it is written only on the apply
+            // path, at the crossing block. The live re-check is skipped for an
+            // owed decision, so a later change of the oracle set or quorum
+            // cannot leave one debt unpayable and hold back every other
+            // settlement with it. A decision with no debt entry is refused
+            // just below.
+            let owed = reject_settles && self.attester_settlement_due.contains_key(decision_id);
+            if !has_quorum && !owed {
                 return Err(StateError::AttesterSettlement(format!(
                     "decision {decision_id} has no oracle quorum in state and \
                      cannot be settled"
@@ -6675,7 +6844,7 @@ impl State {
             // or marked. Dropping an unresolvable payee and marking the decision
             // anyway would consume its id and strand a real attester's pay.
             for attester_id in &eligible {
-                if Self::attester_payout_address(attester_id).is_none() {
+                if self.attester_settlement_payee(attester_id, finalization_height).is_none() {
                     return Err(StateError::AttesterSettlement(format!(
                         "attester {attester_id} on decision {decision_id} does \
                          not resolve to a payout address"
@@ -6745,6 +6914,159 @@ impl State {
         PublicKey::from_hex(attester_id)
             .ok()
             .map(|public_key| Address::from_public_key(&public_key))
+    }
+
+    /// The registration of bond `deployment_id` if it is registered AND holds
+    /// its full principal (`attester_pay_v2`). A bond whose principal was
+    /// forfeited keeps its registration entry but is not in good standing.
+    /// (Node settlement applies the same principal test, among others.) A bond
+    /// that is exiting still holds its principal and is paid until withdrawn.
+    fn attester_bond_in_good_standing(
+        &self,
+        deployment_id: &[u8; 32],
+    ) -> Option<&crate::consensus::node_bond_registry::NodeBondRegistration> {
+        self.node_bond_registry
+            .as_ref()?
+            .registrations
+            .get(deployment_id)
+            .filter(|registration| {
+                registration.principal_units == crate::consensus::node_bond_registry::NODE_BOND_UNITS
+            })
+    }
+
+    /// The payout account of the bond `attester_id` is bound to, if it has a
+    /// binding AND that bond is still registered with its full principal
+    /// (`attester_pay_v2`). The account is the bond's CURRENT binding, never a
+    /// pending one. `None` while the map is empty.
+    pub fn attester_bond_payout_account(&self, attester_id: &str) -> Option<Address> {
+        let deployment_id = self.attester_payout_bonds.get(attester_id)?;
+        self.attester_bond_in_good_standing(deployment_id)
+            .map(|registration| registration.binding.payout_account)
+    }
+
+    /// The address an attester settlement at `height` pays `attester_id`.
+    ///
+    /// THE one payee rule, read from committed state at the paying block by
+    /// the settlement derivation, the settlement apply and the escrow guard:
+    /// from `attester_pay_v2` the bound bond's payout account
+    /// ([`Self::attester_bond_payout_account`]); otherwise, and below the
+    /// activation, the address derived from the identity itself
+    /// (`attester_payout_address`).
+    pub fn attester_settlement_payee(&self, attester_id: &str, height: u64) -> Option<Address> {
+        if crate::crypto::chain_binding::feature_active(
+            crate::crypto::chain_binding::ConsensusFeature::AttesterPayV2,
+            height,
+        ) {
+            if let Some(account) = self.attester_bond_payout_account(attester_id) {
+                return Some(account);
+            }
+        }
+        Self::attester_payout_address(attester_id)
+    }
+
+    /// Check a registration's `payout_bond` for `identity` against committed
+    /// state (`attester_pay_v2`) and return the bond's `deployment_id`:
+    /// 64 hex characters, a bond registered now, and bound to no OTHER
+    /// identity of `oracle_set` (the set the registration installs). Reads
+    /// only.
+    fn checked_attester_payout_bond(
+        &self,
+        identity: &str,
+        payout_bond: &str,
+        oracle_set: &FxHashSet<String>,
+    ) -> Result<[u8; 32], StateError> {
+        let refused = |why: &str| {
+            StateError::Governance(format!(
+                "{SP_ATTESTER_PAYOUT_BOND_REFUSED}: oracle registration for {identity} names a payout bond {why}"
+            ))
+        };
+        let deployment_id: [u8; 32] = (payout_bond.len() == 64)
+            .then(|| hex::decode(payout_bond).ok())
+            .flatten()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| refused("that is not 64 hex characters"))?;
+        if self.attester_bond_in_good_standing(&deployment_id).is_none() {
+            return Err(refused("that is not a registered bond holding its full principal"));
+        }
+        let taken = self.attester_payout_bonds.iter().any(|(other, bound)| {
+            other != identity && *bound == deployment_id && oracle_set.contains(other)
+        });
+        if taken {
+            return Err(refused("that another oracle identity is bound to"));
+        }
+        Ok(deployment_id)
+    }
+
+    /// Apply an oracle registration from `attester_pay_v2`: the registration
+    /// itself, exactly as `ApplyOracleRegistration`, then the identity's
+    /// payout binding set to exactly `payout_bond` (`None` removes it).
+    ///
+    /// All or nothing: the bond is checked before anything is written, and a
+    /// refusal inside the registration restores what it had written.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_oracle_registration_with_payout_bond(
+        &mut self,
+        oracle_set: Vec<String>,
+        oracle_quorum: usize,
+        identity: String,
+        public_key: String,
+        epoch: u64,
+        activated_at: i64,
+        payout_bond: Option<String>,
+    ) -> Result<(), StateError> {
+        let normalized_set: FxHashSet<String> = oracle_set
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let bond = payout_bond
+            .as_deref()
+            .map(|bond| self.checked_attester_payout_bond(&identity, bond, &normalized_set))
+            .transpose()?;
+        let before = (
+            self.oracle_set.clone(),
+            self.oracle_quorum,
+            self.oracle_registry.clone(),
+            self.signing_keys.clone(), // secret-copy-ok: public signing-key registry (public keys only), kept to restore on refusal
+            self.governance.params.oracle_set.clone(),
+            self.governance.params.oracle_quorum,
+            self.attester_payout_bonds.clone(),
+        );
+        let registered = (|| {
+            // Replaces the set and drops the bindings of identities that left it.
+            self.set_oracle_config(normalized_set, oracle_quorum)?;
+            self.governance.params.oracle_set = self.oracle_set.clone();
+            self.governance.params.oracle_quorum = self.oracle_quorum;
+            if !self.oracle_set.contains(&identity) {
+                return Err(StateError::SigningKey(format!(
+                    "oracle identity {identity} is not in the registered oracle_set"
+                )));
+            }
+            self.signing_keys
+                .register_key_epoch(&identity, SigningRole::Oracle, epoch, public_key, activated_at)
+                .map_err(|e| StateError::SigningKey(e.to_string()))
+        })();
+        if let Err(error) = registered {
+            (
+                self.oracle_set,
+                self.oracle_quorum,
+                self.oracle_registry,
+                self.signing_keys,
+                self.governance.params.oracle_set,
+                self.governance.params.oracle_quorum,
+                self.attester_payout_bonds,
+            ) = before;
+            return Err(error);
+        }
+        match bond {
+            Some(deployment_id) => {
+                self.attester_payout_bonds.insert(identity, deployment_id);
+            },
+            None => {
+                self.attester_payout_bonds.remove(&identity);
+            },
+        }
+        Ok(())
     }
 
     /// Whether `height` lies past the current per-contributor emission window
@@ -7460,6 +7782,7 @@ impl State {
                 self.governance.params.oracle_set = self.oracle_set.clone();
                 self.oracle_registry.set_oracle_set(self.oracle_set.clone());
                 self.ensure_legacy_oracle_keys()?;
+                self.prune_attester_payout_bonds();
             },
             GovernanceParameterUpdate::OracleQuorum(q) => {
                 Self::validate_oracle_config(&self.oracle_set, q)?;
@@ -11606,6 +11929,23 @@ pub enum StateTransition {
         owner_address: String,
         action_nonce: u64,
         submitter: Option<(String, crate::blockchain::transaction::SubmitterClass)>,
+        block_height: u64,
+    },
+    /// `attester_pay_v2`: an oracle registration applied at or above the
+    /// activation. [`Self::ApplyOracleRegistration`] plus the identity's
+    /// payout binding: `payout_bond` (a bond `deployment_id`, 64 hex) becomes
+    /// the identity's binding, `None` removes it. A `payout_bond` that is not
+    /// a registered bond free for the identity refuses the whole registration.
+    /// Refused below the activation. APPENDED LAST (bincode is positional) and
+    /// never emitted while the feature is inactive.
+    ApplyOracleRegistrationWithPayoutBond {
+        oracle_set: Vec<String>,
+        oracle_quorum: usize,
+        identity: String,
+        public_key: String,
+        epoch: u64,
+        activated_at: i64,
+        payout_bond: Option<String>,
         block_height: u64,
     },
 }
@@ -16828,6 +17168,36 @@ mod tests {
             multidomain,
             GovernanceParameterUpdate::MultidomainHydrologyEnabled(true)
         ));
+    }
+
+    #[test]
+    fn a_governance_oracle_set_update_drops_the_payout_bindings_of_removed_identities() {
+        let ids: Vec<String> = (1u8..=4)
+            .map(|n| {
+                PublicKey::from_private_key(&PrivateKey::from_bytes(&[n; 32]).expect("seed")).to_hex()
+            })
+            .collect();
+        let mut state = State::new();
+        state
+            .apply_transition(StateTransition::SetOracleConfig {
+                oracle_set: ids.clone(),
+                oracle_quorum: 2,
+            })
+            .expect("oracle config");
+        state.attester_payout_bonds.insert(ids[0].clone(), [1u8; 32]);
+        state.attester_payout_bonds.insert(ids[3].clone(), [2u8; 32]);
+        state
+            .apply_governance_update(
+                GovernanceParameterUpdate::OracleSet(ids[..3].to_vec()),
+                None,
+                None,
+            )
+            .expect("oracle set update");
+        assert_eq!(
+            state.attester_payout_bonds.keys().collect::<Vec<_>>(),
+            [&ids[0]],
+            "the identity that left the set loses its binding; the one that stayed keeps it"
+        );
     }
 
     #[test]
@@ -22139,6 +22509,7 @@ mod tests {
     "advisory_proposals",
     "forecast_late_score",
     "station_submitters",
+    "attester_payout_bonds",
         ];
 
         let actual = State::state_root_material_field_names();
