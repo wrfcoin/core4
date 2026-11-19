@@ -319,7 +319,8 @@ pub struct AttesterPay {
     pub paid_wrf: String,
     /// Where attester pay lands: the oracle key's own address, or from
     /// `attester_pay_v2` the payout account of the bond the oracle's
-    /// registration names (while that bond is registered).
+    /// registration names (while that bond is registered and holds its full
+    /// principal).
     pub payee_address: String,
     pub payee_balance_units: String,
     pub payee_balance_wrf: String,
@@ -450,7 +451,8 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
         };
         // Where the next settlement pays this oracle: from `attester_pay_v2`
         // the payout account of the bond its registration names, while that
-        // bond is registered; otherwise the oracle key's own address.
+        // bond is registered and holds its full principal; otherwise the
+        // oracle key's own address.
         let next_height = tip.saturating_add(1);
         let payee = oracle_id
             .as_ref()

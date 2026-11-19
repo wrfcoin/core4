@@ -428,6 +428,20 @@ fn a_set_change_between_the_crossing_and_the_paying_block() {
     let (records, _) = settle(&mut state, H + 1);
     assert_eq!(paid(&records[0]).len(), 2);
 
+    // Below the activation nothing changes: an approve debt whose quorum was
+    // raised after the crossing is still refused at H - 1, exactly as before,
+    // and the same state pays it at H.
+    let mut state = plain(4, 2);
+    votes(&mut state, H - 1, "e", &[1, 2], true);
+    set_config(&mut state, &[1, 2, 3, 4], 3);
+    state.open_emission_block(H - 1);
+    let slice = state.emission_ledger.remaining(EmissionRole::Attester);
+    let refused = state.derive_attester_settlements(&["e".to_string()], H - 1, slice).unwrap_err();
+    assert!(refused.to_string().contains("no oracle quorum"), "{refused}");
+    assert_eq!(due(&state, "e"), Some((H - 1, oracles(&[1, 2]))), "still owed below the activation");
+    let (records, _) = settle(&mut state, H);
+    assert_eq!(paid(&records[0]).len(), 2);
+
     // A decision with no debt entry is never payable, whatever is named.
     let mut state = plain(4, 2);
     votes(&mut state, H, "d", &[1, 2], false);

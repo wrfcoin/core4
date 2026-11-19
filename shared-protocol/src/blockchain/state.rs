@@ -6739,7 +6739,9 @@ impl State {
     ///   actually attested this decision, which had to pass attestation
     ///   signature verification to be recorded at all;
     /// - **how much** comes from the ADR-003 rule 5 division, recomputed here;
-    /// - **whether it may be paid** requires live quorum and no terminal marker.
+    /// - **whether it may be paid** requires live quorum and no terminal marker
+    ///   (from `attester_pay_v2`: a debt entry, written at the crossing block,
+    ///   and no terminal marker; the live quorum is not re-checked).
     ///
     /// The producer still chooses WHICH decisions settle, because that is the
     /// one part which genuinely is not recoverable from post-state: it needs the
@@ -6747,8 +6749,8 @@ impl State {
     /// oracle's record so a re-attestation is indistinguishable from a first
     /// vote afterwards. That residual is what ADR-003 rule 6's "replayed, never
     /// recomputed from local timing" protects — and it is bounded, because a
-    /// named decision must have live quorum, must carry no marker, and can be
-    /// named at most once.
+    /// named decision must have live quorum (from `attester_pay_v2`: a debt
+    /// entry), must carry no marker, and can be named at most once.
     ///
     /// # Division (ADR-003 rule 5)
     ///
@@ -6916,8 +6918,9 @@ impl State {
 
     /// The registration of bond `deployment_id` if it is registered AND holds
     /// its full principal (`attester_pay_v2`). A bond whose principal was
-    /// forfeited keeps its registration entry but is not in good standing, the
-    /// same test node settlement applies.
+    /// forfeited keeps its registration entry but is not in good standing.
+    /// (Node settlement applies the same principal test, among others.) A bond
+    /// that is exiting still holds its principal and is paid until withdrawn.
     fn attester_bond_in_good_standing(
         &self,
         deployment_id: &[u8; 32],

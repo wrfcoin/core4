@@ -5149,7 +5149,8 @@ impl ProofOfPublishing {
         // record its own peers would reject, because there is one implementation
         // and both sides call it.
         //
-        // `crossing` is built from live quorum and unmarked decisions, so this
+        // `crossing` is the outstanding debt (decisions that crossed their
+        // threshold on the apply path and carry no terminal marker), so this
         // cannot error on an honest block; a failure means the producer's own
         // state disagrees with itself, and emitting nothing is the right answer.
         let records = state
