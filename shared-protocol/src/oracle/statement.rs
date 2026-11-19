@@ -138,13 +138,16 @@ pub struct OracleStatement {
     pub attestations_included: u64,
     pub approve_votes: u64,
     pub reject_votes: u64,
-    /// Decisions this oracle was paid for: its approve vote landed in the
-    /// decision's quorum-crossing block (the on-time votes).
+    /// Decisions this oracle was paid for: its vote agreed with the outcome
+    /// and landed in the decision's crossing block (the on-time votes). Until
+    /// `attester_pay_v2` only approved decisions are settled; from it a
+    /// rejected decision pays its reject votes the same way.
     pub paid_votes: u64,
     /// Sum of those payments, base units.
     pub paid_units: u128,
     /// Approve votes from this oracle for a decision settled in the range that
-    /// did not pay it (the vote missed the crossing block).
+    /// did not pay it: the vote missed the crossing block, or (from
+    /// `attester_pay_v2`) the decision was settled as rejected.
     pub unpaid_approve_votes: u64,
     /// Decisions settled in the range, paid to anyone.
     pub decisions_settled: u64,
@@ -411,6 +414,23 @@ mod tests {
         let epochs = s.epochs.unwrap();
         assert_eq!(epochs.len(), 1);
         assert_eq!((epochs[0].from_height, epochs[0].to_height), (600, 700));
+    }
+
+    /// `attester_pay_v2`: a settlement of a rejected decision pays the reject
+    /// voters. The paid reject vote counts as paid; an approve vote on that
+    /// decision is an approve vote that was not paid.
+    #[test]
+    fn a_paid_reject_vote_counts_as_paid() {
+        let blocks = vec![StatementBlock {
+            height: 100,
+            votes: vec![vote(ME, "aa", false), vote(HOUSE, "aa", false), vote(ME, "bb", true), vote(HOUSE, "bb", false)],
+            settlements: vec![settle("aa", 100, &[(HOUSE, 50), (ME, 50)]), settle("bb", 100, &[(HOUSE, 100)])],
+        }];
+        let s = compute_statement(ME, 100, 100, &blocks, None);
+        assert_eq!((s.approve_votes, s.reject_votes), (1, 1));
+        assert_eq!((s.paid_votes, s.paid_units), (1, 50), "the reject vote on aa is paid");
+        assert_eq!(s.unpaid_approve_votes, 1, "bb was settled as rejected");
+        assert_eq!(s.decisions_settled, 2);
     }
 
     #[test]

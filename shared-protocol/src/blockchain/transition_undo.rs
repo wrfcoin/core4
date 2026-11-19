@@ -10,7 +10,7 @@ use super::{State, StateTransition};
 
 type Undo = Box<dyn FnOnce(&mut State)>;
 pub(super) struct TransitionUndo {
-    records: [Option<Undo>; 81],
+    records: [Option<Undo>; 82],
 }
 
 impl TransitionUndo {
@@ -98,6 +98,7 @@ impl TransitionUndo {
             advisory_proposals: _,
             forecast_late_score: _,
             station_submitters: _,
+            attester_payout_bonds: _,
         } = state;
         let fields = write_fields(transition);
         macro_rules! capture {
@@ -192,6 +193,7 @@ impl TransitionUndo {
             capture!(advisory_proposals),
             capture!(forecast_late_score),
             capture!(station_submitters),
+            capture!(attester_payout_bonds),
         ];
         Self { records }
     }
@@ -223,12 +225,15 @@ const PRIVACY: &[&str] = &[
     "reward_claim_key_images",
     "reward_claim_key_images_height",
 ];
+// `attester_payout_bonds`: replacing the oracle set drops the payout bindings
+// of identities that left it, and a registration sets its identity's binding.
 const ORACLE_CONFIG: &[&str] = &[
     "oracle_set",
     "oracle_quorum",
     "oracle_registry",
     "signing_keys",
     "governance",
+    "attester_payout_bonds",
 ];
 const GOVERNANCE: &[&str] = &[
     "governance",
@@ -242,6 +247,8 @@ const GOVERNANCE: &[&str] = &[
     "quality_policy_event_archive",
     "archived_quality_policy_event_count",
     "archived_quality_policy_event_through_event_id",
+    // An oracle-set update drops the payout bindings of removed identities.
+    "attester_payout_bonds",
 ];
 const PROTOCOL: &[&str] = &[
     // Sponsored first sends: a transfer carrying a sponsorship updates the
@@ -285,6 +292,8 @@ const PROTOCOL: &[&str] = &[
     // `AdvisoryGovernance` (advisory_governance) writes the proposal map
     // through the governance sink; balances and nonces are in COMMON.
     "advisory_proposals",
+    // An oracle-set update drops the payout bindings of removed identities.
+    "attester_payout_bonds",
 ];
 // `station_submitters`: owner steps can clear an approved submitter key.
 const STATION: &[&str] = &["station_registry", "station_counts", "station_owner_ledger", "station_submitters"];
@@ -357,7 +366,9 @@ fn write_fields(transition: &StateTransition) -> &'static [&'static str] {
             "slashing_engine",
             "slashing_reason_counts",
         ],
-        SetOracleConfig { .. } | ApplyOracleRegistration { .. } => ORACLE_CONFIG,
+        SetOracleConfig { .. }
+        | ApplyOracleRegistration { .. }
+        | ApplyOracleRegistrationWithPayoutBond { .. } => ORACLE_CONFIG,
         ApplyProducerSetChange { .. } => &["producer_set_history"],
         RegisterSigningKeyEpoch { .. } | RevokeSigningKeyEpoch { .. } => &["signing_keys"],
         CreateGovernanceProposal { .. }
@@ -516,5 +527,8 @@ fn transition_name(t: &StateTransition) -> &'static str {
         StateTransition::ApplyForecastScore { .. } => "ApplyForecastScore",
         StateTransition::CloseForecastBuckets { .. } => "CloseForecastBuckets",
         StateTransition::ApplyStationSubmitterKey { .. } => "ApplyStationSubmitterKey",
+        StateTransition::ApplyOracleRegistrationWithPayoutBond { .. } => {
+            "ApplyOracleRegistrationWithPayoutBond"
+        },
     }
 }

@@ -109,6 +109,7 @@ pub static MIGRATIONS: &[&dyn CheckpointMigration] = &[
     &MigrationV16ToV17,
     &MigrationV17ToV18,
     &MigrationV18ToV19,
+    &MigrationV19ToV20,
 ];
 
 /// The registered migration that reads `version`, if any.
@@ -618,8 +619,29 @@ impl CheckpointMigration for MigrationV18ToV19 {
         let _: legacy::state_v18::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 18, error: e.to_string() })?;
         let mut migrated = body.to_vec();
         migrated.extend_from_slice(&[0u8; EMPTY_STATION_SUBMITTERS_BYTES]);
-        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 19, error: e.to_string() })?;
-        debug_assert!(current.station_submitters.is_empty());
+        let _: legacy::state_v19::State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 19, error: e.to_string() })?;
+        Ok(migrated)
+    }
+}
+
+/// Bytes of an empty attester payout bond map in the checkpoint codec: one
+/// u64 zero length.
+pub(super) const EMPTY_ATTESTER_PAYOUT_BONDS_BYTES: usize = 8;
+
+/// Format 20 appends the attester payout bond map
+/// (`ConsensusFeature::AttesterPayV2`). A format-19 checkpoint predates the
+/// feature, so the map is empty: append exactly its u64 zero length. No
+/// binding is invented.
+pub struct MigrationV19ToV20;
+impl CheckpointMigration for MigrationV19ToV20 {
+    fn from_version(&self) -> u32 { 19 }
+    fn to_version(&self) -> u32 { 20 }
+    fn migrate(&self, body: &[u8]) -> Result<Vec<u8>, MigrationError> {
+        let _: legacy::state_v19::State = decode_exact(body).map_err(|e| MigrationError::Decode { version: 19, error: e.to_string() })?;
+        let mut migrated = body.to_vec();
+        migrated.extend_from_slice(&[0u8; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]);
+        let current: State = decode_exact(&migrated).map_err(|e| MigrationError::Encode { version: 20, error: e.to_string() })?;
+        debug_assert!(current.attester_payout_bonds.is_empty());
         Ok(migrated)
     }
 }
@@ -629,9 +651,19 @@ impl CheckpointMigration for MigrationV18ToV19 {
 /// validation prevents an accidental field reorder from silently truncating.
 pub(super) fn encode_compatible(state: &State) -> Result<Vec<u8>, bincode::Error> {
     let mut payload = bincode::serialize(state)?;
-    // Format 19: any approved submitter key or signer record needs the full current layout.
-    if !state.station_submitters.is_empty() {
+    // Format 20: any attester payout binding needs the full current layout.
+    if !state.attester_payout_bonds.is_empty() {
         return Ok(envelope(CHECKPOINT_FORMAT_VERSION, &payload));
+    }
+    // Empty (always, until `attester_pay_v2`): drop the map's u64 zero length
+    // and continue with the format-19 writer.
+    let suffix = [0u8; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES];
+    assert!(payload.ends_with(&suffix), "empty attester payout bonds must be the final field");
+    payload.truncate(payload.len() - suffix.len());
+    let _: legacy::state_v19::State = decode_exact(&payload)?;
+    // Format 19: any approved submitter key or signer record needs the format-19 layout.
+    if !state.station_submitters.is_empty() {
+        return Ok(envelope(19, &payload));
     }
     // Empty (always, until `station_submitter_key` / `device_submission_limit`):
     // drop its two u64 zero lengths and continue with the format-18 writer.
@@ -743,6 +775,7 @@ mod tests {
             vec![0; 8],
             vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES],
             vec![0; EMPTY_STATION_SUBMITTERS_BYTES],
+            vec![0; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES],
         ]
         .concat()
     }
@@ -925,6 +958,7 @@ mod tests {
                 &[0; 8], // empty advisory proposal map (format 17)
                 &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
                 &[0; EMPTY_STATION_SUBMITTERS_BYTES], // empty station submitter state (format 19)
+                &[0; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES], // empty attester payout bond map (format 20)
             ].concat()
         );
     }
@@ -965,6 +999,7 @@ mod tests {
                 &[0; 8], // empty advisory proposal map (format 17)
                 &[0; EMPTY_FORECAST_LATE_SCORE_BYTES], // empty forecast late-score state (format 18)
                 &[0; EMPTY_STATION_SUBMITTERS_BYTES], // empty station submitter state (format 19)
+                &[0; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES], // empty attester payout bond map (format 20)
             ]
             .concat()
         );
@@ -1044,7 +1079,7 @@ mod tests {
         assert_eq!(&body(&migrated)[..body(&v9).len()], body(&v9));
         assert_eq!(
             &body(&migrated)[body(&v9).len()..],
-            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES], vec![0; EMPTY_STATION_SUBMITTERS_BYTES]]
+            [appended_station_block_time(), appended_owner_ledger(), vec![0, 0, 0, 0], vec![0; 8], vec![0; 8], vec![0; EMPTY_FORECAST_LATE_SCORE_BYTES], vec![0; EMPTY_STATION_SUBMITTERS_BYTES], vec![0; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]]
                 .concat()
                 .as_slice()
         );
@@ -1071,7 +1106,7 @@ mod tests {
         assert_eq!(frozen.station_weather_accepted_block_unix, weather);
         let migrated = migrate_to_current(10, &v10_body).unwrap();
         assert_eq!(&body(&migrated)[..v10_body.len()], &v10_body);
-        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]);
+        assert_eq!(&body(&migrated)[v10_body.len()..], &[0; 28 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES + EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]);
         let current: State = decode_exact(body(&migrated)).unwrap();
         assert_eq!(current.station_weather_accepted_block_unix, weather);
         assert!(current.station_owner_ledger.is_empty());
@@ -1101,14 +1136,14 @@ mod tests {
         assert_eq!(&body(&v11)[..body(&v10).len()], body(&v10));
         assert_eq!(&body(&v11)[body(&v10).len()..], 0u64.to_le_bytes());
         assert_eq!(MigrationV10ToV11.migrate(body(&v10)).unwrap(), body(&v11));
-        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(19));
-        assert_eq!(&body(&golden(19))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]);
+        assert_eq!(migrate_to_current(11, body(&v11)).unwrap(), golden(20));
+        assert_eq!(&body(&golden(20))[body(&v11).len()..], &[0; 20 + EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES + EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]);
     }
 
     #[test]
     fn v13_off_migrates_exactly_and_prior_node_activation_is_refused() {
         let v13=golden(13);
-        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(19));
+        assert_eq!(migrate_to_current(13,body(&v13)).unwrap(),golden(20));
         for receipt_marker in [false,true] {
             // Independent frozen suffix: bond Option tag/body, then the S3
             // receipt Option tag and its original three-field empty body.
@@ -1140,7 +1175,7 @@ mod tests {
         assert_eq!(&body(&v16)[..body(&v15).len()], body(&v15));
         assert_eq!(&body(&v16)[body(&v15).len()..], &[0; 8]);
         let migrated = migrate_to_current(15, body(&v15)).unwrap();
-        assert_eq!(migrated, golden(19));
+        assert_eq!(migrated, golden(20));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.send_allowlists.is_empty());
         // Empty maps: the writer never emits format 16 or 17 (byte-identical
@@ -1171,7 +1206,7 @@ mod tests {
         assert_eq!(&body(&v17)[..body(&v16).len()], body(&v16));
         assert_eq!(&body(&v17)[body(&v16).len()..], &[0; 8]);
         let migrated = migrate_to_current(16, body(&v16)).unwrap();
-        assert_eq!(migrated, golden(19));
+        assert_eq!(migrated, golden(20));
         let state: State = decode_exact(body(&migrated)).unwrap();
         assert!(state.advisory_proposals.is_empty());
         let mut with_proposal = state.clone();
@@ -1212,11 +1247,11 @@ mod tests {
         let v17 = golden(17);
         let _: legacy::state_v17::State = decode_exact(body(&v17)).unwrap();
         let migrated = migrate_to_current(17, body(&v17)).unwrap();
-        assert_eq!(migrated, golden(19));
+        assert_eq!(migrated, golden(20));
         assert_eq!(&body(&migrated)[..body(&v17).len()], body(&v17));
         assert_eq!(
             &body(&migrated)[body(&v17).len()..],
-            &[0; EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES]
+            &[0; EMPTY_FORECAST_LATE_SCORE_BYTES + EMPTY_STATION_SUBMITTERS_BYTES + EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]
         );
         assert_eq!(
             bincode::serialize(&ForecastLateScoreState::default()).unwrap(),
@@ -1264,9 +1299,9 @@ mod tests {
         let _: legacy::state_v18::State = decode_exact(body(&v18)).unwrap();
         assert_eq!(MigrationV18ToV19.migrate(body(&v18)).unwrap(), body(&golden(19)));
         let migrated = migrate_to_current(18, body(&v18)).unwrap();
-        assert_eq!(migrated, golden(19));
+        assert_eq!(migrated, golden(20));
         assert_eq!(&body(&migrated)[..body(&v18).len()], body(&v18));
-        assert_eq!(&body(&migrated)[body(&v18).len()..], &[0; EMPTY_STATION_SUBMITTERS_BYTES]);
+        assert_eq!(&body(&migrated)[body(&v18).len()..], &[0; EMPTY_STATION_SUBMITTERS_BYTES + EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]);
         assert_eq!(
             bincode::serialize(&StationSubmitterState::default()).unwrap(),
             vec![0u8; EMPTY_STATION_SUBMITTERS_BYTES],
@@ -1290,13 +1325,49 @@ mod tests {
             .insert("c1".into(), CommitSignerRecord { class: CommitSignerClass::Device, committed_at: 9 });
         for with_entry in [keyed, signed] {
             let written = encode_compatible(&with_entry).unwrap();
-            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
-            let back: State = decode_exact(body(&written)).unwrap();
+            assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), 19);
+            let frozen: legacy::state_v19::State = decode_exact(body(&written)).unwrap();
+            assert_eq!(frozen.station_submitters, with_entry.station_submitters);
+            let back: State = decode_exact(body(&migrate_to_current(19, body(&written)).unwrap())).unwrap();
             assert_eq!(back.station_submitters, with_entry.station_submitters);
         }
         // A format-18 body cannot be mislabelled as 19 or vice versa.
-        assert!(migrate_to_current(18, body(&migrated)).is_err());
-        assert!(decode_exact::<State>(body(&v18)).is_err());
+        assert!(migrate_to_current(18, body(&golden(19))).is_err());
+        assert!(decode_exact::<legacy::state_v19::State>(body(&v18)).is_err());
+    }
+
+    #[test]
+    fn v19_golden_appends_only_the_empty_attester_payout_bond_map() {
+        let v19 = golden(19);
+        let _: legacy::state_v19::State = decode_exact(body(&v19)).unwrap();
+        assert_eq!(MigrationV19ToV20.migrate(body(&v19)).unwrap(), body(&golden(20)));
+        let migrated = migrate_to_current(19, body(&v19)).unwrap();
+        assert_eq!(migrated, golden(20));
+        assert_eq!(&body(&migrated)[..body(&v19).len()], body(&v19));
+        assert_eq!(&body(&migrated)[body(&v19).len()..], &[0; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES]);
+        assert_eq!(
+            bincode::serialize(&BTreeMap::<String, [u8; 32]>::new()).unwrap(),
+            vec![0u8; EMPTY_ATTESTER_PAYOUT_BONDS_BYTES],
+            "the empty map must be exactly the bytes the migration appends"
+        );
+        let state: State = decode_exact(body(&migrated)).unwrap();
+        assert!(state.attester_payout_bonds.is_empty());
+        // Empty: the writer keeps the deployed format (byte-identical).
+        let written = encode_compatible(&state).unwrap();
+        assert!(u32::from_le_bytes(written[8..12].try_into().unwrap()) < 16);
+        // A binding: format 20, full layout, exact round trip.
+        let mut bound = state.clone();
+        bound.attester_payout_bonds.insert("ab".repeat(32), [0x5a; 32]);
+        bound.attester_payout_bonds.insert("cd".repeat(32), [0x11; 32]);
+        let written = encode_compatible(&bound).unwrap();
+        assert_eq!(u32::from_le_bytes(written[8..12].try_into().unwrap()), CHECKPOINT_FORMAT_VERSION);
+        assert_eq!(CHECKPOINT_FORMAT_VERSION, 20);
+        let back: State = decode_exact(body(&written)).unwrap();
+        assert_eq!(back.attester_payout_bonds, bound.attester_payout_bonds);
+        assert_eq!(encode_compatible(&back).unwrap(), written, "the format-20 writer round-trips");
+        // A format-19 body cannot be mislabelled as 20 or vice versa.
+        assert!(migrate_to_current(19, body(&migrated)).is_err());
+        assert!(decode_exact::<State>(body(&v19)).is_err());
     }
 
     #[test]

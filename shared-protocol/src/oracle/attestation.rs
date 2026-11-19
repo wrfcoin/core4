@@ -67,7 +67,36 @@ pub struct AttesterSettlementDebt {
     pub crossing_height: u64,
     /// Eligible attester identities: the approved canonical votes present at
     /// the end of the crossing block, canonically sorted, no duplicates.
+    ///
+    /// Under `attester_pay_v2` a decision may instead cross its reject
+    /// threshold ([`reject_threshold`]); the eligible identities are then the
+    /// reject votes present at the end of that block. The layout is unchanged:
+    /// the outcome is whichever way the eligible identities voted.
     pub eligible: Vec<String>,
+}
+
+/// Reject votes that settle a decision as REJECTED (`attester_pay_v2`).
+///
+/// A decision is rejected once approval is impossible: with `n` oracle
+/// identities and approval needing `quorum` approvals, `n - quorum + 1`
+/// reject votes leave fewer than `quorum` identities able to approve. The
+/// threshold is never below `quorum` itself, so a rejection is carried by at
+/// least as many votes as an approval:
+///
+/// `max(quorum, n - quorum + 1)`, with `quorum` floored at 1.
+///
+/// | n | quorum | threshold |
+/// |---|--------|-----------|
+/// | 3 | 2 | 2 |
+/// | 4 | 2 | 3 |
+/// | 5 | 3 | 3 |
+/// | 7 | 3 | 5 |
+///
+/// The one place the rule lives: the vote apply, the settlement derivation
+/// and producer selection all call this.
+pub fn reject_threshold(oracle_count: usize, quorum: usize) -> usize {
+    let quorum = quorum.max(1);
+    quorum.max(oracle_count.saturating_sub(quorum).saturating_add(1))
 }
 
 /// The ADR-003 Phase A attester settlement record (#2846).
@@ -170,6 +199,19 @@ impl AttestationSet {
 
     pub fn has_quorum(&self, quorum: usize) -> bool {
         self.approvals() >= quorum
+    }
+
+    /// Reject votes recorded for this decision, one per oracle identity.
+    pub fn rejections(&self) -> usize {
+        // determinism-ok: a count over the map; the result does not depend on iteration order
+        self.by_oracle.values().filter(|r| !r.approved).count()
+    }
+
+    /// Whether the reject votes have reached [`reject_threshold`] for an
+    /// oracle set of `oracle_count` identities and the given `quorum`. Read
+    /// only where `attester_pay_v2` is active.
+    pub fn has_reject_threshold(&self, oracle_count: usize, quorum: usize) -> bool {
+        self.rejections() >= reject_threshold(oracle_count, quorum)
     }
 
     /// LEGACY float average — order-sensitive summation over an unordered
@@ -785,6 +827,38 @@ fn physics_violation_info(v: &PhysicsViolation) -> (String, f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reject_threshold_makes_approval_impossible_and_is_never_below_quorum() {
+        for (n, quorum, expected) in [
+            (3usize, 2usize, 2usize),
+            (4, 2, 3),
+            (5, 3, 3),
+            (7, 3, 5),
+            (1, 1, 1),
+            (4, 4, 4),
+            (4, 0, 4),
+            (0, 2, 2),
+        ] {
+            assert_eq!(super::reject_threshold(n, quorum), expected, "n={n} quorum={quorum}");
+            let q = quorum.max(1);
+            // After `threshold` rejections fewer than `q` identities remain.
+            assert!(n.saturating_sub(expected) < q, "n={n} quorum={quorum}");
+            assert!(expected >= q);
+        }
+        let mut set = super::AttestationSet::default();
+        for (id, approved) in [("a", false), ("b", false), ("c", true)] {
+            set.add(super::AttestationRecord {
+                oracle_id: id.to_string(),
+                approved,
+                confidence: 1.0,
+                timestamp: 0,
+            });
+        }
+        assert_eq!((set.approvals(), set.rejections()), (1, 2));
+        assert!(set.has_reject_threshold(3, 2));
+        assert!(!set.has_reject_threshold(4, 2));
+    }
+
     use super::*;
     use crate::consensus::zk_verification::{RejectAllZkVerifier, ZkVerifier};
     use crate::crypto::signature::{PrivateKey, PublicKey};

@@ -39,3 +39,5 @@ registrations are exercised through real redb checkpoint/WAL round trips in
 SHA-256: `fc1d257f284cb0b3d12a3380ab5cbc2f1b7b54132074da25712ec835550a30dd`.
 
 S3 format 13 fixture is the immutable format 12 body plus one absent receipt marker byte 0x00, with header version changed to 13. Old fixture bytes are unchanged.
+
+Format 20 fixture (`checkpoint_state_v20_golden.bin`) is the immutable format 19 body plus the empty attester payout bond map (one u64 zero length, 8 bytes), with header version changed to 20. Old fixture bytes are unchanged.

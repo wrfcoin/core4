@@ -1078,6 +1078,22 @@
     },
     {
       "package": "wrfcoin-shared-protocol",
+      "target": "attester_pay_v2_inactive"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "attester_pay_v2"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
+      "target": "attester_pay_v2_schedulable"
+    },
+    {
+      "package": "wrfcoin-native-chain",
+      "target": "attester_pay_v2_parity"
+    },
+    {
+      "package": "wrfcoin-shared-protocol",
       "target": "station_submitter_key"
     },
     {

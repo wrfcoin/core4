@@ -7721,6 +7721,8 @@ mod tests {
             field!("forecast_late_score", |s| field_json(&s.forecast_late_score)),
             // BTreeMaps throughout: compared as one ordered value.
             field!("station_submitters", |s| field_json(&s.station_submitters)),
+            // A BTreeMap: compared as one ordered value.
+            field!("attester_payout_bonds", |s| field_json(&s.attester_payout_bonds)),
         ]
     }
 
@@ -11662,6 +11664,9 @@ mod tests {
             // Producer/applier/WAL parity with an approved key and recorded
             // commit signers: native-chain/tests/station_submitter_key_parity.rs.
             "station_submitters",
+            // Producer/applier/WAL parity with a bound attester paid for a
+            // reject vote: native-chain/tests/attester_pay_v2_parity.rs.
+            "attester_payout_bonds",
         ]
         .into_iter()
         .collect();

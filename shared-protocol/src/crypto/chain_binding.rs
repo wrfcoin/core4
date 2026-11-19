@@ -1379,6 +1379,26 @@ pub enum ConsensusFeature {
     /// `forecaster_key_binding` (`forecast_late_score_schedule_allowed`);
     /// scheduling is the owner's signature only.
     ForecastLateScoreV2,
+    /// Attester pay, second rule set. From its activation:
+    ///
+    /// - a decision is also settled when its reject votes make approval
+    ///   impossible (`oracle::attestation::reject_threshold`), and the
+    ///   attesters who voted reject in that block are paid from the same
+    ///   attester slice, with the same division;
+    /// - an oracle registration may name a bond (`payout_bond`), and an
+    ///   attester bound to a registered bond is paid to that bond's payout
+    ///   account instead of the address derived from its oracle identity
+    ///   (`State::attester_payout_bonds`).
+    ///
+    /// Below the activation none of this is read: `payout_bond` is not
+    /// parsed, the map stays empty and blocks and `state_root` are
+    /// byte-identical.
+    ///
+    /// Wire ordinal 42. Ships UNSCHEDULED: it appears in no genesis, default
+    /// schedule or cut pin. No earlier binary knows the name, so one that has
+    /// not upgraded halts at the activation. Scheduling is the owner's
+    /// signature only.
+    AttesterPayV2,
 }
 
 /// The retirement feature for each slot of a `BOND_ADMISSION_KEY_PINS` row,
@@ -1562,6 +1582,7 @@ impl ConsensusFeature {
         Self::StationRegistrarKeyRetire0,
         Self::StationRegistrarKeyRetire1,
         Self::ForecastLateScoreV2,
+        Self::AttesterPayV2,
     ];
 
     /// The stable name the genesis schedule carries.
@@ -1609,6 +1630,7 @@ impl ConsensusFeature {
             Self::StationRegistrarKeyRetire0 => "station_registrar_key_retire_0",
             Self::StationRegistrarKeyRetire1 => "station_registrar_key_retire_1",
             Self::ForecastLateScoreV2 => "forecast_late_score_v2",
+            Self::AttesterPayV2 => "attester_pay_v2",
         }
     }
 
@@ -1750,7 +1772,13 @@ impl ConsensusFeature {
             // `forecaster_key_binding` (`forecast_late_score_schedule_allowed`,
             // enforced at admission and by `forecast_late_score_active`). The
             // owner signs the schedule.
-            | Self::ForecastLateScoreV2 => true,
+            | Self::ForecastLateScoreV2
+            // Attester pay v2 (paid reject votes, bond payout accounts): wired
+            // end to end (vote apply, settlement derivation and apply, the
+            // registration step). No dependency on another feature: a
+            // `payout_bond` simply cannot name a bond before bonds exist. The
+            // owner signs the schedule.
+            | Self::AttesterPayV2 => true,
         }
     }
 
@@ -1796,6 +1824,9 @@ impl ConsensusFeature {
             // Reveal records, the score transaction, bucket close and pay, and
             // the baseline-credit switch all read it.
             Self::ForecastLateScoreV2 => true,
+            // The vote apply, settlement derivation and apply, the payee
+            // lookup and the oracle registration step read it.
+            Self::AttesterPayV2 => true,
             // The contribution reward reads it (late-data reduction).
             Self::LateDataPay => true,
             // The owner-action extractor, admission, apply and the commit check read it.
@@ -1909,11 +1940,13 @@ mod forecast_skill_baseline_tests {
             (40, ConsensusFeature::StationRegistrarKeyRetire1),
             // The forecast late score's live name, appended at 41.
             (41, ConsensusFeature::ForecastLateScoreV2),
+            // Attester pay v2, appended at 42.
+            (42, ConsensusFeature::AttesterPayV2),
         ] {
             assert_eq!(ConsensusFeature::ALL[ordinal as usize], feature);
             assert_eq!(bincode::serialize(&feature).unwrap(), ordinal.to_le_bytes());
         }
-        assert_eq!(ConsensusFeature::ALL.len(), 42);
+        assert_eq!(ConsensusFeature::ALL.len(), 43);
         assert_eq!(
             ConsensusFeature::ALL[13],
             ConsensusFeature::ScheduleExtension
@@ -3414,6 +3447,9 @@ mod tests {
         // key-binding lead rule; the owner signs it. Ordinal 34
         // (`forecast_late_score`) is retired and never schedulable.
         expected.push("forecast_late_score_v2");
+        // Ordinal 42: attester pay v2; the binary accepts a schedule, the
+        // owner signs it.
+        expected.push("attester_pay_v2");
         for node in [None, Some(other.as_str())] {
             let schedulable: Vec<&str> = ConsensusFeature::ALL
                 .iter()
@@ -3466,6 +3502,9 @@ mod tests {
         // key-binding lead rule; the owner signs it. Ordinal 34
         // (`forecast_late_score`) is retired and never schedulable.
         expected.push("forecast_late_score_v2");
+        // Ordinal 42: attester pay v2; the binary accepts a schedule, the
+        // owner signs it.
+        expected.push("attester_pay_v2");
         assert_eq!(schedulable, expected);
     }
 

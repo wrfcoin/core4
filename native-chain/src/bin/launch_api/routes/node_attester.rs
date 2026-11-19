@@ -19,9 +19,11 @@
 //!
 //! With a key configured, an optional `pay` object adds attester pay as chain
 //! facts only, over the last [`PAY_WINDOW_BLOCKS`] blocks: votes the chain paid
-//! for (from each paying block's `attester_settlements` metadata), approve
+//! for (from each paying block's `attester_settlements` metadata; from
+//! `attester_pay_v2` that includes reject votes on rejected decisions), approve
 //! votes for settled decisions that did not pay this oracle, the amount paid,
-//! and the oracle key's own address (where attester pay lands) with its
+//! and the address attester pay lands at (the oracle key's own address, or
+//! from `attester_pay_v2` its bond's payout account) with its
 //! balance. Counted with the same fold as `wrfcoin oracle statement`. No rates
 //! and no projections.
 //!
@@ -315,7 +317,9 @@ pub struct AttesterPay {
     pub approve_votes_not_paid: u64,
     pub paid_units: String,
     pub paid_wrf: String,
-    /// The oracle key's own address: where attester pay lands.
+    /// Where attester pay lands: the oracle key's own address, or from
+    /// `attester_pay_v2` the payout account of the bond the oracle's
+    /// registration names (while that bond is registered).
     pub payee_address: String,
     pub payee_balance_units: String,
     pub payee_balance_wrf: String,
@@ -423,8 +427,8 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
         None => 0,
     };
 
-    let payee = oracle_id.as_deref().and_then(payee_address);
-    let (tip, seated, set_size, quorum, mut fingerprint, in_memory, payee_balance) = {
+    let own_address = oracle_id.as_deref().and_then(payee_address);
+    let (tip, seated, set_size, quorum, mut fingerprint, in_memory, payee, payee_balance) = {
         let chain = state.blockchain.read().await;
         let mut set: Vec<String> = chain
             .state
@@ -444,6 +448,15 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
             Some(_) => chain.blocks_range(from, tip).cloned().collect(),
             None => Vec::new(),
         };
+        // Where the next settlement pays this oracle: from `attester_pay_v2`
+        // the payout account of the bond its registration names, while that
+        // bond is registered; otherwise the oracle key's own address.
+        let next_height = tip.saturating_add(1);
+        let payee = oracle_id
+            .as_ref()
+            .and_then(|id| chain.state.oracle_set.iter().find(|s| s.eq_ignore_ascii_case(id)))
+            .and_then(|id| chain.state.attester_settlement_payee(id, next_height))
+            .or(own_address);
         let payee_balance = payee.as_ref().map(|a| {
             chain
                 .state
@@ -457,6 +470,7 @@ pub async fn get_node_attester(req: HttpRequest, state: web::Data<AppState>) -> 
             chain.state.oracle_quorum,
             set,
             in_memory,
+            payee,
             payee_balance,
         )
     };
