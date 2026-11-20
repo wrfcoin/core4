@@ -82,7 +82,8 @@ The next start resumes from where the node stopped.
 
 The node keeps running after you close the browser. It writes its log to
 `%LOCALAPPDATA%\WRFCoin\logs\node.log` (the previous run's log is `node.log.1`).
-Only one node can run at a time (it uses ports 8556 and 9000 on this PC).
+Only one node can run at a time (it uses ports 8556 and 9000 on this PC). To run
+it next to another node on the same PC, see [Two nodes on one PC](#two-nodes-on-one-pc).
 
 ### The firewall prompt
 
@@ -94,7 +95,8 @@ remove that "deny" again.)
 ## Check that it is syncing
 
 Start menu → **WRFCoin Node Status** opens `http://127.0.0.1:8556/dashboard` in
-your browser. The chain panel shows the height climbing and the number of peers.
+your browser (on the port you chose, if you moved it: see
+[Two nodes on one PC](#two-nodes-on-one-pc)). The chain panel shows the height climbing and the number of peers.
 The raw numbers are at `http://127.0.0.1:8556/network/info`: look for
 `"chain_id":"888"`, `chain_height` going up, and `peer_count` of 1 or more.
 
@@ -108,13 +110,13 @@ node's operator token. It is in `%LOCALAPPDATA%\WRFCoin\operator.token`
 (created at install, unique to this PC, readable only by your Windows account).
 You do not need it to watch the sync.
 
-When you open the page with Start menu → **WRFCoin Node**, the launcher hands the
+When you open the page with Start menu → **WRFCoin Node** or **WRFCoin Node
+Status**, the launcher hands the
 token over for you: it opens `http://127.0.0.1:8556/dashboard#operator=<token>`.
 The part after `#` is a URL *fragment*: browsers never send it to the node, so it
 appears in no request and no log. The page moves it into that browser tab's
 session storage (gone when the tab closes) and immediately removes it from the
-address bar. The **WRFCoin Node Status** shortcut and a typed or bookmarked URL
-open the page without the token; there, paste the token into the field under
+address bar. A typed or bookmarked URL opens the page without the token; there, paste the token into the field under
 **Host** (on another computer, or a node you run some other way, paste works the
 same). **Forget** clears it from the tab.
 
@@ -193,6 +195,32 @@ Restart the node (Start menu → **Stop WRFCoin Node**, then **WRFCoin Node**).
 
 To close the port again: delete `reachable.conf`, restart the node, and remove
 the router rule and the firewall rule.
+
+## Two nodes on one PC
+
+The node uses two ports on this PC: **8556** for its local API and status page,
+and **9000** for P2P. If another node already uses them (for example one in WSL
+or Docker on the same PC), the WRFCoin Node start stops with "another program
+already answers on http://127.0.0.1:8556". Give this node its own ports in
+`%LOCALAPPDATA%\WRFCoin\reachable.conf` (create the file if it is not there):
+
+```
+WRFCOIN_API_PORT=8566
+WRFCOIN_P2P_PORT=9010
+```
+
+Each value is a whole number from 1024 to 65535, and the two must differ (also
+from the default of the one you leave out). Any other value stops the start
+with a message naming the line. Stop the node, save the file, start it again.
+Then the status page is at `http://127.0.0.1:8566/dashboard`; the
+**WRFCoin Node Status** entry, the attester and the receipt and address timers
+all follow the new API port by themselves.
+
+If you also opened your port or run in bonded mode, use the new P2P port
+everywhere [Open your port](#open-your-port-optional) says 9000: the router
+rule, the firewall rule and the end of `WRFCOIN_P2P_EXTERNAL_ADDR`
+(`/ip4/203.0.113.7/tcp/9010`). The status page's port guide still says 9000. To
+go back to the defaults, remove the two lines.
 
 ## Where the data lives
 
@@ -475,7 +503,7 @@ where it stopped. To remove them later, delete `%LOCALAPPDATA%\WRFCoin`.
   administrator, or use a personal PC.
 - **"The node stopped during startup":** the message shows the end of
   `node.log`. "Address in use" means another node (or another program on port
-  8556 or 9000) is already running.
+  8556 or 9000) is already running; see [Two nodes on one PC](#two-nodes-on-one-pc).
 - **Height stays at 0:** check the internet connection; the seed is
   `seed.wrfcoin.com` port 9000 (outbound TCP).
 
@@ -579,7 +607,10 @@ node logs it, checks that `wrfcoin.exe` derives the same public key from it, che
 announced address on `/network/peer_id` and the dashboard's "Reachable at"),
 starts it in bonded mode (checks `node.log` and the `bonded` status on
 `/network/peer_id`, server key equal to the CLI's), checks that a bonded
-`reachable.conf` without a service id and one with any other key stop the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
+`reachable.conf` without a service id and one with any other key stop the start, starts it on
+`WRFCOIN_API_PORT=8566` / `WRFCOIN_P2P_PORT=9010` (checks the API answers there and not on 8556, the
+9010 listener, and that the Status entry and an attester auto-start pass follow the port), checks that
+clashing or malformed ports and a stand-in program already answering on 8556 stop the start, uninstalls it, and uploads `wrfcoin-node-windows-x86_64-setup` (installer +
 `SHA256SUMS`).
 
 The node is configured only by environment variables. `chain-888.conf` is the
