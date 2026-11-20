@@ -78,6 +78,21 @@ pub enum OracleCommands {
         #[clap(long)]
         governance_key: PathBuf,
 
+        /// Optional identity -> payout bond map (JSON object of oracle id to
+        /// a node bond `deployment_id`, 64 hex). The named identity's
+        /// registration carries `payout_bond`, signed by the governance key,
+        /// and from `attester_pay_v2` its attester pay goes to that bond's
+        /// payout account. Identities left out name no bond, which from the
+        /// activation CLEARS any binding they had.
+        ///
+        /// A registration that names a bond is accepted only in a block at or
+        /// after `attester_pay_v2`'s activation: submit the batch once the
+        /// node's tip is at least the activation height minus one. Offline;
+        /// whether each bond is registered with its full principal is checked
+        /// by the node at the mining block, not here.
+        #[clap(long)]
+        payout_bonds: Option<PathBuf>,
+
         /// Artifact output path.
         #[clap(long)]
         out: PathBuf,
@@ -183,6 +198,7 @@ pub async fn handle_oracle_command_with(command: &OracleCommands, interactive: b
             activated_at,
             submitted_at,
             governance_key,
+            payout_bonds,
             out,
         } => {
             let genesis_config = read_genesis_config(genesis)?;
@@ -214,7 +230,13 @@ pub async fn handle_oracle_command_with(command: &OracleCommands, interactive: b
             .map_err(|err| anyhow!("ceremony inputs rejected: {err}"))?;
 
             let governance = read_private_key(governance_key)?;
-            let artifact = ceremony.build_artifact(&governance);
+            let mut artifact = ceremony.build_artifact(&governance);
+            if let Some(path) = payout_bonds {
+                let bonds = read_payout_bonds(path)?;
+                apply_payout_bonds(&mut artifact, &bonds, &governance)?;
+            }
+            // Never write what would not verify.
+            verify_artifact(&artifact)?;
             write_pretty_json(out, &artifact)?;
 
             Ok(json!({
@@ -234,6 +256,7 @@ pub async fn handle_oracle_command_with(command: &OracleCommands, interactive: b
                 "activatedAt": artifact.activated_at,
                 "submittedAt": artifact.submitted_at,
                 "governancePubkey": artifact.governance_pubkey,
+                "payoutBonds": artifact_payout_bonds(&artifact)?,
                 "transactionIds": transaction_ids(&artifact),
             }))
         },
@@ -257,11 +280,14 @@ pub async fn handle_oracle_command_with(command: &OracleCommands, interactive: b
                     "governance allowlist — the node's WRFCOIN_ORACLE_GOVERNANCE_PUBKEYS",
                     "the node's own chain/network identity",
                     "submitted_at freshness at admission and at block assembly",
+                    "a named payout bond: attester_pay_v2 active at the mining block, and the \
+                     bond registered with its full principal there",
                 ],
                 "chainId": artifact.chain_id,
                 "networkId": artifact.network_id,
                 "oracleSet": artifact.oracle_set,
                 "oracleQuorum": artifact.oracle_quorum,
+                "payoutBonds": artifact_payout_bonds(&artifact)?,
                 "transactionIds": transaction_ids(&artifact),
             }))
         },
@@ -497,6 +523,15 @@ fn verify_artifact(artifact: &GenesisOracleCeremonyArtifact) -> Result<()> {
         let mut unsigned = payload.clone();
         unsigned.auth_pubkey = None;
         unsigned.auth_signature = None;
+        // The heightless parse never reads `payout_bond`. Read it the way a
+        // node does from `attester_pay_v2` (strictly), so a named bond is
+        // covered by the signature check and a swapped or stripped one fails.
+        unsigned.payout_bond = registration_payout_bond(tx).map_err(|why| {
+            anyhow!(
+                "transactions[{index}] (identity {}) {why}",
+                payload.identity
+            )
+        })?;
         let message = oracle_registration_authorization_message_with_domain(
             &artifact.chain_id,
             &artifact.network_id,
@@ -514,6 +549,155 @@ fn verify_artifact(artifact: &GenesisOracleCeremonyArtifact) -> Result<()> {
         }
     }
 
+    // A node refuses a bond bound to two identities of the set it installs.
+    artifact_payout_bonds(artifact)?;
+
+    Ok(())
+}
+
+/// A registration's `payout_bond`, read the way a node reads it from
+/// `attester_pay_v2`: absent or `null` is `None`, a string is that string,
+/// and any other JSON type or a repeated member is an error. A present bond
+/// must also be 64 lowercase hex characters (the form this tool writes).
+fn registration_payout_bond(
+    tx: &wrfcoin_shared_protocol::blockchain::transaction::Transaction,
+) -> std::result::Result<Option<String>, String> {
+    #[derive(Deserialize)]
+    struct PayoutBondMember {
+        #[serde(default)]
+        payout_bond: Option<String>,
+    }
+    let data = tx.data.as_deref().ok_or("carries no registration data")?;
+    let member: PayoutBondMember = serde_json::from_str(data)
+        .map_err(|_| "has a payout_bond member that is not one string".to_string())?;
+    match member.payout_bond {
+        None => Ok(None),
+        Some(bond) if is_bond_id(&bond) => Ok(Some(bond)),
+        Some(_) => Err("names a payout bond that is not 64 lowercase hex characters".to_string()),
+    }
+}
+
+fn is_bond_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// identity -> payout bond for every registration in the artifact that names
+/// one. Errors if one bond is named for two identities.
+fn artifact_payout_bonds(
+    artifact: &GenesisOracleCeremonyArtifact,
+) -> Result<BTreeMap<String, String>> {
+    let mut bonds = BTreeMap::new();
+    let mut owner_of: BTreeMap<String, String> = BTreeMap::new();
+    for (index, tx) in artifact.transactions.iter().enumerate() {
+        let identity = tx
+            .parse_oracle_registration()
+            .ok_or_else(|| anyhow!("transactions[{index}] is not an oracle registration"))?
+            .identity;
+        if let Some(bond) = registration_payout_bond(tx)
+            .map_err(|why| anyhow!("transactions[{index}] (identity {identity}) {why}"))?
+        {
+            if let Some(other) = owner_of.insert(bond.clone(), identity.clone()) {
+                return Err(anyhow!(
+                    "payout bond {bond} is named for two identities ({other} and {identity}); \
+                     a node refuses that"
+                ));
+            }
+            bonds.insert(identity, bond);
+        }
+    }
+    Ok(bonds)
+}
+
+/// Read the `--payout-bonds` map: a JSON object of oracle id -> bond
+/// `deployment_id`. Keys and values are trimmed and lowercased.
+fn read_payout_bonds(path: &Path) -> Result<BTreeMap<String, String>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read payout bonds {}", path.display()))?;
+    let map: BTreeMap<String, String> = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "payout bonds {} must be a JSON object of oracle id to bond id",
+            path.display()
+        )
+    })?;
+    let mut out = BTreeMap::new();
+    for (identity, bond) in map {
+        let identity = identity.trim().to_ascii_lowercase();
+        if out
+            .insert(identity.clone(), bond.trim().to_ascii_lowercase())
+            .is_some()
+        {
+            return Err(anyhow!("payout bonds name identity {identity} twice"));
+        }
+    }
+    if out.is_empty() {
+        return Err(anyhow!(
+            "payout bonds {} is empty; omit --payout-bonds to name no bond",
+            path.display()
+        ));
+    }
+    Ok(out)
+}
+
+/// Re-sign the registrations of the identities in `bonds` so each names its
+/// payout bond. Every other field, the transaction timestamp and the order
+/// are unchanged; registrations of identities not in `bonds` are untouched.
+fn apply_payout_bonds(
+    artifact: &mut GenesisOracleCeremonyArtifact,
+    bonds: &BTreeMap<String, String>,
+    governance: &PrivateKey,
+) -> Result<()> {
+    use wrfcoin_shared_protocol::blockchain::transaction::Transaction;
+
+    for (identity, bond) in bonds {
+        if !artifact.oracle_set.contains(identity) {
+            return Err(anyhow!(
+                "payout bonds name {identity}, which is not in the oracle set"
+            ));
+        }
+        if !is_bond_id(bond) {
+            return Err(anyhow!(
+                "payout bond for {identity} is not 64 hex characters"
+            ));
+        }
+    }
+    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    for (identity, bond) in bonds {
+        if let Some(other) = seen.insert(bond.as_str(), identity.as_str()) {
+            return Err(anyhow!(
+                "payout bond {bond} is named for two identities ({other} and {identity}); \
+                 a node refuses that"
+            ));
+        }
+    }
+
+    for tx in artifact.transactions.iter_mut() {
+        let payload = tx
+            .parse_oracle_registration()
+            .ok_or_else(|| anyhow!("artifact holds a transaction that is not a registration"))?;
+        let Some(bond) = bonds.get(&payload.identity) else {
+            continue;
+        };
+        let timestamp = tx.timestamp;
+        let mut rebuilt = Transaction::new_oracle_registration_with_payout_bond_and_domain(
+            &artifact.chain_id,
+            &artifact.network_id,
+            payload.oracle_set,
+            payload.oracle_quorum,
+            &payload.identity,
+            &payload.public_key,
+            payload.epoch,
+            payload.activated_at,
+            Some(bond),
+            governance,
+        );
+        // Same pinned timestamp as the ceremony, so the id is reproducible.
+        rebuilt.timestamp = timestamp;
+        rebuilt.set_id();
+        *tx = rebuilt;
+    }
     Ok(())
 }
 
@@ -675,6 +859,254 @@ mod tests {
             assert!(!err.contains(&seed_hex), "{name}: error must not echo key material"); // secret-leak-ok: asserts the fixture is ABSENT; the message names only the case
         }
         assert!(oracle_public_key_from_file(&dir.join("missing.key")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const BOND_A: &str = "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11";
+    const BOND_B: &str = "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22";
+
+    fn bonds(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Re-encode a transaction's payload with `payout_bond` set to `value`
+    /// (JSON), keep the signature, and re-derive the id.
+    fn set_bond_member(
+        tx: &mut wrfcoin_shared_protocol::blockchain::transaction::Transaction,
+        value: Option<Value>,
+    ) {
+        let mut data: Value = serde_json::from_str(tx.data.as_deref().unwrap()).unwrap();
+        let obj = data.as_object_mut().unwrap();
+        match value {
+            Some(v) => {
+                obj.insert("payout_bond".into(), v);
+            },
+            None => {
+                obj.remove("payout_bond");
+            },
+        }
+        tx.data = Some(serde_json::to_string(&data).unwrap());
+        tx.id = Some(tx.calculate_hash());
+    }
+
+    /// `--payout-bonds`: the named identity's registration carries the bond
+    /// and a governance signature over it (the node's message from the
+    /// activation); the other registrations are byte-identical to a build
+    /// without the option; the timestamp is the ceremony's.
+    #[test]
+    fn payout_bonds_sign_the_named_registration_only() {
+        let (plain, gov) = artifact();
+        let mut built = plain.clone();
+        let target = built.oracle_set[1].clone();
+        apply_payout_bonds(&mut built, &bonds(&[(&target, BOND_A)]), &gov).unwrap();
+        verify_artifact(&built).unwrap();
+
+        for (before, after) in plain.transactions.iter().zip(&built.transactions) {
+            let p = after.parse_oracle_registration().unwrap();
+            assert_eq!(before.timestamp, after.timestamp);
+            if p.identity == target {
+                assert_eq!(
+                    registration_payout_bond(after).unwrap().as_deref(),
+                    Some(BOND_A)
+                );
+                assert_ne!(before.id, after.id);
+                // The signature covers the bond: the message with the bond
+                // verifies, the message without it does not.
+                let sig = Signature::from_hex(p.auth_signature.as_deref().unwrap()).unwrap();
+                let gov_pk = PublicKey::from_hex(&built.governance_pubkey).unwrap();
+                let mut unsigned = p.clone();
+                unsigned.auth_pubkey = None;
+                unsigned.auth_signature = None;
+                let without = oracle_registration_authorization_message_with_domain(
+                    CHAIN, NETWORK, &unsigned,
+                );
+                assert!(!gov_pk.verify(&without, &sig));
+                unsigned.payout_bond = Some(BOND_A.to_string());
+                let with = oracle_registration_authorization_message_with_domain(
+                    CHAIN, NETWORK, &unsigned,
+                );
+                assert!(gov_pk.verify(&with, &sig));
+            } else {
+                assert_eq!(
+                    serde_json::to_string(before).unwrap(),
+                    serde_json::to_string(after).unwrap()
+                );
+                assert_eq!(registration_payout_bond(after).unwrap(), None);
+            }
+        }
+        assert_eq!(
+            artifact_payout_bonds(&built).unwrap(),
+            bonds(&[(&target, BOND_A)])
+        );
+
+        // Deterministic: the same inputs give the same bytes.
+        let mut again = plain.clone();
+        apply_payout_bonds(&mut again, &bonds(&[(&target, BOND_A)]), &gov).unwrap();
+        assert_eq!(
+            serde_json::to_string(&built).unwrap(),
+            serde_json::to_string(&again).unwrap()
+        );
+    }
+
+    /// A swapped, stripped, mistyped or repeated bond fails verification.
+    #[test]
+    fn verify_rejects_a_tampered_payout_bond() {
+        let (mut built, gov) = artifact();
+        let target = built.oracle_set[0].clone();
+        apply_payout_bonds(&mut built, &bonds(&[(&target, BOND_A)]), &gov).unwrap();
+
+        let mut swapped = built.clone();
+        set_bond_member(&mut swapped.transactions[0], Some(json!(BOND_B)));
+        assert!(
+            verify_artifact(&swapped)
+                .unwrap_err()
+                .to_string()
+                .contains("does not verify")
+        );
+
+        let mut stripped = built.clone();
+        set_bond_member(&mut stripped.transactions[0], None);
+        assert!(
+            verify_artifact(&stripped)
+                .unwrap_err()
+                .to_string()
+                .contains("does not verify")
+        );
+
+        let mut wrong_type = built.clone();
+        set_bond_member(&mut wrong_type.transactions[0], Some(json!(7)));
+        assert!(
+            verify_artifact(&wrong_type)
+                .unwrap_err()
+                .to_string()
+                .contains("not one string")
+        );
+
+        let mut added = built.clone();
+        set_bond_member(&mut added.transactions[1], Some(json!(BOND_B)));
+        assert!(
+            verify_artifact(&added)
+                .unwrap_err()
+                .to_string()
+                .contains("does not verify")
+        );
+
+        let mut repeated = built.clone();
+        let data = repeated.transactions[0].data.clone().unwrap();
+        let doubled = data.replacen('{', &format!("{{\"payout_bond\":\"{BOND_B}\","), 1);
+        repeated.transactions[0].data = Some(doubled);
+        repeated.transactions[0].id = Some(repeated.transactions[0].calculate_hash());
+        assert!(verify_artifact(&repeated).is_err());
+    }
+
+    /// Inputs a node would refuse are refused before anything is signed.
+    #[test]
+    fn payout_bonds_refuse_bad_input() {
+        let (built, gov) = artifact();
+        let a = built.oracle_set[0].clone();
+        let b = built.oracle_set[1].clone();
+        let outsider = keypair(99).1;
+        for (case, map, want) in [
+            (
+                "outside the set",
+                bonds(&[(&outsider, BOND_A)]),
+                "not in the oracle set",
+            ),
+            ("short", bonds(&[(&a, &BOND_A[1..])]), "64 hex"),
+            ("not hex", bonds(&[(&a, &"zz".repeat(32))]), "64 hex"),
+            (
+                "one bond, two ids",
+                bonds(&[(&a, BOND_A), (&b, BOND_A)]),
+                "two identities",
+            ),
+        ] {
+            let mut copy = built.clone();
+            let err = apply_payout_bonds(&mut copy, &map, &gov)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(want), "{case}: {err}");
+            assert_eq!(
+                serde_json::to_string(&copy).unwrap(),
+                serde_json::to_string(&built).unwrap(),
+                "{case}: nothing changed"
+            );
+        }
+    }
+
+    /// End to end through the command: `--payout-bonds` read from a file
+    /// (mixed case and padding normalized), written artifact re-verifies
+    /// with `verify-registrations`, and both report the binding.
+    #[tokio::test]
+    async fn build_registrations_with_payout_bonds_file() {
+        let dir =
+            std::env::temp_dir().join(format!("wrfcoin-cli-oracle-bonds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ids: Vec<String> = (0..4).map(|i| keypair(40 + i).1).collect();
+        let genesis = dir.join("genesis.json");
+        fs::write(
+            &genesis,
+            json!({"network_id": NETWORK, "oracle_config": {"authorized_oracles": ids, "quorum": 2}}).to_string(),
+        )
+        .unwrap();
+        let (gov_sk, _) = keypair(7);
+        let gov_file = dir.join("gov.key");
+        fs::write(&gov_file, gov_sk.to_hex()).unwrap(); // secret-leak-ok: fixed all-0x07 test fixture in a temp file
+        let bonds_file = dir.join("bonds.json");
+        fs::write(
+            &bonds_file,
+            json!({ format!(" {} ", ids[2].to_uppercase()): BOND_B.to_uppercase() }).to_string(),
+        )
+        .unwrap();
+        let out = dir.join("artifact.json");
+
+        let build =
+            |payout_bonds: Option<PathBuf>, out: PathBuf| OracleCommands::BuildRegistrations {
+                genesis: genesis.clone(),
+                chain_id: CHAIN.into(),
+                network_id: None,
+                signing_keys: None,
+                epoch: 5,
+                activated_at: 1_700_000_000,
+                submitted_at: 1_700_000_100,
+                governance_key: gov_file.clone(),
+                payout_bonds,
+                out,
+            };
+        let res = handle_oracle_command_with(&build(Some(bonds_file.clone()), out.clone()), false)
+            .await
+            .unwrap();
+        assert_eq!(res["payoutBonds"], json!({ ids[2].clone(): BOND_B }));
+        assert!(!res.to_string().contains(&gov_sk.to_hex())); // secret-leak-ok: asserts the fixture is ABSENT
+
+        let checked = handle_oracle_command_with(
+            &OracleCommands::VerifyRegistrations {
+                artifact: out.clone(),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(checked["payoutBonds"], json!({ ids[2].clone(): BOND_B }));
+        assert_eq!(checked["transactionIds"], res["transactionIds"]);
+
+        // Without the option nothing names a bond (unchanged behaviour).
+        let plain_out = dir.join("plain.json");
+        let plain = handle_oracle_command_with(&build(None, plain_out), false)
+            .await
+            .unwrap();
+        assert_eq!(plain["payoutBonds"], json!({}));
+
+        // An empty map is refused rather than silently naming nothing.
+        fs::write(&bonds_file, "{}").unwrap();
+        assert!(
+            handle_oracle_command_with(&build(Some(bonds_file.clone()), dir.join("x.json")), false)
+                .await
+                .is_err()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
