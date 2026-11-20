@@ -25,7 +25,6 @@
 #endif
 
 #define AppName "WRFCoin Node"
-#define StatusUrl "http://127.0.0.1:8556/dashboard"
 #define Launcher "{sys}\WindowsPowerShell\v1.0\powershell.exe"
 ; -WindowStyle Hidden: the user sees no console window (a brief flash at most).
 ; A VBScript shim would hide even that, but VBScript is being retired from
@@ -68,8 +67,10 @@ Source: "chain-888.conf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "attester-888.conf"; DestDir: "{app}"; Flags: ignoreversion
 Source: "wrfcoin-node.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
-[INI]
-Filename: "{app}\WRFCoin Node Status.url"; Section: "InternetShortcut"; Key: "URL"; String: "{#StatusUrl}"
+[InstallDelete]
+; Earlier versions wrote a fixed http://127.0.0.1:8556 shortcut; the Status entry now asks the
+; launcher, which follows the API port chosen in reachable.conf.
+Type: files; Name: "{app}\WRFCoin Node Status.url"
 
 [Tasks]
 Name: "startup"; Description: "Start the WRFCoin node when I sign in to Windows"; Flags: unchecked
@@ -82,7 +83,7 @@ Name: "{group}\Start WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#
 Name: "{group}\Stop WRFCoin Attester"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action StopAttester"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Stop the oracle attester cleanly"
 Name: "{group}\Attester Auto-Start On"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action AttesterTimer"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Start the attester by itself once your oracle key is seated"
 Name: "{group}\Attester Auto-Start Off"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action AttesterAutoStartOff"; WorkingDir: "{app}"; IconFilename: "{app}\oracle_attester.exe"; Comment: "Never start the attester by itself"
-Name: "{group}\WRFCoin Node Status"; Filename: "{app}\WRFCoin Node Status.url"; Comment: "Open the node's status page in your browser"
+Name: "{group}\WRFCoin Node Status"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Status"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Comment: "Open the node's status page in your browser"
 Name: "{group}\WRFCoin Node Data Folder"; Filename: "{localappdata}\WRFCoin"; Comment: "Chain data, identity key and logs"
 Name: "{group}\Uninstall WRFCoin Node"; Filename: "{uninstallexe}"
 Name: "{userstartup}\WRFCoin Node"; Filename: "{#Launcher}"; Parameters: "{#LauncherArgs} -Action Start -NoBrowser"; WorkingDir: "{app}"; IconFilename: "{app}\launch_api.exe"; Tasks: startup

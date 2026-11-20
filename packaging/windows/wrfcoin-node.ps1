@@ -105,6 +105,9 @@
       A running attester keeps running until stopped.
   -Action StopAttesterTimer
       Removes the attester Scheduled Task only (the uninstaller does this).
+  -Action Status
+      Opens the running node's status page (the "WRFCoin Node Status" entry),
+      on the API port reachable.conf chooses. Starts nothing.
 
   -NoBrowser  start without opening the browser (sign-in start, CI).
 
@@ -113,6 +116,13 @@
     WRFCOIN_P2P_HOST=0.0.0.0                        an IPv4 address to listen on
     WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<ip>/tcp/<port>  the address other nodes dial
                               (or /dns4/<name>/tcp/<port>)
+  Two nodes on one PC (optional): the same reachable.conf may also move the
+  node's local ports off the defaults (API 8556, P2P 9000):
+    WRFCOIN_API_PORT=8566                   the local API and status page port
+    WRFCOIN_P2P_PORT=9010                   the P2P listen port
+  Each is a whole number 1024-65535 and the two must differ. Every action
+  that talks to the node (status page, attester, receipt and address passes,
+  attester auto-start) follows the chosen API port.
   They override the same keys of chain-888.conf; any other key, a duplicate or
   a malformed value stops the start with a message. chain-888.conf itself is
   still checked as the chain-888 sync-only config. See docs/operator/
@@ -140,7 +150,7 @@
     oracle.token       the node's Oracle-role API token (created with oracle.key)
     oracle-public.txt  the oracle key's public half (safe to share)
     logs\attester.log  oracle attester output (previous run: attester.log.1)
-    reachable.conf     optional: open a P2P port (see above)
+    reachable.conf     optional: open a P2P port, bonded mode, local ports (see above)
     bond.conf          a bonded node's receipt settings, only these keys:
                          WRFCOIN_BOND_DEPLOYMENT_ID  the bond id (64 lowercase hex)
                          WRFCOIN_BOND_OWNER_ADDRESS  the bond owner (0x + 40 lowercase hex)
@@ -166,7 +176,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Start', 'Stop', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer', 'AddressTimer', 'PublishAddress', 'StopAddressTimer', 'AttesterTimer', 'AttesterAutoStart', 'AttesterAutoStartOff', 'StopAttesterTimer')]
+    [ValidateSet('Start', 'Stop', 'Status', 'Setup', 'ServerKey', 'NewOracleKey', 'StartAttester', 'StopAttester', 'ReceiptTimer', 'Receipt', 'StopReceiptTimer', 'AddressTimer', 'PublishAddress', 'StopAddressTimer', 'AttesterTimer', 'AttesterAutoStart', 'AttesterAutoStartOff', 'StopAttesterTimer')]
     [string]$Action = 'Start',
     [switch]$NoBrowser,
     [switch]$Quiet
@@ -213,9 +223,12 @@ $OracleTokenFile = Join-Path $Root 'oracle.token'
 $OraclePublicFile = Join-Path $Root 'oracle-public.txt'
 $AttesterLog = Join-Path $LogDir 'attester.log'
 $AttesterStartSeconds = 15
-# The only chain-888.conf keys a user may override (case-sensitive). The last
-# two switch on bonded mode and are checked together by Resolve-NodeMode.
-$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID')
+# The only chain-888.conf keys a user may override (case-sensitive). The two
+# bonded-mode keys are checked together by Resolve-NodeMode; the two ports by
+# Read-LocalNodeConfig (they must differ).
+$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID', 'WRFCOIN_API_PORT', 'WRFCOIN_P2P_PORT')
+# Of those, the local ports: every action that talks to the node uses them.
+$PortKeys = @('WRFCOIN_API_PORT', 'WRFCOIN_P2P_PORT')
 $StopWaitSeconds = 120
 # Bonded node receipts (testnet): -Action ReceiptTimer / Receipt / StopReceiptTimer.
 $BondConfig = Join-Path $Root 'bond.conf'
@@ -487,9 +500,9 @@ function Get-AttesterProcess {
 }
 
 function Start-Attester {
-    $cfg = Read-NodeConfig $Config
+    $cfg = Read-LocalNodeConfig
     if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'the software oracle key is for testnet only' }
-    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $api = Get-NodeApiUrl $cfg
     if (@(Get-AttesterProcess).Count -gt 0) { Show-Message 'The WRFCoin attester is already running.'; return }
     if (-not (Test-Path -LiteralPath $AttesterExe)) { Fail "missing $AttesterExe - reinstall the package" }
     if (-not (Test-OracleKey)) { Fail "no attester key yet: use 'Create attester key' first" }
@@ -576,6 +589,12 @@ function Test-Ipv4([string]$Text) {
     return $true
 }
 
+function Test-PortValue([string]$Value) {
+    if ($Value -cnotmatch '^[1-9][0-9]{3,4}$') { return $false }
+    $port = [int]$Value
+    return ($port -ge 1024 -and $port -le 65535)
+}
+
 function Test-ReachableValue([string]$Key, [string]$Value) {
     switch -CaseSensitive ($Key) {
         'WRFCOIN_P2P_HOST' { return (Test-Ipv4 $Value) }
@@ -591,6 +610,8 @@ function Test-ReachableValue([string]$Key, [string]$Value) {
         'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS' { return ($Value -ceq '1') }
         # The bond's service alias (chain limit 128 bytes), plain ASCII only.
         'WRFCOIN_SERVICE_ID' { return ($Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') }
+        # Local ports: plain decimal, no sign or leading zero, 1024-65535.
+        { $PortKeys -ccontains $_ } { return (Test-PortValue $Value) }
     }
     return $false
 }
@@ -619,6 +640,25 @@ function Read-ReachableConfig {
     return $pairs
 }
 
+function Read-LocalNodeConfig($Reach = $null) {
+    # chain-888.conf with the operator's port choices from reachable.conf
+    # (defaults 8556/9000 when it sets none). Every action that talks to the
+    # local node builds its URL from this, so they all follow the same port.
+    $cfg = Read-NodeConfig $Config
+    if ($null -eq $Reach) { $Reach = Read-ReachableConfig }
+    foreach ($key in $PortKeys) {
+        if ($Reach.Contains($key)) { $cfg[$key] = $Reach[$key] }
+    }
+    if ([string]$cfg['WRFCOIN_API_PORT'] -ceq [string]$cfg['WRFCOIN_P2P_PORT']) {
+        Fail "${ReachableConfig}: WRFCOIN_API_PORT and WRFCOIN_P2P_PORT are both $($cfg['WRFCOIN_API_PORT']); the API and P2P ports must differ"
+    }
+    return $cfg
+}
+
+function Get-NodeApiUrl($Cfg) {
+    return "http://$($Cfg['WRFCOIN_API_HOST']):$($Cfg['WRFCOIN_API_PORT'])"
+}
+
 function Resolve-NodeMode($Reach) {
     # 'sync' (the default) or 'bonded'. Bonded mode is an explicit opt-in and
     # all or nothing: a half-configured bonded node would start, look fine and
@@ -638,7 +678,8 @@ function Resolve-NodeMode($Reach) {
         Fail "${ReachableConfig}: bonded mode needs WRFCOIN_P2P_HOST=0.0.0.0 so other nodes can connect (see Open your port)"
     }
     if (-not $Reach.Contains('WRFCOIN_P2P_EXTERNAL_ADDR')) {
-        Fail "${ReachableConfig}: bonded mode needs WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/9000 (see Open your port)"
+        $p2pPort = if ($Reach.Contains('WRFCOIN_P2P_PORT')) { [string]$Reach['WRFCOIN_P2P_PORT'] } else { '9000' }
+        Fail "${ReachableConfig}: bonded mode needs WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/$p2pPort (see Open your port)"
     }
     if (-not (Test-Path -LiteralPath $ServerKeyFile)) {
         Fail "bonded mode needs the server key ${ServerKeyFile}: run wrfcoin-node.ps1 -Action ServerKey first"
@@ -674,13 +715,27 @@ function Open-StatusPage([string]$Api) {
     Start-Process (Get-StatusPageUrl $Api (Test-Url "$Api/dashboard"))
 }
 
+function Show-StatusPage {
+    # The Start-menu "WRFCoin Node Status" entry: the status page of this
+    # installation's node, on the API port reachable.conf chooses.
+    $api = Get-NodeApiUrl (Read-LocalNodeConfig)
+    if (@(Get-NodeProcess).Count -eq 0) { Show-Message "The WRFCoin node is not running: start it with 'WRFCoin Node'."; return }
+    Open-StatusPage $api
+}
+
 function Start-Node {
     $cfg = Read-NodeConfig $Config
-    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $reach = Read-ReachableConfig
+    $api = Get-NodeApiUrl (Read-LocalNodeConfig $reach)
     if (@(Get-NodeProcess).Count -gt 0) { Open-StatusPage $api; return }
     if (-not (Test-Path -LiteralPath $Exe)) { Fail "missing $Exe - reinstall the package" }
+    # Something else (another node on this PC?) already answers on the API
+    # port: this node could not bind it, and the status page would be the
+    # other program's. Stop with a message that says how to move this one.
+    if (Test-Url "$api/health") {
+        Fail "another program already answers on $api (another node on this PC?). Stop it, or give this node its own ports in ${ReachableConfig}, e.g. WRFCOIN_API_PORT=8566 and WRFCOIN_P2P_PORT=9010"
+    }
 
-    $reach = Read-ReachableConfig
     $mode = Resolve-NodeMode $reach
     foreach ($key in $cfg.Keys) { [Environment]::SetEnvironmentVariable($key, $cfg[$key], 'Process') }
     foreach ($key in $reach.Keys) { [Environment]::SetEnvironmentVariable($key, $reach[$key], 'Process') }
@@ -836,7 +891,7 @@ function Read-BondConfig {
 
 function Assert-ReceiptReady {
     # Everything a receipt pass needs, checked before a task is registered.
-    $cfg = Read-NodeConfig $Config
+    $cfg = Read-LocalNodeConfig
     if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'unattended receipts are for testnet only' }
     $bond = Read-BondConfig
     if (-not (Test-Path -LiteralPath $OwnerKeyFile)) { Fail "missing $OwnerKeyFile (the bond owner's key)" }
@@ -865,7 +920,7 @@ function Invoke-Receipt {
     $cfg = $ready.Node; $bond = $ready.Bond
     if (-not (Test-Path -LiteralPath $ReceiptStateDir)) { New-Item -ItemType Directory -Path $ReceiptStateDir | Out-Null }
     Protect-UserOnly $ReceiptStateDir
-    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $api = Get-NodeApiUrl $cfg
     # The key and token go by file path only; wrfcoin.exe checks both are
     # owner-only and never prints them. The mailbox gets no credential.
     $cliArgs = @('--output', 'json', 'node', 'receipt', 'auto',
@@ -959,9 +1014,9 @@ function Read-AddressConfig {
 
 function Assert-AddressReady {
     # Everything a publish pass needs, checked before a task is registered.
-    $cfg = Read-NodeConfig $Config
-    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'unattended address records are for testnet only' }
     $reach = Read-ReachableConfig
+    $cfg = Read-LocalNodeConfig $reach
+    if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Fail 'unattended address records are for testnet only' }
     if ((Resolve-NodeMode $reach) -ne 'bonded') { Fail "the address record is for a bonded node: set up bonded mode in $ReachableConfig first" }
     if ([string]$reach['WRFCOIN_P2P_EXTERNAL_ADDR'] -cnotmatch '^/ip4/') {
         Fail "${ReachableConfig}: the address record needs WRFCOIN_P2P_EXTERNAL_ADDR=/ip4/<your public address>/tcp/<port> (a /dns4/ name is not accepted there)"
@@ -994,7 +1049,7 @@ function Hide-Addresses([string]$Text) {
 function Invoke-AddressPublish {
     $ready = Assert-AddressReady
     $cfg = $ready.Node; $addr = $ready.Address
-    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $api = Get-NodeApiUrl $cfg
     # The address the node itself announces, ending in /p2p/<its peer id>.
     $announced = ''
     try {
@@ -1126,10 +1181,18 @@ function Test-AttesterSeatDepth([string]$OracleId, [bool]$Seated, [long]$Height)
 function Invoke-AttesterAutoStart {
     if (Test-Path -LiteralPath $AttesterOptOutFile) { Write-AttesterAutoLog 'auto-start is off (attester-autostart.off)'; return }
     if (-not (Test-OracleKey)) { Write-AttesterAutoLog 'no attester key yet'; return }
-    $cfg = Read-NodeConfig $Config
+    $script:FailThrows = $true
+    try {
+        $cfg = Read-LocalNodeConfig
+    } catch {
+        Write-AttesterAutoLog "not started: $($_.Exception.Message)"
+        exit 1
+    } finally {
+        $script:FailThrows = $false
+    }
     if ($cfg['WRFCOIN_NETWORK_ID'] -ne 'testnet') { Write-AttesterAutoLog 'not started: the software oracle key is for testnet only'; exit 1 }
     if (@(Get-NodeProcess).Count -eq 0) { Write-AttesterAutoLog 'waiting (node not running)'; return }
-    $api = "http://$($cfg['WRFCOIN_API_HOST']):$($cfg['WRFCOIN_API_PORT'])"
+    $api = Get-NodeApiUrl $cfg
     $script:FailThrows = $true
     try {
         $id = Get-AttesterOracleId
@@ -1242,6 +1305,7 @@ try {
         'StopAttester' { Stop-Attester }
         'Start' { Initialize-UserState; Start-Node; Enable-AttesterAutoStart }
         'Stop'  { Stop-Node }
+        'Status' { Show-StatusPage }
         'ReceiptTimer' { Initialize-UserState; Register-ReceiptTimer }
         'Receipt' { Initialize-UserState; Invoke-Receipt }
         'StopReceiptTimer' { Unregister-ReceiptTimer }

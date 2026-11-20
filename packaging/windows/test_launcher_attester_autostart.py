@@ -135,20 +135,24 @@ $AttesterOptOutFile = Join-Path $Root 'attester-autostart.off'
 $AttesterAutoLog = Join-Path $Root 'attester-auto.log'
 $AttesterAutoLogMaxBytes = 1MB
 $AttesterSeatDepthBlocks = 3
+$ReachableConfig = Join-Path $Root 'reachable.conf'
+$ReachableKeys = @('WRFCOIN_P2P_HOST', 'WRFCOIN_P2P_EXTERNAL_ADDR', 'WRFCOIN_P2P_SERVE_BONDED_SNAPSHOTS', 'WRFCOIN_SERVICE_ID', 'WRFCOIN_API_PORT', 'WRFCOIN_P2P_PORT')
+$PortKeys = @('WRFCOIN_API_PORT', 'WRFCOIN_P2P_PORT')
 $script:FailThrows = $false
 [System.IO.File]::WriteAllText($TokenFile, 'test-operator-token')
 [System.IO.File]::WriteAllText($OraclePublicFile, "ORACLE_ID`r`n")
 
 # Stubs for everything outside the gate's own logic.
 $script:NodeUp = $false; $script:AttUp = $false; $script:Set = @(); $script:Height = 0
-$script:Starts = 0; $script:Stops = 0; $script:Tokens = @()
-function Read-NodeConfig([string]$Path) { @{ WRFCOIN_NETWORK_ID = 'testnet'; WRFCOIN_API_HOST = '127.0.0.1'; WRFCOIN_API_PORT = '8556' } }
+$script:Starts = 0; $script:Stops = 0; $script:Tokens = @(); $script:Uris = @()
+function Read-NodeConfig([string]$Path) { @{ WRFCOIN_NETWORK_ID = 'testnet'; WRFCOIN_API_HOST = '127.0.0.1'; WRFCOIN_API_PORT = '8556'; WRFCOIN_P2P_PORT = '9000' } }
 function Test-OracleKey { $true }
 function Get-NodeProcess { if ($script:NodeUp) { @(1) } else { @() } }
 function Get-AttesterProcess { if ($script:AttUp) { @(1) } else { @() } }
 function Start-Attester { $script:AttUp = $true; $script:Starts++ }
 function Stop-Attester([bool]$Report = $true) { $script:AttUp = $false; $script:Stops++ }
 function Invoke-RestMethod([string]$Uri, $TimeoutSec, $Headers) {
+    $script:Uris += $Uri
     if ($Uri -like '*/transactions/oracle/config') {
         $script:Tokens += $Headers['Authorization']
         return [pscustomobject]@{ oracle_set = $script:Set; oracle_quorum = 2 }
@@ -192,6 +196,13 @@ $script:Height = 300
 Step 'seat file without a height'
 [System.IO.File]::WriteAllText($AttesterSeatFile, '{"oracle_id":"OTHER_ID","first_seen_height":1}')
 Step 'seat file for another key'
+$results += [pscustomobject]@{ name = 'default port uris'; log = ($script:Uris | ForEach-Object { ([uri]$_).Port } | Select-Object -Unique) -join ','; starts = 0; stops = 0; seat = $false; lines = 0 }
+# reachable.conf moves the API port: the pass asks the node there.
+$script:Uris = @()
+[System.IO.File]::WriteAllText($ReachableConfig, "# two nodes on one PC`r`nWRFCOIN_API_PORT=8566`r`nWRFCOIN_P2P_PORT=9010`r`n")
+Step 'chosen api port'
+$results += [pscustomobject]@{ name = 'chosen port uris'; log = ($script:Uris | ForEach-Object { ([uri]$_).Port } | Select-Object -Unique) -join ','; starts = 0; stops = 0; seat = $false; lines = 0 }
+Remove-Item -LiteralPath $ReachableConfig
 $results += [pscustomobject]@{ name = 'tokens'; log = ($script:Tokens | Select-Object -Unique) -join ','; starts = 0; stops = 0; seat = $false; lines = 0 }
 $results += [pscustomobject]@{ name = 'log text'; log = (Get-Content -LiteralPath $AttesterAutoLog -Raw); starts = 0; stops = 0; seat = $false; lines = 0 }
 [System.IO.File]::WriteAllText($OutFile, (ConvertTo-Json -InputObject $results -Depth 3), (New-Object System.Text.UTF8Encoding($false)))
@@ -282,6 +293,10 @@ class Behaviour(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(self.steps[name]["starts"], 1)
                 self.assertIn("waiting until the seat is 3 blocks deep", self.steps[name]["log"])
+
+    def test_the_pass_follows_the_api_port_in_reachable_conf(self) -> None:
+        self.assertEqual(self.steps["default port uris"]["log"], "8556")
+        self.assertEqual(self.steps["chosen port uris"]["log"], "8566")
 
     def test_token_goes_only_to_the_node_and_never_to_the_log(self) -> None:
         self.assertEqual(self.steps["tokens"]["log"], "Bearer test-operator-token")

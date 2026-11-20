@@ -170,7 +170,7 @@ jobs:
           $app = Join-Path $env:LOCALAPPDATA 'Programs\WRFCoin Node'
           $root = Join-Path $env:LOCALAPPDATA 'WRFCoin'
           $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WRFCoin Node'
-          foreach ($f in 'launch_api.exe','wrfcoin.exe','oracle_attester.exe','chain-888.conf','attester-888.conf','wrfcoin-node.ps1','WRFCoin Node Status.url') {
+          foreach ($f in 'launch_api.exe','wrfcoin.exe','oracle_attester.exe','chain-888.conf','attester-888.conf','wrfcoin-node.ps1') {
             if (-not (Test-Path (Join-Path $app $f))) { throw "not installed: $f" }
           }
           # The installed attester runs (offline --help) from its install folder.
@@ -180,7 +180,10 @@ jobs:
           foreach ($f in 'WRFCoin Node.lnk','Stop WRFCoin Node.lnk','WRFCoin Node Status.lnk','Uninstall WRFCoin Node.lnk','Create Attester Key.lnk','Start WRFCoin Attester.lnk','Stop WRFCoin Attester.lnk','Attester Auto-Start On.lnk','Attester Auto-Start Off.lnk') {
             if (-not (Test-Path (Join-Path $menu $f))) { throw "missing Start-menu entry: $f" }
           }
-          if ((Get-Content (Join-Path $app 'WRFCoin Node Status.url') -Raw) -notmatch 'URL=http://127\.0\.0\.1:8556/dashboard') { throw 'status shortcut URL' }
+          # The Status entry asks the launcher (it follows the API port in reachable.conf); no fixed-port .url file.
+          if (Test-Path (Join-Path $app 'WRFCoin Node Status.url')) { throw 'a fixed-port WRFCoin Node Status.url was installed' }
+          $statusLnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $menu 'WRFCoin Node Status.lnk'))
+          if ($statusLnk.Arguments -notmatch 'wrfcoin-node\.ps1"? -Action Status$') { throw "status shortcut arguments: $($statusLnk.Arguments)" }
 
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           function Assert-UserOnly($path) {
@@ -495,6 +498,73 @@ jobs:
             if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'WRFCOIN_API_HOST cannot be set there' -Quiet)) { throw 'launcher.log does not explain the refused key' }
             Remove-Item -LiteralPath $reach
             Write-Host 'reachable.conf: allowed keys applied (0.0.0.0 listener, announced address on /network/peer_id and the dashboard), other keys refused'
+
+            # Two nodes on one PC: reachable.conf moves the API and P2P ports.
+            # The node listens there, the default API port stays free, and the
+            # launcher's own callers (Status entry, attester auto-start pass)
+            # talk to the chosen port. Bad or clashing ports stop the start.
+            $launcherPs1 = Join-Path $app 'wrfcoin-node.ps1'
+            [System.IO.File]::WriteAllText($reach, "# CI`r`nWRFCOIN_API_PORT=8566`r`nWRFCOIN_P2P_PORT=9010`r`n")
+            Invoke-Shortcut 'WRFCoin Node.lnk' '-NoBrowser -Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 1) { throw 'node did not start on the chosen ports' }
+            $i = Invoke-RestMethod http://127.0.0.1:8566/network/info -TimeoutSec 10
+            if ("$($i.chain_id)" -ne '888') { throw "port 8566: chain_id $($i.chain_id)" }
+            $defaultAnswers = $true
+            try { $null = Invoke-WebRequest http://127.0.0.1:8556/health -UseBasicParsing -TimeoutSec 3 } catch { $defaultAnswers = $false }
+            if ($defaultAnswers) { throw 'the default API port 8556 still answers with WRFCOIN_API_PORT=8566' }
+            if (@(Get-NetTCPConnection -LocalPort 9010 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) { throw 'P2P is not listening on port 9010 with WRFCOIN_P2P_PORT=9010' }
+            Invoke-Shortcut 'WRFCoin Node Status.lnk' '-NoBrowser -Quiet'
+            Remove-Item -LiteralPath $autoLog -ErrorAction SilentlyContinue
+            & $ps -NoProfile -ExecutionPolicy Bypass -File $launcherPs1 -Action AttesterAutoStart -Quiet
+            $global:LASTEXITCODE = 0
+            $autoLine = Get-Content -LiteralPath $autoLog -Tail 1
+            Write-Host "attester-auto.log on port 8566: $autoLine"
+            if ($autoLine -notmatch 'waiting for your seat|reported no height|attester (running|started)') { throw "the auto-start pass did not reach the node on port 8566: $autoLine" }
+            Get-Process oracle_attester -ErrorAction SilentlyContinue | Stop-Process -Force
+            Invoke-Shortcut 'Stop WRFCoin Node.lnk' '-Quiet'
+            if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'node still running after Stop (port run)' }
+            foreach ($bad in @(
+                @("WRFCOIN_API_PORT=8566`r`nWRFCOIN_P2P_PORT=8566`r`n", 'the API and P2P ports must differ'),
+                @("WRFCOIN_P2P_PORT=8556`r`n", 'the API and P2P ports must differ'),
+                @("WRFCOIN_API_PORT=80`r`n", "'80' is not a valid WRFCOIN_API_PORT"),
+                @("WRFCOIN_API_PORT=08566`r`n", "'08566' is not a valid WRFCOIN_API_PORT"))) {
+              [System.IO.File]::WriteAllText($reach, $bad[0])
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcherPs1 -Action Start -NoBrowser -Quiet
+              if ($LASTEXITCODE -eq 0) { throw "the launcher started with reachable.conf: $($bad[0])" }
+              $global:LASTEXITCODE = 0   # the refusal was expected
+              if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'a refused port setting still started the node' }
+              if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern $bad[1] -SimpleMatch -Quiet)) { throw "launcher.log does not say: $($bad[1])" }
+            }
+            # Another program already answering on the API port (the case of two
+            # nodes on one PC): the start stops and names the setting to change.
+            Remove-Item -LiteralPath $reach
+            $busy = Start-Job {
+              $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8556)
+              $l.Start()
+              $until = (Get-Date).AddSeconds(90)
+              while ((Get-Date) -lt $until) {
+                if (-not $l.Pending()) { Start-Sleep -Milliseconds 100; continue }
+                $c = $l.AcceptTcpClient(); $st = $c.GetStream()
+                Start-Sleep -Milliseconds 200
+                $buf = New-Object byte[] 4096; $null = $st.Read($buf, 0, $buf.Length)
+                $body = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Length: 2`r`nConnection: close`r`n`r`nok")
+                $st.Write($body, 0, $body.Length); $st.Flush(); $c.Close()
+              }
+              $l.Stop()
+            }
+            try {
+              $up = $false
+              foreach ($n in 1..50) { try { $null = Invoke-WebRequest http://127.0.0.1:8556/health -UseBasicParsing -TimeoutSec 2; $up = $true; break } catch { Start-Sleep -Milliseconds 200 } }
+              if (-not $up) { throw 'the stand-in listener on 8556 did not answer' }
+              & $ps -NoProfile -ExecutionPolicy Bypass -File $launcherPs1 -Action Start -NoBrowser -Quiet
+              if ($LASTEXITCODE -eq 0) { throw 'the launcher started while another program answered on 8556' }
+              $global:LASTEXITCODE = 0   # the refusal was expected
+              if (@(Get-Process launch_api -ErrorAction SilentlyContinue).Count -ne 0) { throw 'the node was started next to another program on 8556' }
+              if (-not (Select-String -Path (Join-Path $root 'logs\launcher.log') -Pattern 'another program already answers on http://127.0.0.1:8556' -SimpleMatch -Quiet)) { throw 'launcher.log does not explain the busy API port' }
+            } finally {
+              Stop-Job $busy -ErrorAction SilentlyContinue; Remove-Job $busy -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host 'ports: API 8566 / P2P 9010 from reachable.conf (8556 free, Status entry and auto-start pass follow it), clashing and malformed ports refused, a busy API port refused'
 
             # Bonded receipts: -Action ReceiptTimer refuses without bond.conf and
             # owner.key, then registers a per-user task that runs -Action Receipt
