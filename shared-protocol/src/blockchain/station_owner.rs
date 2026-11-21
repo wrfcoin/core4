@@ -1663,6 +1663,11 @@ pub struct StationOwnerLedgerView {
     pub frozen: Option<StationFreeze>,
     pub owner_deactivated: bool,
     pub pending_recovery: Option<PendingRecoveryView>,
+    /// The station's approved submitter key (`station_submitter_key`):
+    /// lowercase hex ed25519, or `None` when it has none.
+    pub submitter_pubkey: Option<String>,
+    /// That key's class (`"device"` / `"relay"`), or `None` when it has none.
+    pub submitter_class: Option<SubmitterClass>,
 }
 
 /// A pending recovery plus its derived notice-window heights.
@@ -1685,6 +1690,7 @@ impl State {
             .get(station_id)
             .cloned()
             .unwrap_or_default();
+        let submitter = self.station_submitter(station_id);
         StationOwnerLedgerView {
             owner_nonce: entry.owner_nonce,
             frozen: entry.frozen,
@@ -1696,6 +1702,8 @@ impl State {
                 recovery_nonce: p.recovery_nonce,
                 filed_at_height: p.filed_at_height,
             }),
+            submitter_pubkey: submitter.map(|s| s.pubkey.clone()),
+            submitter_class: submitter.map(|s| s.class),
         }
     }
 

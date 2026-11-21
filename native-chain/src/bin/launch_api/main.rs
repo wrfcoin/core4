@@ -18212,8 +18212,9 @@ mod tests {
     #[actix_web::test]
     async fn station_owner_ledger_reader_reports_the_entry_3345() {
         use wrfcoin_shared_protocol::blockchain::station_owner::{
-            PendingStationOwnerRecovery, StationFreeze, StationOwnerLedgerEntry,
+            PendingStationOwnerRecovery, StationFreeze, StationOwnerLedgerEntry, StationSubmitter,
         };
+        use wrfcoin_shared_protocol::blockchain::transaction::SubmitterClass;
         use wrfcoin_shared_protocol::station_registry::ContributionProvenanceClass;
 
         let state = test_state(None);
@@ -18256,6 +18257,13 @@ mod tests {
         assert_eq!(body["features"]["station_owner_consent"], false);
         assert_eq!(body["features"]["station_owner_actions"], false);
         assert_eq!(body["features"]["station_active_reward_gate"], false);
+        // `station_submitter_key` is unscheduled here: reported, and false.
+        assert_eq!(body["features"]["station_submitter_key"], false);
+        // No approved submitter key: both fields present and null.
+        assert_eq!(body["owner_ledger"]["submitter_pubkey"], serde_json::Value::Null);
+        assert_eq!(body["owner_ledger"]["submitter_class"], serde_json::Value::Null);
+        assert!(body["owner_ledger"].as_object().unwrap().contains_key("submitter_pubkey"));
+        assert!(body["owner_ledger"].as_object().unwrap().contains_key("submitter_class"));
         assert_eq!(body["recovery_notice_blocks"], 34_000);
         assert_eq!(body["observed_at_height"], 150);
         assert_eq!(body["settled_height"], 120);
@@ -18287,6 +18295,24 @@ mod tests {
         // The features are unscheduled here, so the ledger half of the reward
         // predicate is not yet in force.
         assert_eq!(body["rewards_suspended"], false);
+        assert_eq!(body["owner_ledger"]["submitter_pubkey"], serde_json::Value::Null);
+
+        // An approved submitter key is reported with its class (core4 serde
+        // spelling), for each class.
+        let relay_key = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"; // pragma: allowlist secret -- public ed25519 key of test seed [9;32]
+        for (class, wire) in [(SubmitterClass::Relay, "relay"), (SubmitterClass::Device, "device")] {
+            state.blockchain.write().await.state.station_submitters.keys.insert(
+                "PWS-EXAMPLE-AMBIENT-01".to_string(),
+                StationSubmitter { pubkey: relay_key.to_string(), class, set_at_height: 140 },
+            );
+            let (status, body) = get_station_list_3342!(&app, uri, Some(TEST_READER_TOKEN));
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["owner_ledger"]["submitter_pubkey"], relay_key);
+            assert_eq!(body["owner_ledger"]["submitter_class"], wire);
+            // Additive: the existing ledger fields are unchanged.
+            assert_eq!(body["owner_ledger"]["owner_nonce"], 3);
+            assert_eq!(body["features"]["station_submitter_key"], false);
+        }
     }
 
     /// #3345 / #3347 (contract A): the submit route needs the Contributor role,
