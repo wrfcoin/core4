@@ -19,6 +19,12 @@
 //!    `TransactionType::ForecastScore` transaction anyone may relay. The
 //!    transaction pays its relay nothing and debits no account.
 //!
+//! 4. **Relay** ([`score_window`], [`relay_step`], [`classify_submit`]): hold
+//!    a score until its window opens (target + 35 min), send it, and send it
+//!    again while it is unscored. A block holds at most 8 scores and a score
+//!    mined early is not valid; in both cases the node drops it from the
+//!    mempool instead of holding it (FINDINGS-2 S2), so the relay resubmits.
+//!
 //! Nothing here decides whether a score is valid: the node's admission and
 //! consensus do. The checks here only refuse, early and locally, what the node
 //! would refuse anyway.
@@ -40,7 +46,7 @@ use wrfcoin_shared_protocol::common::types::Address;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
     ForecastScorePayload, LateScoreVariable, MAX_FORECASTS_PER_SCORE_TX, MAX_OBSERVATION_SIGNATURES,
     LEAD_HOURS, MAX_WINDOW_READINGS, ObservationAttestation, ObservationSignature, forecast_score_message, score_outpoint,
-    target_for,
+    SCORE_OPENS_AFTER_SECS, bucket_closes_at, bucket_hour, target_for,
 };
 use wrfcoin_shared_protocol::crypto::signature::{PrivateKey, PublicKey, Signature};
 
@@ -218,6 +224,110 @@ pub fn weather_readings_only(samples: Vec<TypedSample>, allow_untyped: bool) -> 
         );
     }
     Ok(SampleFilter { kept, dropped_forecast_type, untyped: untyped.len() })
+}
+
+/// When a score can land: no block before `opens_at` (target + 35 min) and
+/// none at or after `closes_at` (the bucket's close) applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScoreWindow {
+    pub opens_at: i64,
+    pub closes_at: i64,
+}
+
+/// The [`ScoreWindow`] of an attestation, from the chain's own rule
+/// (`ForecastLateScoreState::apply_score`).
+pub fn score_window(attestation: &ObservationAttestation) -> Result<ScoreWindow> {
+    let opens_at = attestation
+        .target
+        .checked_add(SCORE_OPENS_AFTER_SECS)
+        .ok_or_else(|| anyhow!("target {} is out of range", attestation.target))?;
+    let hour = bucket_hour(attestation.target)
+        .ok_or_else(|| anyhow!("target {} is out of range", attestation.target))?;
+    Ok(ScoreWindow { opens_at, closes_at: bucket_closes_at(hour) })
+}
+
+/// What the node's records say about the forecasts one score lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoredState {
+    /// None is scored yet.
+    None,
+    /// Some but not all: the score as built would be refused; rebuild it with
+    /// the unscored ids.
+    Some,
+    All,
+}
+
+impl ScoredState {
+    pub fn of(scored: &[bool]) -> Self {
+        match scored.iter().filter(|s| **s).count() {
+            0 => Self::None,
+            n if n == scored.len() => Self::All,
+            _ => Self::Some,
+        }
+    }
+}
+
+/// The relay's next move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStep {
+    /// Too early: a score in a block before `opens_at` is dropped from the
+    /// mempool, so hold it here until then.
+    WaitUntil(i64),
+    /// (Re)send it: a score mined over the 8-per-block cap, or sent early and
+    /// evicted, is gone from the pool and has to be sent again.
+    Submit,
+    Done,
+    PartlyScored,
+    Closed,
+}
+
+/// One relay decision at wall time `now`.
+pub fn relay_step(now: i64, window: ScoreWindow, scored: ScoredState) -> RelayStep {
+    match scored {
+        ScoredState::All => RelayStep::Done,
+        ScoredState::Some => RelayStep::PartlyScored,
+        ScoredState::None if now >= window.closes_at => RelayStep::Closed,
+        ScoredState::None if now < window.opens_at => RelayStep::WaitUntil(window.opens_at),
+        ScoredState::None => RelayStep::Submit,
+    }
+}
+
+/// How the node answered one submit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmitAnswer {
+    Admitted,
+    /// 409 `ALREADY_PENDING`: still in this node's pool; wait for a block.
+    Pending,
+    /// Worth sending again on the next round: rate limit, full pool,
+    /// transport or a server error.
+    Retry(String),
+    /// The node will not take it as it stands (malformed, signers, a listed
+    /// forecast already scored or not recorded, feature off, auth).
+    Refused(String),
+}
+
+/// Classify a submit result. Errors are the CLI's `RECEIPT_HTTP_<status> <CODE>[: msg]`.
+pub fn classify_submit(result: &Result<serde_json::Value>) -> SubmitAnswer {
+    let error = match result {
+        Ok(_) => return SubmitAnswer::Admitted,
+        Err(error) => error.to_string(),
+    };
+    let has = |code: &str| error.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == code);
+    if has("ALREADY_PENDING") {
+        return SubmitAnswer::Pending;
+    }
+    let status = error
+        .strip_prefix("RECEIPT_HTTP_")
+        .and_then(|rest| rest.get(..3))
+        .and_then(|code| code.parse::<u16>().ok());
+    match status {
+        Some(503) if has("FEATURE_NOT_ACTIVE") => SubmitAnswer::Refused(error),
+        Some(429) | Some(500..=599) => SubmitAnswer::Retry(error),
+        Some(_) => SubmitAnswer::Refused(error),
+        // No HTTP status: transport, or an unreadable answer.
+        None => SubmitAnswer::Retry(error),
+    }
 }
 
 /// The oracle identity a key signs as when none is given: its public key hex.
@@ -649,6 +759,59 @@ mod tests {
         assert_eq!(parsed[0].sample.id, "a");
         assert_eq!(parsed[1].contribution_type, None);
         assert_eq!(parsed[1].sample.provenance.as_deref(), Some("device"));
+    }
+
+    #[test]
+    fn the_relay_window_matches_the_chain_rule() {
+        let (samples, block) = full_day();
+        let a = attest_observation(&samples, &block).unwrap().attestation;
+        let w = score_window(&a).unwrap();
+        assert_eq!(w.opens_at, a.target + 35 * 60);
+        let hour = a.target - a.target.rem_euclid(3_600);
+        assert_eq!(w.closes_at, hour + 3_600 + 86_400);
+        assert!(w.opens_at < w.closes_at);
+    }
+
+    #[test]
+    fn the_relay_holds_early_scores_and_resends_unscored_ones() {
+        let w = ScoreWindow { opens_at: 1_000, closes_at: 90_000 };
+        use RelayStep::*;
+        assert_eq!(relay_step(999, w, ScoredState::None), WaitUntil(1_000));
+        assert_eq!(relay_step(1_000, w, ScoredState::None), Submit);
+        // Still unscored a block later (dropped over the cap): send again.
+        assert_eq!(relay_step(1_077, w, ScoredState::None), Submit);
+        assert_eq!(relay_step(89_999, w, ScoredState::None), Submit);
+        assert_eq!(relay_step(90_000, w, ScoredState::None), Closed);
+        assert_eq!(relay_step(5_000, w, ScoredState::All), Done);
+        assert_eq!(relay_step(95_000, w, ScoredState::All), Done);
+        assert_eq!(relay_step(5_000, w, ScoredState::Some), PartlyScored);
+        assert_eq!(ScoredState::of(&[]), ScoredState::None);
+        assert_eq!(ScoredState::of(&[false, false]), ScoredState::None);
+        assert_eq!(ScoredState::of(&[true, false]), ScoredState::Some);
+        assert_eq!(ScoredState::of(&[true, true]), ScoredState::All);
+    }
+
+    #[test]
+    fn submit_answers_are_classified_by_status_and_code() {
+        let err = |text: &str| -> Result<Value> { Err(anyhow!(text.to_string())) };
+        assert_eq!(classify_submit(&Ok(serde_json::json!({"admitted": true}))), SubmitAnswer::Admitted);
+        assert_eq!(
+            classify_submit(&err("RECEIPT_HTTP_409 ALREADY_PENDING: this score is already in the mempool")),
+            SubmitAnswer::Pending
+        );
+        for retry in ["RECEIPT_HTTP_429 RATE_LIMITED", "RECEIPT_HTTP_503 MEMPOOL_FULL: full", "RECEIPT_HTTP_502", "RECEIPT_TRANSPORT"] {
+            assert!(matches!(classify_submit(&err(retry)), SubmitAnswer::Retry(_)), "{retry}");
+        }
+        for refused in [
+            "RECEIPT_HTTP_503 FEATURE_NOT_ACTIVE: off",
+            "RECEIPT_HTTP_422 FORECAST_SCORE_REFUSED: already scored",
+            "RECEIPT_HTTP_400 FORECAST_SCORE_PAYLOAD",
+            "RECEIPT_HTTP_401",
+        ] {
+            assert!(matches!(classify_submit(&err(refused)), SubmitAnswer::Refused(_)), "{refused}");
+        }
+        // A code inside a longer word does not count.
+        assert!(matches!(classify_submit(&err("RECEIPT_HTTP_422 NOT_ALREADY_PENDING_X")), SubmitAnswer::Refused(_)));
     }
 
     #[test]
