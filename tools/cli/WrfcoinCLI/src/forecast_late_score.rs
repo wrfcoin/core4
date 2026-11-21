@@ -8,7 +8,8 @@
 //!    and one commit block's (station, variable, lead, height, time), build the
 //!    [`ObservationAttestation`] with the shared rule's own helpers: truth
 //!    candidates and the nearest reading, window candidates, the 24 hourly
-//!    samples, the reference, `mean24`, `last` and the window hash.
+//!    samples, the reference, `mean24`, `last` and the window hash. The
+//!    command first drops forecast-type reveals ([`weather_readings_only`]).
 //! 2. **Sign** ([`sign_observation`]): one oracle signs the exact bytes core4
 //!    verifies (`forecast_score_message`: the observation and the forecast
 //!    commit ids it scores, i.e. the full score payload), and the signature is
@@ -161,6 +162,62 @@ pub fn attest_observation(samples: &[ChainSample], block: &CommitBlock) -> Resul
         truth_candidates: truths.into_iter().map(|r| r.id).collect(),
         last_commit_id: last.id,
     })
+}
+
+/// One station reading as the oracle job reads it: the chain sample plus the
+/// reveal's `contribution_type` exactly as the chain holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TypedSample {
+    #[serde(flatten)]
+    pub sample: ChainSample,
+    /// The reveal's contribution type (`"forecast"` for a forecast reveal).
+    #[serde(default)]
+    pub contribution_type: Option<String>,
+}
+
+/// What [`weather_readings_only`] kept and left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SampleFilter {
+    pub kept: Vec<ChainSample>,
+    /// Commit ids of forecast-type reveals that were left out.
+    pub dropped_forecast_type: Vec<String>,
+    /// Kept samples that carried no contribution type (only with `allow_untyped`).
+    pub untyped: usize,
+}
+
+/// Keep only station readings: a forecast-type reveal is never a reading,
+/// even when it carries weather fields. A forecast reveal applied before
+/// `forecast_late_score_v2` was in force may hold a quality score, and the
+/// chain would then accept it as a cited reading for up to 10,000 blocks
+/// (FINDINGS-2 N4), so the oracle job must not cite one. The type is compared
+/// trimmed and without case, so a near-miss spelling is left out too (leaving
+/// a reading out can only thin the window, never make a score invalid).
+///
+/// A sample without a contribution type is refused unless `allow_untyped`:
+/// the oracle job cannot tell it apart from a forecast.
+pub fn weather_readings_only(samples: Vec<TypedSample>, allow_untyped: bool) -> Result<SampleFilter> {
+    let mut kept = Vec::with_capacity(samples.len());
+    let mut dropped_forecast_type = Vec::new();
+    let mut untyped = Vec::new();
+    for TypedSample { sample, contribution_type } in samples {
+        match contribution_type.as_deref().map(str::trim) {
+            Some(kind) if kind.eq_ignore_ascii_case("forecast") => dropped_forecast_type.push(sample.id),
+            Some(kind) if !kind.is_empty() => kept.push(sample),
+            _ => {
+                untyped.push(sample.id.clone());
+                kept.push(sample);
+            },
+        }
+    }
+    if !untyped.is_empty() && !allow_untyped {
+        bail!(
+            "{} sample(s) have no contribution_type (first: {}); give each reading the reveal's \
+             contribution_type so forecast reveals are left out, or pass --allow-untyped",
+            untyped.len(),
+            untyped[0]
+        );
+    }
+    Ok(SampleFilter { kept, dropped_forecast_type, untyped: untyped.len() })
 }
 
 /// The oracle identity a key signs as when none is given: its public key hex.
@@ -515,6 +572,83 @@ mod tests {
             provenance: None,
         });
         samples
+    }
+
+    fn typed(sample: &ChainSample, kind: Option<&str>) -> TypedSample {
+        TypedSample { sample: sample.clone(), contribution_type: kind.map(str::to_string) }
+    }
+
+    #[test]
+    fn forecast_type_reveals_are_never_cited_as_readings() {
+        let commit_time = 1_800_000_000 - 1_800_000_000 % 3_600;
+        let commit_height = 5_000;
+        let samples = two_days(commit_time, commit_height, 6, |slot| 2_000 + slot as i64);
+        let block = CommitBlock {
+            station_id: "st1".into(),
+            variable: LateScoreVariable::TemperatureC,
+            lead_hours: 6,
+            commit_height,
+            commit_time,
+        };
+        // A forecast-type reveal with weather fields sits in the window, one
+        // in a near-miss spelling, and one claims to be the truth.
+        let mut input: Vec<TypedSample> = samples.iter().map(|s| typed(s, Some("weather"))).collect();
+        let mut forecast = samples[47].clone();
+        forecast.id = "f-window".into();
+        forecast.observed_at -= 60;
+        input.push(typed(&forecast, Some("forecast")));
+        let mut shouted = samples[40].clone();
+        shouted.id = "f-shout".into();
+        input.push(typed(&shouted, Some(" Forecast ")));
+        let mut fake_truth = samples[48].clone();
+        fake_truth.id = "f-truth".into();
+        input.push(typed(&fake_truth, Some("forecast")));
+
+        let filtered = weather_readings_only(input.clone(), false).unwrap();
+        assert_eq!(filtered.dropped_forecast_type, vec!["f-window", "f-shout", "f-truth"]);
+        assert_eq!(filtered.kept, samples);
+        assert_eq!(filtered.untyped, 0);
+        let report = attest_observation(&filtered.kept, &block).unwrap();
+        let cited: Vec<&str> = report
+            .attestation
+            .window_commit_ids
+            .iter()
+            .map(String::as_str)
+            .chain([report.attestation.truth_commit_id.as_str()])
+            .collect();
+        assert!(cited.iter().all(|id| !id.starts_with("f-")), "{cited:?}");
+
+        // Without the filter the forecast reveal would have been cited.
+        let unfiltered: Vec<ChainSample> = input.into_iter().map(|t| t.sample).collect();
+        let report = attest_observation(&unfiltered, &block).unwrap();
+        assert!(report.attestation.window_commit_ids.iter().any(|id| id == "f-window"));
+    }
+
+    #[test]
+    fn an_untyped_sample_is_refused_unless_allowed() {
+        let samples = two_days(1_800_000_000 - 1_800_000_000 % 3_600, 5_000, 6, |_| 2_000);
+        let mut input: Vec<TypedSample> = samples.iter().map(|s| typed(s, Some("weather"))).collect();
+        input[3].contribution_type = None;
+        input[5].contribution_type = Some("  ".into());
+        let error = weather_readings_only(input.clone(), false).unwrap_err().to_string();
+        assert!(error.contains("2 sample(s)") && error.contains("w03"), "{error}");
+        let allowed = weather_readings_only(input, true).unwrap();
+        assert_eq!((allowed.kept.len(), allowed.untyped), (samples.len(), 2));
+    }
+
+    #[test]
+    fn the_samples_file_reads_the_contribution_type_next_to_the_sample() {
+        let raw = serde_json::json!([
+            {"id": "a", "observed_at": 1, "value": 2, "height": 3, "block_time": 4, "has_quorum": true,
+             "provenance": null, "contribution_type": "forecast"},
+            {"id": "b", "observed_at": 1, "value": 2, "height": 3, "block_time": 4, "has_quorum": true,
+             "provenance": "device"}
+        ]);
+        let parsed: Vec<TypedSample> = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed[0].contribution_type.as_deref(), Some("forecast"));
+        assert_eq!(parsed[0].sample.id, "a");
+        assert_eq!(parsed[1].contribution_type, None);
+        assert_eq!(parsed[1].sample.provenance.as_deref(), Some("device"));
     }
 
     #[test]
