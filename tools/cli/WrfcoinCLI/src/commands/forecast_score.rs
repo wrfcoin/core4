@@ -22,12 +22,11 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use wrfcoin_cli::forecast_late_score::{
-    CommitBlock, attest_observation, build_score_payload, build_score_transaction, default_oracle_identity,
-    sign_observation,
+    CommitBlock, TypedSample, attest_observation, build_score_payload, build_score_transaction,
+    default_oracle_identity, sign_observation, weather_readings_only,
 };
 use wrfcoin_cli::forecast_submission::read_signer;
 use wrfcoin_cli::{ApiClient, ApiConfig};
-use wrfcoin_forecast_score::late_score::ChainSample;
 use wrfcoin_shared_protocol::blockchain::transaction::Transaction;
 use wrfcoin_shared_protocol::common::types::Address;
 use wrfcoin_shared_protocol::consensus::forecast_late_score::{
@@ -40,10 +39,15 @@ pub enum ForecastScoreCommands {
     /// station, variable and lead committed in one block.
     Attest {
         /// JSON array of the station's readings of this variable:
-        /// `[{id, observed_at, value, height, block_time, has_quorum, provenance}]`,
-        /// quorum as of the closing block (target + 35 min).
+        /// `[{id, observed_at, value, height, block_time, has_quorum, provenance, contribution_type}]`,
+        /// quorum as of the closing block (target + 35 min). `contribution_type` is the
+        /// reveal's type as the chain holds it; forecast-type reveals are left out.
         #[clap(long)]
         samples: PathBuf,
+        /// Accept samples without a `contribution_type` (they cannot be told apart
+        /// from forecast reveals, so this is off by default).
+        #[clap(long)]
+        allow_untyped: bool,
         #[clap(long)]
         station_id: String,
         /// temperature_c (0.01 °C) or pressure_hpa (Pa).
@@ -191,6 +195,7 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
     match command {
         C::Attest {
             samples,
+            allow_untyped,
             station_id,
             variable,
             lead_hours,
@@ -203,7 +208,9 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
             chain_id,
             network_id,
         } => {
-            let samples: Vec<ChainSample> = read_json(samples, "a JSON array of chain samples")?;
+            let samples: Vec<TypedSample> = read_json(samples, "a JSON array of chain samples")?;
+            let filtered = weather_readings_only(samples, *allow_untyped)?;
+            let samples = filtered.kept;
             let block = CommitBlock {
                 station_id: station_id.trim().to_string(),
                 variable: parse_variable(variable)?,
@@ -223,6 +230,8 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
                 "last": report.attestation.last,
                 "hourly_samples": report.samples,
                 "window_readings": report.attestation.window_commit_ids.len(),
+                "dropped_forecast_type": filtered.dropped_forecast_type,
+                "untyped_samples": filtered.untyped,
             });
             if let (Some(key), Some(chain_id), Some(network_id)) = (key, chain_id, network_id) {
                 let key = read_signer(key)?;
