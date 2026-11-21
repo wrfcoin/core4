@@ -24,7 +24,8 @@ use wrfcoin_shared_protocol::blockchain::station_owner::{
 use wrfcoin_shared_protocol::blockchain::transaction::{
     CommitPayload, CommitSignerClass, StationOwnerActionKind, SubmitterClass, Transaction,
     TransactionInput, TransactionOutput, TransactionType,
-    commit_authorization_message_with_domain, station_owner_action_message_with_domain,
+    commit_authorization_message_with_domain, owner_address_bound_to_pubkey,
+    station_owner_action_message_with_domain,
     station_owner_set_submitter_message_with_domain,
 };
 use wrfcoin_shared_protocol::contributions::commit_reveal::APPLIED_REVEAL_RETENTION_BLOCKS;
@@ -441,5 +442,55 @@ fn routing_reads_the_action_with_the_legacy_enum_deserializer() {
         (r#"{"action":"report_stolen","action":"unfreeze"}"#, None),
     ] {
         assert_eq!(owner_action_is_set_submitter(json), want, "{json}");
+    }
+}
+
+/// Fixed-byte golden vector for the `set_submitter_key` preimage, shared with
+/// the clients that sign it: frontend
+/// `src/services/walletCrypto/__tests__/s10-submitter-key-888-vectors.json`
+/// and the mobile copy pin these exact bytes (relay, device, clear). Owner key
+/// = ed25519 seed `[7;32]`, submitter key = seed `[9;32]`; chain 888 /
+/// testnet. Literal inputs, so this does not depend on the process schedule
+/// or chain identity. A change here breaks every wallet's signature.
+#[test]
+fn set_submitter_key_preimage_matches_the_client_golden_vectors() {
+    const STATION_ID: &str = "station-s10-test";
+    const OWNER_ADDRESS: &str = "0x791026e25cc1ba461167ffb5c6dc095c284bd92c";
+    const OWNER_PUBKEY: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"; // pragma: allowlist secret -- public key of test seed [7;32]
+    const SUBMITTER_PUBKEY: &str = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"; // pragma: allowlist secret -- public key of test seed [9;32]
+    // The client JSON's `preimageHex` values, verbatim.
+    let relay_hex = "777266636f696e5f73746174696f6e5f6f776e65725f616374696f6e5f76310300000038383807000000746573746e65741000000073746174696f6e2d7331302d746573742a000000307837393130323665323563633162613436313136376666623563366463303935633238346264393263050700000000000000085200000000000001400000006664313732343338356161306337356236346662373863643630326661316439393166646562663736623133633538656437303265616338333565396636313802"; // pragma: allowlist secret -- golden preimage (relay)
+    let device_hex = "777266636f696e5f73746174696f6e5f6f776e65725f616374696f6e5f76310300000038383807000000746573746e65741000000073746174696f6e2d7331302d746573742a000000307837393130323665323563633162613436313136376666623563366463303935633238346264393263050700000000000000085200000000000001400000006664313732343338356161306337356236346662373863643630326661316439393166646562663736623133633538656437303265616338333565396636313801"; // pragma: allowlist secret -- golden preimage (device)
+    let clear_hex = "777266636f696e5f73746174696f6e5f6f776e65725f616374696f6e5f76310300000038383807000000746573746e65741000000073746174696f6e2d7331302d746573742a000000307837393130323665323563633162613436313136376666623563366463303935633238346264393263050700000000000000085200000000000000"; // pragma: allowlist secret -- golden preimage (clear)
+
+    // The keys and address the vectors name derive from the stated seeds.
+    assert_eq!(pk_of(&key(7)), OWNER_PUBKEY);
+    // `0x` spelling of the owner's 20-byte address (core4 derives `wrf…`; the
+    // owner binding accepts both).
+    assert_eq!(addr_of(&key(7)), OWNER_ADDRESS.replacen("0x", "wrf", 1));
+    assert!(owner_address_bound_to_pubkey(OWNER_ADDRESS, OWNER_PUBKEY));
+    assert_eq!(pk_of(&key(9)), SUBMITTER_PUBKEY);
+
+    let preimage = |submitter: Option<(&str, SubmitterClass)>| {
+        hex::encode(station_owner_set_submitter_message_with_domain(
+            "888", "testnet", STATION_ID, OWNER_ADDRESS, 7, 21_000, submitter,
+        ))
+    };
+    let relay = preimage(Some((SUBMITTER_PUBKEY, SubmitterClass::Relay)));
+    let device = preimage(Some((SUBMITTER_PUBKEY, SubmitterClass::Device)));
+    let clear = preimage(None);
+    assert_eq!(relay, relay_hex, "relay preimage");
+    assert_eq!(device, device_hex, "device preimage");
+    assert_eq!(clear, clear_hex, "clear preimage");
+
+    // The clients' ed25519 signatures (deterministic) are the owner key's
+    // signature over exactly these bytes.
+    for (hex_preimage, want_sig) in [
+        (relay_hex, "51430982727723bdedb8417ba4d3c9d384488b2d1b5ed5644f9f436ea9405390a70588eae83376af73aae5abcbe99d1ded309012f1f597fcb243983cdd1adc01"), // pragma: allowlist secret -- golden signature (relay)
+        (device_hex, "125bb44eb81b2d0784446a25fc7f573acac050233826031b305bbbeb3ee4f7a41057e4458d5ef5d9db0ed74f3cc9bd21cf1873c63e43cdbfbedb3c9e4cd37503"), // pragma: allowlist secret -- golden signature (device)
+        (clear_hex, "d7899b9be909124e958a660542c6938b3ef3b8d216e229a64095775700b2879a386cf8a5e3b77211920e8e7afa25eeb600f367b73b83914827b33db34a14af0a"), // pragma: allowlist secret -- golden signature (clear)
+    ] {
+        let bytes = hex::decode(hex_preimage).unwrap();
+        assert_eq!(key(7).sign(&bytes).to_hex(), want_sig);
     }
 }

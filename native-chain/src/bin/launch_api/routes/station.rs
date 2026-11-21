@@ -941,6 +941,8 @@ pub struct StationOwnerFeaturesResponse {
     pub station_owner_consent: bool,
     pub station_owner_actions: bool,
     pub station_active_reward_gate: bool,
+    /// Whether the owner may approve a submitter key (`set_submitter_key`).
+    pub station_submitter_key: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1012,6 +1014,7 @@ pub async fn get_station_owner_ledger(
             station_owner_consent: feature_active(F::StationOwnerConsent, next),
             station_owner_actions: feature_active(F::StationOwnerActions, next),
             station_active_reward_gate: feature_active(F::StationActiveRewardGate, next),
+            station_submitter_key: feature_active(F::StationSubmitterKey, next),
         },
         recovery_notice_blocks:
             wrfcoin_shared_protocol::blockchain::station_owner::STATION_OWNER_RECOVERY_NOTICE_BLOCKS,
