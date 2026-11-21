@@ -22,8 +22,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use wrfcoin_cli::forecast_late_score::{
-    CommitBlock, TypedSample, attest_observation, build_score_payload, build_score_transaction,
-    default_oracle_identity, sign_observation, weather_readings_only,
+    CommitBlock, RelayStep, ScoredState, SubmitAnswer, TypedSample, attest_observation, build_score_payload,
+    build_score_transaction, classify_submit, default_oracle_identity, relay_step, score_window,
+    sign_observation, weather_readings_only,
 };
 use wrfcoin_cli::forecast_submission::read_signer;
 use wrfcoin_cli::{ApiClient, ApiConfig};
@@ -132,10 +133,28 @@ pub enum ForecastScoreCommands {
         #[clap(long)]
         out: PathBuf,
     },
-    /// Submit an artifact written by `build`.
+    /// Submit an artifact written by `build`, once. Refused here before its
+    /// window opens (target + 35 min) or after the bucket closes: a score
+    /// mined early is dropped from the mempool, not held. Use `relay` to wait
+    /// and resubmit.
     Submit {
         #[clap(long)]
         artifact: PathBuf,
+    },
+    /// Relay an artifact written by `build` until it is scored: hold it until
+    /// its window opens, submit it, and submit it again each round while its
+    /// forecasts are unscored and it is not pending (a block takes at most 8
+    /// scores; the rest are dropped from the mempool). Stops when every listed
+    /// forecast is scored, the bucket closes, or the node refuses it.
+    Relay {
+        #[clap(long)]
+        artifact: PathBuf,
+        /// Seconds between rounds (default one block, 77 s; at least 10).
+        #[clap(long, default_value_t = 77)]
+        poll_secs: u64,
+        /// Stop after this many seconds even if unscored (default: run to the bucket's close).
+        #[clap(long)]
+        max_secs: Option<u64>,
     },
     /// Whether the lane is in force, its limits, the chain and network id to sign for, and counts.
     Status,
@@ -188,6 +207,100 @@ fn sig_path(out: &Path) -> PathBuf {
     let mut name = out.as_os_str().to_owned();
     name.push(".sig.json");
     PathBuf::from(name)
+}
+
+/// Whether each forecast is scored, as the node's records say. A forecast
+/// with no record reads as unscored; the submit then says why.
+async fn scored_state(api: &ApiClient, forecasts: &[String]) -> Result<ScoredState> {
+    let mut scored = Vec::with_capacity(forecasts.len());
+    for id in forecasts {
+        let path = format!("/forecast/late-score/records/{}", path_segment(id));
+        match api.receipt_request("GET", &path, None).await {
+            Ok(record) => scored.push(record["scored"].as_bool().unwrap_or(false)),
+            Err(e) if e.to_string().starts_with("RECEIPT_HTTP_404") => scored.push(false),
+            Err(e) => return Err(anyhow!("cannot read the record of {id} ({e})")),
+        }
+    }
+    Ok(ScoredState::of(&scored))
+}
+
+/// `forecast score relay`: see [`ForecastScoreCommands::Relay`].
+async fn relay(artifact: &Path, poll_secs: u64, max_secs: Option<u64>) -> Result<Value> {
+    let tx: Transaction = read_json(artifact, "a transaction artifact")?;
+    let payload = ForecastScorePayload::parse(&tx)
+        .ok_or_else(|| anyhow!("{} is not a ForecastScore transaction", artifact.display()))?;
+    let window = score_window(&payload.attestation)?;
+    let forecasts = payload.forecast_commit_ids.clone();
+    let body = serde_json::to_value(&tx)?;
+    let api = ApiClient::new(ApiConfig::default())?;
+    let started = chrono::Utc::now().timestamp();
+    let deadline = max_secs.map(|secs| started.saturating_add(secs.min(i64::MAX as u64) as i64));
+    let (mut submits, mut resubmits, mut pending_rounds, mut retries) = (0u32, 0u32, 0u32, 0u32);
+    let mut last_retry: Option<String> = None;
+    let outcome = loop {
+        let now = chrono::Utc::now().timestamp();
+        let state = scored_state(&api, &forecasts).await?;
+        let step = relay_step(now, window, state);
+        let wait = match step {
+            RelayStep::Done => break "scored",
+            RelayStep::PartlyScored => break "partly_scored",
+            RelayStep::Closed => break "bucket_closed",
+            RelayStep::WaitUntil(at) => (at - now).max(1) as u64,
+            RelayStep::Submit => {
+                let result = api.receipt_request("POST", "/forecast/late-score/submit", Some(body.clone())).await;
+                match classify_submit(&result) {
+                    SubmitAnswer::Admitted => {
+                        if submits > 0 {
+                            resubmits += 1;
+                        }
+                        submits += 1;
+                        eprintln!("forecast score relay: admitted (send {submits})");
+                    },
+                    SubmitAnswer::Pending => pending_rounds += 1,
+                    SubmitAnswer::Retry(e) => {
+                        retries += 1;
+                        eprintln!("forecast score relay: will retry ({e})");
+                        last_retry = Some(e);
+                    },
+                    SubmitAnswer::Refused(e) => {
+                        // A refusal may race a block that just scored it.
+                        if scored_state(&api, &forecasts).await? == ScoredState::All {
+                            break "scored";
+                        }
+                        return Err(anyhow!("node refused the score ({e})"));
+                    },
+                }
+                poll_secs
+            },
+        };
+        let now = chrono::Utc::now().timestamp();
+        if deadline.is_some_and(|d| now >= d) {
+            break "max_secs";
+        }
+        let wait = deadline.map_or(wait, |d| wait.min((d - now).max(1) as u64));
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+    };
+    let done = outcome == "scored";
+    let result = json!({
+        "tx_id": tx.id.map(|id| id.to_hex()),
+        "outcome": outcome,
+        "forecasts": forecasts,
+        "opens_at": window.opens_at,
+        "closes_at": window.closes_at,
+        "submits": submits,
+        "resubmits": resubmits,
+        "pending_rounds": pending_rounds,
+        "retries": retries,
+        "last_retry_error": last_retry,
+        "note": match outcome {
+            "partly_scored" => "some listed forecasts are scored; build a new score for the unscored ids",
+            "bucket_closed" => "the bucket closed before the score landed",
+            "max_secs" => "stopped at --max-secs; run relay again to continue",
+            _ => "every listed forecast is scored",
+        },
+    });
+    ensure!(done, "{}", serde_json::to_string(&result)?);
+    Ok(result)
 }
 
 pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> Result<Value> {
@@ -310,11 +423,18 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
         },
         C::Submit { artifact } => {
             let tx: Transaction = read_json(artifact, "a transaction artifact")?;
+            let payload = ForecastScorePayload::parse(&tx)
+                .ok_or_else(|| anyhow!("{} is not a ForecastScore transaction", artifact.display()))?;
+            let window = score_window(&payload.attestation)?;
+            let now = chrono::Utc::now().timestamp();
             ensure!(
-                ForecastScorePayload::parse(&tx).is_some(),
-                "{} is not a ForecastScore transaction",
-                artifact.display()
+                now >= window.opens_at,
+                "too early: this score can land from {} ({} s from now); a score sent before then is \
+                 dropped from the mempool. Use `forecast score relay` to wait and resubmit",
+                window.opens_at,
+                window.opens_at - now
             );
+            ensure!(now < window.closes_at, "the bucket closed at {}; this score can no longer land", window.closes_at);
             let api = ApiClient::new(ApiConfig::default())?;
             let ack = api
                 .receipt_request("POST", "/forecast/late-score/submit", Some(serde_json::to_value(&tx)?))
@@ -323,9 +443,11 @@ pub async fn handle_forecast_score_command(command: &ForecastScoreCommands) -> R
             Ok(json!({
                 "tx_id": tx.id.map(|id| id.to_hex()),
                 "node": ack,
-                "note": "Submitted is not scored: check `forecast score record` after a few blocks.",
+                "note": "Submitted is not scored: a block takes at most 8 scores and drops the rest. \
+                         Check `forecast score record` after a few blocks, or use `forecast score relay`.",
             }))
         },
+        C::Relay { artifact, poll_secs, max_secs } => relay(artifact, (*poll_secs).max(10), *max_secs).await,
         C::Status => {
             ApiClient::new(ApiConfig::default())?.receipt_request("GET", "/forecast/late-score", None).await
         },
