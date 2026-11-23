@@ -369,6 +369,80 @@ async function run() {
         assert.notStrictEqual(a.pubHex, c.pubHex, 'different seed -> different pubkey');
     });
 
+    // 5e. an explicitly named key file (the house relay key) is read strictly:
+    // the file's key signs, a bad file throws and is never overwritten, and an
+    // absent file keeps the old generate-and-persist behaviour.
+    await test('explicit COLLECTOR_SIGNING_KEY_FILE: file key signs; bad file refuses; absent file unchanged', () => {
+        const os = require('os');
+        const crypto = require('crypto');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'collector-key-'));
+        const saved = process.env.COLLECTOR_SIGNING_KEY_FILE;
+        const savedSeed = process.env.COLLECTOR_SIGNING_SEED;
+        delete process.env.COLLECTOR_SIGNING_SEED;
+        try {
+            const seedHex = crypto.randomBytes(32).toString('hex');
+            const expected = pipeline.loadCollectorSigningKey({ signingSeed: seedHex });
+            const good = path.join(dir, 'house-relay.json');
+            fs.writeFileSync(good, JSON.stringify({ seed_hex: seedHex, pub_hex: expected.pubHex }), { mode: 0o600 });
+
+            // Via the env var, as the collector containers use it.
+            process.env.COLLECTOR_SIGNING_KEY_FILE = good;
+            const viaEnv = pipeline.loadCollectorSigningKey();
+            assert.strictEqual(viaEnv.pubHex, expected.pubHex, 'file key is the signing key');
+            const auth = pipeline.signCommitAuthorization('PWS-TEST', 'c'.repeat(64), 'contribution');
+            assert.strictEqual(auth.auth_pubkey, expected.pubHex, 'commits carry the file key');
+            const msg = pipeline.commitAuthorizationMessage('PWS-TEST', 'c'.repeat(64), 'contribution');
+            assert.ok(crypto.verify(null, msg, viaEnv.publicKey, Buffer.from(auth.auth_signature, 'hex')), 'signature verifies');
+            delete process.env.COLLECTOR_SIGNING_KEY_FILE;
+
+            // pub_hex may be omitted; uppercase pub_hex still matches.
+            const noPub = path.join(dir, 'no-pub.json');
+            fs.writeFileSync(noPub, JSON.stringify({ seed_hex: seedHex }));
+            assert.strictEqual(pipeline.loadCollectorSigningKey({ signingKeyPath: noPub }).pubHex, expected.pubHex);
+            const upper = path.join(dir, 'upper.json');
+            fs.writeFileSync(upper, JSON.stringify({ seed_hex: seedHex, pub_hex: expected.pubHex.toUpperCase() }));
+            assert.strictEqual(pipeline.loadCollectorSigningKey({ signingKeyPath: upper }).pubHex, expected.pubHex);
+
+            // Bad files throw, name no key material, and are left byte-for-byte as they were.
+            const other = crypto.randomBytes(32).toString('hex');
+            const cases = {
+                'garbage.json': 'not json at all',
+                'noseed.json': JSON.stringify({ pub_hex: expected.pubHex }),
+                'shortseed.json': JSON.stringify({ seed_hex: 'ab'.repeat(16) }),
+                'mismatch.json': JSON.stringify({ seed_hex: seedHex, pub_hex: pipeline.loadCollectorSigningKey({ signingSeed: other }).pubHex }),
+            };
+            for (const [name, body] of Object.entries(cases)) {
+                const f = path.join(dir, name);
+                fs.writeFileSync(f, body);
+                assert.throws(
+                    () => pipeline.loadCollectorSigningKey({ signingKeyPath: f }),
+                    (err) => /refusing to sign/.test(err.message) && !err.message.includes(seedHex) && !err.message.includes(other),
+                    `${name} must refuse`,
+                );
+                assert.strictEqual(fs.readFileSync(f, 'utf8'), body, `${name} must not be overwritten`);
+                process.env.COLLECTOR_SIGNING_KEY_FILE = f;
+                assert.throws(() => pipeline.signCommitAuthorization('PWS-TEST', 'd'.repeat(64), 'contribution'), /refusing to sign/);
+                delete process.env.COLLECTOR_SIGNING_KEY_FILE;
+            }
+
+            // Unreadable file (a directory at the path) refuses too.
+            const asDir = path.join(dir, 'is-a-dir.json');
+            fs.mkdirSync(asDir);
+            assert.throws(() => pipeline.loadCollectorSigningKey({ signingKeyPath: asDir }), /unreadable/);
+
+            // Absent file: unchanged behaviour (generate, persist 0600, reuse).
+            const absent = path.join(dir, 'sub', 'fresh.json');
+            const made = pipeline.loadCollectorSigningKey({ signingKeyPath: absent });
+            assert.ok(fs.existsSync(absent), 'generated key persisted at the named path');
+            if (process.platform !== 'win32') assert.strictEqual(fs.statSync(absent).mode & 0o777, 0o600);
+            assert.strictEqual(pipeline.loadCollectorSigningKey({ signingKeyPath: absent }).pubHex, made.pubHex, 'reused next time');
+        } finally {
+            if (saved === undefined) delete process.env.COLLECTOR_SIGNING_KEY_FILE; else process.env.COLLECTOR_SIGNING_KEY_FILE = saved;
+            if (savedSeed === undefined) delete process.env.COLLECTOR_SIGNING_SEED; else process.env.COLLECTOR_SIGNING_SEED = savedSeed;
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     // 6. per-owner attribution differs across two contributors (no cross-contamination)
     await test('two contributors get distinct attribution', async () => {
         const byOwner = {};
