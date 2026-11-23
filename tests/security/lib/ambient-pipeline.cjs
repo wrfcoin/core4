@@ -521,7 +521,18 @@ function rawEd25519PublicKeyHex(publicKeyObject) {
  *      string; hashed to 32 bytes with SHA-256 if not 64 hex chars). Stable
  *      across machines without a key file.
  *   2. A persisted key file under the collector data dir (reused across runs).
+ *      COLLECTOR_SIGNING_KEY_FILE (or options.signingKeyPath) names a different
+ *      file, e.g. the house relay key mounted read-only into the container.
  *   3. A freshly generated key, persisted to that file.
+ *
+ * A key file named EXPLICITLY (COLLECTOR_SIGNING_KEY_FILE / signingKeyPath)
+ * that exists is read strictly: if it cannot be read, is not
+ * `{ "seed_hex": <64 hex> }`, or its `pub_hex` does not match the seed, this
+ * throws and nothing is signed. It is never regenerated or overwritten. (Owners
+ * approve exactly one submitter key per station, so silently signing with a
+ * fresh key would make every relayed commit unapproved.) When the named file is
+ * absent, behaviour is unchanged: a key is generated and persisted there. The
+ * default path keeps its old lenient behaviour.
  *
  * Returns { privateKey: KeyObject, publicKey: KeyObject, pubHex }.
  */
@@ -542,11 +553,16 @@ function loadCollectorSigningKey(options = {}) {
         return key;
     }
 
-    const keyPath = options.signingKeyPath
+    const explicitPath = options.signingKeyPath
         || (typeof process !== 'undefined' && process.env
             ? process.env.COLLECTOR_SIGNING_KEY_FILE
-            : undefined)
-        || COLLECTOR_SIGNING_KEY_PATH;
+            : undefined);
+    const keyPath = explicitPath || COLLECTOR_SIGNING_KEY_PATH;
+
+    // An explicitly named key file that exists is the key, or nothing is signed.
+    if (explicitPath && fs.existsSync(keyPath)) {
+        return readCollectorSigningKeyFileStrict(keyPath);
+    }
 
     // Reuse a persisted key if present.
     try {
@@ -572,6 +588,34 @@ function loadCollectorSigningKey(options = {}) {
         );
     } catch (_) {
         // Persistence is best-effort; a non-persisted key still authorizes.
+    }
+    return key;
+}
+
+/**
+ * Read an explicitly named collector key file. Throws (never returns a different
+ * key) when the file is unreadable, malformed, or its `pub_hex` disagrees with
+ * its seed. Error messages name the path and the problem, never key material.
+ */
+function readCollectorSigningKeyFileStrict(keyPath) {
+    let text;
+    try {
+        text = fs.readFileSync(keyPath, 'utf8');
+    } catch (error) {
+        throw new Error(`collector signing key file ${keyPath} is unreadable (${error.code || 'error'}); refusing to sign`);
+    }
+    let raw;
+    try {
+        raw = JSON.parse(text);
+    } catch (_) {
+        throw new Error(`collector signing key file ${keyPath} is not JSON; refusing to sign`);
+    }
+    if (!raw || typeof raw.seed_hex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(raw.seed_hex)) {
+        throw new Error(`collector signing key file ${keyPath} has no 64-hex seed_hex; refusing to sign`);
+    }
+    const key = keyPairFromSeed(Buffer.from(raw.seed_hex, 'hex'));
+    if (raw.pub_hex !== undefined && String(raw.pub_hex).toLowerCase() !== key.pubHex) {
+        throw new Error(`collector signing key file ${keyPath}: pub_hex does not match its seed; refusing to sign`);
     }
     return key;
 }
