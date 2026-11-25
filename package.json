@@ -419,7 +419,7 @@
     "chai": "^4.5.0",
     "chokidar": "^4.0.3",
     "concurrently": "^9.2.0",
-    "cypress": "^14.5.0",
+    "cypress": "^16.3.0",
     "dependency-cruiser": "^17.3.6",
     "drizzle-kit": "^0.31.8",
     "eslint": "^9.29.0",
