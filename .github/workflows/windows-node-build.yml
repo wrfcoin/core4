@@ -124,7 +124,7 @@ jobs:
           if target/release/oracle_attester.exe foo --help > /dev/null 2>&1; then
             echo 'oracle_attester.exe accepted an unrecognised argument'; exit 1
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wrfcoin-node-windows-x86_64
           path: |
@@ -670,7 +670,7 @@ jobs:
           if (Test-Path $menu) { throw 'uninstall left the Start-menu folder' }
           if (-not (Test-Path (Join-Path $root 'data'))) { throw 'silent uninstall must keep the chain data' }
           Write-Host 'install / hidden start / chain-888 check / clean stop / dashboard Stop route / uninstall: OK'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wrfcoin-node-windows-x86_64-setup
           path: |
