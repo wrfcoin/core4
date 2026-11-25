@@ -5,10 +5,12 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use wrfcoin_cli::{ApiClient, ApiConfig};
+use wrfcoin_shared_protocol::common::types::Address;
+use wrfcoin_shared_protocol::crypto::chain_binding::{
+    ConsensusFeature, LegacyFaucetBinding, refresh_feature_schedule_extensions,
+};
 use wrfcoin_shared_protocol::crypto::domain_signing::oracle_governance_pubkeys;
 use wrfcoin_shared_protocol::crypto::signature::PrivateKey;
-use wrfcoin_shared_protocol::common::types::Address;
-use wrfcoin_shared_protocol::crypto::chain_binding::LegacyFaucetBinding;
 use wrfcoin_shared_protocol::governance::faucet_sink_pop::{
     FaucetSinkPossession, FaucetSinkPossessionProof,
 };
@@ -167,6 +169,11 @@ pub enum ScheduleExtensionCommands {
         /// Also check the activation window as if carried at this height
         #[clap(long)]
         carrying_height: Option<u64>,
+
+        /// Confirmed station_submitter_key activation height on the extension's chain.
+        /// Offline admission context for a standalone device_submission_limit extension.
+        #[clap(long)]
+        station_submitter_key_activation_height: Option<u64>,
 
         /// Faucet-key proof of possession (`wrfcoin governance faucet-pop
         /// sign`). Required to sign a `faucet_sink_binding*` extension
@@ -579,6 +586,7 @@ fn handle_schedule_extension_with_bindings(
             governance_key,
             out,
             carrying_height,
+            station_submitter_key_activation_height,
             faucet_pop,
         } => {
             let mut signed = read_extension_input(extension)?;
@@ -603,11 +611,33 @@ fn handle_schedule_extension_with_bindings(
             // Offline, "this node's block 1" is the chain instance the
             // extension names: a faucet binding passes only when a row binds
             // exactly that instance (#3361 F3).
-            wrfcoin_shared_protocol::governance::schedule_extension::check_admission_policy(
-                &signed.extension,
-                Some(&signed.extension.genesis_hash),
-            )
-            .map_err(|err| anyhow!("refusing to sign: {err}"))?;
+            let check_admission = || {
+                wrfcoin_shared_protocol::governance::schedule_extension::check_admission_policy(
+                    &signed.extension,
+                    Some(&signed.extension.genesis_hash),
+                )
+            };
+            let admission = if let Some(height) = station_submitter_key_activation_height {
+                if !matches!(signed.extension.entries.as_slice(), [entry]
+                    if entry.feature == ConsensusFeature::DeviceSubmissionLimit.name())
+                {
+                    bail!(
+                        "prior station_submitter_key height requires a standalone device_submission_limit extension"
+                    );
+                }
+                // The offline CLI runs one command per process with an empty overlay.
+                // Supply the prior entry only during admission, including on refusal.
+                refresh_feature_schedule_extensions(vec![(
+                    ConsensusFeature::StationSubmitterKey.name().into(),
+                    *height,
+                )]);
+                let result = check_admission();
+                refresh_feature_schedule_extensions(Vec::new());
+                result
+            } else {
+                check_admission()
+            };
+            admission.map_err(|err| anyhow!("refusing to sign: {err}"))?;
             check_scheduling_held(&signed.extension, SCHEDULING_HELD)?;
             if let Some(height) = carrying_height {
                 signed
@@ -1031,6 +1061,7 @@ mod tests {
             governance_key: key_a.clone(),
             out: signed.clone(),
             carrying_height: Some(21_300),
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect("sign");
@@ -1042,6 +1073,7 @@ mod tests {
             governance_key: key_b,
             out: signed.clone(),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect("second signature");
@@ -1051,6 +1083,7 @@ mod tests {
             governance_key: key_a,
             out: signed.clone(),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect_err("same signer twice");
@@ -1070,6 +1103,55 @@ mod tests {
         assert_eq!(verdict["signers"].as_array().map(|s| s.len()), Some(2));
     }
 
+    #[test]
+    fn prior_submitter_activation_is_only_used_for_offline_admission() {
+        let dir = temp_dir("prior-submitter-activation");
+        let (key, public_key) = write_key(&dir, 21);
+        let signed = dir.join("signed.json");
+        let sign = |height, prior| {
+            let path = write_extension(&dir, &[("device_submission_limit", height)]);
+            let mut extension: FeatureScheduleExtension = read_json(&path, "extension").unwrap();
+            extension.sequence = 6;
+            fs::write(&path, serde_json::to_vec(&extension).unwrap()).unwrap();
+            handle_schedule_extension(&ScheduleExtensionCommands::Sign {
+                extension: path,
+                governance_key: key.clone(),
+                out: signed.clone(),
+                carrying_height: Some(height - 3_000),
+                station_submitter_key_activation_height: prior,
+                faucet_pop: None,
+            })
+            .map(|_| extension)
+        };
+
+        let err = sign(39_999, Some(38_000)).unwrap_err().to_string();
+        assert!(
+            err.contains("at least 2000 blocks after station_submitter_key (activates at 38000)"),
+            "{err}"
+        );
+        assert!(!signed.exists());
+        let err = sign(45_000, None).unwrap_err().to_string();
+        assert!(
+            err.contains("station_submitter_key (not scheduled)"),
+            "{err}"
+        );
+        assert!(!signed.exists());
+
+        let expected = sign(45_000, Some(38_000)).unwrap();
+        let artifact: SignedFeatureScheduleExtension = read_json(&signed, "signed").unwrap();
+        assert_eq!(artifact.extension.preimage(), expected.preimage());
+        let verdict = handle_schedule_extension(&ScheduleExtensionCommands::Verify {
+            signed,
+            genesis_hash: S1_GENESIS.into(),
+            chain_id: Some(expected.chain_id),
+            network_id: Some(expected.network_id),
+            allowlist: Some(public_key),
+            carrying_height: Some(42_000),
+        })
+        .unwrap();
+        assert_eq!(verdict["verdict"], json!("valid"));
+    }
+
     /// The signing tool refuses unknown features, malformed extensions and
     /// an out-of-window height — admission policy, before any key is read.
     #[test]
@@ -1082,6 +1164,7 @@ mod tests {
                 governance_key: key.clone(),
                 out: dir.join("out.json"),
                 carrying_height: carrying,
+                station_submitter_key_activation_height: None,
                 faucet_pop: None,
             })
             .expect_err("must refuse")
@@ -1139,6 +1222,7 @@ mod tests {
             governance_key: key.clone(),
             out: dir.join("out.json"),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect_err("version step")
@@ -1157,6 +1241,7 @@ mod tests {
             governance_key: key,
             out: dir.join("out.json"),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect("an unheld schedulable feature still signs");
@@ -1184,6 +1269,7 @@ mod tests {
             governance_key: key,
             out: signed.clone(),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect("sign");
@@ -1302,6 +1388,7 @@ mod tests {
                 governance_key,
                 out: dir.join("e0f-signed.json"),
                 carrying_height: Some(37_000),
+                station_submitter_key_activation_height: None,
                 faucet_pop: pop,
             },
             rows,
@@ -1433,6 +1520,7 @@ mod tests {
             governance_key,
             out: dir.join("out.json"),
             carrying_height: None,
+            station_submitter_key_activation_height: None,
             faucet_pop: None,
         })
         .expect_err("no proof")
