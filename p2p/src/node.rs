@@ -6421,7 +6421,10 @@ async fn handle_behaviour_event(
             Err(ref e) => warn!("DCUtR: upgrade failed with {remote_peer_id}: {e}"),
         },
 
-        WrfcoinBehaviourEvent::Upnp(upnp::Event::NewExternalAddr(addr)) => {
+        WrfcoinBehaviourEvent::Upnp(upnp::Event::NewExternalAddr {
+            external_addr: addr,
+            ..
+        }) => {
             // A router behind carrier-grade NAT maps to a 100.64/10 address,
             // which is not reachable from the internet and must not be
             // announced (crate::announce).
@@ -6432,7 +6435,10 @@ async fn handle_behaviour_event(
                 info!("UPnP: mapped external address {addr} is not globally routable; not announcing it");
             }
         },
-        WrfcoinBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr(addr)) => {
+        WrfcoinBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr {
+            external_addr: addr,
+            ..
+        }) => {
             info!("UPnP: external address mapping expired: {addr}");
             swarm.remove_external_address(&addr);
         },

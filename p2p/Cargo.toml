@@ -2,7 +2,7 @@
 name = "wrfcoin-p2p"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.88"
 
 [features]
 # Exposes `behaviour::test_swarm()`, which builds a real `Swarm<WrfcoinBehaviour>` without
@@ -14,8 +14,8 @@ test-harness = []
 [dependencies]
 wrfcoin-shared-protocol = { path = "../shared-protocol", features = ["test-support"] }
 
-# libp2p -- viral-scale P2P networking
-libp2p = { version = "0.56", default-features = false, features = [
+# libp2p -- viral-scale P2P networking (0.57 needs Rust 1.88, hence rust-version)
+libp2p = { version = "0.57", default-features = false, features = [
     "tcp",
     "dns",
     "quic",
@@ -35,7 +35,6 @@ libp2p = { version = "0.56", default-features = false, features = [
 
 # Async runtime
 tokio = { workspace = true }
-async-trait = "0.1"
 log = { workspace = true }
 env_logger = { workspace = true }
 serde = { workspace = true }

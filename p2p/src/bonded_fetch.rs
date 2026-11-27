@@ -34,7 +34,6 @@
 
 use std::{io, time::Duration};
 
-use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
     futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -371,7 +370,6 @@ where
 #[derive(Debug, Clone, Default)]
 pub struct BondedFetchCodec;
 
-#[async_trait]
 impl request_response::Codec for BondedFetchCodec {
     type Protocol = StreamProtocol;
     type Request = BondedFetchRequest;

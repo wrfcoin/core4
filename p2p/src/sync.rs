@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use chrono::Utc;
 use libp2p::{
     PeerId, StreamProtocol,
@@ -230,7 +229,6 @@ pub struct BlockResponse {
 #[derive(Debug, Clone, Default)]
 pub struct BlockSyncCodec;
 
-#[async_trait]
 impl request_response::Codec for BlockSyncCodec {
     type Protocol = StreamProtocol;
     type Request = BlockRequest;
