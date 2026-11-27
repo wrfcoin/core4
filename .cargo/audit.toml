@@ -38,21 +38,10 @@
 
 [advisories]
 ignore = [
-  # RUSTSEC-2026-0118 — hickory-proto 0.25.2
-  #   why:      core4 enables neither libp2p dns nor mdns, so hickory-proto is absent from the all-features production graph
-  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
-  #   revisit:  2026-10-28 — remove when libp2p upgrades or either discovery feature is enabled
-  "RUSTSEC-2026-0118",
-  # RUSTSEC-2026-0119 — hickory-proto 0.25.2
-  #   why:      core4 enables neither libp2p dns nor mdns, so the affected encoder is not compiled
-  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
-  #   revisit:  2026-10-28 — remove when libp2p upgrades or either discovery feature is enabled
-  "RUSTSEC-2026-0119",
-  # RUSTSEC-2025-0055 — tracing-subscriber 0.2.25
-  #   why:      ark-relations enables only the registry layer; the affected fmt and ansi features are not compiled
-  #   decided:  #2336 audit owner, 2026-07-28, with the executable feature-graph guard
-  #   revisit:  2026-10-28 — remove when arkworks upgrades to tracing-subscriber 0.3.20 or newer
-  "RUSTSEC-2025-0055",
+  # The three #2336 reachability waivers (RUSTSEC-2026-0118 and -0119 for
+  # hickory-proto 0.25.2, RUSTSEC-2025-0055 for tracing-subscriber 0.2.25)
+  # were retired when libp2p moved to 0.57: hickory-proto 0.25.2 left
+  # Cargo.lock with it, and tracing-subscriber 0.2.25 had already left.
 ]
 
 # Unmaintained / unsound / yanked notices are informational. They are reported

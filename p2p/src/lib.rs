@@ -80,3 +80,55 @@ mod integration_target_registration {
         );
     }
 }
+
+#[cfg(test)]
+mod dependency_floor_libp2p_057 {
+    //! libp2p 0.57 removed two advisory packages from the lock: yamux 0.12
+    //! (GHSA-vxx9-2994-q338, compiled unconditionally by libp2p-yamux 0.47)
+    //! and the yanked core2 0.4.0 (RUSTSEC-2026-0105, via multihash 0.19.3).
+    //! Fail if either comes back.
+    const LOCK: &str = include_str!("../../Cargo.lock");
+
+    fn versions<'a>(lock: &'a str, name: &str) -> Vec<&'a str> {
+        lock.split("[[package]]")
+            .filter_map(|package| {
+                let mut package_name = None;
+                let mut version = None;
+                for line in package.lines() {
+                    if let Some(value) = line.strip_prefix("name = \"") {
+                        package_name = value.strip_suffix('"');
+                    }
+                    if let Some(value) = line.strip_prefix("version = \"") {
+                        version = value.strip_suffix('"');
+                    }
+                }
+                (package_name == Some(name)).then_some(version).flatten()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_yamux_012_in_lock() {
+        let yamux = versions(LOCK, "yamux");
+        assert!(
+            !yamux.is_empty(),
+            "lock scan found no yamux at all: parser is blind"
+        );
+        assert!(
+            yamux.iter().all(|v| !v.starts_with("0.12.")),
+            "yamux 0.12 is back: {yamux:?}"
+        );
+    }
+
+    #[test]
+    fn no_yanked_core2_in_lock() {
+        assert!(versions(LOCK, "core2").is_empty(), "yanked core2 is back");
+    }
+
+    #[test]
+    fn lock_parser_keeps_every_version_and_exact_names() {
+        let fixture = "[[package]]\nname = \"yamux\"\nversion = \"0.12.1\"\n\n[[package]]\nname = \"libp2p-yamux\"\nversion = \"0.47.0\"\n\n[[package]]\nname = \"yamux\"\nversion = \"0.14.0\"\n";
+        assert_eq!(versions(fixture, "yamux"), ["0.12.1", "0.14.0"]);
+        assert!(versions(fixture, "core2").is_empty());
+    }
+}
